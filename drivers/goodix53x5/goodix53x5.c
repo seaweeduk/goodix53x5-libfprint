@@ -27,6 +27,10 @@
 #include <string.h>
 #include <openssl/rand.h>
 
+#define GOODIX_PROTO_CATEGORY_FDT     0x03
+#define GOODIX_PROTO_CMD_FDT_DOWN     0x01
+#define GOODIX_PROTO_CMD_FDT_UP       0x02
+
 /* All-zero PSK */
 static const guint8 goodix_psk[GOODIX_PSK_LEN] = { 0 };
 
@@ -1129,12 +1133,22 @@ goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
         const guint8 *pl;
         gsize pl_len;
 
-        if (!goodix_proto_rx_parse (&self->rx, &cat, &cmd, &pl, &pl_len) ||
+        if (!goodix_proto_rx_parse (&self->rx, &cat, &cmd, &pl, &pl_len))
+          {
+            fpi_ssm_mark_failed (ssm,
+                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                            "Failed to parse FDT down event"));
+            return;
+          }
+
+        if (cat != GOODIX_PROTO_CATEGORY_FDT ||
+            cmd != GOODIX_PROTO_CMD_FDT_DOWN ||
             pl_len < 28)
           {
             fpi_ssm_mark_failed (ssm,
                                  fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Failed to parse FDT event"));
+                                                           "Unexpected FDT down event: cat=0x%02x cmd=0x%02x len=%zu",
+                                                           cat, cmd, pl_len));
             return;
           }
 
@@ -1331,12 +1345,22 @@ goodix_finger_up_ssm_handler (FpiSsm   *ssm,
         const guint8 *pl;
         gsize pl_len;
 
-        if (!goodix_proto_rx_parse (&self->rx, &cat, &cmd, &pl, &pl_len) ||
+        if (!goodix_proto_rx_parse (&self->rx, &cat, &cmd, &pl, &pl_len))
+          {
+            fpi_ssm_mark_failed (ssm,
+                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                            "Failed to parse finger-up event"));
+            return;
+          }
+
+        if (cat != GOODIX_PROTO_CATEGORY_FDT ||
+            cmd != GOODIX_PROTO_CMD_FDT_UP ||
             pl_len < 4 + GOODIX_FDT_BASE_LEN)
           {
             fpi_ssm_mark_failed (ssm,
                                  fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Failed to parse finger-up event"));
+                                                           "Unexpected finger-up event: cat=0x%02x cmd=0x%02x len=%zu",
+                                                           cat, cmd, pl_len));
             return;
           }
 

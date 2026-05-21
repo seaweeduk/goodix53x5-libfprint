@@ -64,6 +64,20 @@ This automatically unbinds `cdc_acm` when it tries to attach to this device. Wit
 
 ## Installation
 
+### Local Build
+
+For development, build libfprint with this driver inside this repository:
+
+```bash
+./scripts/build-local.sh
+```
+
+This clones/prepares libfprint under `.build/libfprint`, copies the current driver and `sigfm` sources into that tree, applies `meson-integration.patch`, and runs `ninja`. Override the libfprint ref with `GOODIX_LIBFPRINT_REF`, for example:
+
+```bash
+GOODIX_LIBFPRINT_REF=v1.94.10 ./scripts/build-local.sh
+```
+
 ### Quick Start
 
 ```bash

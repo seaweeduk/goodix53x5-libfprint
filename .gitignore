@@ -1,0 +1,5 @@
+.build/
+builddir/
+results/
+tools/
+*.pkg.tar.zst
