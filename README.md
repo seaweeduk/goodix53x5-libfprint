@@ -1,6 +1,8 @@
 # Goodix HTK32 (27c6:5335 / 27c6:5385 / 27c6:5395) libfprint Driver
 
-A libfprint driver for the Goodix HTK32 fingerprint sensor found in the **Dell XPS 13 9305**, the **Dell XPS 13 7390**, the **Dell XPS 15 9570** and possibly other laptops using the `27c6:5335`, `27c6:5385` or `27c6:5395` USB device.
+A libfprint driver for Goodix HTK32 fingerprint sensors using the `27c6:5335`, `27c6:5385`, or `27c6:5395` USB IDs.
+
+This fork is specifically validated and tuned for the **Dell XPS 13 9305** with the `27c6:5335` sensor. Other HTK32 devices may still work, but the testing and changes here were made on this 9305/5335 combination rather than the broader upstream hardware list.
 
 ## Hardware
 
@@ -62,17 +64,7 @@ This automatically unbinds `cdc_acm` when it tries to attach to this device. Wit
 
 ## Installation
 
-### Arch Linux (AUR)
-
-```bash
-yay -S libfprint-goodix53x5
-sudo pacman -S fprintd
-sudo systemctl restart fprintd
-```
-
-This builds a patched libfprint with the driver and udev rule included. No manual steps needed.
-
-### Other Distros: Quick Start
+### Quick Start
 
 ```bash
 # Clone libfprint
@@ -80,7 +72,7 @@ git clone https://gitlab.freedesktop.org/libfprint/libfprint.git
 cd libfprint
 
 # Apply this driver (also installs the udev rule)
-/path/to/goodix53x5-driver/install.sh .
+/path/to/goodix53x5-libfprint/install.sh .
 
 # The install script will print manual meson.build edits needed.
 # Apply those edits, then:
@@ -122,8 +114,8 @@ sudo systemctl restart fprintd
    - Add `libsigfm` to `link_with` for both `libfprint_drivers` and the main `libfprint` library
    - Add `opencv_dep` to the main library `dependencies`
 4. Edit root `meson.build`:
-   - Add `'goodix53x5'` to the default drivers list
-   - Add `'goodix53x5' : [ 'openssl' ]` to `driver_helpers`
+    - Add `'goodix53x5'` to the default drivers list
+    - Add `'goodix53x5' : [ 'openssl' ]` to `driver_helper_mapping`
 5. Reconfigure and build
 
 ## Enrollment and Verification
@@ -140,9 +132,9 @@ fprintd-verify
 
 ## Technical Notes
 
-- **SIGFM matching** uses OpenCV SIFT features with CLAHE contrast enhancement. Score threshold is 5 (correct finger typically scores 28-24000+, wrong finger scores 0-4).
-- **8 enrollment samples** are stored as raw 108x88 grayscale images. During verification, SIFT features are extracted from each stored sample and compared with the live capture.
-- **Image preprocessing** removes horizontal banding and vertical striping via row/column mean subtraction, then normalizes to 8-bit.
+- **SIGFM matching** uses OpenCV SIFT features with CLAHE contrast enhancement. A sample counts as matching at score `>= 10`, and verify/identify require a best score `>= 40` with at least one enrolled sample above the match threshold.
+- **8 enrollment samples** are stored as processed 108x88 8-bit images. During verification, SIFT features are extracted from each stored sample and compared with the live capture.
+- **Image preprocessing** uses a row/column bandpass: it removes row/column mean structure, subtracts a wide Gaussian lowpass, applies light smoothing, then normalizes to 8-bit.
 - Thermal throttling is disabled (`temp_hot_seconds = -1`) since the small sensor generates negligible heat.
 
 ## File Structure
