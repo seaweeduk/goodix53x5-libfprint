@@ -2,4 +2,5 @@
 builddir/
 results/
 tools/
+AGENTS.md
 *.pkg.tar.zst
