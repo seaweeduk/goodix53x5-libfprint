@@ -34,6 +34,7 @@
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <tuple>
 
 #include <opencv2/opencv.hpp>
 #include <vector>
@@ -80,8 +81,8 @@ struct match {
     }
     bool operator<(const match& right) const
     {
-        return (this->p1.y < right.p1.y) ||
-               ((this->p1.y < right.p1.y) && this->p1.x < right.p1.x);
+        return std::tie(this->p1.y, this->p1.x, this->p2.y, this->p2.x) <
+               std::tie(right.p1.y, right.p1.x, right.p2.y, right.p2.x);
     }
 };
 struct angle {
