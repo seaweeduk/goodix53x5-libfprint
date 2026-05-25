@@ -1583,7 +1583,6 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
             GPtrArray *gallery = NULL;
             FpPrint *match = NULL;
             int best_score = 0;
-            int best_match_count = 0;
 
             fpi_device_get_identify_data (dev, &gallery);
 
@@ -1600,7 +1599,6 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                 GVariant *child;
                 int sample_idx = 0;
                 int tmpl_best_score = 0;
-                int tmpl_match_count = 0;
 
                 g_variant_iter_init (&iter, tmpl_data);
                 while ((child = g_variant_iter_next_value (&iter)))
@@ -1621,8 +1619,6 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                                 i, sample_idx, score);
                         sigfm_free_info (tmpl_info);
 
-                        if (score >= GOODIX_SIGFM_THRESHOLD)
-                          tmpl_match_count++;
                         if (score > tmpl_best_score)
                           tmpl_best_score = score;
 
@@ -1632,22 +1628,16 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                   }
                 g_variant_unref (tmpl_data);
 
-                /* Only consider this gallery entry if it passes all gates */
                 if (tmpl_best_score >= GOODIX_SIGFM_BEST_MIN &&
-                    tmpl_match_count >= GOODIX_SIGFM_MIN_SAMPLES &&
                     tmpl_best_score > best_score)
                   {
                     best_score = tmpl_best_score;
-                    best_match_count = tmpl_match_count;
                     match = tmpl;
                   }
               }
 
-            fp_dbg ("Identify best SIGFM score: %d, matching_samples: %d "
-                    "(threshold: %d, best_min: %d, min_samples: %d)",
-                    best_score, best_match_count,
-                    GOODIX_SIGFM_THRESHOLD, GOODIX_SIGFM_BEST_MIN,
-                    GOODIX_SIGFM_MIN_SAMPLES);
+            fp_dbg ("Identify best SIGFM score: %d (best_min: %d)",
+                    best_score, GOODIX_SIGFM_BEST_MIN);
 
             if (match != NULL)
               fpi_device_identify_report (dev, match, NULL, NULL);
@@ -1660,7 +1650,6 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
             FpPrint *print = NULL;
             GVariant *data = NULL;
             int best_score = 0;
-            int match_count = 0;
             int sample_idx = 0;
 
             fpi_device_get_verify_data (dev, &print);
@@ -1690,8 +1679,6 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                                 sample_idx, score);
                         sigfm_free_info (tmpl_info);
 
-                        if (score >= GOODIX_SIGFM_THRESHOLD)
-                          match_count++;
                         if (score > best_score)
                           best_score = score;
 
@@ -1702,14 +1689,10 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                 g_variant_unref (data);
               }
 
-            fp_dbg ("Verify best SIGFM score: %d, matching_samples: %d "
-                    "(threshold: %d, best_min: %d, min_samples: %d)",
-                    best_score, match_count,
-                    GOODIX_SIGFM_THRESHOLD, GOODIX_SIGFM_BEST_MIN,
-                    GOODIX_SIGFM_MIN_SAMPLES);
+            fp_dbg ("Verify best SIGFM score: %d (best_min: %d)",
+                    best_score, GOODIX_SIGFM_BEST_MIN);
 
-            if (best_score >= GOODIX_SIGFM_BEST_MIN &&
-                match_count >= GOODIX_SIGFM_MIN_SAMPLES)
+            if (best_score >= GOODIX_SIGFM_BEST_MIN)
               fpi_device_verify_report (dev, FPI_MATCH_SUCCESS, NULL, NULL);
             else
               fpi_device_verify_report (dev, FPI_MATCH_FAIL, NULL, NULL);

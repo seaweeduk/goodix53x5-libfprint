@@ -34,6 +34,7 @@
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <tuple>
 
 #include <opencv2/opencv.hpp>
 #include <vector>
@@ -64,6 +65,11 @@ constexpr auto distance_match = 0.85;
 constexpr auto length_match = 0.05;
 constexpr auto angle_match = 0.05;
 constexpr auto min_match = 5;
+constexpr auto sift_nfeatures = 0;
+constexpr auto sift_octave_layers = 3;
+constexpr auto sift_contrast_threshold = 0.04;
+constexpr auto sift_edge_threshold = 18.0;
+constexpr auto sift_sigma = 2.0;
 struct match {
     cv::Point2i p1;
     cv::Point2i p2;
@@ -75,8 +81,8 @@ struct match {
     }
     bool operator<(const match& right) const
     {
-        return (this->p1.y < right.p1.y) ||
-               ((this->p1.y < right.p1.y) && this->p1.x < right.p1.x);
+        return std::tie(this->p1.y, this->p1.x, this->p2.y, this->p2.x) <
+               std::tie(right.p1.y, right.p1.x, right.p2.y, right.p2.x);
     }
 };
 struct angle {
@@ -129,7 +135,12 @@ SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height)
     std::vector<cv::KeyPoint> pts;
 
     cv::Mat descs;
-    cv::SIFT::create()->detectAndCompute(enhanced, roi, pts, descs);
+    cv::SIFT::create(sift_nfeatures,
+                     sift_octave_layers,
+                     sift_contrast_threshold,
+                     sift_edge_threshold,
+                     sift_sigma)
+        ->detectAndCompute(enhanced, roi, pts, descs);
 
     auto* info = new SigfmImgInfo{pts, descs};
     return info;

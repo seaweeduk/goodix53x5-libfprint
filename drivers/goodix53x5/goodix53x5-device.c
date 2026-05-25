@@ -22,6 +22,7 @@
 #include "drivers_api.h"
 #include "goodix53x5.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
@@ -517,15 +518,26 @@ gaussian_blur_separable (const double *src,
   g_free (temp);
 }
 
+static int
+compare_double (const void *a,
+                const void *b)
+{
+  double left = *(const double *) a;
+  double right = *(const double *) b;
+
+  return (left > right) - (left < right);
+}
+
 /**
  * goodix_device_image_to_8bit:
  *
  * Convert 12-bit sensor image to 8-bit grayscale with row/column bandpass.
  *
  * First removes row/column mean structure from the raw sensor frame, then
- * subtracts a wide Gaussian lowpass (sigma=7.0) and applies light smoothing
- * (sigma=0.7). This keeps fingerprint ridge-scale detail while suppressing
- * fixed grid artefacts that otherwise produce stable false matches.
+ * subtracts a wide Gaussian lowpass (sigma=7.0), applies light smoothing
+ * (sigma=0.7), then normalizes using the interior 2%..98% percentile range.
+ * This keeps fingerprint ridge-scale detail while suppressing fixed grid
+ * artefacts and preventing edge/outlier pixels from dominating contrast.
  *
  * Returns newly allocated array of GOODIX_SENSOR_PIXELS guint8 values.
  */
@@ -546,6 +558,8 @@ goodix_device_image_to_8bit (const guint16 *img12,
   double *lowpass = g_malloc (N * sizeof (double));
   double *highpass = g_malloc (N * sizeof (double));
   double *smoothed = g_malloc (N * sizeof (double));
+  double *sample = g_malloc ((W - 2) * (H - 2) * sizeof (double));
+  int sample_count = 0;
   double global_mean = 0.0;
   double corr_min = G_MAXDOUBLE;
   double corr_max = -G_MAXDOUBLE;
@@ -576,19 +590,20 @@ goodix_device_image_to_8bit (const guint16 *img12,
 
   gaussian_blur_separable (highpass, smoothed, W, H, 0.7);
 
-  /* Find range and normalize to [0, 255] */
-  for (int i = 0; i < N; i++)
-    {
-      if (smoothed[i] < corr_min) corr_min = smoothed[i];
-      if (smoothed[i] > corr_max) corr_max = smoothed[i];
-    }
+  for (int r = 1; r < H - 1; r++)
+    for (int c = 1; c < W - 1; c++)
+      sample[sample_count++] = smoothed[r * W + c];
+
+  qsort (sample, sample_count, sizeof (double), compare_double);
+  corr_min = sample[(int) (0.02 * (sample_count - 1))];
+  corr_max = sample[(int) (0.98 * (sample_count - 1))];
 
   double range = corr_max - corr_min;
   if (range < 1.0)
     range = 1.0;
 
   for (int i = 0; i < N; i++)
-    img8[i] = (guint8) (((smoothed[i] - corr_min) * 255.0) / range);
+    img8[i] = (guint8) CLAMP ((int) (((smoothed[i] - corr_min) * 255.0) / range), 0, 255);
 
   g_free (row_mean);
   g_free (col_mean);
@@ -596,5 +611,6 @@ goodix_device_image_to_8bit (const guint16 *img12,
   g_free (lowpass);
   g_free (highpass);
   g_free (smoothed);
+  g_free (sample);
   return img8;
 }
