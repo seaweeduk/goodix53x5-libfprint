@@ -211,7 +211,7 @@ goodix_device_parse_otp (const guint8      *otp,
       params->delta_nav = tmp * 4;
     }
 
-  if (otp[17] == 0 || otp[22] == 0 || otp_len > 31 ? otp[31] == 0 : TRUE)
+  if (otp[17] == 0 || otp[22] == 0 || (otp_len > 31 ? otp[31] == 0 : TRUE))
     {
       params->dac_h = 0x97;
       params->dac_l = 0xD0;

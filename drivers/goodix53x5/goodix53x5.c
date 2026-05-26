@@ -94,14 +94,8 @@ goodix_send_message (FpiSsm   *ssm,
                                     use_checksum, &msg_len);
   cmd_byte = msg[0];
 
-  /* We need to send chunks of 64 bytes. The protocol pads writes to 64.
-   * For the first chunk, send the message bytes.
-   * For continuation chunks, prepend cmd_byte | 1. */
-  /* Since libfprint transfers handle padding, we send the whole thing
-   * as one bulk write if it fits, or chain if not.
-   * Actually, looking at the Python: each chunk is exactly 64 bytes, padded.
-   * The USB protocol.py write() pads to 64 bytes.
-   * Let's build a single contiguous padded buffer with proper chunking. */
+  /* The transport uses 64-byte USB writes. Continuation chunks prepend
+   * cmd_byte | 1 and carry up to 63 more bytes of message data. */
 
   gsize total_chunks = 0;
   gsize padded_len = 0;
@@ -346,6 +340,50 @@ goodix_run_cmd (FpiSsm       *parent_ssm,
   fpi_ssm_start_subsm (parent_ssm, cmd_ssm);
 }
 
+static gboolean
+goodix_parse_reply (FpDevice      *dev,
+                    guint8        *out_category,
+                    guint8        *out_command,
+                    const guint8 **out_payload,
+                    gsize         *out_payload_len,
+                    GError       **error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (goodix_proto_rx_parse (&self->rx, out_category, out_command,
+                             out_payload, out_payload_len))
+    return TRUE;
+
+  g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                       "Failed to parse device reply");
+  return FALSE;
+}
+
+static gboolean
+goodix_parse_reply_exact (FpDevice      *dev,
+                          guint8         expected_category,
+                          guint8         expected_command,
+                          const guint8 **out_payload,
+                          gsize         *out_payload_len,
+                          GError       **error)
+{
+  guint8 category, command;
+
+  if (!goodix_parse_reply (dev, &category, &command, out_payload,
+                           out_payload_len, error))
+    return FALSE;
+
+  if (category != expected_category || command != expected_command)
+    {
+      g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                   "Unexpected reply: cat=0x%02x cmd=0x%02x",
+                   category, command);
+      return FALSE;
+    }
+
+  return TRUE;
+}
+
 /**
  * Launch a command sub-SSM with a specific ACK timeout.
  * For FDT operations that need a long timeout, we handle it slightly
@@ -481,43 +519,89 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_OPEN_RESET:
-      /* reset type 0, irq_status=false: msg = 0b001 | (20<<8) = 0x1401 */
       {
-        guint16 msg = 0x01 | (20 << 8);
-        payload[0] = msg & 0xFF;
-        payload[1] = (msg >> 8) & 0xFF;
-        goodix_run_cmd (ssm, dev, 0xA, 0x1, payload, 2, FALSE);
+        g_autoptr(GError) error = NULL;
+        const guint8 *pl;
+        gsize pl_len;
+
+        if (!goodix_parse_reply_exact (dev, 0xA, 0x4, &pl, &pl_len, &error))
+          {
+            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+            return;
+          }
+
+        g_clear_pointer (&self->fw_version, g_free);
+        self->fw_version = g_strndup ((const gchar *) pl,
+                                      strnlen ((const gchar *) pl, pl_len));
+
+        /* reset type 0, irq_status=false: msg = 0b001 | (20<<8) = 0x1401 */
+        {
+          guint16 msg = 0x01 | (20 << 8);
+          payload[0] = msg & 0xFF;
+          payload[1] = (msg >> 8) & 0xFF;
+          goodix_run_cmd (ssm, dev, 0xA, 0x1, payload, 2, FALSE);
+        }
       }
       break;
 
     case GOODIX_OPEN_READ_CHIP_ID:
-      /* read_data(addr=0, size=4): category=0x8, command=0x1 */
-      payload[0] = 0x00;                /* \x00 */
-      payload[1] = 0x00; payload[2] = 0x00; /* addr LE */
-      payload[3] = 0x04; payload[4] = 0x00; /* size LE */
-      goodix_run_cmd (ssm, dev, 0x8, 0x1, payload, 5, TRUE);
+      {
+        /* read_data(addr=0, size=4): category=0x8, command=0x1 */
+        payload[0] = 0x00;                /* \x00 */
+        payload[1] = 0x00; payload[2] = 0x00; /* addr LE */
+        payload[3] = 0x04; payload[4] = 0x00; /* size LE */
+        goodix_run_cmd (ssm, dev, 0x8, 0x1, payload, 5, TRUE);
+      }
       break;
 
     case GOODIX_OPEN_READ_OTP:
-      /* read_otp: category=0xA, command=0x3, payload=\x00\x00 */
-      payload[0] = 0x00;
-      payload[1] = 0x00;
-      goodix_run_cmd (ssm, dev, 0xA, 0x3, payload, 2, TRUE);
+      {
+        g_autoptr(GError) error = NULL;
+        const guint8 *pl;
+        gsize pl_len;
+        guint32 chip_id;
+
+        if (!goodix_parse_reply_exact (dev, 0x8, 0x1, &pl, &pl_len, &error))
+          {
+            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+            return;
+          }
+
+        if (pl_len != 4)
+          {
+            fpi_ssm_mark_failed (ssm,
+                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                           "Unexpected chip ID reply length: %zu",
+                                                           pl_len));
+            return;
+          }
+
+        chip_id = goodix_crypto_decode_u32 (pl);
+        fp_dbg ("Chip ID: 0x%08x", chip_id);
+
+        /* read_otp: category=0xA, command=0x3, payload=\x00\x00 */
+        payload[0] = 0x00;
+        payload[1] = 0x00;
+        goodix_run_cmd (ssm, dev, 0xA, 0x3, payload, 2, TRUE);
+      }
       break;
 
     case GOODIX_OPEN_PARSE_OTP:
       {
-        guint8 cat, cmd;
         const guint8 *pl;
         gsize pl_len;
 
-        if (!goodix_proto_rx_parse (&self->rx, &cat, &cmd, &pl, &pl_len))
+        if (!goodix_parse_reply_exact (dev, 0xA, 0x3, &pl, &pl_len, NULL))
           {
             fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Failed to parse OTP response"));
+                                  fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                            "Failed to parse OTP response"));
             return;
           }
+
+        g_clear_pointer (&self->otp_data, g_free);
+        self->otp_data = g_memdup2 (pl, pl_len);
+        self->otp_len = pl_len;
 
         if (!goodix_device_verify_otp (pl, pl_len))
           {
@@ -548,11 +632,10 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       {
         /* Check if PSK hash matches our all-zero PSK.
          * Parse the production_read response. */
-        guint8 cat, cmd;
         const guint8 *pl, *psk_data;
         gsize pl_len, psk_data_len;
 
-        if (!goodix_proto_rx_parse (&self->rx, &cat, &cmd, &pl, &pl_len) ||
+        if (!goodix_parse_reply_exact (dev, 0xE, 0x2, &pl, &pl_len, NULL) ||
             !goodix_proto_parse_production_read (pl, pl_len, 0xB003,
                                                  &psk_data, &psk_data_len))
           {
@@ -574,13 +657,15 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
           if (psk_data_len >= 32 && memcmp (psk_data, expected_hash, 32) == 0)
             {
               fp_dbg ("PSK hash matches, no need to write");
-              fpi_ssm_next_state (ssm);
+              self->psk_write_verify_pending = FALSE;
+              fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_GTLS_CLIENT_HELLO);
               return;
             }
         }
 
         /* Need to write PSK white box */
         fp_info ("Writing PSK white box");
+        self->psk_write_verify_pending = TRUE;
         {
           gsize wb_payload_len = 4 + 4 + GOODIX_PSK_WHITE_BOX_LEN;
           g_autofree guint8 *wb_payload = g_malloc (wb_payload_len);
@@ -604,8 +689,72 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       }
       break;
 
+    case GOODIX_OPEN_VERIFY_PSK_WRITE:
+      {
+        const guint8 *pl;
+        gsize pl_len;
+        guint32 read_type = 0xB003;
+
+        if (!goodix_parse_reply_exact (dev, 0xE, 0x1, &pl, &pl_len, NULL) ||
+            pl_len < 1)
+          {
+            fpi_ssm_mark_failed (ssm,
+                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                           "Failed to parse PSK write reply"));
+            return;
+          }
+
+        if (pl[0] != 0)
+          {
+            fpi_ssm_mark_failed (ssm,
+                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                           "PSK write failed: %u",
+                                                           pl[0]));
+            return;
+          }
+
+        payload[0] = read_type & 0xFF;
+        payload[1] = (read_type >> 8) & 0xFF;
+        payload[2] = (read_type >> 16) & 0xFF;
+        payload[3] = (read_type >> 24) & 0xFF;
+        goodix_run_cmd (ssm, dev, 0xE, 0x2, payload, 4, TRUE);
+      }
+      break;
+
     case GOODIX_OPEN_GTLS_CLIENT_HELLO:
       {
+        if (self->psk_write_verify_pending)
+          {
+            const guint8 *pl, *psk_data;
+            gsize pl_len, psk_data_len;
+            g_autoptr(GChecksum) sha = g_checksum_new (G_CHECKSUM_SHA256);
+            guint8 expected_hash[32];
+            gsize hash_len = 32;
+
+            if (!goodix_parse_reply_exact (dev, 0xE, 0x2, &pl, &pl_len, NULL) ||
+                !goodix_proto_parse_production_read (pl, pl_len, 0xB003,
+                                                     &psk_data, &psk_data_len))
+              {
+                fpi_ssm_mark_failed (ssm,
+                                     fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                               "Failed to re-read PSK hash"));
+                return;
+              }
+
+            g_checksum_update (sha, goodix_psk, GOODIX_PSK_LEN);
+            g_checksum_get_digest (sha, expected_hash, &hash_len);
+
+            if (psk_data_len < 32 || memcmp (psk_data, expected_hash, 32) != 0)
+              {
+                fpi_ssm_mark_failed (ssm,
+                                     fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                               "PSK hash mismatch after write"));
+                return;
+              }
+
+            self->psk_write_verify_pending = FALSE;
+          }
+
         /* Generate client_random and send via MCU */
         RAND_bytes (self->gtls.client_random, 32);
         goodix_crypto_gtls_init (&self->gtls, goodix_psk);
@@ -738,6 +887,19 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_OPEN_FDT_TX_ON:
       {
+        const guint8 *cfg_reply;
+        gsize cfg_reply_len;
+
+        if (!goodix_parse_reply_exact (dev, 0x9, 0x0, &cfg_reply, &cfg_reply_len,
+                                       NULL) ||
+            cfg_reply_len == 0 || cfg_reply[0] != 1)
+          {
+            fpi_ssm_mark_failed (ssm,
+                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                           "Config upload failed"));
+            return;
+          }
+
         /* FDT manual operation with TX enabled: op_code=0x0D */
         guint8 manual_payload[1 + GOODIX_FDT_BASE_LEN];
         manual_payload[0] = 0x0D;
@@ -1081,12 +1243,30 @@ goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
       }
       break;
 
+    case GOODIX_FINGER_WAIT_EC_POWER_ON_DONE:
+      {
+        const guint8 *pl;
+        gsize pl_len;
+
+        if (!goodix_parse_reply_exact (dev, 0xA, 0x7, &pl, &pl_len, NULL) ||
+            pl_len == 0 || pl[0] != 1)
+          {
+            fpi_ssm_mark_failed (ssm,
+                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                           "EC power-on failed"));
+            return;
+          }
+
+        fpi_ssm_next_state (ssm);
+      }
+      break;
+
     case GOODIX_FINGER_WAIT_WARMUP_CAPTURE:
       if (self->warmup_remaining > 0)
         {
           fp_dbg ("Warmup: capturing (%d remaining)", self->warmup_remaining);
           FpiSsm *sub = fpi_ssm_new (dev, goodix_capture_ssm_handler,
-                                       GOODIX_CAPTURE_NUM_STATES);
+                                     GOODIX_CAPTURE_NUM_STATES);
           fpi_ssm_start_subsm (ssm, sub);
         }
       else
@@ -1383,6 +1563,24 @@ goodix_finger_up_ssm_handler (FpiSsm   *ssm,
       {
         guint8 ec_payload[3] = { 0x00, 0x00, 0x00 };
         goodix_run_cmd (ssm, dev, 0xA, 0x7, ec_payload, 3, TRUE);
+      }
+      break;
+
+    case GOODIX_FINGER_UP_EC_POWER_OFF_DONE:
+      {
+        const guint8 *pl;
+        gsize pl_len;
+
+        if (!goodix_parse_reply_exact (dev, 0xA, 0x7, &pl, &pl_len, NULL) ||
+            pl_len == 0 || pl[0] != 1)
+          {
+            fpi_ssm_mark_failed (ssm,
+                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                           "EC power-off failed"));
+            return;
+          }
+
+        fpi_ssm_mark_completed (ssm);
       }
       break;
     }
