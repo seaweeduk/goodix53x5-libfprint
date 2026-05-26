@@ -51,16 +51,9 @@ sudo dnf install opencv opencv-devel
 sudo apt install libopencv-dev
 ```
 
-## Important: udev Rule
+## USB Interface Claiming
 
-The sensor exposes a CDC (Communications Device Class) descriptor that causes the Linux `cdc_acm` kernel driver to claim it as a modem device, blocking libfprint. You **must** install the included udev rule:
-
-```bash
-sudo cp 91-goodix-fingerprint.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-```
-
-This automatically unbinds `cdc_acm` when it tries to attach to this device. Without this rule, the driver will fail with "Resource busy" errors after every reboot.
+The sensor exposes a CDC (Communications Device Class) descriptor, so Linux may bind the `cdc_acm` kernel driver to it as a modem device. The driver detaches that kernel driver when claiming the Goodix USB interface.
 
 ## Installation
 
@@ -85,7 +78,7 @@ GOODIX_LIBFPRINT_REF=v1.94.10 ./scripts/build-local.sh
 git clone https://gitlab.freedesktop.org/libfprint/libfprint.git
 cd libfprint
 
-# Apply this driver (also installs the udev rule)
+# Apply this driver
 /path/to/goodix53x5-libfprint/install.sh .
 
 # The install script will print manual meson.build edits needed.
@@ -154,8 +147,6 @@ fprintd-verify
 ## File Structure
 
 ```
-91-goodix-fingerprint.rules - udev rule to unbind cdc_acm from the sensor
-
 drivers/goodix53x5/
   goodix53x5.h           - Header: defines, structs, function declarations
   goodix53x5.c           - Main driver: SSMs for open, enroll, verify, identify

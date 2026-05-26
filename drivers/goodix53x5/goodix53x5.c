@@ -441,8 +441,8 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         GError *error = NULL;
 
         if (!g_usb_device_claim_interface (
-                fpi_device_get_usb_device (dev),
-                GOODIX_USB_INTERFACE, 0, &error))
+                fpi_device_get_usb_device (dev), GOODIX_USB_INTERFACE,
+                G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER, &error))
           {
             fpi_ssm_mark_failed (ssm, error);
             return;
