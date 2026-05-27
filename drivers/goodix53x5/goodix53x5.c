@@ -1711,12 +1711,6 @@ goodix_enroll_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 
   fp_info ("Enrollment complete with %d samples", GOODIX_ENROLL_SAMPLES);
 
-  /* Flag to skip the next identify call — fprintd uses identify for
-   * duplicate detection after enrollment, but SIFT on this 108x88 sensor
-   * produces false cross-finger matches between adjacent fingers on the
-   * same hand.  Real security matching is unaffected. */
-  self->skip_next_identify = TRUE;
-
   fpi_device_enroll_complete (dev, g_object_ref (print), NULL);
 }
 
@@ -2033,19 +2027,6 @@ goodix_identify (FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiSsm *ssm;
-
-  /* Skip post-enrollment duplicate detection entirely — avoids requiring
-   * an extra finger scan just to discard the result.  SIFT on 108x88
-   * produces false cross-finger matches between adjacent fingers on the
-   * same hand, making duplicate detection unreliable. */
-  if (self->skip_next_identify)
-    {
-      self->skip_next_identify = FALSE;
-      fp_dbg ("Identify: skipping post-enrollment duplicate check");
-      fpi_device_identify_report (dev, NULL, NULL, NULL);
-      fpi_device_identify_complete (dev, NULL);
-      return;
-    }
 
   g_clear_object (&self->cancel);
   self->cancel = g_cancellable_new ();

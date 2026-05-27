@@ -307,9 +307,6 @@ struct _FpiDeviceGoodix53x5
   GPtrArray *enroll_images; /* array of guint8* native images */
   gint       enroll_stage;
 
-  /* Skip post-enrollment duplicate detection (cleared after first identify) */
-  gboolean   skip_next_identify;
-
   /* Sensor warmup state */
   int        warmup_remaining;   /* pre-touch captures left */
   gboolean   warmup_done;        /* TRUE after first warmup cycle (per fprintd session) */
