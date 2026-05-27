@@ -165,6 +165,7 @@ typedef enum {
   GOODIX_OPEN_PARSE_OTP,
   GOODIX_OPEN_READ_PSK_HASH,
   GOODIX_OPEN_WRITE_PSK,
+  GOODIX_OPEN_VERIFY_PSK_WRITE,
   GOODIX_OPEN_GTLS_CLIENT_HELLO,
   GOODIX_OPEN_GTLS_RECV_IDENTITY,
   GOODIX_OPEN_GTLS_SEND_VERIFY,
@@ -186,6 +187,7 @@ typedef enum {
 /* Finger-wait SSM (awaiting finger down) */
 typedef enum {
   GOODIX_FINGER_WAIT_EC_POWER_ON = 0,
+  GOODIX_FINGER_WAIT_EC_POWER_ON_DONE,
   GOODIX_FINGER_WAIT_WARMUP_CAPTURE,
   GOODIX_FINGER_WAIT_WARMUP_CHECK,
   GOODIX_FINGER_WAIT_FDT_DOWN_SETUP,
@@ -212,6 +214,7 @@ typedef enum {
   GOODIX_FINGER_UP_UPDATE_DOWN_BASE,
   GOODIX_FINGER_UP_SLEEP,
   GOODIX_FINGER_UP_EC_POWER_OFF,
+  GOODIX_FINGER_UP_EC_POWER_OFF_DONE,
   GOODIX_FINGER_UP_NUM_STATES,
 } GoodixFingerUpState;
 
@@ -281,6 +284,7 @@ struct _FpiDeviceGoodix53x5
   /* PSK hash for validation */
   guint8 *psk_hash;
   gsize   psk_hash_len;
+  gboolean psk_write_verify_pending;
 
   /* Current command (for sub-SSM) */
   GoodixCmd *cmd;
@@ -302,9 +306,6 @@ struct _FpiDeviceGoodix53x5
   /* Enrollment tracking */
   GPtrArray *enroll_images; /* array of guint8* native images */
   gint       enroll_stage;
-
-  /* Skip post-enrollment duplicate detection (cleared after first identify) */
-  gboolean   skip_next_identify;
 
   /* Sensor warmup state */
   int        warmup_remaining;   /* pre-touch captures left */

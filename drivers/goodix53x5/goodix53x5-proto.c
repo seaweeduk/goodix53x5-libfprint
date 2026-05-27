@@ -146,35 +146,9 @@ goodix_proto_rx_feed_chunk (GoodixReassembly *rx,
 
       guint16 msg_size = chunk[1] | ((guint16) chunk[2] << 8);
 
-      /* Total expected: 1(cmd) + 2(size) + msg_size(payload+checksum)
-       * But the size field already accounts for payload + checksum,
-       * and the header (cmd+size) is 3 bytes.
-       * Actually, looking at the Python: data = data[:message_size + 3]
-       * So total = message_size + 3 where message_size is the 2-byte LE field.
-       * BUT len(data) - 1 < message_size is the condition, and data includes
-       * the cmd_byte. So total bytes to collect = message_size + 3.
-       * Wait: the Python code: message_size = struct.unpack("<H", data[1:3])[0]
-       * then: while len(data) - 1 < message_size: ...
-       * then: data = data[:message_size + 3]
-       * So total = message_size + 3 bytes (cmd + size_field(2) is already 3,
-       * plus message_size more, minus the fact that len(data)-1 < message_size
-       * means we need message_size+1 total data bytes... let me recheck.
-       *
-       * Actually: data starts with one chunk. Then for continued chunks,
-       * the first byte is the continued cmd_byte (stripped), rest appended.
-       * data[0] = cmd_byte, data[1:3] = size field, data[3:] = payload+checksum
-       * message_size = size field value = payload_len + 1 (checksum)
-       * Total message bytes: 3 + message_size = 3 + payload_len + 1
-       *
-       * The loop: while len(data) - 1 < message_size
-       *   i.e. len(data) < message_size + 1
-       * After trimming: data = data[:message_size + 3]
-       * So total expected = message_size + 3.
-       *
-       * But the reassembly buffer stores everything linearly.
-       * First chunk: all bytes go into buffer.
-       * Continuation chunks: skip byte 0 (continued cmd_byte), rest goes in.
-       */
+      /* size_field stores payload + checksum, so the full message length is
+       * 3-byte header plus size_field bytes. Continuation chunks contribute
+       * only bytes after their leading continuation marker. */
       rx->expected = (gsize) msg_size + 3;
 
       /* Copy the entire first chunk */
