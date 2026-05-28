@@ -56,9 +56,6 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5, FPI,
 /* Captures below this feature count are effectively blank/failed touches. */
 #define GOODIX_MIN_CAPTURE_KEYPOINTS 20
 
-/* Sensor warmup parameters */
-#define GOODIX_WARMUP_CAPTURES      5    /* pre-touch captures after resume */
-
 /* Timeouts in ms */
 #define GOODIX_CMD_TIMEOUT    1000
 #define GOODIX_ACK_TIMEOUT    2000
@@ -188,8 +185,6 @@ typedef enum {
 typedef enum {
   GOODIX_FINGER_WAIT_EC_POWER_ON = 0,
   GOODIX_FINGER_WAIT_EC_POWER_ON_DONE,
-  GOODIX_FINGER_WAIT_WARMUP_CAPTURE,
-  GOODIX_FINGER_WAIT_WARMUP_CHECK,
   GOODIX_FINGER_WAIT_FDT_DOWN_SETUP,
   GOODIX_FINGER_WAIT_RECV_EVENT,
   GOODIX_FINGER_WAIT_GEN_UP_BASE,
@@ -306,10 +301,6 @@ struct _FpiDeviceGoodix53x5
   /* Enrollment tracking */
   GPtrArray *enroll_images; /* array of guint8* native images */
   gint       enroll_stage;
-
-  /* Sensor warmup state */
-  int        warmup_remaining;   /* pre-touch captures left */
-  gboolean   warmup_done;        /* TRUE after first warmup cycle (per fprintd session) */
 };
 
 /* --- Protocol functions (goodix53x5-proto.c) --- */

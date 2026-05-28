@@ -1204,13 +1204,6 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
       return;
     }
 
-  /* Warm up sensor on first open after fprintd start.  The open-time
-   * calibration captures use dac_l which doesn't exercise the dac_h analog
-   * path used for finger matching.  Subsequent opens (greeter retries)
-   * skip warmup since the sensor is already stabilized. */
-  if (!self->warmup_done)
-    self->warmup_remaining = GOODIX_WARMUP_CAPTURES;
-
   fp_info ("Device initialization complete");
   fpi_device_open_complete (dev, NULL);
 }
@@ -1261,30 +1254,6 @@ goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
       }
       break;
 
-    case GOODIX_FINGER_WAIT_WARMUP_CAPTURE:
-      if (self->warmup_remaining > 0)
-        {
-          fp_dbg ("Warmup: capturing (%d remaining)", self->warmup_remaining);
-          FpiSsm *sub = fpi_ssm_new (dev, goodix_capture_ssm_handler,
-                                     GOODIX_CAPTURE_NUM_STATES);
-          fpi_ssm_start_subsm (ssm, sub);
-        }
-      else
-        {
-          self->warmup_done = TRUE;
-          fpi_ssm_jump_to_state (ssm, GOODIX_FINGER_WAIT_FDT_DOWN_SETUP);
-        }
-      break;
-
-    case GOODIX_FINGER_WAIT_WARMUP_CHECK:
-      /* Discard the warmup image and loop */
-      g_clear_pointer (&self->captured_image, g_free);
-      self->warmup_remaining--;
-      fp_dbg ("Warmup: discarding capture (%d remaining)",
-              self->warmup_remaining);
-      fpi_ssm_jump_to_state (ssm, GOODIX_FINGER_WAIT_WARMUP_CAPTURE);
-      break;
-
     case GOODIX_FINGER_WAIT_FDT_DOWN_SETUP:
       {
         /* Set up finger-down detection (re-arms the sensor) */
@@ -1301,7 +1270,7 @@ goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
     case GOODIX_FINGER_WAIT_RECV_EVENT:
       /* Wait for FDT DOWN event with cancellable */
       self->blocking_ssm = ssm;
-      self->blocking_resume_state = GOODIX_FINGER_WAIT_WARMUP_CAPTURE;
+      self->blocking_resume_state = GOODIX_FINGER_WAIT_FDT_DOWN_SETUP;
       goodix_recv_start_cancellable (ssm, dev, self->cancel);
       break;
 
@@ -2081,11 +2050,10 @@ goodix_resume (FpDevice *dev)
     }
 
   self->suspended = FALSE;
-  self->warmup_remaining = GOODIX_WARMUP_CAPTURES;
   g_clear_object (&self->cancel);
   self->cancel = g_cancellable_new ();
 
-  /* Restart the SSM from the warmup/re-arm state (resubmits USB reads) */
+  /* Restart the SSM from the re-arm state (resubmits USB reads) */
   if (self->blocking_ssm)
     {
       fpi_ssm_jump_to_state (self->blocking_ssm, self->blocking_resume_state);
