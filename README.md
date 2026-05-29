@@ -51,9 +51,19 @@ sudo dnf install opencv opencv-devel
 sudo apt install libopencv-dev
 ```
 
-## USB Interface Claiming
+## Important: Hibernate Integration
 
-The sensor exposes a CDC (Communications Device Class) descriptor, so Linux may bind the `cdc_acm` kernel driver to it as a modem device. The driver detaches that kernel driver when claiming the Goodix USB interface.
+The sensor exposes a CDC (Communications Device Class) descriptor that causes the Linux `cdc_acm` kernel driver to claim it as a modem device. Install the included recovery helper and systemd sleep integration so `fprintd` is stopped before hibernate/hybrid-sleep and `cdc_acm` is unbound before user sessions resume afterward:
+
+```bash
+sudo install -D -m 0755 scripts/goodix53x5-fprintd-recover.sh /usr/local/libexec/goodix53x5-fprintd-recover
+sudo install -D -m 0755 scripts/goodix53x5-fprintd-system-sleep /etc/systemd/system-sleep/goodix53x5-fprintd
+sudo systemctl disable --now goodix53x5-stop-fprintd-before-sleep.service 2>/dev/null || true
+sudo rm -f /etc/systemd/system/goodix53x5-stop-fprintd-before-sleep.service
+sudo systemctl daemon-reload
+```
+
+The system-sleep hook is action-aware. It leaves ordinary suspend and the initial suspend phase of `suspend-then-hibernate` alone so an active lockscreen fingerprint prompt is not killed when the machine merely suspends. For real S4 paths (`hibernate`, `hybrid-sleep`, and the hibernate phase of `suspend-then-hibernate`) it stops `fprintd` before entering S4 and runs the recovery helper before user sessions are thawed after resume.
 
 ## Installation
 
@@ -78,7 +88,7 @@ GOODIX_LIBFPRINT_REF=v1.94.10 ./scripts/build-local.sh
 git clone https://gitlab.freedesktop.org/libfprint/libfprint.git
 cd libfprint
 
-# Apply this driver
+# Apply this driver (also installs the udev/systemd integration)
 /path/to/goodix53x5-libfprint/install.sh .
 
 # The install script will print manual meson.build edits needed.
@@ -139,7 +149,7 @@ fprintd-verify
 
 ## Technical Notes
 
-- **SIGFM matching** uses OpenCV SIFT features with CLAHE contrast enhancement. A sample counts as matching at score `>= 10`, and verify/identify require a best score `>= 40` with at least one enrolled sample above the match threshold.
+- **SIGFM matching** uses OpenCV SIFT features with CLAHE contrast enhancement. A sample counts as matching at score `>= 10`, and verify/identify require a best score `>= 14` with at least one enrolled sample above the match threshold.
 - **8 enrollment samples** are stored as processed 108x88 8-bit images. During verification, SIFT features are extracted from each stored sample and compared with the live capture.
 - **Image preprocessing** uses a row/column bandpass: it removes row/column mean structure, subtracts a wide Gaussian lowpass, applies light smoothing, then normalizes to 8-bit.
 - Thermal throttling is disabled (`temp_hot_seconds = -1`) since the small sensor generates negligible heat.
@@ -159,6 +169,9 @@ sigfm/
   sigfm.cpp              - SIFT feature extraction and matching (with CLAHE)
   binary.hpp             - Binary serialization for print storage
   img-info.hpp           - SigfmImgInfo struct (keypoints + descriptors)
+
+scripts/goodix53x5-fprintd-system-sleep - hibernate-only fprintd stop/recovery hook
+scripts/goodix53x5-fprintd-recover.sh - post-reenumeration cdc_acm recovery helper
 ```
 
 ## Credits

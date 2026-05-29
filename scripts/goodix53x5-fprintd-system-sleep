@@ -1,0 +1,30 @@
+#!/bin/sh
+# Keep Goodix 53x5/fprintd out of S4 without breaking ordinary suspend.
+
+set -eu
+
+phase="${1:-}"
+mode="${2:-}"
+action="${SYSTEMD_SLEEP_ACTION:-$mode}"
+
+case "$action" in
+  hibernate|hybrid-sleep)
+    ;;
+  *)
+    # Do not stop fprintd for ordinary suspend or for the initial suspend
+    # phase of suspend-then-hibernate. Killing an active lockscreen PAM
+    # transaction there leaves hyprlock showing a dead fingerprint prompt.
+    exit 0
+    ;;
+esac
+
+case "$phase" in
+  pre)
+    echo "goodix53x5-fprintd-system-sleep: stopping fprintd before $action"
+    systemctl stop fprintd.service || true
+    ;;
+  post)
+    echo "goodix53x5-fprintd-system-sleep: recovering Goodix before releasing users after $action"
+    /usr/local/libexec/goodix53x5-fprintd-recover || true
+    ;;
+esac
