@@ -91,6 +91,22 @@ sudo ninja install
 sudo systemctl restart fprintd
 ```
 
+### Uninstalling
+
+To remove the copied driver files from a libfprint source tree:
+
+```bash
+/path/to/goodix53x5-libfprint/uninstall.sh /path/to/libfprint
+```
+
+The uninstall script removes `libfprint/drivers/goodix53x5/` and `libfprint/sigfm/`. It will print the manual Meson cleanup steps needed to remove the driver registration, SIGFM/OpenCV build block, and helper mapping.
+
+Preview the removals without deleting files:
+
+```bash
+/path/to/goodix53x5-libfprint/uninstall.sh --dry-run /path/to/libfprint
+```
+
 ### Manual Integration
 
 1. Copy `drivers/goodix53x5/` into `libfprint/libfprint/drivers/goodix53x5/`
