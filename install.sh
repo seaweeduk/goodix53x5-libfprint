@@ -71,13 +71,5 @@ else
     echo ""
 fi
 
-# Install integration for the internal Goodix USB device.
-echo "Installing recovery and hibernate integration..."
-sudo install -D -m 0755 "$SCRIPT_DIR/scripts/goodix53x5-fprintd-recover.sh" /usr/local/libexec/goodix53x5-fprintd-recover
-sudo install -D -m 0755 "$SCRIPT_DIR/scripts/goodix53x5-fprintd-system-sleep" /etc/systemd/system-sleep/goodix53x5-fprintd
-sudo systemctl disable --now goodix53x5-stop-fprintd-before-sleep.service 2>/dev/null || true
-sudo rm -f /etc/systemd/system/goodix53x5-stop-fprintd-before-sleep.service
-sudo systemctl daemon-reload
-
 echo ""
 echo "Done. Now reconfigure and rebuild libfprint."
