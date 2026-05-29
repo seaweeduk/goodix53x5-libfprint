@@ -78,7 +78,7 @@ GOODIX_LIBFPRINT_REF=v1.94.10 ./scripts/build-local.sh
 git clone https://gitlab.freedesktop.org/libfprint/libfprint.git
 cd libfprint
 
-# Apply this driver
+# Copy this driver into libfprint
 /path/to/goodix53x5-libfprint/install.sh .
 
 # The install script will print manual meson.build edits needed.
@@ -90,6 +90,24 @@ ninja
 sudo ninja install
 sudo systemctl restart fprintd
 ```
+
+### Updating
+
+If you already installed this driver, update this repository, copy the newer driver files into libfprint, then rebuild libfprint:
+
+```bash
+cd /path/to/goodix53x5-libfprint
+git pull
+./install.sh /path/to/libfprint
+
+cd /path/to/libfprint/builddir
+meson setup --reconfigure ..
+ninja
+sudo ninja install
+sudo systemctl restart fprintd
+```
+
+You usually do not need to repeat the manual Meson edits after the first install.
 
 ### Uninstalling
 
