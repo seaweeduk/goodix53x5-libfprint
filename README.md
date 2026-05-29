@@ -65,6 +65,8 @@ sudo systemctl daemon-reload
 
 The system-sleep hook is action-aware. It leaves ordinary suspend and the initial suspend phase of `suspend-then-hibernate` alone so an active lockscreen fingerprint prompt is not killed when the machine merely suspends. For real S4 paths (`hibernate`, `hybrid-sleep`, and the hibernate phase of `suspend-then-hibernate`) it stops `fprintd` before entering S4 and runs the recovery helper before user sessions are thawed after resume.
 
+Handling the hibernate phase of `suspend-then-hibernate` requires systemd to provide `SYSTEMD_SLEEP_ACTION`. If that variable is unavailable, the hook leaves `suspend-then-hibernate` unchanged rather than treating the initial suspend phase as hibernate.
+
 ## Installation
 
 ### Local Build

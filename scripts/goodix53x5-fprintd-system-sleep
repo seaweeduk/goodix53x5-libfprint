@@ -5,7 +5,25 @@ set -eu
 
 phase="${1:-}"
 mode="${2:-}"
-action="${SYSTEMD_SLEEP_ACTION:-$mode}"
+action="${SYSTEMD_SLEEP_ACTION:-}"
+
+if [ -z "$action" ]; then
+  case "$mode" in
+    hibernate|hybrid-sleep)
+      action="$mode"
+      ;;
+    suspend-then-hibernate)
+      # Without SYSTEMD_SLEEP_ACTION we cannot distinguish the initial suspend
+      # phase from the later hibernate phase, and stopping fprintd before the
+      # initial suspend breaks active lockscreen fingerprint prompts.
+      echo "goodix53x5-fprintd-system-sleep: SYSTEMD_SLEEP_ACTION unavailable, leaving suspend-then-hibernate unchanged"
+      exit 0
+      ;;
+    *)
+      exit 0
+      ;;
+  esac
+fi
 
 case "$action" in
   hibernate|hybrid-sleep)
