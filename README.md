@@ -53,20 +53,6 @@ sudo apt install libopencv-dev
 
 ## Installation
 
-### Local Build
-
-For development, build libfprint with this driver inside this repository:
-
-```bash
-./scripts/build-local.sh
-```
-
-This clones/prepares libfprint under `.build/libfprint`, copies the current driver and `sigfm` sources into that tree, applies `meson-integration.patch`, and runs `ninja`. Override the libfprint ref with `GOODIX_LIBFPRINT_REF`, for example:
-
-```bash
-GOODIX_LIBFPRINT_REF=v1.94.10 ./scripts/build-local.sh
-```
-
 ### Quick Start
 
 ```bash
@@ -80,12 +66,13 @@ cd libfprint
 # The install script will print manual meson.build edits needed.
 # Apply those edits, then:
 
-meson setup builddir
-cd builddir
-ninja
-sudo ninja install
+meson setup builddir --prefix=/usr -Dinstalled-tests=false -Ddoc=false
+ninja -C builddir
+sudo ninja -C builddir install
 sudo systemctl restart fprintd
 ```
+
+Use `--prefix=/usr` so the installed libfprint replaces the system library used by `fprintd`. A default Meson setup may install into `/usr/local`, which `fprintd` may not load.
 
 ### Updating
 
@@ -97,7 +84,7 @@ git pull
 ./install.sh /path/to/libfprint
 
 cd /path/to/libfprint/builddir
-meson setup --reconfigure ..
+meson setup --reconfigure .. --prefix=/usr -Dinstalled-tests=false -Ddoc=false
 ninja
 sudo ninja install
 sudo systemctl restart fprintd
@@ -154,6 +141,22 @@ Preview the removals without deleting files:
     - Add `'goodix53x5'` to the default drivers list
     - Add `'goodix53x5' : [ 'openssl' ]` to `driver_helper_mapping`
 5. Reconfigure and build
+
+## Development
+
+### Local Build
+
+For development, build libfprint with this driver inside this repository:
+
+```bash
+./scripts/build-local.sh
+```
+
+This clones/prepares libfprint under `.build/libfprint`, copies the current driver and `sigfm` sources into that tree, applies `meson-integration.patch`, and runs `ninja`. Override the libfprint ref with `GOODIX_LIBFPRINT_REF`, for example:
+
+```bash
+GOODIX_LIBFPRINT_REF=v1.94.10 ./scripts/build-local.sh
+```
 
 ## Enrollment and Verification
 
