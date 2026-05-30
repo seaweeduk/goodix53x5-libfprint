@@ -196,6 +196,7 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
       if (!self->suspended &&
           g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
           self->action_result_reported &&
+          !self->verify_wait_finger_up &&
           transfer->ssm == self->blocking_ssm)
         {
           /* Once verify/identify has reported a result, libfprint may cancel
@@ -1833,6 +1834,10 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
 
         sigfm_free_info (probe_info);
         g_clear_pointer (&self->captured_image, g_free);
+
+        if (self->verify_wait_finger_up)
+          goodix_flush_pending_result_report (dev);
+
         fpi_ssm_next_state (ssm);
       }
       break;

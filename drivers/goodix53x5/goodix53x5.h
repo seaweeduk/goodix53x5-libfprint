@@ -273,7 +273,7 @@ struct _FpiDeviceGoodix53x5
   /* TRUE once verify/identify has already reported a result. */
   gboolean action_result_reported;
 
-  /* Failed verify/identify attempts wait for lift-off before reporting so one
+  /* Failed verify/identify attempts wait for lift-off before completing so one
    * held invalid finger cannot consume multiple PAM attempts. */
   gboolean verify_wait_finger_up;
 
