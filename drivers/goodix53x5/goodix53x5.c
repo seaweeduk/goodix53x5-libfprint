@@ -410,7 +410,6 @@ goodix_parse_reply_exact (FpDevice      *dev,
 
 static void
 goodix_build_fdt_payload (guint8  op_code,
-                          guint8  fdt_op,
                           const guint8 *fdt_base,
                           guint8 **out_payload,
                           gsize   *out_len)
@@ -894,7 +893,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         memcpy (manual_payload + 1, self->calib.fdt_base_manual,
                 GOODIX_FDT_BASE_LEN);
 
-        goodix_build_fdt_payload (manual_payload[0], 3, manual_payload + 1,
+        goodix_build_fdt_payload (manual_payload[0], manual_payload + 1,
                                   &p, &plen);
         /* Send as FDT MANUAL: category=3, command=3 (MANUAL=3) */
         goodix_run_cmd (ssm, dev, 0x3, 0x3, p, plen, TRUE);
@@ -937,7 +936,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         memcpy (manual_payload + 1, self->calib.fdt_base_manual,
                 GOODIX_FDT_BASE_LEN);
 
-        goodix_build_fdt_payload (manual_payload[0], 3, manual_payload + 1,
+        goodix_build_fdt_payload (manual_payload[0], manual_payload + 1,
                                   &p, &plen);
         goodix_run_cmd (ssm, dev, 0x3, 0x3, p, plen, TRUE);
         g_free (p);
@@ -1040,7 +1039,6 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 
   /* Clean up temp data */
   g_clear_pointer (&self->fdt_data_tx_on, g_free);
-  g_clear_pointer (&self->fdt_data_tx_off, g_free);
 
   if (error)
     {
@@ -1107,7 +1105,7 @@ goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
         guint8 *p;
         gsize plen;
 
-        goodix_build_fdt_payload (0x0C, 1, self->calib.fdt_base_down,
+        goodix_build_fdt_payload (0x0C, self->calib.fdt_base_down,
                                   &p, &plen);
         goodix_run_cmd (ssm, dev, 0x3, 0x1, p, plen, FALSE);
         g_free (p);
@@ -1173,7 +1171,7 @@ goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
         memcpy (manual_payload + 1, self->calib.fdt_base_manual,
                 GOODIX_FDT_BASE_LEN);
 
-        goodix_build_fdt_payload (manual_payload[0], 3, manual_payload + 1,
+        goodix_build_fdt_payload (manual_payload[0], manual_payload + 1,
                                   &p, &plen);
         goodix_run_cmd (ssm, dev, 0x3, 0x3, p, plen, TRUE);
         g_free (p);
@@ -1321,7 +1319,7 @@ goodix_finger_up_ssm_handler (FpiSsm   *ssm,
         guint8 *p;
         gsize plen;
 
-        goodix_build_fdt_payload (0x0E, 2, self->calib.fdt_base_up, &p, &plen);
+        goodix_build_fdt_payload (0x0E, self->calib.fdt_base_up, &p, &plen);
         goodix_run_cmd (ssm, dev, 0x3, 0x2, p, plen, FALSE);
         g_free (p);
       }
@@ -1909,10 +1907,8 @@ goodix_close (FpDevice *dev)
   goodix_clear_pending_result_report (self);
   g_clear_pointer (&self->fdt_event_data, g_free);
   g_clear_pointer (&self->fdt_data_tx_on, g_free);
-  g_clear_pointer (&self->fdt_data_tx_off, g_free);
   g_clear_pointer (&self->otp_data, g_free);
   g_clear_pointer (&self->fw_version, g_free);
-  g_clear_pointer (&self->psk_hash, g_free);
   g_clear_pointer (&self->rx.buf, g_free);
   g_clear_pointer (&self->captured_image, g_free);
   g_clear_pointer (&self->enroll_images, g_ptr_array_unref);

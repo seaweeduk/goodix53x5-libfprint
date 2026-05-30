@@ -41,9 +41,6 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5, FPI,
 #define GOODIX_SENSOR_HEIGHT 88
 #define GOODIX_SENSOR_PIXELS (GOODIX_SENSOR_WIDTH * GOODIX_SENSOR_HEIGHT)
 
-/* 12-bit packed: 6 bytes per 4 pixels */
-#define GOODIX_RAW_FRAME_SIZE (GOODIX_SENSOR_PIXELS * 6 / 4)
-
 /* FDT base length */
 #define GOODIX_FDT_BASE_LEN 24
 
@@ -131,10 +128,6 @@ typedef struct
   guint8 *payload;
   gsize   payload_len;
   gboolean use_checksum;
-
-  /* Response storage */
-  guint8 *response;
-  gsize   response_len;
 } GoodixCmd;
 
 /* --- SSM state enums --- */
@@ -257,7 +250,6 @@ struct _FpiDeviceGoodix53x5
 
   /* Temporary FDT data from calibration */
   guint8 *fdt_data_tx_on;
-  guint8 *fdt_data_tx_off;
 
   /* OTP raw data */
   guint8 *otp_data;
@@ -266,9 +258,7 @@ struct _FpiDeviceGoodix53x5
   /* Firmware version string */
   gchar *fw_version;
 
-  /* PSK hash for validation */
-  guint8 *psk_hash;
-  gsize   psk_hash_len;
+  /* TRUE while verifying a PSK write during open. */
   gboolean psk_write_verify_pending;
 
   /* Current command (for sub-SSM) */
