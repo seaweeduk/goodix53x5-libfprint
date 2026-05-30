@@ -199,7 +199,7 @@ typedef enum {
   GOODIX_FINGER_UP_NUM_STATES,
 } GoodixFingerUpState;
 
-/* Deactivate SSM — bounded cleanup after verify/identify */
+/* Deactivate SSM — bounded cleanup after successful verify/identify */
 typedef enum {
   GOODIX_DEACTIVATE_SLEEP = 0,
   GOODIX_DEACTIVATE_EC_POWER_OFF,
@@ -222,7 +222,7 @@ typedef enum {
   GOODIX_VERIFY_WAIT_FINGER = 0,
   GOODIX_VERIFY_CAPTURE,
   GOODIX_VERIFY_MATCH,
-  GOODIX_VERIFY_CLEANUP,
+  GOODIX_VERIFY_FINISH,
   GOODIX_VERIFY_NUM_STATES,
 } GoodixVerifyState;
 
@@ -273,7 +273,11 @@ struct _FpiDeviceGoodix53x5
   /* TRUE once verify/identify has already reported a result. */
   gboolean action_result_reported;
 
-  /* Verify/identify result queued until bounded cleanup has completed. */
+  /* Failed verify/identify attempts wait for lift-off before reporting so one
+   * held invalid finger cannot consume multiple PAM attempts. */
+  gboolean verify_wait_finger_up;
+
+  /* Verify/identify result queued until post-match cleanup has completed. */
   gboolean        pending_result_report;
   FpiDeviceAction pending_result_action;
   FpiMatchResult  pending_verify_result;

@@ -1691,6 +1691,7 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                                             fpi_device_retry_new (FP_DEVICE_RETRY_REMOVE_FINGER));
               }
 
+            self->verify_wait_finger_up = TRUE;
             sigfm_free_info (probe_info);
             g_clear_pointer (&self->captured_image, g_free);
             fpi_ssm_next_state (ssm);
@@ -1760,9 +1761,15 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                     best_score, GOODIX_SIGFM_BEST_MIN);
 
             if (match != NULL)
-              goodix_queue_identify_report (self, match, NULL);
+              {
+                goodix_queue_identify_report (self, match, NULL);
+                self->verify_wait_finger_up = FALSE;
+              }
             else
-              goodix_queue_identify_report (self, NULL, NULL);
+              {
+                goodix_queue_identify_report (self, NULL, NULL);
+                self->verify_wait_finger_up = TRUE;
+              }
           }
         else
           {
@@ -1813,9 +1820,15 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                     best_score, GOODIX_SIGFM_BEST_MIN);
 
             if (best_score >= GOODIX_SIGFM_BEST_MIN)
-              goodix_queue_verify_report (self, FPI_MATCH_SUCCESS, NULL);
+              {
+                goodix_queue_verify_report (self, FPI_MATCH_SUCCESS, NULL);
+                self->verify_wait_finger_up = FALSE;
+              }
             else
-              goodix_queue_verify_report (self, FPI_MATCH_FAIL, NULL);
+              {
+                goodix_queue_verify_report (self, FPI_MATCH_FAIL, NULL);
+                self->verify_wait_finger_up = TRUE;
+              }
           }
 
         sigfm_free_info (probe_info);
@@ -1824,13 +1837,17 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
       }
       break;
 
-    case GOODIX_VERIFY_CLEANUP:
+    case GOODIX_VERIFY_FINISH:
       {
-        /* Do not wait indefinitely for finger-up before reporting to PAM.
-         * Power the MCU down first so fprintd can close without seeing an
-         * active operation after the PAM client exits. */
-        FpiSsm *sub = fpi_ssm_new (dev, goodix_deactivate_ssm_handler,
-                                      GOODIX_DEACTIVATE_NUM_STATES);
+        FpiSsm *sub;
+
+        if (self->verify_wait_finger_up)
+          sub = fpi_ssm_new (dev, goodix_finger_up_ssm_handler,
+                             GOODIX_FINGER_UP_NUM_STATES);
+        else
+          sub = fpi_ssm_new (dev, goodix_deactivate_ssm_handler,
+                             GOODIX_DEACTIVATE_NUM_STATES);
+
         fpi_ssm_start_subsm (ssm, sub);
       }
       break;
@@ -1849,10 +1866,11 @@ goodix_verify_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 
   if (error)
     {
-      /* If bounded cleanup fails after matching, still report the auth result. */
+      /* If cleanup fails after matching, the auth result still matters more
+       * than post-result hardware cleanup. */
       gint failed_state = fpi_ssm_get_cur_state (ssm);
 
-      if (failed_state >= GOODIX_VERIFY_CLEANUP &&
+      if (failed_state >= GOODIX_VERIFY_FINISH &&
           !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
         {
           fp_warn ("Post-match cleanup error (non-fatal): %s",
@@ -1867,6 +1885,7 @@ goodix_verify_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
     goodix_clear_pending_result_report (self);
 
   self->action_result_reported = FALSE;
+  self->verify_wait_finger_up = FALSE;
 
   if (action == FPI_DEVICE_ACTION_IDENTIFY)
     fpi_device_identify_complete (dev, error);
@@ -1920,6 +1939,7 @@ goodix_close (FpDevice *dev)
     }
 
   self->action_result_reported = FALSE;
+  self->verify_wait_finger_up = FALSE;
 
   g_usb_device_release_interface (fpi_device_get_usb_device (dev),
                                   GOODIX_USB_INTERFACE, 0, &error);
@@ -1957,6 +1977,7 @@ goodix_verify (FpDevice *dev)
   self->cancel = g_cancellable_new ();
   goodix_clear_pending_result_report (self);
   self->action_result_reported = FALSE;
+  self->verify_wait_finger_up = FALSE;
 
   ssm = fpi_ssm_new (dev, goodix_verify_ssm_handler,
                       GOODIX_VERIFY_NUM_STATES);
@@ -1974,6 +1995,7 @@ goodix_identify (FpDevice *dev)
   self->cancel = g_cancellable_new ();
   goodix_clear_pending_result_report (self);
   self->action_result_reported = FALSE;
+  self->verify_wait_finger_up = FALSE;
 
   ssm = fpi_ssm_new (dev, goodix_verify_ssm_handler,
                       GOODIX_VERIFY_NUM_STATES);
