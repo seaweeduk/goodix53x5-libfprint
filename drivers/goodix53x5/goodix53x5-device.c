@@ -340,37 +340,6 @@ goodix_device_is_fdt_base_valid (const guint8 *data1,
 }
 
 /**
- * goodix_device_validate_base_img:
- *
- * Validate two base images by computing average absolute difference
- * in the interior (excluding 2-pixel border).
- */
-void
-goodix_device_validate_base_img (const guint16 *img1,
-                                 const guint16 *img2,
-                                 guint16        threshold,
-                                 gboolean      *valid)
-{
-  guint32 diff_sum = 0;
-  guint count = 0;
-
-  for (int row = 2; row < GOODIX_SENSOR_HEIGHT - 2; row++)
-    {
-      for (int col = 2; col < GOODIX_SENSOR_WIDTH - 2; col++)
-        {
-          int offset = row * GOODIX_SENSOR_WIDTH + col;
-          gint diff = abs ((gint) img2[offset] - (gint) img1[offset]);
-          diff_sum += diff;
-          count++;
-        }
-    }
-
-  guint avg = diff_sum / count;
-  fp_dbg ("Base image avg delta: %u, threshold: %u", avg, threshold);
-  *valid = avg <= threshold;
-}
-
-/**
  * goodix_device_generate_fdt_base:
  *
  * Generate FDT base from FDT event data.

@@ -25,7 +25,7 @@ The sensor provides raw 12-bit capacitive images encrypted with a TLS-like proto
 3. Captures and decrypts the fingerprint image
 4. Matches using **SIGFM** (SIFT-based fingerprint matching via OpenCV)
 
-Fingerprint matching uses SIFT keypoints with CLAHE preprocessing, Lowe's ratio test, and pairwise geometric verification. This approach works well with the small 108x88 sensor where traditional minutiae-based methods struggle.
+Fingerprint matching uses SIFT keypoints with CLAHE preprocessing, Lowe's ratio test, and pairwise geometric verification. The driver uses this SIGFM path instead of libfprint's usual minutiae matcher for the small 108x88 captures.
 
 ## Dependencies
 
@@ -50,10 +50,6 @@ sudo dnf install opencv opencv-devel
 ```
 sudo apt install libopencv-dev
 ```
-
-## USB Interface Claiming
-
-The sensor exposes a CDC (Communications Device Class) descriptor, so Linux may bind the `cdc_acm` kernel driver to it as a modem device. The driver detaches that kernel driver when claiming the Goodix USB interface.
 
 ## Installation
 
@@ -173,10 +169,9 @@ fprintd-verify
 
 ## Technical Notes
 
-- **SIGFM matching** uses OpenCV SIFT features with CLAHE contrast enhancement. A sample counts as matching at score `>= 10`, and verify/identify require a best score `>= 40` with at least one enrolled sample above the match threshold.
+- **SIGFM matching** uses OpenCV SIFT features with CLAHE contrast enhancement. Verify/identify accept a print when the best enrolled-sample score is `>= 14` (`GOODIX_SIGFM_BEST_MIN`).
 - **8 enrollment samples** are stored as processed 108x88 8-bit images. During verification, SIFT features are extracted from each stored sample and compared with the live capture.
 - **Image preprocessing** uses a row/column bandpass: it removes row/column mean structure, subtracts a wide Gaussian lowpass, applies light smoothing, then normalizes to 8-bit.
-- Thermal throttling is disabled (`temp_hot_seconds = -1`) since the small sensor generates negligible heat.
 
 ## File Structure
 
