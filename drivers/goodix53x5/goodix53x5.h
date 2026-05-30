@@ -149,7 +149,8 @@ typedef enum {
 
 /* Open SSM — full device initialization */
 typedef enum {
-  GOODIX_OPEN_CLAIM_INTERFACE = 0,
+  GOODIX_OPEN_USB_RESET = 0,
+  GOODIX_OPEN_CLAIM_INTERFACE,
   GOODIX_OPEN_PING,
   GOODIX_OPEN_READ_FW_VERSION,
   GOODIX_OPEN_RESET,
@@ -205,11 +206,11 @@ typedef enum {
   GOODIX_FINGER_UP_NUM_STATES,
 } GoodixFingerUpState;
 
-/* Deactivate SSM — cleanup after operations */
+/* Deactivate SSM — bounded cleanup after verify/identify */
 typedef enum {
-  GOODIX_DEACTIVATE_DRAIN = 0,
-  GOODIX_DEACTIVATE_SLEEP,
+  GOODIX_DEACTIVATE_SLEEP = 0,
   GOODIX_DEACTIVATE_EC_POWER_OFF,
+  GOODIX_DEACTIVATE_EC_POWER_OFF_DONE,
   GOODIX_DEACTIVATE_NUM_STATES,
 } GoodixDeactivateState;
 
@@ -228,7 +229,7 @@ typedef enum {
   GOODIX_VERIFY_WAIT_FINGER = 0,
   GOODIX_VERIFY_CAPTURE,
   GOODIX_VERIFY_MATCH,
-  GOODIX_VERIFY_WAIT_FINGER_UP,
+  GOODIX_VERIFY_CLEANUP,
   GOODIX_VERIFY_NUM_STATES,
 } GoodixVerifyState;
 
@@ -279,11 +280,10 @@ struct _FpiDeviceGoodix53x5
   /* Task SSM tracking */
   FpiSsm *task_ssm;
 
-  /* TRUE once verify/identify has already reported a result and only
-   * post-result hardware cleanup remains. */
+  /* TRUE once verify/identify has already reported a result. */
   gboolean action_result_reported;
 
-  /* Verify/identify result queued until finger-up cleanup has completed. */
+  /* Verify/identify result queued until bounded cleanup has completed. */
   gboolean        pending_result_report;
   FpiDeviceAction pending_result_action;
   FpiMatchResult  pending_verify_result;

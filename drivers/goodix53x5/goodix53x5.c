@@ -461,6 +461,20 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
   switch (state)
     {
+    case GOODIX_OPEN_USB_RESET:
+      {
+        GError *error = NULL;
+
+        if (!g_usb_device_reset (fpi_device_get_usb_device (dev), &error))
+          {
+            fpi_ssm_mark_failed (ssm, error);
+            return;
+          }
+      }
+
+      fpi_ssm_next_state (ssm);
+      break;
+
     case GOODIX_OPEN_CLAIM_INTERFACE:
       {
         GError *error = NULL;
@@ -1391,6 +1405,51 @@ goodix_finger_up_ssm_handler (FpiSsm   *ssm,
 /* finger_up is used as a sub-SSM — no standalone run/done needed */
 
 /* ========================================================================
+ * Deactivate SSM
+ * ======================================================================== */
+
+static void
+goodix_deactivate_ssm_handler (FpiSsm   *ssm,
+                               FpDevice *dev)
+{
+  guint8 payload[2];
+
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case GOODIX_DEACTIVATE_SLEEP:
+      payload[0] = 0x01;
+      payload[1] = 0x00;
+      goodix_run_cmd (ssm, dev, 0x6, 0x0, payload, 2, FALSE);
+      break;
+
+    case GOODIX_DEACTIVATE_EC_POWER_OFF:
+      {
+        guint8 ec_payload[3] = { 0x00, 0x00, 0x00 };
+        goodix_run_cmd (ssm, dev, 0xA, 0x7, ec_payload, 3, TRUE);
+      }
+      break;
+
+    case GOODIX_DEACTIVATE_EC_POWER_OFF_DONE:
+      {
+        const guint8 *pl;
+        gsize pl_len;
+
+        if (!goodix_parse_reply_exact (dev, 0xA, 0x7, &pl, &pl_len, NULL) ||
+            pl_len == 0 || pl[0] != 1)
+          {
+            fpi_ssm_mark_failed (ssm,
+                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                           "EC power-off failed"));
+            return;
+          }
+
+        fpi_ssm_mark_completed (ssm);
+      }
+      break;
+    }
+}
+
+/* ========================================================================
  * Enroll SSM
  * ======================================================================== */
 
@@ -1767,10 +1826,13 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
       }
       break;
 
-    case GOODIX_VERIFY_WAIT_FINGER_UP:
+    case GOODIX_VERIFY_CLEANUP:
       {
-        FpiSsm *sub = fpi_ssm_new (dev, goodix_finger_up_ssm_handler,
-                                     GOODIX_FINGER_UP_NUM_STATES);
+        /* Do not wait indefinitely for finger-up before reporting to PAM.
+         * Power the MCU down first so fprintd can close without seeing an
+         * active operation after the PAM client exits. */
+        FpiSsm *sub = fpi_ssm_new (dev, goodix_deactivate_ssm_handler,
+                                      GOODIX_DEACTIVATE_NUM_STATES);
         fpi_ssm_start_subsm (ssm, sub);
       }
       break;
@@ -1789,14 +1851,13 @@ goodix_verify_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 
   if (error)
     {
-      /* If error occurred after match was already reported (during finger_up),
-       * treat it as non-fatal — the match result is what matters. */
+      /* If bounded cleanup fails after matching, still report the auth result. */
       gint failed_state = fpi_ssm_get_cur_state (ssm);
 
-      if (failed_state >= GOODIX_VERIFY_WAIT_FINGER_UP &&
+      if (failed_state >= GOODIX_VERIFY_CLEANUP &&
           !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
         {
-          fp_warn ("Post-match finger-up error (non-fatal): %s",
+          fp_warn ("Post-match cleanup error (non-fatal): %s",
                    error->message);
           g_clear_error (&error);
         }
