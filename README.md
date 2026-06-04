@@ -28,7 +28,7 @@ Fingerprint matching uses SIFT keypoints with CLAHE preprocessing, Lowe's ratio 
 ## Dependencies
 
 - **libfprint** source tree (tested with v1.94.10)
-- **OpenCV 4** (`opencv_core`, `opencv_features2d`, `opencv_flann`, `opencv_imgproc`)
+- **OpenCV 4** (`opencv_core`, `opencv_features2d`, `opencv_flann`, `opencv_imgproc`, `opencv_calib3d`)
 - **OpenSSL 3.0+**
 - Standard libfprint build dependencies (meson, ninja, glib, libgusb, etc.)
 
@@ -109,9 +109,10 @@ sudo systemctl restart fprintd
      opencv_features2d = cc.find_library('opencv_features2d')
      opencv_flann = cc.find_library('opencv_flann')
      opencv_imgproc = cc.find_library('opencv_imgproc')
+     opencv_calib3d = cc.find_library('opencv_calib3d')
      opencv_dep = declare_dependency(
          include_directories: opencv_inc,
-         dependencies: [opencv_core, opencv_features2d, opencv_flann, opencv_imgproc],
+         dependencies: [opencv_core, opencv_features2d, opencv_flann, opencv_imgproc, opencv_calib3d],
      )
      libsigfm = static_library('sigfm',
          'sigfm/sigfm.cpp',
@@ -200,7 +201,7 @@ fprintd-enroll
 
 ## Technical Notes
 
-- **SIGFM matching** uses OpenCV SIFT features with CLAHE contrast enhancement. Score threshold is 5 (correct finger typically scores 28-24000+, wrong finger scores 0-4).
+- **SIGFM matching** uses OpenCV SIFT features with CLAHE contrast enhancement. Candidate correspondences (Lowe's ratio test) are confirmed by RANSAC: a single rigid+scale transform (`estimateAffinePartial2D`) is fitted between probe and enrolled keypoints, and the **inlier count** is the match score. A probe must clear a minimum-keypoint quality gate, then score enough inliers on the best sample and across multiple of the 8 stored samples (see thresholds in `goodix53x5.h`). Using a single global transform — rather than counting locally-consistent pairs — is what prevents false accepts from adjacent fingers or other people.
 - **8 enrollment samples** are stored as raw 108x88 grayscale images. During verification, SIFT features are extracted from each stored sample and compared with the live capture.
 - **Image preprocessing** removes horizontal banding and vertical striping via row/column mean subtraction, then normalizes to 8-bit.
 - Thermal throttling is disabled (`temp_hot_seconds = -1`) since the small sensor generates negligible heat.

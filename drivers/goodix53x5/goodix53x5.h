@@ -50,9 +50,13 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5, FPI,
 /* Enroll stages */
 #define GOODIX_ENROLL_SAMPLES 8
 
-/* SIGFM (SIFT-based) matching parameters */
-#define GOODIX_SIGFM_THRESHOLD    10   /* minimum sigfm score to count as matching */
-#define GOODIX_SIGFM_BEST_MIN     40   /* minimum best score from any single sample */
+/* SIGFM (SIFT-based) matching parameters.
+ * Scores are RANSAC inlier counts: the number of keypoint correspondences
+ * explained by a single rigid transform between probe and enrolled sample.
+ * Conservative starting values, validated on hardware (see issue #3). */
+#define GOODIX_SIGFM_MIN_KEYPOINTS 20  /* reject low-quality probe captures */
+#define GOODIX_SIGFM_THRESHOLD    12   /* min inliers for a sample to count as matching */
+#define GOODIX_SIGFM_BEST_MIN     18   /* min inliers on the best-matching sample */
 #define GOODIX_SIGFM_MIN_SAMPLES  2    /* minimum enrolled samples above threshold */
 
 /* Sensor warmup parameters */

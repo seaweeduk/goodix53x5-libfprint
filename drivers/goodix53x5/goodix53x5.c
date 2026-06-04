@@ -1472,6 +1472,23 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
         keypoints = sigfm_keypoints_count (probe_info);
         fp_dbg ("SIGFM probe keypoints: %d", keypoints);
 
+        /* Quality gate: a probe with too few keypoints cannot be matched
+         * reliably and is a common source of false accepts.  Reject outright
+         * rather than risk a spurious match on a poor capture. */
+        if (keypoints < GOODIX_SIGFM_MIN_KEYPOINTS)
+          {
+            fp_dbg ("Probe rejected: %d keypoints below minimum %d",
+                    keypoints, GOODIX_SIGFM_MIN_KEYPOINTS);
+            if (action == FPI_DEVICE_ACTION_IDENTIFY)
+              fpi_device_identify_report (dev, NULL, NULL, NULL);
+            else
+              fpi_device_verify_report (dev, FPI_MATCH_FAIL, NULL, NULL);
+            sigfm_free_info (probe_info);
+            g_clear_pointer (&self->captured_image, g_free);
+            fpi_ssm_next_state (ssm);
+            break;
+          }
+
         if (action == FPI_DEVICE_ACTION_IDENTIFY)
           {
             /* Identify: match against gallery of enrolled prints */
