@@ -144,7 +144,7 @@ fprintd-verify
 ### `No devices available` (`net.reactivated.Fprint.Error.NoSuchDevice`)
 
 The most common cause is that the udev rule has not taken effect, so `cdc_acm`
-is still holding the device. **A full reboot is required** — reloading udev
+is still holding the device. **A full reboot is required**: reloading udev
 rules or restarting `fprintd` alone is usually not enough, because `cdc_acm`
 binds at USB enumeration time.
 
@@ -165,7 +165,7 @@ binds at USB enumeration time.
 
 ### `GTLS identity verification failed`
 
-Seen on the first open after boot — the GTLS handshake occasionally fails on
+Seen on the first open after boot: the GTLS handshake occasionally fails on
 the first attempt. Simply **run the enroll/verify command again**; it usually
 succeeds on the second try. Some users have also reported that
 `sudo systemctl restart rsyslog` followed by a retry clears it.
@@ -177,7 +177,7 @@ a conflicting **TOD (Touch OEM Driver)** package shipping a different Goodix
 driver. Remove it so it stops claiming the device:
 
 ```bash
-# Debian/Ubuntu/Kali — check for and remove the conflicting TOD driver
+# Debian/Ubuntu/Kali: check for and remove the conflicting TOD driver
 dpkg -l | grep goodix
 sudo apt remove libfprint-2-tod1-goodix
 ```
@@ -201,16 +201,18 @@ fprintd-enroll
 
 ## Technical Notes
 
-- **SIGFM matching** uses OpenCV SIFT features with CLAHE contrast enhancement. Candidate correspondences (Lowe's ratio test) are confirmed by RANSAC: a single rigid+scale transform (`estimateAffinePartial2D`) is fitted between probe and enrolled keypoints, and the **inlier count** is the match score. A probe must clear a minimum-keypoint quality gate, then the sum of inliers across the 8 stored samples must clear a threshold (see `goodix53x5.h`). Using a single global transform — rather than counting locally-consistent pairs — strongly reduces false accepts from adjacent fingers compared to the earlier metric.
-
-## ⚠️ Security limitations
-
-This is a small (108×88 px) press sensor, and SIFT-based matching **cannot fully distinguish your enrolled finger from other fingers** on it. On-hardware testing (see [issue #3](https://github.com/AndyHazz/goodix53x5-libfprint/issues/3)) found the genuine and impostor match-score distributions overlap: with the default thresholds, roughly 1 in 15 impostor presses can still be accepted, and your own finger is accepted on roughly 1 in 3 presses (so expect to press 2–3 times).
-
-The RANSAC matcher here is a **large improvement** over the previous behaviour (which accepted almost any similar finger) but is **not a security guarantee**. Treat this sensor as **convenience-grade**, not as a sole factor for protecting anything sensitive. Tune `GOODIX_SIGFM_SUM_MIN` in `goodix53x5.h` higher (e.g. 42) to reduce false accepts at the cost of more retries, or lower for fewer retries at higher risk. A more discriminative minutiae-based matcher is tracked as follow-up work.
+- **SIGFM matching** uses OpenCV SIFT features with CLAHE contrast enhancement. Candidate correspondences (Lowe's ratio test) are confirmed by RANSAC: a single rigid+scale transform (`estimateAffinePartial2D`) is fitted between probe and enrolled keypoints, and the **inlier count** is the match score. A probe must clear a minimum-keypoint quality gate, then the sum of inliers across the 8 stored samples must clear a threshold (see `goodix53x5.h`). Using a single global transform, rather than counting locally-consistent pairs, strongly reduces false accepts from adjacent fingers compared to the earlier metric.
 - **8 enrollment samples** are stored as raw 108x88 grayscale images. During verification, SIFT features are extracted from each stored sample and compared with the live capture.
 - **Image preprocessing** removes horizontal banding and vertical striping via row/column mean subtraction, then normalizes to 8-bit.
 - Thermal throttling is disabled (`temp_hot_seconds = -1`) since the small sensor generates negligible heat.
+
+## ⚠️ Security limitations
+
+This is a small (108x88 px) press sensor, and SIFT-based matching **cannot fully distinguish your enrolled finger from other fingers** on it. On-hardware testing (see [issue #3](https://github.com/AndyHazz/goodix53x5-libfprint/issues/3)) found the genuine and impostor match-score distributions overlap: with the default thresholds, roughly 1 in 15 impostor presses can still be accepted, and your own finger is accepted on roughly 1 in 3 presses (so expect to press 2-3 times).
+
+The RANSAC matcher here is a **large improvement** over the previous behaviour (which accepted almost any similar finger) but is **not a security guarantee**. Treat this sensor as **convenience-grade**, not as a sole factor for protecting anything sensitive. Tune `GOODIX_SIGFM_SUM_MIN` in `goodix53x5.h` higher (e.g. 42) to reduce false accepts at the cost of more retries, or lower for fewer retries at higher risk.
+
+A minutiae-based matcher (libfprint's NBIS) was evaluated as a more discriminative alternative but is not viable here: `mindtct` extracts only about 5-7 minutiae from genuine captures on this sensor and bozorth3 needs roughly 12+, too few to match reliably. The small contact area is the fundamental limit.
 
 ## File Structure
 
