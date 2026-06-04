@@ -50,10 +50,25 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5, FPI,
 /* Enroll stages */
 #define GOODIX_ENROLL_SAMPLES 8
 
-/* SIGFM (SIFT-based) matching parameters */
-#define GOODIX_SIGFM_THRESHOLD    10   /* minimum sigfm score to count as matching */
-#define GOODIX_SIGFM_BEST_MIN     40   /* minimum best score from any single sample */
-#define GOODIX_SIGFM_MIN_SAMPLES  2    /* minimum enrolled samples above threshold */
+/* SIGFM (SIFT-based) matching parameters.
+ * A score is the RANSAC inlier count: keypoint correspondences between probe
+ * and one enrolled sample explained by a single rigid transform. The decision
+ * is a dual gate: the sum of inliers across all 8 samples must clear SUM_MIN
+ * (the discriminator), and the best single sample must clear BEST_MIN (a floor
+ * against diffuse low-score noise).
+ *
+ * SECURITY CAVEAT: this is a MITIGATION, not a guarantee. On-hardware
+ * calibration (issue #3, 13 genuine + 15 impostor presses) found genuine and
+ * impostor inlier distributions OVERLAP on this 108x88 sensor (genuine total
+ * 20-51, impostor total 0-41) -- SIFT features cannot fully determine which
+ * finger pressed. No threshold gives both good acceptance and zero false
+ * accepts. These values are security-leaning: measured ~38% genuine accept
+ * (expect to press 2-3x) and ~7% residual false-accept, vs ~100% false-accept
+ * with the previous metric. Raise SUM_MIN (e.g. 42) for fewer false accepts at
+ * the cost of more retries; a proper fix needs minutiae-based matching. */
+#define GOODIX_SIGFM_MIN_KEYPOINTS 20  /* reject low-quality probe captures */
+#define GOODIX_SIGFM_BEST_MIN      6   /* floor: best sample must show a real local match */
+#define GOODIX_SIGFM_SUM_MIN       37  /* min total inliers summed over all 8 samples */
 
 /* Sensor warmup parameters */
 #define GOODIX_WARMUP_CAPTURES      5    /* pre-touch captures after resume */
