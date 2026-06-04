@@ -147,6 +147,31 @@ Push to a feature branch → open a PR with "Fixes #3" and the root-cause writeu
 → user validates on hardware → merge → issue auto-closes. PR #4 (the 27c6:5335
 device addition) remains on hold until this merges, then can be revisited.
 
+## Outcome (on-hardware calibration, 2026-06-04)
+
+Tested on the XPS 15 9570 (`27c6:5385`) using the in-tree `examples/` tools
+against the freshly built driver (no system install). Key findings across 13
+genuine + 15 impostor presses:
+
+- The initial guessed thresholds (best 18 / 12) false-rejected the genuine
+  finger; inlier counts on this sensor are far lower than assumed.
+- `estimateAffinePartial2D` reproj tolerance of 3px separates better than 5px.
+- **Best-single-sample does not discriminate** (genuine 3–14, impostor 0–8
+  overlap). The **sum of inliers across all 8 samples** is the better signal,
+  but with a broad impostor sample (different fingers) it still overlaps:
+  genuine total 20–51, impostor total 0–41. A non-enrolled finger reached
+  best 8 / total 41 — inside the genuine cloud.
+- **Conclusion: no threshold yields both usable acceptance and zero false
+  accepts.** SIFT features on a 108×88 sensor cannot reliably determine which
+  finger pressed. RANSAC is a strong *mitigation* (worst impostor score fell
+  from ~114 under the old metric to ~41, vs genuine up to 51) but not a fix.
+
+Shipped as a **mitigation** with a security-leaning operating point
+(`BEST_MIN=6`, `SUM_MIN=37`: ~38% genuine accept, ~7% residual false accept) and
+an explicit security caveat in the README and in `goodix53x5.h`. PR relabelled
+to *mitigate* (not close) issue #3. A minutiae-based matcher (libfprint NBIS) is
+the candidate real fix, deferred to a follow-up session.
+
 ## Out of scope
 
 - Recalibrating thresholds against a captured genuine-vs-impostor score
