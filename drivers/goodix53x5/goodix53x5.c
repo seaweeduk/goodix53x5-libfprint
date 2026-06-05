@@ -30,6 +30,52 @@
 #define GOODIX_PROTO_CATEGORY_FDT     0x03
 #define GOODIX_PROTO_CMD_FDT_DOWN     0x01
 #define GOODIX_PROTO_CMD_FDT_UP       0x02
+#define GOODIX_PROTO_CATEGORY_ACK     0x0B
+#define GOODIX_PROTO_CMD_ACK          0x00
+#define GOODIX_PROTO_ACK_FLAG_VALID   0x01
+#define GOODIX_PROTO_CMD_BYTE(category, command) \
+  (((category) << 4) | ((command) << 1))
+
+static gboolean
+goodix_validate_ack_for_cmd (FpDevice        *dev,
+                             const GoodixCmd *cmd,
+                             GError         **error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  guint8 category, command;
+  const guint8 *payload;
+  gsize payload_len;
+  guint8 expected_cmd_byte = GOODIX_PROTO_CMD_BYTE (cmd->category, cmd->command);
+
+  if (!goodix_proto_rx_parse (&self->rx, &category, &command,
+                              &payload, &payload_len))
+    {
+      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                           "Failed to parse ACK");
+      return FALSE;
+    }
+
+  if (category != GOODIX_PROTO_CATEGORY_ACK ||
+      command != GOODIX_PROTO_CMD_ACK ||
+      payload_len < 2)
+    {
+      g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                   "Unexpected ACK: expected cmd_byte=0x%02x, got cat=0x%02x cmd=0x%02x len=%zu",
+                   expected_cmd_byte, category, command, payload_len);
+      return FALSE;
+    }
+
+  if (payload[0] != expected_cmd_byte ||
+      (payload[1] & GOODIX_PROTO_ACK_FLAG_VALID) == 0)
+    {
+      g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                   "Unexpected ACK: expected cmd_byte=0x%02x, got ack_cmd=0x%02x flags=0x%02x",
+                   expected_cmd_byte, payload[0], payload[1]);
+      return FALSE;
+    }
+
+  return TRUE;
+}
 
 /* All-zero PSK */
 static const guint8 goodix_psk[GOODIX_PSK_LEN] = { 0 };
@@ -301,6 +347,20 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_CMD_RECV_ACK:
       goodix_recv_start (ssm, dev, GOODIX_ACK_TIMEOUT, NULL);
+      break;
+
+    case GOODIX_CMD_VALIDATE_ACK:
+      {
+        g_autoptr(GError) error = NULL;
+
+        if (!goodix_validate_ack_for_cmd (dev, cmd, &error))
+          {
+            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+            return;
+          }
+
+        fpi_ssm_next_state (ssm);
+      }
       break;
 
     case GOODIX_CMD_RECV_DATA:
