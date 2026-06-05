@@ -74,12 +74,31 @@ cd libfprint
 # The install script will print manual meson.build edits needed.
 # Apply those edits, then:
 
-meson setup builddir
-cd builddir
+meson setup builddir --prefix=/usr -Dinstalled-tests=false -Ddoc=false
+ninja -C builddir
+sudo ninja -C builddir install
+sudo systemctl restart fprintd
+```
+
+Use `--prefix=/usr` so the installed libfprint replaces the system library used by `fprintd`. A default Meson setup may install into `/usr/local`, which `fprintd` may not load.
+
+### Updating
+
+If you already installed this driver, update this repository, copy the newer driver files into libfprint, then rebuild libfprint:
+
+```bash
+cd /path/to/goodix53x5-libfprint
+git pull
+./install.sh /path/to/libfprint
+
+cd /path/to/libfprint/builddir
+meson setup --reconfigure .. --prefix=/usr -Dinstalled-tests=false -Ddoc=false
 ninja
 sudo ninja install
 sudo systemctl restart fprintd
 ```
+
+You usually do not need to repeat the manual Meson edits after the first install.
 
 ## Troubleshooting
 
@@ -112,6 +131,22 @@ Then reload systemd and enable the service:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable kill-fprintd-before-sleep.service
+```
+
+### Uninstalling
+
+To remove the copied driver files from a libfprint source tree:
+
+```bash
+/path/to/goodix53x5-libfprint/uninstall.sh /path/to/libfprint
+```
+
+The uninstall script removes `libfprint/drivers/goodix53x5/` and `libfprint/sigfm/`. It will print the manual Meson cleanup steps needed to remove the driver registration, SIGFM/OpenCV build block, and helper mapping.
+
+Preview the removals without deleting files:
+
+```bash
+/path/to/goodix53x5-libfprint/uninstall.sh --dry-run /path/to/libfprint
 ```
 
 ### Manual Integration
@@ -147,6 +182,22 @@ sudo systemctl enable kill-fprintd-before-sleep.service
    - Add `'goodix53x5'` to the default drivers list
    - Add `'goodix53x5' : [ 'openssl' ]` to `driver_helpers`
 5. Reconfigure and build
+
+## Development
+
+### Local Build
+
+For development, build libfprint with this driver inside this repository:
+
+```bash
+./scripts/build-local.sh
+```
+
+This clones/prepares libfprint under `.build/libfprint`, copies the current driver and `sigfm` sources into that tree, applies `meson-integration.patch`, and runs `ninja`. Override the libfprint ref with `GOODIX_LIBFPRINT_REF`, for example:
+
+```bash
+GOODIX_LIBFPRINT_REF=v1.94.10 ./scripts/build-local.sh
+```
 
 ## Enrollment and Verification
 
