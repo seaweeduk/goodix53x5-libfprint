@@ -136,6 +136,7 @@ typedef struct
 typedef enum {
   GOODIX_CMD_SEND = 0,
   GOODIX_CMD_RECV_ACK,
+  GOODIX_CMD_VALIDATE_ACK,
   GOODIX_CMD_RECV_DATA,
   GOODIX_CMD_NUM_STATES,
 } GoodixCmdState;
