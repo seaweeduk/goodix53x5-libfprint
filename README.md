@@ -49,16 +49,9 @@ sudo dnf install opencv opencv-devel
 sudo apt install libopencv-dev
 ```
 
-## Important: udev Rule
+## USB Interface Claiming
 
-The sensor exposes a CDC (Communications Device Class) descriptor that causes the Linux `cdc_acm` kernel driver to claim it as a modem device, blocking libfprint. You **must** install the included udev rule:
-
-```bash
-sudo cp 91-goodix-fingerprint.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-```
-
-This automatically unbinds `cdc_acm` when it tries to attach to this device. Without this rule, the driver will fail with "Resource busy" errors after every reboot.
+The sensor exposes a CDC (Communications Device Class) descriptor, so Linux may bind the `cdc_acm` kernel driver to it as a modem device. The driver detaches that kernel driver when claiming the Goodix USB interface.
 
 ## Installation
 
@@ -70,7 +63,7 @@ sudo pacman -S fprintd
 sudo systemctl restart fprintd
 ```
 
-This builds a patched libfprint with the driver and udev rule included. No manual steps needed.
+This builds a patched libfprint with the driver included. No manual steps needed.
 
 ### Other Distros: Quick Start
 
@@ -79,8 +72,8 @@ This builds a patched libfprint with the driver and udev rule included. No manua
 git clone https://gitlab.freedesktop.org/libfprint/libfprint.git
 cd libfprint
 
-# Apply this driver (also installs the udev rule)
-/path/to/goodix53x5-driver/install.sh .
+# Apply this driver
+/path/to/goodix53x5-libfprint/install.sh .
 
 # The install script will print manual meson.build edits needed.
 # Apply those edits, then:
@@ -173,50 +166,6 @@ fprintd-verify
 
 ## Troubleshooting
 
-### `No devices available` (`net.reactivated.Fprint.Error.NoSuchDevice`)
-
-The most common cause is that the udev rule has not taken effect, so `cdc_acm`
-is still holding the device. **A full reboot is required**: reloading udev
-rules or restarting `fprintd` alone is usually not enough, because `cdc_acm`
-binds at USB enumeration time.
-
-1. Confirm the device is present:
-   ```bash
-   lsusb | grep -E '27c6:(5335|5385|5395)'
-   ```
-2. Confirm the udev rule is installed and reload it:
-   ```bash
-   ls /etc/udev/rules.d/91-goodix-fingerprint.rules
-   sudo udevadm control --reload-rules
-   ```
-3. **Reboot.**
-4. Check that `cdc_acm` is *not* bound to the sensor (no `ttyACM*` should map to it):
-   ```bash
-   dmesg | grep -i cdc_acm
-   ```
-
-### `GTLS identity verification failed`
-
-Seen on the first open after boot: the GTLS handshake occasionally fails on
-the first attempt. Simply **run the enroll/verify command again**; it usually
-succeeds on the second try. Some users have also reported that
-`sudo systemctl restart rsyslog` followed by a retry clears it.
-
-### `Device 27c6:XXXX is already open`
-
-Another driver or process is already holding the device. The usual culprit is
-a conflicting **TOD (Touch OEM Driver)** package shipping a different Goodix
-driver. Remove it so it stops claiming the device:
-
-```bash
-# Debian/Ubuntu/Kali: check for and remove the conflicting TOD driver
-dpkg -l | grep goodix
-sudo apt remove libfprint-2-tod1-goodix
-```
-
-Then reboot and try again. If a stale `fprintd` is holding the device, you can
-also try `sudo systemctl restart fprintd`.
-
 ### Capturing debug logs
 
 To gather logs for a bug report, stop the system `fprintd` and run it in the
@@ -241,8 +190,6 @@ fprintd-enroll
 ## File Structure
 
 ```
-91-goodix-fingerprint.rules - udev rule to unbind cdc_acm from the sensor
-
 drivers/goodix53x5/
   goodix53x5.h           - Header: defines, structs, function declarations
   goodix53x5.c           - Main driver: SSMs for open, enroll, verify, identify
