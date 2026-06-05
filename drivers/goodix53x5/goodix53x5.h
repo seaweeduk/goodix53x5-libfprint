@@ -41,9 +41,6 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5, FPI,
 #define GOODIX_SENSOR_HEIGHT 88
 #define GOODIX_SENSOR_PIXELS (GOODIX_SENSOR_WIDTH * GOODIX_SENSOR_HEIGHT)
 
-/* 12-bit packed: 6 bytes per 4 pixels */
-#define GOODIX_RAW_FRAME_SIZE (GOODIX_SENSOR_PIXELS * 6 / 4)
-
 /* FDT base length */
 #define GOODIX_FDT_BASE_LEN 24
 
@@ -56,15 +53,10 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5, FPI,
 /* Captures below this feature count are effectively blank/failed touches. */
 #define GOODIX_MIN_CAPTURE_KEYPOINTS 20
 
-/* Sensor warmup parameters */
-#define GOODIX_WARMUP_CAPTURES      5    /* pre-touch captures after resume */
-
 /* Timeouts in ms */
 #define GOODIX_CMD_TIMEOUT    1000
 #define GOODIX_ACK_TIMEOUT    2000
 #define GOODIX_DATA_TIMEOUT   5000
-#define GOODIX_EMPTY_TIMEOUT  200
-
 /* HV value for image capture */
 #define GOODIX_HV_VALUE 6
 
@@ -136,10 +128,6 @@ typedef struct
   guint8 *payload;
   gsize   payload_len;
   gboolean use_checksum;
-
-  /* Response storage */
-  guint8 *response;
-  gsize   response_len;
 } GoodixCmd;
 
 /* --- SSM state enums --- */
@@ -157,7 +145,6 @@ typedef enum {
 typedef enum {
   GOODIX_OPEN_USB_RESET = 0,
   GOODIX_OPEN_CLAIM_INTERFACE,
-  GOODIX_OPEN_EMPTY_BUFFER,
   GOODIX_OPEN_PING,
   GOODIX_OPEN_READ_FW_VERSION,
   GOODIX_OPEN_RESET,
@@ -173,11 +160,7 @@ typedef enum {
   GOODIX_OPEN_GTLS_RECV_DONE,
   GOODIX_OPEN_UPLOAD_CONFIG,
   GOODIX_OPEN_FDT_TX_ON,
-  GOODIX_OPEN_IMAGE_TX_ON,
-  GOODIX_OPEN_FDT_TX_OFF,
   GOODIX_OPEN_VALIDATE_FDT,
-  GOODIX_OPEN_IMAGE_TX_OFF,
-  GOODIX_OPEN_VALIDATE_IMG,
   GOODIX_OPEN_FDT_TX_ON_2,
   GOODIX_OPEN_VALIDATE_FDT_2,
   GOODIX_OPEN_GENERATE_FDT_BASE,
@@ -189,8 +172,6 @@ typedef enum {
 typedef enum {
   GOODIX_FINGER_WAIT_EC_POWER_ON = 0,
   GOODIX_FINGER_WAIT_EC_POWER_ON_DONE,
-  GOODIX_FINGER_WAIT_WARMUP_CAPTURE,
-  GOODIX_FINGER_WAIT_WARMUP_CHECK,
   GOODIX_FINGER_WAIT_FDT_DOWN_SETUP,
   GOODIX_FINGER_WAIT_RECV_EVENT,
   GOODIX_FINGER_WAIT_GEN_UP_BASE,
@@ -219,11 +200,11 @@ typedef enum {
   GOODIX_FINGER_UP_NUM_STATES,
 } GoodixFingerUpState;
 
-/* Deactivate SSM — cleanup after operations */
+/* Deactivate SSM — bounded cleanup after successful verify/identify */
 typedef enum {
-  GOODIX_DEACTIVATE_DRAIN = 0,
-  GOODIX_DEACTIVATE_SLEEP,
+  GOODIX_DEACTIVATE_SLEEP = 0,
   GOODIX_DEACTIVATE_EC_POWER_OFF,
+  GOODIX_DEACTIVATE_EC_POWER_OFF_DONE,
   GOODIX_DEACTIVATE_NUM_STATES,
 } GoodixDeactivateState;
 
@@ -242,7 +223,7 @@ typedef enum {
   GOODIX_VERIFY_WAIT_FINGER = 0,
   GOODIX_VERIFY_CAPTURE,
   GOODIX_VERIFY_MATCH,
-  GOODIX_VERIFY_WAIT_FINGER_UP,
+  GOODIX_VERIFY_FINISH,
   GOODIX_VERIFY_NUM_STATES,
 } GoodixVerifyState;
 
@@ -265,15 +246,11 @@ struct _FpiDeviceGoodix53x5
   guint            rx_timeout;     /* Timeout for current receive continuation */
 
   /* Temporary data used during SSMs */
-  guint16 *calib_image;        /* Background image for subtraction */
   guint8  *fdt_event_data;     /* FDT event data (24 bytes) */
   guint16  fdt_touch_flag;
 
   /* Temporary FDT data from calibration */
   guint8 *fdt_data_tx_on;
-  guint8 *fdt_data_tx_off;
-  guint16 *image_tx_on;
-  guint16 *image_tx_off;
 
   /* OTP raw data */
   guint8 *otp_data;
@@ -282,9 +259,7 @@ struct _FpiDeviceGoodix53x5
   /* Firmware version string */
   gchar *fw_version;
 
-  /* PSK hash for validation */
-  guint8 *psk_hash;
-  gsize   psk_hash_len;
+  /* TRUE while verifying a PSK write during open. */
   gboolean psk_write_verify_pending;
 
   /* Current command (for sub-SSM) */
@@ -295,6 +270,20 @@ struct _FpiDeviceGoodix53x5
 
   /* Task SSM tracking */
   FpiSsm *task_ssm;
+
+  /* TRUE once verify/identify has already reported a result. */
+  gboolean action_result_reported;
+
+  /* Failed verify/identify attempts wait for lift-off before completing so one
+   * held invalid finger cannot consume multiple PAM attempts. */
+  gboolean verify_wait_finger_up;
+
+  /* Verify/identify result queued until post-match cleanup has completed. */
+  gboolean        pending_result_report;
+  FpiDeviceAction pending_result_action;
+  FpiMatchResult  pending_verify_result;
+  FpPrint        *pending_identify_match;
+  GError         *pending_result_error;
 
   /* Suspend/resume state */
   gboolean suspended;            /* TRUE between suspend() and resume() calls */
@@ -307,10 +296,6 @@ struct _FpiDeviceGoodix53x5
   /* Enrollment tracking */
   GPtrArray *enroll_images; /* array of guint8* native images */
   gint       enroll_stage;
-
-  /* Sensor warmup state */
-  int        warmup_remaining;   /* pre-touch captures left */
-  gboolean   warmup_done;        /* TRUE after first warmup cycle (per fprintd session) */
 };
 
 /* --- Protocol functions (goodix53x5-proto.c) --- */
@@ -417,11 +402,6 @@ gboolean goodix_device_is_fdt_base_valid (const guint8 *data1,
                                           const guint8 *data2,
                                           gsize         len,
                                           guint16       max_delta);
-
-void     goodix_device_validate_base_img (const guint16 *img1,
-                                          const guint16 *img2,
-                                          guint16        threshold,
-                                          gboolean      *valid);
 
 void     goodix_device_generate_fdt_base (const guint8 *fdt_data,
                                           gsize         len,
