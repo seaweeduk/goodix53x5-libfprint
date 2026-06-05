@@ -32,6 +32,7 @@
 #define GOODIX_PROTO_CMD_FDT_UP       0x02
 #define GOODIX_PROTO_CATEGORY_ACK     0x0B
 #define GOODIX_PROTO_CMD_ACK          0x00
+#define GOODIX_PROTO_ACK_FLAG_VALID   0x01
 #define GOODIX_PROTO_CMD_BYTE(category, command) \
   (((category) << 4) | ((command) << 1))
 
@@ -65,7 +66,7 @@ goodix_validate_ack_for_cmd (FpDevice        *dev,
     }
 
   if (payload[0] != expected_cmd_byte ||
-      (payload[1] & 0x01) == 0)
+      (payload[1] & GOODIX_PROTO_ACK_FLAG_VALID) == 0)
     {
       g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
                    "Unexpected ACK: expected cmd_byte=0x%02x, got ack_cmd=0x%02x flags=0x%02x",
