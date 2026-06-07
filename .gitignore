@@ -3,3 +3,11 @@
 CLAUDE.md
 CLAUDE.local.md
 docs/superpowers/
+
+# Local build and research artifacts
+.build/
+builddir/
+results/
+tools/
+AGENTS.md
+*.pkg.tar.zst
