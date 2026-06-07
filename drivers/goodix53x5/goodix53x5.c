@@ -1347,6 +1347,24 @@ goodix_enroll_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_ENROLL_PROCESS:
       {
+        SigfmImgInfo *info;
+        int keypoints;
+
+        info = sigfm_extract (self->captured_image,
+                              GOODIX_SENSOR_WIDTH,
+                              GOODIX_SENSOR_HEIGHT);
+        keypoints = sigfm_keypoints_count (info);
+        sigfm_free_info (info);
+
+        if (keypoints < GOODIX_MIN_CAPTURE_KEYPOINTS)
+          {
+            g_clear_pointer (&self->captured_image, g_free);
+            fpi_device_enroll_progress (dev, self->enroll_stage, NULL,
+                                        fpi_device_retry_new (FP_DEVICE_RETRY_REMOVE_FINGER));
+            fpi_ssm_next_state (ssm);
+            return;
+          }
+
         /* Store captured image in enrollment array */
         g_ptr_array_add (self->enroll_images, self->captured_image);
         self->captured_image = NULL;
@@ -1470,15 +1488,9 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                                      GOODIX_SENSOR_WIDTH,
                                      GOODIX_SENSOR_HEIGHT);
         keypoints = sigfm_keypoints_count (probe_info);
-        fp_dbg ("SIGFM probe keypoints: %d", keypoints);
 
-        /* Quality gate: a probe with too few keypoints cannot be matched
-         * reliably and is a common source of false accepts.  Reject outright
-         * rather than risk a spurious match on a poor capture. */
-        if (keypoints < GOODIX_SIGFM_MIN_KEYPOINTS)
+        if (keypoints < GOODIX_MIN_CAPTURE_KEYPOINTS)
           {
-            fp_dbg ("Probe rejected: %d keypoints below minimum %d",
-                    keypoints, GOODIX_SIGFM_MIN_KEYPOINTS);
             if (action == FPI_DEVICE_ACTION_IDENTIFY)
               fpi_device_identify_report (dev, NULL, NULL, NULL);
             else
@@ -1495,7 +1507,6 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
             GPtrArray *gallery = NULL;
             FpPrint *match = NULL;
             int best_score = 0;
-            int best_match_count = 0;
 
             fpi_device_get_identify_data (dev, &gallery);
 
@@ -1512,7 +1523,6 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                 GVariant *child;
                 int sample_idx = 0;
                 int tmpl_best_score = 0;
-                int tmpl_total_score = 0;
 
                 g_variant_iter_init (&iter, tmpl_data);
                 while ((child = g_variant_iter_next_value (&iter)))
@@ -1533,8 +1543,6 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                                 i, sample_idx, score);
                         sigfm_free_info (tmpl_info);
 
-                        if (score > 0)
-                          tmpl_total_score += score;
                         if (score > tmpl_best_score)
                           tmpl_best_score = score;
 
@@ -1544,22 +1552,16 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                   }
                 g_variant_unref (tmpl_data);
 
-                /* Dual gate: best single sample AND total across all samples.
-                 * Pick the strongest-corroborated gallery entry. */
                 if (tmpl_best_score >= GOODIX_SIGFM_BEST_MIN &&
-                    tmpl_total_score >= GOODIX_SIGFM_SUM_MIN &&
-                    tmpl_total_score > best_match_count)
+                    tmpl_best_score > best_score)
                   {
                     best_score = tmpl_best_score;
-                    best_match_count = tmpl_total_score;
                     match = tmpl;
                   }
               }
 
-            fp_dbg ("Identify best SIGFM score: %d, total: %d "
-                    "(best_min: %d, sum_min: %d)",
-                    best_score, best_match_count,
-                    GOODIX_SIGFM_BEST_MIN, GOODIX_SIGFM_SUM_MIN);
+            fp_dbg ("Identify best SIGFM score: %d (best_min: %d)",
+                    best_score, GOODIX_SIGFM_BEST_MIN);
 
             if (match != NULL)
               fpi_device_identify_report (dev, match, NULL, NULL);
@@ -1572,7 +1574,6 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
             FpPrint *print = NULL;
             GVariant *data = NULL;
             int best_score = 0;
-            int total_score = 0;
             int sample_idx = 0;
 
             fpi_device_get_verify_data (dev, &print);
@@ -1602,8 +1603,6 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                                 sample_idx, score);
                         sigfm_free_info (tmpl_info);
 
-                        if (score > 0)
-                          total_score += score;
                         if (score > best_score)
                           best_score = score;
 
@@ -1614,16 +1613,10 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                 g_variant_unref (data);
               }
 
-            fp_dbg ("Verify best SIGFM score: %d, total: %d "
-                    "(best_min: %d, sum_min: %d)",
-                    best_score, total_score,
-                    GOODIX_SIGFM_BEST_MIN, GOODIX_SIGFM_SUM_MIN);
+            fp_dbg ("Verify best SIGFM score: %d (best_min: %d)",
+                    best_score, GOODIX_SIGFM_BEST_MIN);
 
-            /* Dual gate: a genuine finger both lands a strong single-sample
-             * match (best) AND corroborates across all 8 stored samples
-             * (total). An impostor breaches at most one. */
-            if (best_score >= GOODIX_SIGFM_BEST_MIN &&
-                total_score >= GOODIX_SIGFM_SUM_MIN)
+            if (best_score >= GOODIX_SIGFM_BEST_MIN)
               fpi_device_verify_report (dev, FPI_MATCH_SUCCESS, NULL, NULL);
             else
               fpi_device_verify_report (dev, FPI_MATCH_FAIL, NULL, NULL);
