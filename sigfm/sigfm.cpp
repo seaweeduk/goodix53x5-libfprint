@@ -23,7 +23,6 @@
 #include "binary.hpp"
 #include "img-info.hpp"
 
-#include "opencv2/calib3d.hpp"
 #include "opencv2/core/persistence.hpp"
 #include "opencv2/core/types.hpp"
 #include "opencv2/features2d.hpp"
@@ -35,6 +34,7 @@
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <tuple>
 
 #include <opencv2/opencv.hpp>
 #include <vector>
@@ -62,8 +62,14 @@ struct deserializer<SigfmImgInfo> : public std::true_type {
 
 namespace {
 constexpr auto distance_match = 0.85;
-constexpr auto min_match = 8;       // min raw descriptor matches before RANSAC
-constexpr auto ransac_reproj_thresh = 3.0; // px: inlier tolerance for the fit
+constexpr auto length_match = 0.05;
+constexpr auto angle_match = 0.05;
+constexpr auto min_match = 5;
+constexpr auto sift_nfeatures = 0;
+constexpr auto sift_octave_layers = 3;
+constexpr auto sift_contrast_threshold = 0.04;
+constexpr auto sift_edge_threshold = 18.0;
+constexpr auto sift_sigma = 2.0;
 struct match {
     cv::Point2i p1;
     cv::Point2i p2;
@@ -75,8 +81,17 @@ struct match {
     }
     bool operator<(const match& right) const
     {
-        return std::tie(p1.y, p1.x, p2.y, p2.x) <
+        return std::tie(this->p1.y, this->p1.x, this->p2.y, this->p2.x) <
                std::tie(right.p1.y, right.p1.x, right.p2.y, right.p2.x);
+    }
+};
+struct angle {
+    double cos;
+    double sin;
+    match corr_matches[2];
+    angle(double cos_, double sin_, match m1, match m2)
+        : cos{cos_}, sin{sin_}, corr_matches{m1, m2}
+    {
     }
 };
 } // namespace
@@ -120,7 +135,12 @@ SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height)
     std::vector<cv::KeyPoint> pts;
 
     cv::Mat descs;
-    cv::SIFT::create()->detectAndCompute(enhanced, roi, pts, descs);
+    cv::SIFT::create(sift_nfeatures,
+                     sift_octave_layers,
+                     sift_contrast_threshold,
+                     sift_edge_threshold,
+                     sift_sigma)
+        ->detectAndCompute(enhanced, roi, pts, descs);
 
     auto* info = new SigfmImgInfo{pts, descs};
     return info;
@@ -151,38 +171,59 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
         }
         std::vector<match> matches{matches_unique.begin(),
                                    matches_unique.end()};
-        if (matches.size() < static_cast<std::size_t>(min_match)) {
+
+        std::vector<angle> angles;
+        for (std::size_t j = 0; j < matches.size(); j++) {
+            match match_1 = matches[j];
+            for (std::size_t k = j + 1; k < matches.size(); k++) {
+                match match_2 = matches[k];
+
+                int vec_1[2] = {match_1.p1.x - match_2.p1.x,
+                                match_1.p1.y - match_2.p1.y};
+                int vec_2[2] = {match_1.p2.x - match_2.p2.x,
+                                match_1.p2.y - match_2.p2.y};
+
+                double length_1 = sqrt(pow(vec_1[0], 2) + pow(vec_1[1], 2));
+                double length_2 = sqrt(pow(vec_2[0], 2) + pow(vec_2[1], 2));
+
+                if (1 - std::min(length_1, length_2) /
+                            std::max(length_1, length_2) <=
+                    length_match) {
+
+                    double product = length_1 * length_2;
+                    angles.emplace_back(angle(
+                        M_PI / 2 +
+                            asin((vec_1[0] * vec_2[0] + vec_1[1] * vec_2[1]) /
+                                 product),
+                        acos((vec_1[0] * vec_2[1] - vec_1[1] * vec_2[0]) /
+                             product),
+                        match_1, match_2));
+                }
+            }
+        }
+
+        if (angles.size() < min_match) {
             return 0;
         }
 
-        // Robust geometric verification. Estimate a SINGLE rigid+uniform-scale
-        // transform (rotation, scale, translation -- 4 DOF) between the matched
-        // keypoints and count its inliers. A genuine re-press of the same
-        // finger yields many inliers under one transform; a different finger
-        // (or a different person) yields scattered matches that no single
-        // transform explains, collapsing the inlier count. The inlier count IS
-        // the score, bounded by the number of matches. A partial-affine model
-        // is used deliberately over a homography: a flat press-sensor produces
-        // no perspective warp, so the extra DOF would only let impostor matches
-        // overfit.
-        std::vector<cv::Point2f> src;
-        std::vector<cv::Point2f> dst;
-        src.reserve(matches.size());
-        dst.reserve(matches.size());
-        for (const auto& m : matches) {
-            src.emplace_back(static_cast<float>(m.p1.x),
-                             static_cast<float>(m.p1.y));
-            dst.emplace_back(static_cast<float>(m.p2.x),
-                             static_cast<float>(m.p2.y));
-        }
+        int count = 0;
+        for (std::size_t j = 0; j < angles.size(); j++) {
+            angle angle_1 = angles[j];
+            for (std::size_t k = j + 1; k < angles.size(); k++) {
+                angle angle_2 = angles[k];
 
-        cv::Mat inliers;
-        cv::Mat transform = cv::estimateAffinePartial2D(
-            src, dst, inliers, cv::RANSAC, ransac_reproj_thresh);
-        if (transform.empty()) {
-            return 0;
+                if (1 - std::min(angle_1.sin, angle_2.sin) /
+                                std::max(angle_1.sin, angle_2.sin) <=
+                        angle_match &&
+                    1 - std::min(angle_1.cos, angle_2.cos) /
+                                std::max(angle_1.cos, angle_2.cos) <=
+                        angle_match) {
+
+                    count += 1;
+                }
+            }
         }
-        return cv::countNonZero(inliers);
+        return count;
     }
     catch (...) {
         return -1;
