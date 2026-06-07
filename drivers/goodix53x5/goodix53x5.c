@@ -239,6 +239,21 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
 
   if (error)
     {
+      if (!self->suspended &&
+          g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
+          self->action_result_reported &&
+          !self->verify_wait_finger_up &&
+          transfer->ssm == self->blocking_ssm)
+        {
+          /* Once verify/identify has reported a result, libfprint may cancel
+           * the action immediately. Finish the sensor shutdown sequence rather
+           * than bailing out and leaving the MCU armed for the next open. */
+          g_clear_error (&error);
+          self->blocking_ssm = NULL;
+          fpi_ssm_jump_to_state (transfer->ssm, GOODIX_FINGER_UP_SLEEP);
+          return;
+        }
+
       if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
           self->suspended)
         {
@@ -456,7 +471,6 @@ goodix_parse_reply_exact (FpDevice      *dev,
 
 static void
 goodix_build_fdt_payload (guint8  op_code,
-                          guint8  fdt_op,
                           const guint8 *fdt_base,
                           guint8 **out_payload,
                           gsize   *out_len)
@@ -495,30 +509,17 @@ goodix_build_image_request (gboolean  tx_enable,
  * Open SSM — full device initialization
  * ======================================================================== */
 
-/**
- * Callback for the empty-buffer drain read.
- * Timeout is expected (means buffer is empty) — advance either way.
- */
-static void
-goodix_empty_buf_cb (FpiUsbTransfer *transfer,
-                     FpDevice       *dev,
-                     gpointer        user_data,
-                     GError         *error)
-{
-  g_clear_error (&error);
-  fpi_ssm_next_state (transfer->ssm);
-}
-
 static void
 goodix_open_ssm_handler (FpiSsm   *ssm,
                          FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixOpenState state = fpi_ssm_get_cur_state (ssm);
   guint8 payload[8];
   guint8 *p;
   gsize plen;
 
-  switch (fpi_ssm_get_cur_state (ssm))
+  switch (state)
     {
     case GOODIX_OPEN_USB_RESET:
       {
@@ -529,9 +530,9 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
             fpi_ssm_mark_failed (ssm, error);
             return;
           }
-
-        fpi_ssm_next_state (ssm);
       }
+
+      fpi_ssm_next_state (ssm);
       break;
 
     case GOODIX_OPEN_CLAIM_INTERFACE:
@@ -548,19 +549,6 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
         self->usb_interface_claimed = TRUE;
         fpi_ssm_next_state (ssm);
-      }
-      break;
-
-    case GOODIX_OPEN_EMPTY_BUFFER:
-      /* Try to read any stale data with a short timeout.
-       * If it times out, that's fine — buffer is empty, move on. */
-      {
-        FpiUsbTransfer *transfer = fpi_usb_transfer_new (dev);
-        transfer->ssm = ssm;
-        fpi_usb_transfer_fill_bulk (transfer, GOODIX_EP_IN,
-                                    GOODIX_USB_CHUNK_SIZE);
-        fpi_usb_transfer_submit (transfer, GOODIX_EMPTY_TIMEOUT, NULL,
-                                 goodix_empty_buf_cb, NULL);
       }
       break;
 
@@ -966,7 +954,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         memcpy (manual_payload + 1, self->calib.fdt_base_manual,
                 GOODIX_FDT_BASE_LEN);
 
-        goodix_build_fdt_payload (manual_payload[0], 3, manual_payload + 1,
+        goodix_build_fdt_payload (manual_payload[0], manual_payload + 1,
                                   &p, &plen);
         /* Send as FDT MANUAL: category=3, command=3 (MANUAL=3) */
         goodix_run_cmd (ssm, dev, 0x3, 0x3, p, plen, TRUE);
@@ -974,7 +962,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       }
       break;
 
-    case GOODIX_OPEN_IMAGE_TX_ON:
+    case GOODIX_OPEN_VALIDATE_FDT:
       {
         /* Parse FDT response and save */
         guint8 cat, cmd;
@@ -996,149 +984,6 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
             self->fdt_data_tx_on = g_memdup2 (pl + 4, GOODIX_FDT_BASE_LEN);
           }
 
-        /* Get image with TX enabled */
-        guint8 img_req[4];
-        goodix_build_image_request (TRUE, TRUE, FALSE, self->calib.dac_l,
-                                    img_req);
-        goodix_run_cmd (ssm, dev, 0x2, 0x0, img_req, 4, TRUE);
-      }
-      break;
-
-    case GOODIX_OPEN_FDT_TX_OFF:
-      {
-        /* Parse image response, decrypt, and save */
-        guint8 cat, cmd;
-        const guint8 *pl;
-        gsize pl_len;
-
-        if (!goodix_proto_rx_parse (&self->rx, &cat, &cmd, &pl, &pl_len))
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Failed to parse image response"));
-            return;
-          }
-
-        {
-          gsize dec_len;
-          guint8 *decrypted = goodix_crypto_gtls_decrypt_sensor_data (
-              &self->gtls, pl, pl_len, &dec_len);
-
-          if (decrypted == NULL)
-            {
-              fpi_ssm_mark_failed (ssm,
-                                   fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                             "Image decryption failed"));
-              return;
-            }
-
-          g_free (self->image_tx_on);
-          self->image_tx_on = goodix_device_decode_image (decrypted, dec_len);
-          g_free (decrypted);
-        }
-
-        /* FDT manual with TX disabled: op_code=0x8D */
-        guint8 manual_payload[1 + GOODIX_FDT_BASE_LEN];
-        manual_payload[0] = 0x8D;
-        memcpy (manual_payload + 1, self->calib.fdt_base_manual,
-                GOODIX_FDT_BASE_LEN);
-
-        goodix_build_fdt_payload (manual_payload[0], 3, manual_payload + 1,
-                                  &p, &plen);
-        goodix_run_cmd (ssm, dev, 0x3, 0x3, p, plen, TRUE);
-        g_free (p);
-      }
-      break;
-
-    case GOODIX_OPEN_VALIDATE_FDT:
-      {
-        /* Parse FDT response (TX off) and save */
-        guint8 cat, cmd;
-        const guint8 *pl;
-        gsize pl_len;
-
-        if (!goodix_proto_rx_parse (&self->rx, &cat, &cmd, &pl, &pl_len))
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Failed to parse FDT TX-off response"));
-            return;
-          }
-
-        if (pl_len >= 4 + GOODIX_FDT_BASE_LEN)
-          {
-            g_free (self->fdt_data_tx_off);
-            self->fdt_data_tx_off = g_memdup2 (pl + 4, GOODIX_FDT_BASE_LEN);
-          }
-
-        /* Validate FDT: tx_on vs tx_off */
-        if (self->fdt_data_tx_on && self->fdt_data_tx_off &&
-            !goodix_device_is_fdt_base_valid (self->fdt_data_tx_on,
-                                              self->fdt_data_tx_off,
-                                              GOODIX_FDT_BASE_LEN,
-                                              self->calib.delta_fdt))
-          {
-            fp_warn ("FDT validation failed, continuing anyway");
-          }
-
-        fpi_ssm_next_state (ssm);
-      }
-      break;
-
-    case GOODIX_OPEN_IMAGE_TX_OFF:
-      {
-        /* Get image with TX disabled */
-        guint8 img_req[4];
-        goodix_build_image_request (FALSE, TRUE, FALSE, self->calib.dac_l,
-                                    img_req);
-        goodix_run_cmd (ssm, dev, 0x2, 0x0, img_req, 4, TRUE);
-      }
-      break;
-
-    case GOODIX_OPEN_VALIDATE_IMG:
-      {
-        /* Parse and decrypt image, validate against TX-on image */
-        guint8 cat, cmd;
-        const guint8 *pl;
-        gsize pl_len;
-
-        if (!goodix_proto_rx_parse (&self->rx, &cat, &cmd, &pl, &pl_len))
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Failed to parse TX-off image"));
-            return;
-          }
-
-        {
-          gsize dec_len;
-          guint8 *decrypted = goodix_crypto_gtls_decrypt_sensor_data (
-              &self->gtls, pl, pl_len, &dec_len);
-
-          if (decrypted == NULL)
-            {
-              fpi_ssm_mark_failed (ssm,
-                                   fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                             "TX-off image decryption failed"));
-              return;
-            }
-
-          g_free (self->image_tx_off);
-          self->image_tx_off = goodix_device_decode_image (decrypted, dec_len);
-          g_free (decrypted);
-        }
-
-        /* Validate base images */
-        if (self->image_tx_on && self->image_tx_off)
-          {
-            gboolean valid;
-            goodix_device_validate_base_img (self->image_tx_on,
-                                             self->image_tx_off,
-                                             self->calib.delta_img, &valid);
-            if (!valid)
-              fp_warn ("Base image validation failed, continuing anyway");
-          }
-
         fpi_ssm_next_state (ssm);
       }
       break;
@@ -1147,11 +992,12 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       {
         /* Second FDT TX on */
         guint8 manual_payload[1 + GOODIX_FDT_BASE_LEN];
+
         manual_payload[0] = 0x0D;
         memcpy (manual_payload + 1, self->calib.fdt_base_manual,
                 GOODIX_FDT_BASE_LEN);
 
-        goodix_build_fdt_payload (manual_payload[0], 3, manual_payload + 1,
+        goodix_build_fdt_payload (manual_payload[0], manual_payload + 1,
                                   &p, &plen);
         goodix_run_cmd (ssm, dev, 0x3, 0x3, p, plen, TRUE);
         g_free (p);
@@ -1173,11 +1019,11 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
             return;
           }
 
-        /* Validate against tx_off */
-        if (pl_len >= 4 + GOODIX_FDT_BASE_LEN && self->fdt_data_tx_off)
+        /* Validate against the open-time FDT base we just recorded. */
+        if (pl_len >= 4 + GOODIX_FDT_BASE_LEN && self->fdt_data_tx_on)
           {
             if (!goodix_device_is_fdt_base_valid (pl + 4,
-                                                  self->fdt_data_tx_off,
+                                                  self->fdt_data_tx_on,
                                                   GOODIX_FDT_BASE_LEN,
                                                   self->calib.delta_fdt))
               fp_warn ("Second FDT validation failed, continuing anyway");
@@ -1201,11 +1047,6 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
                     GOODIX_FDT_BASE_LEN);
           }
 
-        /* Save calibration image */
-        g_free (self->calib_image);
-        self->calib_image = self->image_tx_on;
-        self->image_tx_on = NULL;
-
         fpi_ssm_next_state (ssm);
       }
       break;
@@ -1217,6 +1058,10 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         payload[1] = 0x00;
         goodix_run_cmd (ssm, dev, 0x6, 0x0, payload, 2, FALSE);
       }
+      break;
+
+    case GOODIX_OPEN_NUM_STATES:
+      g_assert_not_reached ();
       break;
     }
 }
@@ -1244,6 +1089,8 @@ goodix_cleanup_failed_open (FpDevice *dev)
              cleanup_error->message);
 }
 
+static void goodix_start_open_ssm (FpDevice *dev);
+
 static void
 goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 {
@@ -1253,23 +1100,15 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 
   /* Clean up temp data */
   g_clear_pointer (&self->fdt_data_tx_on, g_free);
-  g_clear_pointer (&self->fdt_data_tx_off, g_free);
-  g_clear_pointer (&self->image_tx_off, g_free);
 
   if (error)
     {
       fp_warn ("Device open failed: %s", error->message);
+
       goodix_cleanup_failed_open (dev);
       fpi_device_open_complete (dev, error);
       return;
     }
-
-  /* Warm up sensor on first open after fprintd start.  The open-time
-   * calibration captures use dac_l which doesn't exercise the dac_h analog
-   * path used for finger matching.  Subsequent opens (greeter retries)
-   * skip warmup since the sensor is already stabilized. */
-  if (!self->warmup_done)
-    self->warmup_remaining = GOODIX_WARMUP_CAPTURES;
 
   fp_info ("Device initialization complete");
   fpi_device_open_complete (dev, NULL);
@@ -1321,37 +1160,13 @@ goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
       }
       break;
 
-    case GOODIX_FINGER_WAIT_WARMUP_CAPTURE:
-      if (self->warmup_remaining > 0)
-        {
-          fp_dbg ("Warmup: capturing (%d remaining)", self->warmup_remaining);
-          FpiSsm *sub = fpi_ssm_new (dev, goodix_capture_ssm_handler,
-                                     GOODIX_CAPTURE_NUM_STATES);
-          fpi_ssm_start_subsm (ssm, sub);
-        }
-      else
-        {
-          self->warmup_done = TRUE;
-          fpi_ssm_jump_to_state (ssm, GOODIX_FINGER_WAIT_FDT_DOWN_SETUP);
-        }
-      break;
-
-    case GOODIX_FINGER_WAIT_WARMUP_CHECK:
-      /* Discard the warmup image and loop */
-      g_clear_pointer (&self->captured_image, g_free);
-      self->warmup_remaining--;
-      fp_dbg ("Warmup: discarding capture (%d remaining)",
-              self->warmup_remaining);
-      fpi_ssm_jump_to_state (ssm, GOODIX_FINGER_WAIT_WARMUP_CAPTURE);
-      break;
-
     case GOODIX_FINGER_WAIT_FDT_DOWN_SETUP:
       {
         /* Set up finger-down detection (re-arms the sensor) */
         guint8 *p;
         gsize plen;
 
-        goodix_build_fdt_payload (0x0C, 1, self->calib.fdt_base_down,
+        goodix_build_fdt_payload (0x0C, self->calib.fdt_base_down,
                                   &p, &plen);
         goodix_run_cmd (ssm, dev, 0x3, 0x1, p, plen, FALSE);
         g_free (p);
@@ -1361,7 +1176,7 @@ goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
     case GOODIX_FINGER_WAIT_RECV_EVENT:
       /* Wait for FDT DOWN event with cancellable */
       self->blocking_ssm = ssm;
-      self->blocking_resume_state = GOODIX_FINGER_WAIT_WARMUP_CAPTURE;
+      self->blocking_resume_state = GOODIX_FINGER_WAIT_FDT_DOWN_SETUP;
       goodix_recv_start_cancellable (ssm, dev, self->cancel);
       break;
 
@@ -1417,7 +1232,7 @@ goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
         memcpy (manual_payload + 1, self->calib.fdt_base_manual,
                 GOODIX_FDT_BASE_LEN);
 
-        goodix_build_fdt_payload (manual_payload[0], 3, manual_payload + 1,
+        goodix_build_fdt_payload (manual_payload[0], manual_payload + 1,
                                   &p, &plen);
         goodix_run_cmd (ssm, dev, 0x3, 0x3, p, plen, TRUE);
         g_free (p);
@@ -1565,7 +1380,7 @@ goodix_finger_up_ssm_handler (FpiSsm   *ssm,
         guint8 *p;
         gsize plen;
 
-        goodix_build_fdt_payload (0x0E, 2, self->calib.fdt_base_up, &p, &plen);
+        goodix_build_fdt_payload (0x0E, self->calib.fdt_base_up, &p, &plen);
         goodix_run_cmd (ssm, dev, 0x3, 0x2, p, plen, FALSE);
         g_free (p);
       }
@@ -1647,6 +1462,51 @@ goodix_finger_up_ssm_handler (FpiSsm   *ssm,
 }
 
 /* finger_up is used as a sub-SSM — no standalone run/done needed */
+
+/* ========================================================================
+ * Deactivate SSM
+ * ======================================================================== */
+
+static void
+goodix_deactivate_ssm_handler (FpiSsm   *ssm,
+                               FpDevice *dev)
+{
+  guint8 payload[2];
+
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case GOODIX_DEACTIVATE_SLEEP:
+      payload[0] = 0x01;
+      payload[1] = 0x00;
+      goodix_run_cmd (ssm, dev, 0x6, 0x0, payload, 2, FALSE);
+      break;
+
+    case GOODIX_DEACTIVATE_EC_POWER_OFF:
+      {
+        guint8 ec_payload[3] = { 0x00, 0x00, 0x00 };
+        goodix_run_cmd (ssm, dev, 0xA, 0x7, ec_payload, 3, TRUE);
+      }
+      break;
+
+    case GOODIX_DEACTIVATE_EC_POWER_OFF_DONE:
+      {
+        const guint8 *pl;
+        gsize pl_len;
+
+        if (!goodix_parse_reply_exact (dev, 0xA, 0x7, &pl, &pl_len, NULL) ||
+            pl_len == 0 || pl[0] != 1)
+          {
+            fpi_ssm_mark_failed (ssm,
+                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                           "EC power-off failed"));
+            return;
+          }
+
+        fpi_ssm_mark_completed (ssm);
+      }
+      break;
+    }
+}
 
 /* ========================================================================
  * Enroll SSM
@@ -1779,6 +1639,71 @@ goodix_enroll_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
  * ======================================================================== */
 
 static void
+goodix_clear_pending_result_report (FpiDeviceGoodix53x5 *self)
+{
+  self->pending_result_report = FALSE;
+  self->pending_result_action = 0;
+  self->pending_verify_result = 0;
+  g_clear_object (&self->pending_identify_match);
+  g_clear_error (&self->pending_result_error);
+}
+
+static void
+goodix_queue_verify_report (FpiDeviceGoodix53x5 *self,
+                            FpiMatchResult       result,
+                            GError              *error)
+{
+  goodix_clear_pending_result_report (self);
+
+  self->pending_result_report = TRUE;
+  self->pending_result_action = FPI_DEVICE_ACTION_VERIFY;
+  self->pending_verify_result = result;
+  self->pending_result_error = error;
+}
+
+static void
+goodix_queue_identify_report (FpiDeviceGoodix53x5 *self,
+                              FpPrint             *match,
+                              GError              *error)
+{
+  goodix_clear_pending_result_report (self);
+
+  self->pending_result_report = TRUE;
+  self->pending_result_action = FPI_DEVICE_ACTION_IDENTIFY;
+  if (match != NULL)
+    self->pending_identify_match = g_object_ref (match);
+  self->pending_result_error = error;
+}
+
+static void
+goodix_flush_pending_result_report (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (!self->pending_result_report)
+    return;
+
+  self->action_result_reported = TRUE;
+
+  if (self->pending_result_action == FPI_DEVICE_ACTION_IDENTIFY)
+    {
+      g_autoptr(FpPrint) match = g_steal_pointer (&self->pending_identify_match);
+
+      fpi_device_identify_report (dev, match, NULL,
+                                  g_steal_pointer (&self->pending_result_error));
+    }
+  else
+    {
+      fpi_device_verify_report (dev, self->pending_verify_result, NULL,
+                                g_steal_pointer (&self->pending_result_error));
+    }
+
+  self->pending_result_report = FALSE;
+  self->pending_result_action = 0;
+  self->pending_verify_result = 0;
+}
+
+static void
 goodix_verify_ssm_handler (FpiSsm   *ssm,
                            FpDevice *dev)
 {
@@ -1817,13 +1742,21 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
         if (keypoints < GOODIX_MIN_CAPTURE_KEYPOINTS)
           {
             if (action == FPI_DEVICE_ACTION_IDENTIFY)
-              fpi_device_identify_report (dev, NULL, NULL, NULL);
+              {
+                goodix_queue_identify_report (self, NULL,
+                                              fpi_device_retry_new (FP_DEVICE_RETRY_REMOVE_FINGER));
+              }
             else
-              fpi_device_verify_report (dev, FPI_MATCH_FAIL, NULL, NULL);
+              {
+                goodix_queue_verify_report (self, FPI_MATCH_ERROR,
+                                            fpi_device_retry_new (FP_DEVICE_RETRY_REMOVE_FINGER));
+              }
+
+            self->verify_wait_finger_up = TRUE;
             sigfm_free_info (probe_info);
             g_clear_pointer (&self->captured_image, g_free);
             fpi_ssm_next_state (ssm);
-            break;
+            return;
           }
 
         if (action == FPI_DEVICE_ACTION_IDENTIFY)
@@ -1889,9 +1822,15 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                     best_score, GOODIX_SIGFM_BEST_MIN);
 
             if (match != NULL)
-              fpi_device_identify_report (dev, match, NULL, NULL);
+              {
+                goodix_queue_identify_report (self, match, NULL);
+                self->verify_wait_finger_up = FALSE;
+              }
             else
-              fpi_device_identify_report (dev, NULL, NULL, NULL);
+              {
+                goodix_queue_identify_report (self, NULL, NULL);
+                self->verify_wait_finger_up = TRUE;
+              }
           }
         else
           {
@@ -1942,21 +1881,38 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                     best_score, GOODIX_SIGFM_BEST_MIN);
 
             if (best_score >= GOODIX_SIGFM_BEST_MIN)
-              fpi_device_verify_report (dev, FPI_MATCH_SUCCESS, NULL, NULL);
+              {
+                goodix_queue_verify_report (self, FPI_MATCH_SUCCESS, NULL);
+                self->verify_wait_finger_up = FALSE;
+              }
             else
-              fpi_device_verify_report (dev, FPI_MATCH_FAIL, NULL, NULL);
+              {
+                goodix_queue_verify_report (self, FPI_MATCH_FAIL, NULL);
+                self->verify_wait_finger_up = TRUE;
+              }
           }
 
         sigfm_free_info (probe_info);
         g_clear_pointer (&self->captured_image, g_free);
+
+        if (self->verify_wait_finger_up)
+          goodix_flush_pending_result_report (dev);
+
         fpi_ssm_next_state (ssm);
       }
       break;
 
-    case GOODIX_VERIFY_WAIT_FINGER_UP:
+    case GOODIX_VERIFY_FINISH:
       {
-        FpiSsm *sub = fpi_ssm_new (dev, goodix_finger_up_ssm_handler,
-                                     GOODIX_FINGER_UP_NUM_STATES);
+        FpiSsm *sub;
+
+        if (self->verify_wait_finger_up)
+          sub = fpi_ssm_new (dev, goodix_finger_up_ssm_handler,
+                             GOODIX_FINGER_UP_NUM_STATES);
+        else
+          sub = fpi_ssm_new (dev, goodix_deactivate_ssm_handler,
+                             GOODIX_DEACTIVATE_NUM_STATES);
+
         fpi_ssm_start_subsm (ssm, sub);
       }
       break;
@@ -1975,18 +1931,26 @@ goodix_verify_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 
   if (error)
     {
-      /* If error occurred after match was already reported (during finger_up),
-       * treat it as non-fatal — the match result is what matters. */
+      /* If cleanup fails after matching, the auth result still matters more
+       * than post-result hardware cleanup. */
       gint failed_state = fpi_ssm_get_cur_state (ssm);
 
-      if (failed_state >= GOODIX_VERIFY_WAIT_FINGER_UP &&
+      if (failed_state >= GOODIX_VERIFY_FINISH &&
           !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
         {
-          fp_warn ("Post-match finger-up error (non-fatal): %s",
+          fp_warn ("Post-match cleanup error (non-fatal): %s",
                    error->message);
           g_clear_error (&error);
         }
     }
+
+  if (error == NULL)
+    goodix_flush_pending_result_report (dev);
+  else
+    goodix_clear_pending_result_report (self);
+
+  self->action_result_reported = FALSE;
+  self->verify_wait_finger_up = FALSE;
 
   if (action == FPI_DEVICE_ACTION_IDENTIFY)
     fpi_device_identify_complete (dev, error);
@@ -1999,7 +1963,7 @@ goodix_verify_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
  * ======================================================================== */
 
 static void
-goodix_open (FpDevice *dev)
+goodix_start_open_ssm (FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiSsm *ssm;
@@ -2011,6 +1975,12 @@ goodix_open (FpDevice *dev)
 }
 
 static void
+goodix_open (FpDevice *dev)
+{
+  goodix_start_open_ssm (dev);
+}
+
+static void
 goodix_close (FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
@@ -2018,15 +1988,11 @@ goodix_close (FpDevice *dev)
 
   self->blocking_ssm = NULL;
   g_clear_object (&self->cancel);
-  g_clear_pointer (&self->calib_image, g_free);
+  goodix_clear_pending_result_report (self);
   g_clear_pointer (&self->fdt_event_data, g_free);
   g_clear_pointer (&self->fdt_data_tx_on, g_free);
-  g_clear_pointer (&self->fdt_data_tx_off, g_free);
-  g_clear_pointer (&self->image_tx_on, g_free);
-  g_clear_pointer (&self->image_tx_off, g_free);
   g_clear_pointer (&self->otp_data, g_free);
   g_clear_pointer (&self->fw_version, g_free);
-  g_clear_pointer (&self->psk_hash, g_free);
   g_clear_pointer (&self->rx.buf, g_free);
   g_clear_pointer (&self->captured_image, g_free);
   g_clear_pointer (&self->enroll_images, g_ptr_array_unref);
@@ -2036,6 +2002,9 @@ goodix_close (FpDevice *dev)
       g_free (self->cmd->payload);
       g_clear_pointer (&self->cmd, g_free);
     }
+
+  self->action_result_reported = FALSE;
+  self->verify_wait_finger_up = FALSE;
 
   g_usb_device_release_interface (fpi_device_get_usb_device (dev),
                                   GOODIX_USB_INTERFACE, 0, &error);
@@ -2071,7 +2040,9 @@ goodix_verify (FpDevice *dev)
 
   g_clear_object (&self->cancel);
   self->cancel = g_cancellable_new ();
-
+  goodix_clear_pending_result_report (self);
+  self->action_result_reported = FALSE;
+  self->verify_wait_finger_up = FALSE;
 
   ssm = fpi_ssm_new (dev, goodix_verify_ssm_handler,
                       GOODIX_VERIFY_NUM_STATES);
@@ -2087,7 +2058,9 @@ goodix_identify (FpDevice *dev)
 
   g_clear_object (&self->cancel);
   self->cancel = g_cancellable_new ();
-
+  goodix_clear_pending_result_report (self);
+  self->action_result_reported = FALSE;
+  self->verify_wait_finger_up = FALSE;
 
   ssm = fpi_ssm_new (dev, goodix_verify_ssm_handler,
                       GOODIX_VERIFY_NUM_STATES);
@@ -2138,11 +2111,10 @@ goodix_resume (FpDevice *dev)
     }
 
   self->suspended = FALSE;
-  self->warmup_remaining = GOODIX_WARMUP_CAPTURES;
   g_clear_object (&self->cancel);
   self->cancel = g_cancellable_new ();
 
-  /* Restart the SSM from the warmup/re-arm state (resubmits USB reads) */
+  /* Restart the SSM from the re-arm state (resubmits USB reads) */
   if (self->blocking_ssm)
     {
       fpi_ssm_jump_to_state (self->blocking_ssm, self->blocking_resume_state);
