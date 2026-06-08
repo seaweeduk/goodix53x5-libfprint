@@ -2,11 +2,13 @@ name: OpenCode PR Review
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, ready_for_review]
 
 jobs:
   review:
-    if: contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+    if: |
+      !github.event.pull_request.draft &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -66,3 +68,31 @@ jobs:
             - Close with a brief summary and recommendations, if any
 
             If there are no actionable findings, respond with "LGTM 👍" on its own line, then leave a blank line before adding a concise, human-readable explanation of what you checked and why the PR looks good. Keep the approval specific to the diff and avoid generic filler or unnecessary detail.
+
+      - name: Persist rotated OpenCode auth
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          auth_file="$HOME/.local/share/opencode/auth.json"
+          if [ ! -s "$auth_file" ]; then
+            echo "::notice::OpenCode auth file was not updated; skipping auth persistence."
+            exit 0
+          fi
+
+          filtered_auth="$(jq -ce 'if .openai then {openai: .openai} else empty end' "$auth_file")" || {
+            echo "::warning::OpenCode auth file does not contain OpenAI auth; skipping auth persistence."
+            exit 0
+          }
+          echo "::add-mask::$filtered_auth"
+
+          oidc_response="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=opencode-github-action")"
+          oidc_token="$(jq -r '.value' <<<"$oidc_response")"
+          echo "::add-mask::$oidc_token"
+
+          app_response="$(curl -fsSL -X POST -H "Authorization: Bearer $oidc_token" https://api.opencode.ai/exchange_github_app_token)"
+          app_token="$(jq -r '.token' <<<"$app_response")"
+          echo "::add-mask::$app_token"
+
+          printf '%s' "$filtered_auth" | GH_TOKEN="$app_token" gh secret set OPENCODE_AUTH_CONTENT --repo "$GITHUB_REPOSITORY"
