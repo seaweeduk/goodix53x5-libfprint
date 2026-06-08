@@ -48,7 +48,7 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5, FPI,
 #define GOODIX_ENROLL_SAMPLES 8
 
 /* SIGFM (SIFT-based) matching parameters */
-#define GOODIX_SIGFM_BEST_MIN 14   /* minimum best score from any single sample */
+#define GOODIX_SIGFM_BEST_MIN 400  /* minimum best score from any single sample */
 
 /* Captures below this feature count are effectively blank/failed touches. */
 #define GOODIX_MIN_CAPTURE_KEYPOINTS 20
@@ -189,6 +189,15 @@ typedef enum {
   GOODIX_CAPTURE_NUM_STATES,
 } GoodixCaptureState;
 
+/* TX-off no-finger reference capture SSM */
+typedef enum {
+  GOODIX_REF_CAPTURE_EC_POWER_ON = 0,
+  GOODIX_REF_CAPTURE_EC_POWER_ON_DONE,
+  GOODIX_REF_CAPTURE_GET_IMAGE,
+  GOODIX_REF_CAPTURE_DECODE,
+  GOODIX_REF_CAPTURE_NUM_STATES,
+} GoodixRefCaptureState;
+
 /* Finger-up SSM (awaiting finger off) */
 typedef enum {
   GOODIX_FINGER_UP_FDT_UP_SETUP = 0,
@@ -210,7 +219,8 @@ typedef enum {
 
 /* Enroll SSM */
 typedef enum {
-  GOODIX_ENROLL_WAIT_FINGER = 0,
+  GOODIX_ENROLL_CAPTURE_REF = 0,
+  GOODIX_ENROLL_WAIT_FINGER,
   GOODIX_ENROLL_CAPTURE,
   GOODIX_ENROLL_PROCESS,
   GOODIX_ENROLL_WAIT_FINGER_UP,
@@ -220,7 +230,8 @@ typedef enum {
 
 /* Verify/Identify SSM */
 typedef enum {
-  GOODIX_VERIFY_WAIT_FINGER = 0,
+  GOODIX_VERIFY_CAPTURE_REF = 0,
+  GOODIX_VERIFY_WAIT_FINGER,
   GOODIX_VERIFY_CAPTURE,
   GOODIX_VERIFY_MATCH,
   GOODIX_VERIFY_FINISH,
@@ -290,8 +301,9 @@ struct _FpiDeviceGoodix53x5
   FpiSsm  *blocking_ssm;        /* Sub-SSM currently blocked on cancellable read */
   int      blocking_resume_state; /* SSM state to jump to on resume */
 
-  /* Captured 8-bit image from last scan */
-  guint8 *captured_image;   /* native 108x88 8-bit LCE-processed */
+  /* Captured images from last scan */
+  guint16 *reference_image; /* native 108x88 12-bit TX-off no-finger frame */
+  guint8  *captured_image;  /* native 108x88 8-bit processed frame */
 
   /* Enrollment tracking */
   GPtrArray *enroll_images; /* array of guint8* native images */

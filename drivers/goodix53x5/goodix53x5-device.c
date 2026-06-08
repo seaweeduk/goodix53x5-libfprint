@@ -502,9 +502,10 @@ compare_double (const void *a,
  *
  * Convert 12-bit sensor image to 8-bit grayscale with row/column bandpass.
  *
- * First removes row/column mean structure from the raw sensor frame, then
+ * First subtracts the TX-off no-finger reference frame, removes row/column
+ * mean structure from the corrected sensor frame, then
  * subtracts a wide Gaussian lowpass (sigma=7.0), applies light smoothing
- * (sigma=0.7), then normalizes using the interior 2%..98% percentile range.
+ * (sigma=0.7), then normalizes using the interior 3%..97% percentile range.
  * This keeps fingerprint ridge-scale detail while suppressing fixed grid
  * artefacts and preventing edge/outlier pixels from dominating contrast.
  *
@@ -518,11 +519,10 @@ goodix_device_image_to_8bit (const guint16 *img12,
   const int H = GOODIX_SENSOR_HEIGHT;
   const int N = GOODIX_SENSOR_PIXELS;
 
-  (void) calib_img;
-
   guint8 *img8 = g_malloc (N);
   double *row_mean = g_new0 (double, H);
   double *col_mean = g_new0 (double, W);
+  double *corrected = g_malloc (N * sizeof (double));
   double *residual = g_malloc (N * sizeof (double));
   double *lowpass = g_malloc (N * sizeof (double));
   double *highpass = g_malloc (N * sizeof (double));
@@ -536,8 +536,10 @@ goodix_device_image_to_8bit (const guint16 *img12,
   for (int r = 0; r < H; r++)
     for (int c = 0; c < W; c++)
       {
-        double value = img12[r * W + c];
+        int i = r * W + c;
+        double value = calib_img != NULL ? img12[i] - calib_img[i] : img12[i];
 
+        corrected[i] = value;
         row_mean[r] += value;
         col_mean[c] += value;
         global_mean += value;
@@ -551,7 +553,7 @@ goodix_device_image_to_8bit (const guint16 *img12,
 
   for (int r = 0; r < H; r++)
     for (int c = 0; c < W; c++)
-      residual[r * W + c] = img12[r * W + c] - row_mean[r] - col_mean[c] + global_mean;
+      residual[r * W + c] = corrected[r * W + c] - row_mean[r] - col_mean[c] + global_mean;
 
   gaussian_blur_separable (residual, lowpass, W, H, 7.0);
   for (int i = 0; i < N; i++)
@@ -564,8 +566,8 @@ goodix_device_image_to_8bit (const guint16 *img12,
       sample[sample_count++] = smoothed[r * W + c];
 
   qsort (sample, sample_count, sizeof (double), compare_double);
-  corr_min = sample[(int) (0.02 * (sample_count - 1))];
-  corr_max = sample[(int) (0.98 * (sample_count - 1))];
+  corr_min = sample[(int) (0.03 * (sample_count - 1))];
+  corr_max = sample[(int) (0.97 * (sample_count - 1))];
 
   double range = corr_max - corr_min;
   if (range < 1.0)
@@ -576,6 +578,7 @@ goodix_device_image_to_8bit (const guint16 *img12,
 
   g_free (row_mean);
   g_free (col_mean);
+  g_free (corrected);
   g_free (residual);
   g_free (lowpass);
   g_free (highpass);
