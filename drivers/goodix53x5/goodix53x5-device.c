@@ -404,14 +404,24 @@ goodix_device_generate_fdt_up_base (const guint8        *fdt_data,
  * Decode 12-bit packed image data to 16-bit pixel array.
  * 6 bytes → 4 pixels, matching tool.py decode_image().
  *
- * Returns newly allocated array of GOODIX_SENSOR_PIXELS guint16 values.
+ * Returns newly allocated array of GOODIX_SENSOR_PIXELS guint16 values, or
+ * NULL if the decrypted payload is too short for a full raw12 frame.
  */
 guint16 *
 goodix_device_decode_image (const guint8 *data,
-                            gsize         data_len)
+                             gsize         data_len)
 {
-  guint16 *image = g_new0 (guint16, GOODIX_SENSOR_PIXELS);
+  guint16 *image;
   gsize pixel_idx = 0;
+
+  if (data_len < GOODIX_SENSOR_RAW12_BYTES)
+    {
+      fp_warn ("Truncated raw12 image payload: %zu < %d",
+               data_len, GOODIX_SENSOR_RAW12_BYTES);
+      return NULL;
+    }
+
+  image = g_new0 (guint16, GOODIX_SENSOR_PIXELS);
 
   for (gsize i = 0; i + 5 < data_len && pixel_idx + 3 < GOODIX_SENSOR_PIXELS; i += 6)
     {
