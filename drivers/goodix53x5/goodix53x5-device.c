@@ -24,7 +24,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
 /* OTP hash lookup table (from driver_53x5.py) */
 static const guint8 otp_hash_table[256] = {
@@ -427,66 +426,6 @@ goodix_device_decode_image (const guint8 *data,
   return image;
 }
 
-/**
- * gaussian_blur_separable:
- *
- * In-place 2D Gaussian blur via two separable 1D passes.
- * Input: src (double array, W*H). Output: dst (double array, W*H).
- * Uses clamped border handling.
- */
-static void
-gaussian_blur_separable (const double *src,
-                         double     *dst,
-                         int         W,
-                         int         H,
-                         double      sigma)
-{
-  int radius = MAX (1, (int) ceil (3.0 * sigma));
-  int ksize = 2 * radius + 1;
-  double *kernel = g_malloc (ksize * sizeof (double));
-  double ksum = 0;
-  double *temp = g_malloc (W * H * sizeof (double));
-
-  /* Build normalized 1D Gaussian kernel */
-  for (int i = 0; i < ksize; i++)
-    {
-      double x = i - radius;
-      kernel[i] = exp (-0.5 * x * x / (sigma * sigma));
-      ksum += kernel[i];
-    }
-  for (int i = 0; i < ksize; i++)
-    kernel[i] /= ksum;
-
-  /* Horizontal pass */
-  for (int r = 0; r < H; r++)
-    for (int c = 0; c < W; c++)
-      {
-        double sum = 0;
-        for (int k = -radius; k <= radius; k++)
-          {
-            int cc = CLAMP (c + k, 0, W - 1);
-            sum += src[r * W + cc] * kernel[k + radius];
-          }
-        temp[r * W + c] = sum;
-      }
-
-  /* Vertical pass */
-  for (int r = 0; r < H; r++)
-    for (int c = 0; c < W; c++)
-      {
-        double sum = 0;
-        for (int k = -radius; k <= radius; k++)
-          {
-            int rr = CLAMP (r + k, 0, H - 1);
-            sum += temp[rr * W + c] * kernel[k + radius];
-          }
-        dst[r * W + c] = sum;
-      }
-
-  g_free (kernel);
-  g_free (temp);
-}
-
 static int
 compare_double (const void *a,
                 const void *b)
@@ -500,14 +439,11 @@ compare_double (const void *a,
 /**
  * goodix_device_image_to_8bit:
  *
- * Convert 12-bit sensor image to 8-bit grayscale with row/column bandpass.
+ * Convert 12-bit sensor image to 8-bit grayscale.
  *
- * First subtracts the TX-off no-finger reference frame, removes row/column
- * mean structure from the corrected sensor frame, then
- * subtracts a wide Gaussian lowpass (sigma=7.0), applies light smoothing
- * (sigma=0.7), then normalizes using the interior 3%..97% percentile range.
- * This keeps fingerprint ridge-scale detail while suppressing fixed grid
- * artefacts and preventing edge/outlier pixels from dominating contrast.
+ * Subtracts the TX-off no-finger reference frame, then normalizes using the
+ * interior 3%..97% percentile range. SIGFM applies CLAHE before SIFT feature
+ * extraction.
  *
  * Returns newly allocated array of GOODIX_SENSOR_PIXELS guint8 values.
  */
@@ -520,50 +456,18 @@ goodix_device_image_to_8bit (const guint16 *img12,
   const int N = GOODIX_SENSOR_PIXELS;
 
   guint8 *img8 = g_malloc (N);
-  double *row_mean = g_new0 (double, H);
-  double *col_mean = g_new0 (double, W);
   double *corrected = g_malloc (N * sizeof (double));
-  double *residual = g_malloc (N * sizeof (double));
-  double *lowpass = g_malloc (N * sizeof (double));
-  double *highpass = g_malloc (N * sizeof (double));
-  double *smoothed = g_malloc (N * sizeof (double));
   double *sample = g_malloc ((W - 2) * (H - 2) * sizeof (double));
   int sample_count = 0;
-  double global_mean = 0.0;
   double corr_min = G_MAXDOUBLE;
   double corr_max = -G_MAXDOUBLE;
 
-  for (int r = 0; r < H; r++)
-    for (int c = 0; c < W; c++)
-      {
-        int i = r * W + c;
-        double value = calib_img != NULL ? img12[i] - calib_img[i] : img12[i];
-
-        corrected[i] = value;
-        row_mean[r] += value;
-        col_mean[c] += value;
-        global_mean += value;
-      }
-
-  global_mean /= N;
-  for (int r = 0; r < H; r++)
-    row_mean[r] /= W;
-  for (int c = 0; c < W; c++)
-    col_mean[c] /= H;
-
-  for (int r = 0; r < H; r++)
-    for (int c = 0; c < W; c++)
-      residual[r * W + c] = corrected[r * W + c] - row_mean[r] - col_mean[c] + global_mean;
-
-  gaussian_blur_separable (residual, lowpass, W, H, 7.0);
   for (int i = 0; i < N; i++)
-    highpass[i] = residual[i] - lowpass[i];
-
-  gaussian_blur_separable (highpass, smoothed, W, H, 0.7);
+    corrected[i] = calib_img != NULL ? img12[i] - calib_img[i] : img12[i];
 
   for (int r = 1; r < H - 1; r++)
     for (int c = 1; c < W - 1; c++)
-      sample[sample_count++] = smoothed[r * W + c];
+      sample[sample_count++] = corrected[r * W + c];
 
   qsort (sample, sample_count, sizeof (double), compare_double);
   corr_min = sample[(int) (0.03 * (sample_count - 1))];
@@ -574,15 +478,9 @@ goodix_device_image_to_8bit (const guint16 *img12,
     range = 1.0;
 
   for (int i = 0; i < N; i++)
-    img8[i] = (guint8) CLAMP ((int) (((smoothed[i] - corr_min) * 255.0) / range), 0, 255);
+    img8[i] = (guint8) CLAMP ((int) (((corrected[i] - corr_min) * 255.0) / range), 0, 255);
 
-  g_free (row_mean);
-  g_free (col_mean);
   g_free (corrected);
-  g_free (residual);
-  g_free (lowpass);
-  g_free (highpass);
-  g_free (smoothed);
   g_free (sample);
   return img8;
 }
