@@ -44,6 +44,7 @@
 #define GOODIX_SIGFM_TEMPLATE_VERSION    1
 #define GOODIX_SIGFM_TEMPLATE_HEADER_LEN \
   (GOODIX_SIGFM_TEMPLATE_MAGIC_LEN + sizeof (guint16))
+#define GOODIX_SIGFM_TEMPLATE_MAX_LEN    (1024 * 1024)
 
 typedef enum {
   GOODIX_SIGFM_TEMPLATE_OK,
@@ -1644,7 +1645,8 @@ goodix_serialize_sigfm_template (SigfmImgInfo *info)
   int feature_len;
 
   feature = sigfm_serialize_binary (info, &feature_len);
-  if (feature == NULL || feature_len <= 0)
+  if (feature == NULL || feature_len <= 0 ||
+      feature_len > GOODIX_SIGFM_TEMPLATE_MAX_LEN - GOODIX_SIGFM_TEMPLATE_HEADER_LEN)
     {
       g_free (feature);
       return NULL;
@@ -1675,6 +1677,7 @@ goodix_deserialize_sigfm_template (const guint8 *template,
   *status = GOODIX_SIGFM_TEMPLATE_INVALID;
 
   if (template_len <= GOODIX_SIGFM_TEMPLATE_HEADER_LEN ||
+      template_len > GOODIX_SIGFM_TEMPLATE_MAX_LEN ||
       memcmp (template, GOODIX_SIGFM_TEMPLATE_MAGIC,
               GOODIX_SIGFM_TEMPLATE_MAGIC_LEN) != 0)
     {
@@ -1937,6 +1940,8 @@ goodix_match_serialized_feature (SigfmImgInfo  *probe_info,
 
   *score = sigfm_match_score (probe_info, tmpl_info);
   sigfm_free_info (tmpl_info);
+  if (*score < 0)
+    return GOODIX_SIGFM_TEMPLATE_INVALID;
 
   return GOODIX_SIGFM_TEMPLATE_OK;
 }
