@@ -1727,7 +1727,10 @@ goodix_enroll_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   fpi_device_get_enroll_data (dev, &print);
   fpi_print_set_type (print, FPI_PRINT_RAW);
 
-  /* Build GVariant "aay" — array of byte arrays, one per enrollment sample */
+  /* Build GVariant "aay" — array of byte arrays, one per enrollment sample.
+   * There is no driver-private format magic/version here; templates enrolled
+   * with the old TX-off p2 preprocessing must be re-enrolled for p3 scoring.
+   */
   GVariantBuilder builder;
 
   g_variant_builder_init (&builder, G_VARIANT_TYPE ("aay"));

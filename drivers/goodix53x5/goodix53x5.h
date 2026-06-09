@@ -48,8 +48,11 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5, FPI,
 /* Enroll stages */
 #define GOODIX_ENROLL_SAMPLES 8
 
-/* SIGFM (SIFT-based) matching parameters */
-#define GOODIX_SIGFM_BEST_MIN 400  /* minimum best score from any single sample */
+/* SIGFM (SIFT-based) matching parameters.
+ * This gate is tuned for TX-off p3 preprocessing plus mutual SIGFM matching;
+ * it is not comparable to old p2/p3 non-mutual score scales.
+ */
+#define GOODIX_SIGFM_BEST_MIN 150  /* minimum best score from any single sample */
 
 /* Captures below this feature count are effectively blank/failed touches. */
 #define GOODIX_MIN_CAPTURE_KEYPOINTS 20

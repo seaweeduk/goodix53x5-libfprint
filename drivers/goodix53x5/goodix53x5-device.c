@@ -452,7 +452,7 @@ compare_double (const void *a,
  * Convert 12-bit sensor image to 8-bit grayscale.
  *
  * Subtracts the TX-off no-finger reference frame, then normalizes using the
- * interior 2%..98% percentile range. SIGFM applies CLAHE before SIFT feature
+ * interior 3%..97% percentile range. SIGFM applies CLAHE before SIFT feature
  * extraction.
  *
  * Returns newly allocated array of GOODIX_SENSOR_PIXELS guint8 values.
@@ -480,8 +480,8 @@ goodix_device_image_to_8bit (const guint16 *img12,
       sample[sample_count++] = corrected[r * W + c];
 
   qsort (sample, sample_count, sizeof (double), compare_double);
-  corr_min = sample[(int) (0.02 * (sample_count - 1))];
-  corr_max = sample[(int) (0.98 * (sample_count - 1))];
+  corr_min = sample[(int) (0.03 * (sample_count - 1))];
+  corr_max = sample[(int) (0.97 * (sample_count - 1))];
 
   double range = corr_max - corr_min;
   if (range < 1.0)
