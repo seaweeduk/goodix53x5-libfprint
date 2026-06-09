@@ -2044,6 +2044,7 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
             GPtrArray *gallery = NULL;
             FpPrint *match = NULL;
             int best_score = 0;
+            int best_match_score = 0;
             int valid_templates = 0;
             gboolean saw_unusable_template = FALSE;
 
@@ -2103,10 +2104,13 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                   }
                 g_variant_unref (tmpl_data);
 
+                if (tmpl_best_score > best_score)
+                  best_score = tmpl_best_score;
+
                 if (tmpl_best_score >= GOODIX_SIGFM_BEST_MIN &&
-                    tmpl_best_score > best_score)
+                    tmpl_best_score > best_match_score)
                   {
-                    best_score = tmpl_best_score;
+                    best_match_score = tmpl_best_score;
                     match = tmpl;
                   }
               }
