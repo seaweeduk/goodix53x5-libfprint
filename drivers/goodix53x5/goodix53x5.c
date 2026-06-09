@@ -1444,6 +1444,8 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
             }
 
           img8 = goodix_device_image_to_8bit (img12, self->reference_image);
+          self->captured_clipped_fraction =
+            goodix_device_image_clipped_fraction (img12);
 
           g_free (img12);
           g_free (decrypted);
@@ -1658,6 +1660,23 @@ goodix_enroll_ssm_handler (FpiSsm   *ssm,
       {
         SigfmImgInfo *info;
         int keypoints;
+
+        /* Partial-contact captures make weak templates: the clipped
+         * (non-contact) area holds no ridge data, and historical fluke
+         * matches rode templates enrolled with poor coverage. Ask the user
+         * to re-place the finger instead of storing such a stage. */
+        if (self->captured_clipped_fraction > GOODIX_ENROLL_MAX_CLIPPED_FRACTION)
+          {
+            fp_dbg ("Enrollment stage rejected: %.1f%% of frame has no "
+                    "finger contact (limit %.1f%%)",
+                    self->captured_clipped_fraction * 100.0,
+                    GOODIX_ENROLL_MAX_CLIPPED_FRACTION * 100.0);
+            g_clear_pointer (&self->captured_image, g_free);
+            fpi_device_enroll_progress (dev, self->enroll_stage, NULL,
+                                        fpi_device_retry_new (FP_DEVICE_RETRY_CENTER_FINGER));
+            fpi_ssm_next_state (ssm);
+            return;
+          }
 
         info = sigfm_extract (self->captured_image,
                               GOODIX_SENSOR_WIDTH,

@@ -455,6 +455,16 @@ compare_double (const void *a,
  * interior 3%..97% percentile range. SIGFM applies CLAHE before SIFT feature
  * extraction.
  *
+ * Raw pixels at GOODIX_RAW12_CLIP are non-contact areas: the ADC clip
+ * destroys the fixed sensor pattern there, so the reference subtraction
+ * would leave the inverted reference grid behind. Clipped pixels carry no
+ * finger signal, so they are excluded from the normalization sample and
+ * filled with the unclipped interior's 99th-percentile residual, which maps
+ * above the p97 ceiling and renders as flat white with no SIFT keypoints.
+ * A frame with no unclipped interior pixels carries no finger signal at all
+ * and is returned as a flat white image rather than normalizing the bare
+ * reference grid.
+ *
  * Returns newly allocated array of GOODIX_SENSOR_PIXELS guint8 values.
  */
 guint8 *
@@ -477,11 +487,26 @@ goodix_device_image_to_8bit (const guint16 *img12,
 
   for (int r = 1; r < H - 1; r++)
     for (int c = 1; c < W - 1; c++)
-      sample[sample_count++] = corrected[r * W + c];
+      if (img12[r * W + c] < GOODIX_RAW12_CLIP)
+        sample[sample_count++] = corrected[r * W + c];
+
+  if (sample_count == 0)
+    {
+      memset (img8, 255, N);
+      g_free (corrected);
+      g_free (sample);
+      return img8;
+    }
 
   qsort (sample, sample_count, sizeof (double), compare_double);
   corr_min = sample[(int) (0.03 * (sample_count - 1))];
   corr_max = sample[(int) (0.97 * (sample_count - 1))];
+
+  double white = sample[(int) (0.99 * (sample_count - 1))];
+
+  for (int i = 0; i < N; i++)
+    if (img12[i] >= GOODIX_RAW12_CLIP)
+      corrected[i] = white;
 
   double range = corr_max - corr_min;
   if (range < 1.0)
@@ -493,4 +518,22 @@ goodix_device_image_to_8bit (const guint16 *img12,
   g_free (corrected);
   g_free (sample);
   return img8;
+}
+
+/**
+ * goodix_device_image_clipped_fraction:
+ *
+ * Fraction of raw12 pixels at ADC full scale, i.e. the non-contact area of
+ * the frame. Used as an exact contact-coverage metric for enrollment gating.
+ */
+double
+goodix_device_image_clipped_fraction (const guint16 *img12)
+{
+  int clipped = 0;
+
+  for (int i = 0; i < GOODIX_SENSOR_PIXELS; i++)
+    if (img12[i] >= GOODIX_RAW12_CLIP)
+      clipped++;
+
+  return (double) clipped / GOODIX_SENSOR_PIXELS;
 }

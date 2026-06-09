@@ -57,6 +57,18 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5, FPI,
 /* Captures below this feature count are effectively blank/failed touches. */
 #define GOODIX_MIN_CAPTURE_KEYPOINTS 20
 
+/* Raw12 frames hard-clip at ADC full scale wherever the finger is not in
+ * contact, so clipped pixels carry no finger signal. The TX-off subtraction
+ * cannot cancel the fixed sensor grid there (residual = clip - ref), so
+ * preprocessing fills clipped pixels with a white level taken from the
+ * unclipped interior instead of letting the inverted reference grid through. */
+#define GOODIX_RAW12_CLIP 4095
+
+/* Clipped fraction doubles as an exact contact-coverage metric. Enrollment
+ * stages with more than this fraction of non-contact pixels are rejected with
+ * a retry so stored templates keep full ridge coverage. */
+#define GOODIX_ENROLL_MAX_CLIPPED_FRACTION 0.10
+
 /* Timeouts in ms */
 #define GOODIX_CMD_TIMEOUT    1000
 #define GOODIX_ACK_TIMEOUT    2000
@@ -308,6 +320,7 @@ struct _FpiDeviceGoodix53x5
   /* Captured images from last scan */
   guint16 *reference_image; /* native 108x88 12-bit TX-off no-finger frame */
   guint8  *captured_image;  /* native 108x88 8-bit processed frame */
+  double   captured_clipped_fraction; /* non-contact (clipped) pixel fraction */
 
   /* Enrollment tracking */
   GPtrArray *enroll_images; /* array of guint8* native images */
@@ -433,5 +446,7 @@ guint16 *goodix_device_decode_image (const guint8 *data,
 
 guint8  *goodix_device_image_to_8bit (const guint16 *img12,
                                       const guint16 *calib_img);
+
+double   goodix_device_image_clipped_fraction (const guint16 *img12);
 
 const guint8 *goodix_device_get_default_config (gsize *out_len);
