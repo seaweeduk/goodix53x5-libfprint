@@ -235,7 +235,9 @@ typedef enum {
 
 /* Enroll SSM */
 typedef enum {
-  GOODIX_ENROLL_CAPTURE_REF = 0,
+  GOODIX_ENROLL_REINIT = 0,
+  GOODIX_ENROLL_REINIT_DONE,
+  GOODIX_ENROLL_CAPTURE_REF,
   GOODIX_ENROLL_WAIT_FINGER,
   GOODIX_ENROLL_CAPTURE,
   GOODIX_ENROLL_PROCESS,
@@ -246,7 +248,9 @@ typedef enum {
 
 /* Verify/Identify SSM */
 typedef enum {
-  GOODIX_VERIFY_CAPTURE_REF = 0,
+  GOODIX_VERIFY_REINIT = 0,
+  GOODIX_VERIFY_REINIT_DONE,
+  GOODIX_VERIFY_CAPTURE_REF,
   GOODIX_VERIFY_WAIT_FINGER,
   GOODIX_VERIFY_CAPTURE,
   GOODIX_VERIFY_MATCH,
@@ -295,6 +299,11 @@ struct _FpiDeviceGoodix53x5
   /* USB interface state */
   gboolean usb_interface_claimed;
 
+  /* System sleep happened while the device was open; the USB claim and GTLS
+   * session may be stale (S4 reset/re-enumeration rebinds cdc_acm). The next
+   * verify/identify/enroll runs the full open SSM before any auth USB I/O. */
+  gboolean needs_reinit;
+
   /* Task SSM tracking */
   FpiSsm *task_ssm;
 
@@ -314,7 +323,8 @@ struct _FpiDeviceGoodix53x5
   GError         *pending_action_error;
 
   /* Suspend/resume state */
-  gboolean suspended;            /* TRUE between suspend() and resume() calls */
+  gboolean suspend_pending;      /* suspend() cancelled the blocking read and
+                                  * the rx callback owes suspend_complete() */
   FpiSsm  *blocking_ssm;        /* Sub-SSM currently blocked on cancellable read */
   int      blocking_resume_state; /* SSM state to jump to on resume */
 
