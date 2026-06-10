@@ -255,7 +255,7 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
 
   if (error)
     {
-      if (!self->suspended &&
+      if (!self->suspend_pending &&
           g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
           self->action_result_reported &&
           !self->verify_wait_finger_up &&
@@ -271,25 +271,50 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
         }
 
       if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
-          self->suspended)
+          self->suspend_pending)
         {
-          /* Suspend cancelled this read — park the SSM for resume to restart.
-           * Keep blocking_ssm set so goodix_resume() can jump it. */
+          /* Do not carry an armed FDT wait across system sleep. The USB device
+           * may disappear and re-enumerate during S4, leaving fprintd with a
+           * stale open device. Abort the active auth so the greeter starts a
+           * fresh operation after resume. */
           g_clear_error (&error);
-          fpi_device_suspend_complete (dev, NULL);
+          self->suspend_pending = FALSE;
+          self->blocking_ssm = NULL;
+          fpi_device_suspend_complete (dev,
+              fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
+          fpi_ssm_mark_failed (transfer->ssm,
+                               fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
+                                                         "Cannot run while suspended."));
           return;
         }
 
       self->blocking_ssm = NULL;
 
-      if (self->suspended)
+      if (self->suspend_pending)
         {
           /* Non-cancellation error during suspend — report it and fail SSM */
-          self->suspended = FALSE;
+          self->suspend_pending = FALSE;
           fpi_device_suspend_complete (dev, g_error_copy (error));
         }
 
       fpi_ssm_mark_failed (transfer->ssm, error);
+      return;
+    }
+
+  if (self->suspend_pending && transfer->ssm == self->blocking_ssm)
+    {
+      /* Data (e.g. an FDT touch event) raced with the suspend cancellation
+       * and the transfer completed before the cancel took effect. Treat it
+       * exactly like the cancelled case above; otherwise the pending suspend
+       * request would never be completed and system sleep would block until
+       * logind times out. */
+      self->suspend_pending = FALSE;
+      self->blocking_ssm = NULL;
+      fpi_device_suspend_complete (dev,
+          fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
+      fpi_ssm_mark_failed (transfer->ssm,
+                           fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
+                                                     "Cannot run while suspended."));
       return;
     }
 
@@ -1127,6 +1152,7 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
     }
 
   fp_info ("Device initialization complete");
+  self->needs_reinit = FALSE;
   fpi_device_open_complete (dev, NULL);
 }
 
@@ -1706,6 +1732,75 @@ goodix_deserialize_sigfm_template (const guint8 *template,
 }
 
 /* ========================================================================
+ * Post-sleep reinitialization
+ * ======================================================================== */
+
+/**
+ * If the device needs reinitialization (system sleep happened while it was
+ * open), release any stale interface claim and run the full open-time
+ * initialization SSM as a sub-SSM of @ssm. The full sequence is required:
+ * after an S4 reset/re-enumeration the kernel rebinds cdc_acm to our
+ * interface, so recovery needs the same USB reset + claim-with-detach +
+ * GTLS handshake as a fresh open.
+ *
+ * Returns TRUE if a reinit sub-SSM was started (caller returns and the
+ * parent advances when it completes), FALSE if no reinit was needed.
+ */
+static gboolean
+goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
+                                 FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  FpiSsm *sub;
+
+  if (!self->needs_reinit)
+    return FALSE;
+
+  fp_info ("Reinitializing device after system sleep");
+
+  if (self->usb_interface_claimed)
+    {
+      g_autoptr(GError) release_error = NULL;
+
+      /* This is expected to fail with EINVAL after an S4 reset because the
+       * kernel already dropped the claim; recovery proceeds either way. */
+      if (!g_usb_device_release_interface (fpi_device_get_usb_device (dev),
+                                           GOODIX_USB_INTERFACE,
+                                           0, &release_error))
+        fp_dbg ("Releasing stale USB interface before reinit failed "
+                "(expected after S4 reset): %s", release_error->message);
+
+      self->usb_interface_claimed = FALSE;
+    }
+
+  sub = fpi_ssm_new (dev, goodix_open_ssm_handler,
+                     GOODIX_OPEN_NUM_STATES);
+  fpi_ssm_start_subsm (ssm, sub);
+  return TRUE;
+}
+
+/**
+ * TRUE for errors that indicate the USB device/claim is likely stale or
+ * gone (e.g. system slept while the device was claimed but idle, so the
+ * driver suspend hook never ran). Setting needs_reinit on these makes the
+ * next action attempt self-heal with a full reinitialization.
+ */
+static gboolean
+goodix_error_indicates_stale_device (const GError *error)
+{
+  return g_error_matches (error, G_USB_DEVICE_ERROR,
+                          G_USB_DEVICE_ERROR_TIMED_OUT) ||
+         g_error_matches (error, G_USB_DEVICE_ERROR,
+                          G_USB_DEVICE_ERROR_NO_DEVICE) ||
+         g_error_matches (error, G_USB_DEVICE_ERROR,
+                          G_USB_DEVICE_ERROR_NOT_OPEN) ||
+         g_error_matches (error, G_USB_DEVICE_ERROR,
+                          G_USB_DEVICE_ERROR_IO) ||
+         g_error_matches (error, G_USB_DEVICE_ERROR,
+                          G_USB_DEVICE_ERROR_FAILED);
+}
+
+/* ========================================================================
  * Enroll SSM
  * ======================================================================== */
 
@@ -1717,6 +1812,16 @@ goodix_enroll_ssm_handler (FpiSsm   *ssm,
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
+    case GOODIX_ENROLL_REINIT:
+      if (!goodix_maybe_start_reinit_subsm (ssm, dev))
+        fpi_ssm_next_state (ssm);
+      break;
+
+    case GOODIX_ENROLL_REINIT_DONE:
+      self->needs_reinit = FALSE;
+      fpi_ssm_next_state (ssm);
+      break;
+
     case GOODIX_ENROLL_CAPTURE_REF:
       {
         FpiSsm *sub = fpi_ssm_new (dev, goodix_ref_capture_ssm_handler,
@@ -1829,12 +1934,17 @@ goodix_enroll_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 
   if (error)
     {
+      if (goodix_error_indicates_stale_device (error))
+        self->needs_reinit = TRUE;
+
       g_clear_pointer (&self->enroll_features, g_ptr_array_unref);
       g_clear_pointer (&self->reference_image, g_free);
       g_clear_pointer (&self->captured_image, g_free);
       fpi_device_enroll_complete (dev, NULL, error);
       return;
     }
+
+  self->needs_reinit = FALSE;
 
   /* Build print from serialized enrollment features */
   FpPrint *print = NULL;
@@ -1982,6 +2092,16 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
+    case GOODIX_VERIFY_REINIT:
+      if (!goodix_maybe_start_reinit_subsm (ssm, dev))
+        fpi_ssm_next_state (ssm);
+      break;
+
+    case GOODIX_VERIFY_REINIT_DONE:
+      self->needs_reinit = FALSE;
+      fpi_ssm_next_state (ssm);
+      break;
+
     case GOODIX_VERIFY_CAPTURE_REF:
       {
         FpiSsm *sub = fpi_ssm_new (dev, goodix_ref_capture_ssm_handler,
@@ -2281,6 +2401,16 @@ goodix_verify_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   self->action_result_reported = FALSE;
   self->verify_wait_finger_up = FALSE;
 
+  /* Transport-level failures mean the USB claim/session is likely stale
+   * (e.g. system slept while the device was claimed but idle, where the
+   * driver suspend hook never runs). Reinitialize on the next attempt so
+   * one failed auth self-heals instead of failing forever. A clean result
+   * proves the device state is valid. */
+  if (error == NULL)
+    self->needs_reinit = FALSE;
+  else if (goodix_error_indicates_stale_device (error))
+    self->needs_reinit = TRUE;
+
   if (action == FPI_DEVICE_ACTION_IDENTIFY)
     fpi_device_identify_complete (dev, error);
   else
@@ -2316,6 +2446,7 @@ goodix_close (FpDevice *dev)
   GError *error = NULL;
 
   self->blocking_ssm = NULL;
+  self->suspend_pending = FALSE;
   g_clear_object (&self->cancel);
   goodix_clear_pending_result_report (self);
   g_clear_pointer (&self->fdt_event_data, g_free);
@@ -2410,6 +2541,13 @@ goodix_suspend (FpDevice *dev)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiDeviceAction action = fpi_device_get_current_action (dev);
 
+  /* Any system sleep while the device is open may invalidate the USB claim
+   * and GTLS session: S4 resets or re-enumerates the device and rebinds the
+   * cdc_acm kernel driver to our interface. Force a full reinitialization at
+   * the start of the next action regardless of what we were doing when sleep
+   * hit. A successfully completed action clears this again. */
+  self->needs_reinit = TRUE;
+
   if (action != FPI_DEVICE_ACTION_VERIFY &&
       action != FPI_DEVICE_ACTION_IDENTIFY)
     {
@@ -2418,11 +2556,10 @@ goodix_suspend (FpDevice *dev)
       return;
     }
 
-  self->suspended = TRUE;
-
   if (self->blocking_ssm)
     {
       /* Cancel the pending read; suspend_complete called from rx callback */
+      self->suspend_pending = TRUE;
       g_cancellable_cancel (self->cancel);
     }
   else
@@ -2446,11 +2583,12 @@ goodix_resume (FpDevice *dev)
       return;
     }
 
-  self->suspended = FALSE;
   g_clear_object (&self->cancel);
   self->cancel = g_cancellable_new ();
 
-  /* Restart the SSM from the re-arm state (resubmits USB reads) */
+  /* Restart the SSM from the re-arm state (resubmits USB reads). Only
+   * reachable if suspend completed successfully mid-capture and the SSM
+   * armed a blocking wait before the system actually slept. */
   if (self->blocking_ssm)
     {
       fpi_ssm_jump_to_state (self->blocking_ssm, self->blocking_resume_state);
