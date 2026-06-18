@@ -37,24 +37,26 @@ The current preprocessing pipeline is shown below:
 - **libfprint** source tree (tested with v1.94.10)
 - **OpenCV 4** (`opencv_core`, `opencv_features2d`, `opencv_flann`, `opencv_imgproc`)
 - **OpenSSL 3.0+**
-- Standard libfprint build dependencies (meson, ninja, glib, libgusb, etc.)
+- Standard libfprint build dependencies: Meson, Ninja, pkg-config, GLib, and libgusb
 
-### Installing OpenCV
+### Build Packages
 
 **Arch Linux:**
 ```
-sudo pacman -S opencv
+sudo pacman -S --needed git base-devel meson ninja pkgconf glib2 libgusb opencv openssl fprintd
 ```
 
 **Fedora:**
 ```
-sudo dnf install opencv opencv-devel
+sudo dnf install git gcc gcc-c++ meson ninja-build pkgconf-pkg-config glib2-devel libgusb-devel opencv-devel openssl-devel fprintd
 ```
 
 **Ubuntu/Debian:**
 ```
-sudo apt install libopencv-dev
+sudo apt install git build-essential meson ninja-build pkg-config libglib2.0-dev libgusb-dev libopencv-dev libssl-dev fprintd
 ```
+
+The minimal build command below disables libfprint's generated udev rules and hwdb install, so Debian/Ubuntu users should not need the `udev.pc` build dependency. If you enable udev rules/hwdb or build libfprint's default driver set, Debian 13 provides `udev.pc` in `systemd-dev`.
 
 ## Installation
 
@@ -68,16 +70,34 @@ cd libfprint
 # Copy this driver into libfprint
 /path/to/goodix53x5-libfprint/install.sh .
 
-# The install script will print manual meson.build edits needed.
-# Apply those edits, then:
-
-meson setup builddir --prefix=/usr -Dinstalled-tests=false -Ddoc=false
+meson setup builddir \
+  --prefix=/usr \
+  -Ddrivers=goodix53x5 \
+  -Dudev_hwdb=disabled \
+  -Dudev_rules=disabled \
+  -Dintrospection=false \
+  -Dinstalled-tests=false \
+  -Ddoc=false
 ninja -C builddir
 sudo ninja -C builddir install
 sudo systemctl restart fprintd
 ```
 
+`-Ddrivers=goodix53x5` avoids building unrelated libfprint drivers and their dependencies. `-Dudev_hwdb=disabled -Dudev_rules=disabled` avoids requiring `udev.pc`; the Goodix 53x5 driver itself is a USB/libgusb driver and does not use udev APIs.
+
 Use `--prefix=/usr` so the installed libfprint replaces the system library used by `fprintd`. A default Meson setup may install into `/usr/local`, which `fprintd` may not load.
+
+On Debian/Ubuntu, Meson should normally choose the multiarch library directory automatically. Check it before installing:
+
+```bash
+meson configure builddir | grep libdir
+```
+
+If it reports `lib` instead of a distro multiarch path such as `lib/x86_64-linux-gnu`, recreate the build directory and pass:
+
+```bash
+--libdir=lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+```
 
 ### Updating
 
@@ -89,13 +109,20 @@ git pull
 ./install.sh /path/to/libfprint
 
 cd /path/to/libfprint/builddir
-meson setup --reconfigure .. --prefix=/usr -Dinstalled-tests=false -Ddoc=false
+meson setup --reconfigure .. \
+  --prefix=/usr \
+  -Ddrivers=goodix53x5 \
+  -Dudev_hwdb=disabled \
+  -Dudev_rules=disabled \
+  -Dintrospection=false \
+  -Dinstalled-tests=false \
+  -Ddoc=false
 ninja
 sudo ninja install
 sudo systemctl restart fprintd
 ```
 
-You usually do not need to repeat the manual Meson edits after the first install.
+If `install.sh` cannot apply the Meson integration patch automatically, it prints the manual edits needed for that libfprint tree.
 
 ## Troubleshooting
 
