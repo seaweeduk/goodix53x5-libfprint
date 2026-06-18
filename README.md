@@ -87,18 +87,6 @@ sudo systemctl restart fprintd
 
 Use `--prefix=/usr` so the installed libfprint replaces the system library used by `fprintd`. A default Meson setup may install into `/usr/local`, which `fprintd` may not load.
 
-On Debian/Ubuntu, Meson should normally choose the multiarch library directory automatically. Check it before installing:
-
-```bash
-meson configure builddir | grep libdir
-```
-
-If it reports `lib` instead of a distro multiarch path such as `lib/x86_64-linux-gnu`, recreate the build directory and pass:
-
-```bash
---libdir=lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)
-```
-
 ### Updating
 
 If you already installed this driver, update this repository, copy the newer driver files into libfprint, then rebuild libfprint:
