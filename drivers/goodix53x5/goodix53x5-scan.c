@@ -240,13 +240,13 @@ goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_FINGER_WAIT_FDT_CHECK:
-      /* FDT manual TX-off to verify it's a real touch, not temperature */
+      /* FDT manual TX-off to verify the interrupt moved away from baseline. */
       goodix_cmd_fdt_manual (ssm, dev, FALSE, self->calib.fdt_base_manual);
       break;
 
     case GOODIX_FINGER_WAIT_VALIDATE:
       {
-        /* Parse manual FDT response and check if it's a temperature event */
+        /* Parse manual FDT response and check for a false FDT-down event. */
         guint8 cat, cmd;
         const guint8 *pl;
         gsize pl_len;
@@ -260,14 +260,14 @@ goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
             return;
           }
 
-        /* If fdt_base_valid == TRUE, it's a temperature event (false alarm) */
+        /* If the event and immediate manual reading still match, the interrupt
+         * was baseline drift/noise rather than a stable finger-down. */
         if (goodix_device_is_fdt_base_valid (self->fdt_event_data,
                                              pl + 4,
                                              GOODIX_FDT_BASE_LEN,
                                              self->calib.delta_fdt))
           {
-            fp_dbg ("Temperature event detected, retrying finger wait");
-            /* Re-arm FDT down detection and wait again */
+            fp_dbg ("False FDT down event detected, retrying finger wait");
             fpi_ssm_jump_to_state (ssm, GOODIX_FINGER_WAIT_FDT_DOWN_SETUP);
             return;
           }
