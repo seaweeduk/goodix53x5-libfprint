@@ -37,6 +37,74 @@ ROOT_MESON="$LIBFPRINT_DIR/meson.build"
 
 DRIVER_SOURCES="[ 'drivers/goodix53x5/goodix53x5.c', 'drivers/goodix53x5/goodix53x5-proto.c', 'drivers/goodix53x5/goodix53x5-crypto.c', 'drivers/goodix53x5/goodix53x5-transport.c', 'drivers/goodix53x5/goodix53x5-commands.c', 'drivers/goodix53x5/goodix53x5-session.c', 'drivers/goodix53x5/goodix53x5-scan.c', 'drivers/goodix53x5/goodix53x5-enroll.c', 'drivers/goodix53x5/goodix53x5-auth.c', 'drivers/goodix53x5/goodix53x5-match.c', 'drivers/goodix53x5/goodix53x5-calibration.c', 'drivers/goodix53x5/goodix53x5-image.c' ],"
 
+# Canonical SIGFM/OpenCV meson block. Keep in sync with meson-integration.patch.
+read -r -d '' SIGFM_MESON_BLOCK <<'EOF' || true
+# SIGFM: SIFT-based fingerprint matching for small sensors
+# Use pkg-config only for the include path; link only the OpenCV modules we
+# need (the full opencv pkg-config pulls modules like viz/hdf that have
+# missing transitive deps).
+opencv_pc = dependency('opencv5', required: false)
+if not opencv_pc.found()
+    opencv_pc = dependency('opencv4')
+endif
+opencv_includes = opencv_pc.partial_dependency(compile_args: true, includes: true)
+opencv_core = cc.find_library('opencv_core')
+# OpenCV 5 renamed the features2d module to features
+opencv_features2d = cc.find_library('opencv_features2d', required: false)
+if not opencv_features2d.found()
+    opencv_features2d = cc.find_library('opencv_features')
+endif
+opencv_flann = cc.find_library('opencv_flann')
+opencv_imgproc = cc.find_library('opencv_imgproc')
+opencv_dep = declare_dependency(
+    dependencies: [opencv_includes, opencv_core, opencv_features2d, opencv_flann, opencv_imgproc],
+)
+libsigfm = static_library('sigfm',
+    'sigfm/sigfm.cpp',
+    dependencies: [opencv_dep],
+    cpp_args: ['-std=c++17'],
+    install: false)
+EOF
+
+# Trees integrated before OpenCV 5 support hardcode the OpenCV 4 include path,
+# which fails to configure once the distro ships OpenCV 5. Replace the whole
+# SIGFM/OpenCV block (start marker through libsigfm) with the current version.
+migrate_sigfm_block() {
+    if ! grep -q "include_directories('/usr/include/opencv4')" "$MESON"; then
+        return 0
+    fi
+    if grep -q "^# SIGFM: SIFT-based fingerprint matching for small sensors$" "$MESON"; then
+        echo "Updating OpenCV 4-only SIGFM block for OpenCV 4/5 ..."
+        awk -v newblock="$SIGFM_MESON_BLOCK" '
+            /^# SIGFM: SIFT-based fingerprint matching for small sensors$/ && !done {
+                print newblock
+                skipping = 1
+                done = 1
+                next
+            }
+            skipping {
+                if ($0 ~ /^    install: false\)$/) skipping = 0
+                next
+            }
+            { print }
+        ' "$MESON" > "$MESON.tmp"
+        mv "$MESON.tmp" "$MESON"
+        echo "SIGFM block updated. Reconfigure your build directory before rebuilding."
+    else
+        echo ""
+        echo "========================================="
+        echo "MANUAL UPDATE REQUIRED"
+        echo "========================================="
+        echo ""
+        echo "$MESON hardcodes the OpenCV 4 include path, but its SIGFM/OpenCV"
+        echo "block does not match the layout this script knows how to update."
+        echo "Replace that block (through the libsigfm static_library) with:"
+        echo ""
+        echo "$SIGFM_MESON_BLOCK" | sed 's/^/   /'
+        echo ""
+    fi
+}
+
 print_manual_steps() {
     echo ""
     echo "========================================="
@@ -50,26 +118,7 @@ print_manual_steps() {
     echo "       $DRIVER_SOURCES"
     echo ""
     echo "2. Before the libfprint_drivers static_library() call, add the SIGFM build:"
-    echo "   opencv_pc = dependency('opencv5', required: false)"
-    echo "   if not opencv_pc.found()"
-    echo "       opencv_pc = dependency('opencv4')"
-    echo "   endif"
-    echo "   opencv_includes = opencv_pc.partial_dependency(compile_args: true, includes: true)"
-    echo "   opencv_core = cc.find_library('opencv_core')"
-    echo "   opencv_features2d = cc.find_library('opencv_features2d', required: false)"
-    echo "   if not opencv_features2d.found()"
-    echo "       opencv_features2d = cc.find_library('opencv_features')"
-    echo "   endif"
-    echo "   opencv_flann = cc.find_library('opencv_flann')"
-    echo "   opencv_imgproc = cc.find_library('opencv_imgproc')"
-    echo "   opencv_dep = declare_dependency("
-    echo "       dependencies: [opencv_includes, opencv_core, opencv_features2d, opencv_flann, opencv_imgproc],"
-    echo "   )"
-    echo "   libsigfm = static_library('sigfm',"
-    echo "       'sigfm/sigfm.cpp',"
-    echo "       dependencies: [opencv_dep],"
-    echo "       cpp_args: ['-std=c++17'],"
-    echo "       install: false)"
+    echo "$SIGFM_MESON_BLOCK" | sed 's/^/   /'
     echo ""
     echo "3. Add libsigfm to the link_with for libfprint_drivers and libfprint."
     echo "4. Add opencv_dep to the dependencies for libfprint."
@@ -84,7 +133,9 @@ print_manual_steps() {
 # layout, so its absence from an existing entry means the source list is stale.
 if grep -q "'goodix53x5'" "$MESON" && grep -q "goodix53x5-commands.c" "$MESON"; then
     echo "Driver already registered in libfprint/meson.build"
+    migrate_sigfm_block
 elif grep -q "'goodix53x5'" "$MESON"; then
+    migrate_sigfm_block
     echo ""
     echo "========================================="
     echo "MANUAL UPDATE REQUIRED"
