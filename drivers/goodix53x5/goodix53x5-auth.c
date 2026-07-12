@@ -29,6 +29,12 @@
 
 #include <string.h>
 
+static gboolean
+goodix_match_scores_need_exhaustive_logging (void)
+{
+  return !g_log_writer_default_would_drop (G_LOG_LEVEL_DEBUG, G_LOG_DOMAIN);
+}
+
 /* Verify/Identify SSM */
 typedef enum {
   GOODIX_VERIFY_REINIT = 0,
@@ -286,6 +292,8 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
             int sample_idx = 0;
             int valid_templates = 0;
             gboolean saw_unusable_template = FALSE;
+            gboolean score_all_templates =
+              goodix_match_scores_need_exhaustive_logging ();
 
             fpi_device_get_verify_data (dev, &print);
             g_object_get (G_OBJECT (print), "fpi-data", &data, NULL);
@@ -330,6 +338,15 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
                           best_score = score;
 
                         sample_idx++;
+
+                        /* Verify targets one known print, so later samples
+                         * cannot change the result after the gate is met. */
+                        if (!score_all_templates &&
+                            best_score >= GOODIX_SIGFM_BEST_MIN)
+                          {
+                            g_variant_unref (child);
+                            break;
+                          }
                       }
                     g_variant_unref (child);
                   }
