@@ -247,16 +247,13 @@ goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
     case GOODIX_FINGER_WAIT_VALIDATE:
       {
         /* Parse manual FDT response and check for a false FDT-down event. */
-        guint8 cat, cmd;
+        g_autoptr(GError) error = NULL;
         const guint8 *pl;
         gsize pl_len;
 
-        if (!goodix_parse_reply (dev, &cat, &cmd, &pl, &pl_len, NULL) ||
-            pl_len < 4 + GOODIX_FDT_BASE_LEN)
+        if (!goodix_cmd_parse_fdt_manual_reply (dev, &pl, &pl_len, &error))
           {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Failed to parse FDT check"));
+            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
             return;
           }
 
