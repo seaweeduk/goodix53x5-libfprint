@@ -38,7 +38,7 @@ jobs:
               "provider": {
                 "openai": {
                   "models": {
-                    "gpt-5.5": {
+                    "gpt-5.6-sol": {
                       "options": {
                         "reasoningEffort": "high"
                       }
@@ -48,7 +48,7 @@ jobs:
               }
             }
         with:
-          model: openai/gpt-5.5
+          model: openai/gpt-5.6-sol
           variant: high
           mentions: /opencode,/oc
           share: false
