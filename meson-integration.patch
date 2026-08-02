@@ -32,7 +32,7 @@ index ae0f6e2..bb4bc29 100644
 @@ -173,5 +177,6 @@ helper_sources = {
  drivers_sources = []
  drivers_cflags = []
-+drivers_cflags += goodix53x5_debug_cflags
++drivers_cflags += goodix53x5_cflags
  foreach driver: drivers
      drivers_sources += driver_sources[driver]
  endforeach
@@ -116,7 +116,7 @@ index 00aa566..f0c5dcf 100644
 +        'test-goodix53x5-milan-synthetic',
 +        'test-goodix53x5-milan-synthetic.c',
 +        dependencies: libfprint_private_dep,
-+        c_args: common_cflags + goodix53x5_debug_cflags,
++        c_args: common_cflags + goodix53x5_cflags,
 +        link_with: libfprint_drivers,
 +        install: false,
 +    )
@@ -128,12 +128,12 @@ index 00aa566..f0c5dcf 100644
 +    goodix53x5_milan_runtime_units = static_library(
 +        'goodix53x5-milan-runtime-test-units',
 +        [
-+            '../libfprint/drivers/goodix53x5/goodix53x5-runtime.c',
-+            '../libfprint/drivers/goodix53x5/goodix53x5-auth.c',
-+            '../libfprint/drivers/goodix53x5/goodix53x5-enroll.c',
++            '../libfprint/drivers/goodix53x5/milan/runtime.c',
++            '../libfprint/drivers/goodix53x5/device/auth.c',
++            '../libfprint/drivers/goodix53x5/device/enroll.c',
 +        ],
 +        dependencies: libfprint_private_dep,
-+        c_args: common_cflags + goodix53x5_debug_cflags + [
++        c_args: common_cflags + goodix53x5_cflags + [
 +            '-include',
 +            join_paths(meson.current_source_dir(),
 +                       'test-goodix53x5-milan-runtime-seam.h'),
@@ -144,7 +144,7 @@ index 00aa566..f0c5dcf 100644
 +        'test-goodix53x5-milan-runtime',
 +        'test-goodix53x5-milan-runtime.c',
 +        dependencies: libfprint_private_dep,
-+        c_args: common_cflags + goodix53x5_debug_cflags,
++        c_args: common_cflags + goodix53x5_cflags,
 +        link_with: [libfprint_drivers, goodix53x5_milan_runtime_units],
 +        install: false,
 +    )

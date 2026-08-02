@@ -10,10 +10,10 @@
 
 #include "drivers_api.h"
 #include "fpi-print.h"
-#include "drivers/goodix53x5/goodix53x5-match.h"
-#include "drivers/goodix53x5/goodix53x5-private.h"
-#include "drivers/goodix53x5/goodix53x5-print.h"
-#include "drivers/goodix53x5/goodix53x5-runtime.h"
+#include "drivers/goodix53x5/driver-private.h"
+#include "drivers/goodix53x5/milan/match/match.h"
+#include "drivers/goodix53x5/milan/print.h"
+#include "drivers/goodix53x5/milan/runtime.h"
 
 #include <glib.h>
 #include <stdint.h>

@@ -20,10 +20,10 @@
 #define FP_COMPONENT "goodix53x5"
 
 #include "drivers_api.h"
-#include "goodix53x5-private.h"
-#include "goodix53x5-session.h"
-#include "goodix53x5-enroll.h"
-#include "goodix53x5-auth.h"
+#include "driver-private.h"
+#include "device/session.h"
+#include "device/enroll.h"
+#include "device/auth.h"
 
 G_DEFINE_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5,
                FP_TYPE_DEVICE)

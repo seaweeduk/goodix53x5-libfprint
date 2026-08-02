@@ -18,8 +18,9 @@ def canonical(value):
 def digest_sources(repo: Path, tool: Path) -> str:
     digest = hashlib.sha256()
     for root in (repo / "drivers" / "goodix53x5", tool / "current"):
-        for path in sorted(root.glob("*.[ch]")):
-            digest.update(path.name.encode())
+        for path in sorted(item for item in root.rglob("*")
+                           if item.suffix in {".c", ".h"}):
+            digest.update(str(path.relative_to(root)).encode())
             digest.update(path.read_bytes())
     digest.update((tool / "build-current-runner").read_bytes())
     return digest.hexdigest()

@@ -8,12 +8,12 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
-#include "drivers/goodix53x5/goodix53x5-base.h"
-#include "drivers/goodix53x5/goodix53x5-match-selection.h"
-#include "drivers/goodix53x5/goodix53x5-match.h"
-#include "drivers/goodix53x5/goodix53x5-milan.h"
-#include "drivers/goodix53x5/goodix53x5-preprocess-gain.h"
-#include "drivers/goodix53x5/goodix53x5-print.h"
+#include "drivers/goodix53x5/device/base.h"
+#include "drivers/goodix53x5/milan/match/match.h"
+#include "drivers/goodix53x5/milan/match/selection.h"
+#include "drivers/goodix53x5/milan/milan.h"
+#include "drivers/goodix53x5/milan/preprocess/gain.h"
+#include "drivers/goodix53x5/milan/print.h"
 
 #include <glib.h>
 #include <stdint.h>

@@ -8,9 +8,9 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
-#include "goodix53x5-match.h"
-#include "goodix53x5-print.h"
-#include "goodix53x5-runtime.h"
+#include "milan/match/match.h"
+#include "milan/print.h"
+#include "milan/runtime.h"
 
 #include <glib.h>
 #include <stdint.h>

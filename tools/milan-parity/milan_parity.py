@@ -850,7 +850,8 @@ def run_build_manifest(args: argparse.Namespace) -> None:
     commit = subprocess.run(("git", "rev-parse", "HEAD"), cwd=repo,
                             stdout=subprocess.PIPE, check=True, text=True).stdout.strip()
     source_digest = hashlib.sha256()
-    source_files = sorted((repo / "drivers" / "goodix53x5").glob("*.[ch]"))
+    source_files = sorted(path for path in (repo / "drivers" / "goodix53x5").rglob("*")
+                          if path.is_file())
     source_files.extend((repo / name for name in ("meson-integration.patch", "scripts/build-local.sh")))
     for path in source_files:
         source_digest.update(str(path.relative_to(repo)).encode("utf-8") + b"\0")
