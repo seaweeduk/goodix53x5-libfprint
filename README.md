@@ -15,9 +15,24 @@ binaries at runtime.
 > deterministic, byte-level parity checks; generated code is not treated as
 > evidence of correctness by itself.
 
+## Supported Hardware
+
 The project is currently validated on a **Dell XPS 13 9305** with a
-`27c6:5335` sensor. The other listed USB IDs are registered by the driver but
-have not received the same hardware validation.
+`27c6:5335` sensor. IDs `27c6:5385` and `27c6:5395` are registered by the driver
+but have not received the same hardware validation.
+
+Before installing on an unlisted Goodix USB device, run:
+
+```sh
+sudo ./scripts/goodix53x5-detect.sh
+```
+
+If it reports `COMPATIBLE CANDIDATE`, either:
+
+- [Open a compatibility issue](https://github.com/seaweeduk/goodix53x5-libfprint/issues/new)
+  with its output, your laptop model, and Linux distribution; or
+- Submit a PR adding the ID to `drivers/goodix53x5/goodix53x5.c` and the Goodix
+  entries in `meson-integration.patch`, with probe and hardware-test results.
 
 > [!NOTE]
 > On the same challenging dataset, Milan's adaptive learning raised the
