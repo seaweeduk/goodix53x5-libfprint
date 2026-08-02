@@ -1,0 +1,96 @@
+# identifyImage
+
+## Binary And Body
+
+- Binary: `GoodixEngineAdapter.dll` 2.0.310.900, SHA-256
+  `6673db3874fea66a58e2da29e371d797b890c767ba0491134d4a372c5b27e3b4`.
+- Export/body: `identifyImage`, `0x180001ad0..0x180001f6e`.
+- Role: exported image-to-feature and candidate-matching entry point.
+
+## Call Graph
+
+- Adapter callers include `FUN_18002e360` and `FUN_1800303c0`.
+- Relevant callees are `FUN_18004ae70` for live-probe extraction,
+  `FUN_1800392f0` for anti-fake data, and `FUN_18005edb0` for matching.
+
+## Production Geometry Path
+
+The export validates and copies the supplied processed image, calls
+`FUN_18004ae70` to create the live probe object, then supplies that object to
+`FUN_18005edb0`. Profile initialization remains visible through the
+`DAT_180218e*` globals used for anti-fake chip information. The exported image
+path does not replace the probe object's dimensions after feature extraction.
+
+For the authoritative profile-9 runs, the input processed artifact is the full
+`108x88` 9,504-byte frame. `FUN_18004ae70` performs the subtype-12 matcher
+normalization to `104x88`; that normalized descriptor, not the raw image header,
+is what later reaches `FUN_180058700`.
+
+## Evidence And Confidence
+
+- Live extraction call and retained probe object: `0x180001c8a` calls
+  `FUN_18004ae70` before the candidate loop.
+- Matching dispatch: `0x180001e32` calls `FUN_18005edb0`.
+- Candidate-array ABI: the export requires `candidates[0]` and
+  `candidates[0]->pFingerTemplate` to be nonnull, then uses the internal pointer
+  as the matcher candidate. `FUN_18002e360` supplies the array of public handles,
+  and `FUN_1800303c0` independently uses the address of an `enrolGetTemplate`
+  handle as its one-candidate array.
+- On a positive score, the export stores the matched internal template at
+  `0x18024e548`; the retained live probe remains at `0x18024ebe8` for the
+  immediately following `templateStudy` call.
+- Confidence is high for the exported production route and distinction between
+  the raw `108x88` frame and the normalized match object.
+- Unresolved ABI names for unrelated exported arguments do not affect geometry.
+
+## Safe-Zero Policy Boundary
+
+The v2 study authority supplies a DLL-unpacked native safe-zero probe at global
+`0x18024ebe8`, replaces only the extraction call at `0x180001c8a` with a
+successful no-op, and replaces only the anti-fake rebuild call at `0x180001dd3`
+with a no-op. The candidate loop from `0x180001df0`, `FUN_18005edb0`, global
+evidence at `0x18024e550`, positive winner publication at `0x180001ed3`, and the
+subsequent `templateStudy` call remain official DLL code. This is an oracle-only
+input bridge, not native runtime behavior and not a claim that patched Windows
+execution is the production Windows byte path.
+
+## Controlled-Boundary Intervention Point
+
+The replacement normal-extraction oracle intervenes at `0x180001dbd`, after
+the successful `FUN_18004ae70` return and all metadata calculations, but before
+the argument loads and untouched call to `FUN_1800392f0` at `0x180001dd3`.
+At that point owning global `0x18024ebe8` contains the normal `0x168` live
+feature and its active 56-byte records. Replacing only feature matrix `+0x20`
+with an allocator-compatible shadow does not bypass extraction, anti-fake
+construction, candidate matching, evidence publication, or ownership cleanup.
+
+The intervention resumes the original instruction at `0x180001dbd` through a
+single-step breakpoint rearm. It does not alter the extraction call at
+`0x180001c8a`, the anti-fake call at `0x180001dd3`, or the matcher call at
+`0x180001e32`.
+
+## Sequence-2 Builder Boundary
+
+A focused passive breakpoint at `0x180001dd8`, immediately after the untouched
+anti-fake call and before the candidate loop, captured the live probe's complete
+anti-fake block. It is byte-identical to the existing post-return snapshot,
+SHA-256
+`7bb448a5159838c3218820f2e4c62ef7626b52789a412ab4ac0453c3726ba354`,
+and already contains boundary score `+0x12d0 = 13`. Matching does not introduce
+the value. The temporary breakpoint instrumentation was removed after capture;
+only derived artifacts and this provenance note remain.
+
+## Outer Candidate Selection
+
+The candidate loop at `0x180001df0..0x180001ef1` evaluates handles in supplied
+order and returns immediately on the first positive matcher score. It does not
+evaluate later candidates to maximize score. If every candidate is nonpositive,
+the published index remains `UINT32_MAX` and the published score is the final
+candidate's score.
+
+The native helper `goodix_milan_index0_select_first_positive()` models this
+contract and the native Milan runtime invokes equivalent first-positive behavior.
+Every native live probe reaches this loop after complete anti-fake construction
+with semantic zero at the documented one-past source. Zero/nonzero differential
+construction is offline diagnostics only and cannot stop verification,
+identification, matching, or study.
