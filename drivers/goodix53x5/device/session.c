@@ -27,9 +27,11 @@
 #include "device/session.h"
 
 #include <string.h>
+#include <openssl/crypto.h>
 #include <openssl/rand.h>
 
 #define GOODIX_OPEN_FDT_MAX_RETRIES 16
+#define GOODIX_PSK_STATE_FILE "/var/lib/fprint/goodix53x5.psk"
 
 /* Open SSM — full device initialization */
 typedef enum {
@@ -116,10 +118,7 @@ goodix_open_state_name (GoodixOpenState state)
 }
 #endif
 
-/* All-zero PSK */
-static const guint8 goodix_psk[GOODIX_PSK_LEN] = { 0 };
-
-/* PSK white box for writing all-zero PSK */
+/* PSK white box for writing the default all-zero PSK. */
 static const guint8 goodix_psk_white_box[GOODIX_PSK_WHITE_BOX_LEN] = {
   0xec, 0x35, 0xae, 0x3a, 0xbb, 0x45, 0xed, 0x3f,
   0x12, 0xc4, 0x75, 0x1f, 0x1e, 0x5c, 0x2c, 0xc0,
@@ -134,6 +133,67 @@ static const guint8 goodix_psk_white_box[GOODIX_PSK_WHITE_BOX_LEN] = {
   0x1e, 0xdb, 0x33, 0x94, 0x04, 0x6e, 0xc0, 0x6b,
   0xbd, 0xac, 0xc5, 0x7d, 0xa6, 0xa7, 0x56, 0xc5,
 };
+
+static gboolean
+goodix_load_psk (FpiDeviceGoodix53x5 *self,
+                 GError             **error)
+{
+  const gchar *path = GOODIX_PSK_STATE_FILE;
+  gchar *contents = NULL;
+  gsize length = 0;
+  gsize hex_length;
+  g_autoptr(GError) local_error = NULL;
+  gboolean success = FALSE;
+
+  memset (self->psk, 0, sizeof (self->psk));
+  self->psk_imported = FALSE;
+
+  if (!g_file_get_contents (path, &contents, &length, &local_error))
+    {
+      if (g_error_matches (local_error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
+        return TRUE;
+
+      g_propagate_prefixed_error (error, g_steal_pointer (&local_error),
+                                  "Failed to read PSK file %s: ", path);
+      return FALSE;
+    }
+
+  hex_length = length;
+  while (hex_length > 0 && g_ascii_isspace (contents[hex_length - 1]))
+    hex_length--;
+  if (hex_length != GOODIX_PSK_LEN * 2)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                   "PSK file %s must contain exactly 64 hexadecimal characters",
+                   path);
+      goto out;
+    }
+
+  for (gsize i = 0; i < GOODIX_PSK_LEN; i++)
+    {
+      gint high = g_ascii_xdigit_value (contents[i * 2]);
+      gint low = g_ascii_xdigit_value (contents[i * 2 + 1]);
+
+      if (high < 0 || low < 0)
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                       "PSK file %s contains non-hexadecimal data", path);
+          goto out;
+        }
+      self->psk[i] = (high << 4) | low;
+    }
+
+  self->psk_imported = TRUE;
+  fp_info ("Using imported GTLS PSK from %s", path);
+  success = TRUE;
+
+out:
+  OPENSSL_cleanse (contents, length);
+  g_free (contents);
+  if (!success)
+    OPENSSL_cleanse (self->psk, sizeof (self->psk));
+  return success;
+}
 
 /* ========================================================================
  * Open SSM — full device initialization
@@ -260,6 +320,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_OPEN_PARSE_OTP:
       {
+        g_autoptr(GError) error = NULL;
         const guint8 *pl;
         gsize pl_len;
 
@@ -284,6 +345,11 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
           }
 
         goodix_device_parse_otp (pl, pl_len, &self->calib);
+        if (!goodix_load_psk (self, &error))
+          {
+            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+            return;
+          }
         fpi_ssm_next_state (ssm);
       }
       break;
@@ -295,7 +361,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_OPEN_WRITE_PSK:
       {
-        /* Check if PSK hash matches our all-zero PSK.
+        /* Check if the sensor PSK hash matches the selected PSK.
          * Parse the production_read response. */
         const guint8 *psk_data;
         gsize psk_data_len;
@@ -315,7 +381,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
           guint8 expected_hash[32];
           gsize hash_len = 32;
 
-          g_checksum_update (sha, goodix_psk, GOODIX_PSK_LEN);
+          g_checksum_update (sha, self->psk, GOODIX_PSK_LEN);
           g_checksum_get_digest (sha, expected_hash, &hash_len);
 
           if (psk_data_len >= 32 && memcmp (psk_data, expected_hash, 32) == 0)
@@ -327,8 +393,16 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
             }
         }
 
-        /* Need to write PSK white box */
-        fp_info ("Writing PSK white box");
+        if (self->psk_imported)
+          {
+            fpi_ssm_mark_failed (
+              ssm,
+              fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                        "Sensor PSK does not match imported Windows PSK; refusing to overwrite it"));
+            return;
+          }
+
+        fp_info ("Writing default PSK white box");
         self->psk_write_verify_pending = TRUE;
         goodix_cmd_production_write (ssm, dev, 0xB002, goodix_psk_white_box,
                                      GOODIX_PSK_WHITE_BOX_LEN);
@@ -384,7 +458,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
                 return;
               }
 
-            g_checksum_update (sha, goodix_psk, GOODIX_PSK_LEN);
+            g_checksum_update (sha, self->psk, GOODIX_PSK_LEN);
             g_checksum_get_digest (sha, expected_hash, &hash_len);
 
             if (psk_data_len < 32 || memcmp (psk_data, expected_hash, 32) != 0)
@@ -400,7 +474,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
         /* Generate client_random and send via MCU */
         RAND_bytes (self->gtls.client_random, 32);
-        goodix_crypto_gtls_init (&self->gtls, goodix_psk);
+        goodix_crypto_gtls_init (&self->gtls, self->psk);
         RAND_bytes (self->gtls.client_random, 32);
         self->gtls.state = 2;
 
@@ -665,6 +739,9 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   if (error)
     {
       goodix_milan_generation_invalidate (&self->milan_generation);
+      OPENSSL_cleanse (self->psk, sizeof (self->psk));
+      OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
+      self->psk_imported = FALSE;
       fp_warn ("Device open failed: %s", error->message);
 
       goodix_debug_timing_open_done (self, dev, error->message);

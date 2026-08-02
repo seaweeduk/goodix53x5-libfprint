@@ -25,6 +25,9 @@
 #include "device/enroll.h"
 #include "device/auth.h"
 
+#include <string.h>
+#include <openssl/crypto.h>
+
 G_DEFINE_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5,
                FP_TYPE_DEVICE)
 
@@ -64,6 +67,9 @@ goodix_close (FpDevice *dev)
   g_clear_pointer (&self->captured_raw_image, g_free);
   goodix_milan_generation_invalidate (&self->milan_generation);
   g_clear_pointer (&self->enroll_features, g_ptr_array_unref);
+  OPENSSL_cleanse (self->psk, sizeof (self->psk));
+  OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
+  self->psk_imported = FALSE;
 
   if (self->cmd)
     {
@@ -131,6 +137,7 @@ goodix_cancel (FpDevice *dev)
 static void
 fpi_device_goodix53x5_init (FpiDeviceGoodix53x5 *self)
 {
+  memset (self->psk, 0, sizeof (self->psk));
 }
 
 static const FpIdEntry goodix53x5_id_table[] = {

@@ -102,6 +102,12 @@ fprintd-enroll
 fprintd-verify
 ```
 
+## Windows Dual Boot
+
+Normal Linux-only installations retain the automatic all-zero PSK setup. An
+optional Windows key file enables shared-key operation without changing the
+default path. See the [Windows dual-boot migration guide](WINDOWS-DUAL-BOOT.md).
+
 ## Limitations And Security
 
 - This is an experimental, out-of-tree driver tied to pinned libfprint and
@@ -110,6 +116,8 @@ fprintd-verify
   `27c6:5335` sensor.
 - Fingerprint images and matching are handled on the host. This is not a
   match-on-chip or secure-element design.
+- A plaintext imported GTLS key is protected by filesystem permissions, not a
+  TPM or DPAPI. Do not publish it or commit it to a repository.
 - A compromised root or kernel environment can bypass authentication or access
   biometric data. Fingerprint unlock should be treated as a convenience factor,
   not the only protection for sensitive data.

@@ -46,7 +46,7 @@
 /* Enroll stages */
 #define GOODIX_ENROLL_SAMPLES 8
 
-/* PSK white box for writing all-zero PSK */
+/* PSK white box for writing the default all-zero PSK. */
 #define GOODIX_PSK_WHITE_BOX_LEN 96
 
 /* --- Calibration parameters (from OTP) --- */
@@ -133,6 +133,11 @@ struct _FpiDeviceGoodix53x5
 
   /* TRUE while verifying a PSK write during open. */
   gboolean psk_write_verify_pending;
+
+  /* GTLS PSK selected for this open. Imported keys are never provisioned by
+   * this driver because the arbitrary-key white-box encoder is not available. */
+  guint8   psk[GOODIX_PSK_LEN];
+  gboolean psk_imported;
 
   /* Current command (for sub-SSM) */
   GoodixCmd *cmd;
