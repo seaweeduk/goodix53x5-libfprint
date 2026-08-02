@@ -1,0 +1,2580 @@
+/*
+ * Goodix 53x5 driver for libfprint - Milan image preprocessing
+ * Copyright (C) 2026 goodix-fp-linux-dev contributors
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#include "goodix53x5-milan.h"
+#include "goodix53x5-milan-private.h"
+#include "goodix53x5-preprocess-gain.h"
+#include "goodix53x5-study-order.h"
+#include "goodix53x5-study-policy.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MILAN_ADC_MAX UINT16_C(0x0fff)
+#define MILAN_FIXED_ONE UINT32_C(0x2000)
+#define MILAN_PROFILE9_SETUP_OFFSET UINT16_C(7095)
+#define MILAN_PROFILE9_UPDATE_BASE UINT16_C(9000)
+
+static const uint16_t milan_update_kernel[5] = {
+  7869, 15328, 19142, 15328, 7869,
+};
+
+static const uint16_t milan_quality_gaussian7_kernel[5] = {
+  3571, 16004, 26386, 16004, 3571,
+};
+
+static const uint16_t milan_quality_gaussian6_kernel[3] = {
+  21845, 21845, 21845,
+};
+
+static int first_update_frame_core (const uint16_t *normalized_live,
+                                    const uint16_t *setup_map,
+                                    const uint16_t *application_map,
+                                    const uint16_t *application_gain_map,
+                                    uint16_t       *persistent_auxiliary_gain,
+                                    uint32_t        auxiliary_samples,
+                                    GoodixMilanPreprocessState *state,
+                                    uint32_t        calibration_ready,
+                                    size_t          rows,
+                                    size_t          columns,
+                                     uint16_t       *gain_map,
+                                     uint16_t       *output);
+static void profile9_update_source (const uint16_t *normalized_live,
+                                    const uint16_t *setup_map,
+                                    size_t          count,
+                                    uint16_t       *output);
+static int profile9_normalize_live (uint16_t *frame,
+                                    size_t    rows,
+                                    size_t    columns);
+static void milan_profile9_encode_metadata (uint8_t       *image,
+                                            const uint8_t *mask,
+                                            size_t         rows,
+                                            size_t         columns,
+                                            int            mode,
+                                            int            apply_mask);
+static void milan_profile9_make_reciprocal_plane (
+  const uint16_t *application_gain,
+  size_t          count,
+  uint16_t       *output);
+static int milan_profile9_post_render (
+  GoodixMilanPreprocessState *state,
+  const uint16_t             *normalized_live,
+  const uint16_t             *setup_map,
+  const uint8_t              *render_mask,
+  const uint16_t             *working,
+  const uint16_t             *reciprocal_plane,
+  const uint8_t              *selected,
+  const uint8_t              *selection_mask,
+  int                         selected_refined,
+  GoodixMilanPreprocessPurpose purpose,
+  uint32_t                     calibration_ready);
+
+void
+goodix_milan_preprocess_reset (GoodixMilanPreprocessState *state)
+{
+  if (state)
+    {
+      memset (state, 0, sizeof(*state));
+      for (size_t i = 0; i < GOODIX_MILAN_SENSOR_PIXELS; i++)
+        {
+          state->auxiliary_gain_map[i] = MILAN_FIXED_ONE;
+          state->secondary_auxiliary_gain_map[i] = MILAN_FIXED_ONE;
+          state->application_gain_map[i] = MILAN_FIXED_ONE;
+        }
+    }
+}
+
+int
+goodix_milan_preprocess (GoodixMilanPreprocessState *state,
+                                GoodixMilanProfileState    *profile_state,
+                                const uint16_t             *setup_frame,
+                                const uint16_t             *live_frame,
+                                GoodixMilanPreprocessPurpose purpose,
+                                uint8_t                    *output,
+                                int                        *quality,
+                                int                        *coverage)
+{
+  const size_t count = GOODIX_MILAN_SENSOR_PIXELS;
+  uint16_t *setup_map = NULL;
+  uint16_t *normalized_live = NULL;
+  uint16_t *difference = NULL;
+  uint16_t *gain = NULL;
+  uint16_t *working = NULL;
+  uint16_t *reciprocal_plane = NULL;
+  uint8_t *mask = NULL;
+  uint8_t *contrast = NULL;
+  uint8_t *refined = NULL;
+  uint8_t *broken_mask = NULL;
+  uint8_t *contrast_mask = NULL;
+  uint8_t *selection_mask = NULL;
+  uint32_t rounded_mean;
+  uint16_t threshold;
+  uint16_t valid_percent;
+  uint16_t admitted_percent;
+  size_t admitted_pixels = 0;
+  uint32_t auxiliary_samples;
+  int selected_refined;
+  int metadata_mode;
+  int apply_metadata_mask;
+  int post_status;
+  int result = -1;
+
+  if (state)
+    {
+      state->primary_contrast_valid = 0;
+      state->post_render.primary_metric = 0;
+      state->post_render.fallback_metric = 0;
+      state->post_render.disagreement = 0;
+      state->post_render.component_score = 0;
+      state->post_render.component_flag = 0;
+      state->post_render.quality_gate = 0;
+      state->post_render.update_applied = 0;
+      state->post_render.status = 0;
+    }
+  if (!state || !profile_state || !setup_frame || !live_frame ||
+      (purpose != GOODIX_MILAN_PURPOSE_IDENTIFY &&
+       purpose != GOODIX_MILAN_PURPOSE_ENROLL) ||
+      !output || !quality || !coverage)
+    return -1;
+  setup_map = malloc (count * sizeof(*setup_map));
+  normalized_live = malloc (count * sizeof(*normalized_live));
+  difference = malloc (count * sizeof(*difference));
+  gain = malloc (count * sizeof(*gain));
+  working = malloc (count * sizeof(*working));
+  reciprocal_plane = malloc (count * sizeof(*reciprocal_plane));
+  mask = malloc (count);
+  contrast = malloc (count);
+  refined = malloc (count);
+  broken_mask = malloc (count);
+  contrast_mask = malloc (count);
+  selection_mask = malloc (count);
+  if (!setup_map || !normalized_live || !difference || !gain || !working ||
+      !reciprocal_plane || !mask || !contrast || !refined || !broken_mask ||
+      !contrast_mask || !selection_mask)
+    goto out;
+
+  for (size_t i = 0; i < count; i++)
+    {
+      if (setup_frame[i] > MILAN_ADC_MAX || live_frame[i] > MILAN_ADC_MAX)
+        goto out;
+    }
+  memcpy (normalized_live, live_frame, count * sizeof(*normalized_live));
+  if (goodix_milan_preprocess_make_setup_map (
+        setup_frame, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
+        setup_map, &rounded_mean) != 0 ||
+      profile9_normalize_live (
+        normalized_live, GOODIX_MILAN_SENSOR_ROWS,
+        GOODIX_MILAN_SENSOR_COLUMNS) != 0 ||
+      goodix_milan_preprocess_build_mask (
+        normalized_live, setup_map, GOODIX_MILAN_SENSOR_ROWS,
+        GOODIX_MILAN_SENSOR_COLUMNS, mask, &threshold, &valid_percent) != 0 ||
+      goodix_milan_preprocess_no_update_frame (
+        normalized_live, setup_map, GOODIX_MILAN_SENSOR_ROWS,
+        GOODIX_MILAN_SENSOR_COLUMNS, difference) != 0 ||
+      goodix_milan_profile9_build_contrast_mask (
+        normalized_live, setup_map, GOODIX_MILAN_SENSOR_ROWS,
+        GOODIX_MILAN_SENSOR_COLUMNS, contrast_mask, &admitted_pixels) != 0)
+    goto out;
+
+  milan_profile9_make_reciprocal_plane (
+    state->application_gain_map, count, reciprocal_plane);
+  goodix_milan_profile9_update_gain_ready (
+    state->sample_count, state->stable_count,
+    &profile_state->calibration_ready);
+
+  if (admitted_pixels * 10 > count * 9)
+    {
+      auxiliary_samples = state->auxiliary_sample_count;
+      if (first_update_frame_core (
+            normalized_live, setup_map, state->calibration_map,
+            state->application_gain_map, state->auxiliary_gain_map,
+            auxiliary_samples, state, profile_state->calibration_ready,
+            GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, gain,
+            working) != 0)
+        goto out;
+    }
+  else
+    {
+      /* Rejection suppresses map evolution, not application of persisted gain. */
+      profile9_update_source (normalized_live, setup_map, count, working);
+      for (size_t i = 0; i < count; i++)
+        {
+          uint32_t combined_gain = goodix_milan_profile9_combine_gain (
+            MILAN_FIXED_ONE, state->application_gain_map[i],
+            state->auxiliary_gain_map[i], profile_state->calibration_ready);
+
+          gain[i] = (uint16_t) combined_gain;
+          if (state->calibration_map[i] != 0)
+            working[i] = combined_gain == 0
+                           ? (uint16_t) ((uint32_t) working[i] << 14)
+                           : (uint16_t) (((uint32_t) working[i] *
+                                           (MILAN_FIXED_ONE * 2) +
+                                         combined_gain / 2) /
+                                        combined_gain);
+        }
+    }
+  admitted_percent = (uint16_t) (admitted_pixels * 100 / count);
+
+  if (goodix_milan_profile9_build_broken_mask (
+        state, difference, normalized_live, contrast_mask,
+        GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, broken_mask,
+        NULL, &metadata_mode, &apply_metadata_mask) != 0)
+    goto out;
+
+  if (goodix_milan_preprocess_contrast (
+        working, contrast_mask, GOODIX_MILAN_SENSOR_ROWS,
+        GOODIX_MILAN_SENSOR_COLUMNS, contrast) != 0 ||
+      goodix_milan_preprocess_selection_mask (
+        contrast, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
+        selection_mask) != 0 ||
+      goodix_milan_preprocess_refine (
+        working, contrast_mask, admitted_percent, GOODIX_MILAN_SENSOR_ROWS,
+        GOODIX_MILAN_SENSOR_COLUMNS, refined) != 0 ||
+      goodix_milan_preprocess_select_output (
+        contrast, refined, selection_mask, GOODIX_MILAN_SENSOR_ROWS,
+        GOODIX_MILAN_SENSOR_COLUMNS, 800, output, &selected_refined) != 0)
+    goto out;
+  post_status = milan_profile9_post_render (
+    state, normalized_live, setup_map, contrast_mask, working,
+    reciprocal_plane, output, selection_mask, selected_refined, purpose,
+    profile_state->calibration_ready);
+  if (post_status < 0)
+    goto out;
+  milan_profile9_encode_metadata (
+    output, broken_mask, GOODIX_MILAN_SENSOR_ROWS,
+    GOODIX_MILAN_SENSOR_COLUMNS, metadata_mode, apply_metadata_mask);
+  if (
+      goodix_milan_preprocess_quality (
+        output, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
+        quality, coverage) != 0)
+    goto out;
+  memcpy (state->setup_map, setup_map, count * sizeof(*setup_map));
+  memcpy (state->primary_contrast, contrast, count);
+  state->primary_contrast_valid = 1;
+  state->selected_refined = selected_refined;
+  result = post_status;
+
+out:
+  free (selection_mask);
+  free (contrast_mask);
+  free (broken_mask);
+  free (refined);
+  free (contrast);
+  free (mask);
+  free (reciprocal_plane);
+  free (working);
+  free (gain);
+  free (difference);
+  free (normalized_live);
+  free (setup_map);
+  return result;
+}
+
+static int
+is_invalid_border_sample (uint16_t sample)
+{
+  return sample == 0 || sample == MILAN_ADC_MAX;
+}
+
+int
+goodix_milan_preprocess_normalize (uint16_t *frame,
+                               size_t    rows,
+                               size_t    columns)
+{
+  size_t count;
+
+  if (!frame || rows < 4 || columns < 4 || columns > SIZE_MAX / rows)
+    return -1;
+
+  count = rows * columns;
+  for (size_t i = 0; i < count; i++)
+    {
+      if (frame[i] > MILAN_ADC_MAX)
+        frame[i] = MILAN_ADC_MAX;
+    }
+
+  for (size_t column = 1; column < columns - 1; column++)
+    {
+      size_t top_inner = columns + column;
+      size_t bottom_inner = (rows - 2) * columns + column;
+
+      if (is_invalid_border_sample (frame[top_inner]))
+        frame[top_inner] = frame[top_inner + columns];
+      if (is_invalid_border_sample (frame[bottom_inner]))
+        frame[bottom_inner] = frame[bottom_inner - columns];
+
+      frame[column] = frame[top_inner];
+      frame[(rows - 1) * columns + column] = frame[bottom_inner];
+    }
+
+  for (size_t row = 0; row < rows; row++)
+    {
+      size_t start = row * columns;
+
+      if (is_invalid_border_sample (frame[start + 1]))
+        frame[start + 1] = frame[start + 2];
+      if (is_invalid_border_sample (frame[start + columns - 2]))
+        frame[start + columns - 2] = frame[start + columns - 3];
+
+      frame[start] = frame[start + 1];
+      frame[start + columns - 1] = frame[start + columns - 2];
+    }
+
+  return 0;
+}
+
+static int
+profile9_normalize_live (uint16_t *frame,
+                         size_t    rows,
+                         size_t    columns)
+{
+  size_t count;
+
+  if (!frame || rows < 3 || columns < 2 || columns > SIZE_MAX / rows)
+    return -1;
+
+  count = rows * columns;
+  for (size_t i = 0; i < count; i++)
+    if (frame[i] > MILAN_ADC_MAX)
+      frame[i] = MILAN_ADC_MAX;
+
+  /* The validated live path copies outer edges but preserves inner-edge data. */
+  memcpy (frame, frame + columns, columns * sizeof(*frame));
+  memcpy (frame + (rows - 1) * columns, frame + (rows - 2) * columns,
+          columns * sizeof(*frame));
+  for (size_t row = 0; row < rows; row++)
+    {
+      size_t start = row * columns;
+
+      frame[start] = frame[start + 1];
+      frame[start + columns - 1] = frame[start + columns - 2];
+    }
+
+  return 0;
+}
+
+int
+goodix_milan_preprocess_make_setup_map (const uint16_t *frame,
+                                    size_t          rows,
+                                    size_t          columns,
+                                    uint16_t       *setup_map,
+                                    uint32_t       *rounded_mean)
+{
+  size_t count;
+  uint64_t count64;
+  uint64_t sum = 0;
+
+  if (!frame || !setup_map || !rounded_mean || columns == 0 ||
+      rows > SIZE_MAX / columns)
+    return -1;
+
+  count = rows * columns;
+  if (count > SIZE_MAX / sizeof(*setup_map))
+    return -1;
+  count64 = count;
+  if (count64 > (UINT64_MAX - count64 / 2) / MILAN_ADC_MAX)
+    return -1;
+
+  memmove (setup_map, frame, count * sizeof(*setup_map));
+  if (goodix_milan_preprocess_normalize (setup_map, rows, columns) != 0)
+    return -1;
+
+  for (size_t i = 0; i < count; i++)
+    sum += setup_map[i];
+
+  *rounded_mean = (uint32_t) ((sum + count64 / 2) / count64);
+  for (size_t i = 0; i < count; i++)
+    setup_map[i] += MILAN_PROFILE9_SETUP_OFFSET;
+  return 0;
+}
+
+int
+goodix_milan_preprocess_build_mask (const uint16_t *normalized_live,
+                                const uint16_t *setup_map,
+                                size_t          rows,
+                                size_t          columns,
+                                uint8_t         *mask,
+                                uint16_t        *threshold,
+                                uint16_t        *valid_percent)
+{
+  size_t count;
+  int difference_count = 0;
+  int difference_sum = 0;
+  int invalid_count = 0;
+  int selected_threshold = 50;
+
+  if (!normalized_live || !setup_map || !mask || !threshold ||
+      !valid_percent || rows == 0 || columns == 0 ||
+      columns > SIZE_MAX / rows)
+    return -1;
+
+  count = rows * columns;
+  if (count > INT16_MAX || columns > INT_MAX / 10)
+    return -1;
+
+  for (size_t i = 0; i < count; i++)
+    {
+      int difference = (int) setup_map[i] - (int) normalized_live[i];
+
+      if (difference > 50)
+        {
+          difference_count++;
+          difference_sum += difference;
+        }
+    }
+
+  if (difference_count > 0)
+    {
+      int learned_threshold = (difference_sum / difference_count) / 5;
+
+      if (difference_count > (int) columns * 10 ||
+          learned_threshold > selected_threshold)
+        selected_threshold = learned_threshold;
+    }
+
+  for (size_t i = 0; i < count; i++)
+    {
+      int difference = (int) setup_map[i] - (int) normalized_live[i];
+      int valid = 1;
+
+      if (difference < selected_threshold)
+        {
+          valid = 0;
+          invalid_count++;
+        }
+      if (normalized_live[i] == MILAN_ADC_MAX)
+        {
+          valid = 0;
+          invalid_count++;
+        }
+
+      mask[i] = valid ? UINT8_MAX : 0;
+    }
+
+  *threshold = (uint16_t) selected_threshold;
+  *valid_percent =
+    (uint16_t) (((int) count - invalid_count) * 100 / (int) count);
+  return 0;
+}
+
+int
+goodix_milan_preprocess_no_update_frame (const uint16_t *normalized_live,
+                                     const uint16_t *setup_map,
+                                     size_t          rows,
+                                     size_t          columns,
+                                     uint16_t       *output)
+{
+  size_t count;
+
+  if (!normalized_live || !setup_map || !output || rows == 0 || columns == 0 ||
+      columns > SIZE_MAX / rows)
+    return -1;
+
+  count = rows * columns;
+  for (size_t i = 0; i < count; i++)
+    output[i] = setup_map[i] > normalized_live[i]
+                  ? setup_map[i] - normalized_live[i]
+                  : 0;
+
+  return 0;
+}
+
+static void
+update_gaussian_core (const uint16_t *source,
+                      size_t          rows,
+                      size_t          columns,
+                      uint16_t       *horizontal,
+                      uint16_t       *output)
+{
+  for (size_t row = 0; row < rows; row++)
+    {
+      for (size_t column = 0; column < columns; column++)
+        {
+          uint64_t sum = 0;
+
+          for (size_t tap = 0; tap < 5; tap++)
+            {
+              size_t x = goodix_milan_reflect101_index (
+                (ptrdiff_t) column + (ptrdiff_t) tap - 2, columns);
+
+              sum += (uint64_t) source[row * columns + x] *
+                     milan_update_kernel[tap];
+            }
+          horizontal[row * columns + column] = (uint16_t) (sum >> 16);
+        }
+    }
+
+  for (size_t row = 0; row < rows; row++)
+    {
+      for (size_t column = 0; column < columns; column++)
+        {
+          uint64_t sum = 0;
+
+          for (size_t tap = 0; tap < 5; tap++)
+            {
+              size_t y = goodix_milan_reflect101_index (
+                (ptrdiff_t) row + (ptrdiff_t) tap - 2, rows);
+
+              sum += (uint64_t) horizontal[y * columns + column] *
+                     milan_update_kernel[tap];
+            }
+          output[row * columns + column] = (uint16_t) (sum >> 16);
+        }
+    }
+}
+
+static uint16_t
+median9 (const uint16_t *values)
+{
+  uint16_t sorted[9];
+
+  memcpy (sorted, values, sizeof(sorted));
+  for (size_t i = 1; i < 9; i++)
+    {
+      uint16_t value = sorted[i];
+      size_t j = i;
+
+      while (j > 0 && sorted[j - 1] > value)
+        {
+          sorted[j] = sorted[j - 1];
+          j--;
+        }
+      sorted[j] = value;
+    }
+
+  return sorted[4];
+}
+
+static void
+median3x3_core (const uint16_t *source,
+                size_t          rows,
+                size_t          columns,
+                uint16_t       *output)
+{
+  memcpy (output, source, rows * columns * sizeof(*source));
+  for (size_t row = 1; row + 1 < rows; row++)
+    {
+      for (size_t column = 1; column + 1 < columns; column++)
+        {
+          uint16_t values[9];
+          size_t index = 0;
+
+          for (ptrdiff_t row_offset = -1; row_offset <= 1; row_offset++)
+            for (ptrdiff_t column_offset = -1; column_offset <= 1;
+                 column_offset++)
+              values[index++] =
+                source[(row + row_offset) * columns + column + column_offset];
+
+          output[row * columns + column] = median9 (values);
+        }
+    }
+}
+
+static int
+profile9_calibration_admit (const uint32_t             *ratio,
+                            size_t                      rows,
+                            size_t                      columns,
+                            GoodixMilanPreprocessState *state)
+{
+  size_t coarse_rows = rows / 2;
+  size_t coarse_columns = columns / 2;
+
+  if (state->auxiliary_sample_count != 0)
+    {
+      uint64_t difference_sum = 0;
+
+      for (size_t row = 0; row < coarse_rows; row++)
+        for (size_t column = 0; column < coarse_columns; column++)
+          {
+            uint16_t current =
+              (uint16_t) ratio[(row * 2) * columns + column * 2];
+            uint16_t previous =
+              state->coarse_reference[row * coarse_columns + column];
+
+            difference_sum += current > previous ? current - previous
+                                                  : previous - current;
+          }
+
+      if (difference_sum / (coarse_rows * coarse_columns) < 30)
+        state->stable_count++;
+      else
+        state->stable_count = 0;
+    }
+
+  if (state->auxiliary_sample_count == 0 || state->stable_count == 0)
+    for (size_t row = 0; row < coarse_rows; row++)
+      for (size_t column = 0; column < coarse_columns; column++)
+        state->coarse_reference[row * coarse_columns + column] =
+          (uint16_t) ratio[(row * 2) * columns + column * 2];
+
+  if (state->stable_count > 3)
+    return 0;
+
+  return 1;
+}
+
+static void
+profile9_update_calibration (const uint32_t             *ratio,
+                             size_t                      count,
+                             GoodixMilanPreprocessState *state)
+{
+  uint32_t sum = 0;
+  uint32_t map_sum = 0;
+  uint32_t mean;
+  uint32_t scale;
+
+  for (size_t i = 0; i < count; i++)
+    sum += ratio[i];
+  mean = (sum + count / 2) / count;
+  if (mean == 0)
+    mean = 8000;
+  scale = (UINT32_C(8000) * MILAN_FIXED_ONE + mean / 2) / mean;
+
+  for (size_t i = 0; i < count; i++)
+    {
+      uint32_t candidate =
+        (uint32_t) (((uint64_t) ratio[i] * scale + MILAN_FIXED_ONE / 2) /
+                    MILAN_FIXED_ONE);
+      int32_t deviation = (int32_t) candidate - 8000;
+
+      if (deviation < 0)
+        deviation = -deviation;
+      if (deviation < 6400 ||
+          (state->sample_count < 30 && deviation < 8192))
+        {
+          uint32_t divisor = state->sample_count + 1;
+
+          state->calibration_map[i] =
+            (uint16_t) (((divisor >> 1) +
+                         (uint32_t) state->calibration_map[i] *
+                           state->sample_count + candidate) /
+                        divisor);
+        }
+      map_sum += state->calibration_map[i];
+    }
+
+  state->sample_count++;
+  if (state->sample_count > 400)
+    state->sample_count = 400;
+
+  if (state->sample_count > 3)
+    {
+      uint32_t map_mean = (map_sum + count / 2) / count;
+
+      if (map_mean != 0)
+        for (size_t i = 0; i < count; i++)
+          state->application_gain_map[i] =
+            (uint16_t) (((uint32_t) state->calibration_map[i] *
+                           MILAN_FIXED_ONE + map_mean / 2) /
+                        map_mean);
+    }
+
+}
+
+static void
+profile9_update_source (const uint16_t *normalized_live,
+                        const uint16_t *setup_map,
+                        size_t          count,
+                        uint16_t       *output)
+{
+  for (size_t i = 0; i < count; i++)
+    {
+      uint16_t normalized_setup =
+        setup_map[i] >= MILAN_PROFILE9_SETUP_OFFSET
+          ? setup_map[i] - MILAN_PROFILE9_SETUP_OFFSET
+          : 0;
+      int32_t value =
+        MILAN_PROFILE9_UPDATE_BASE +
+        3 * ((int32_t) normalized_setup - (int32_t) normalized_live[i]);
+
+      output[i] = (uint16_t) (value <= 0
+                                ? 0
+                                : value <= UINT16_MAX ? value : UINT16_MAX);
+    }
+}
+
+static void
+profile9_update_auxiliary_map (uint16_t       *map,
+                               uint32_t        samples,
+                               const uint16_t *adjusted,
+                               const uint16_t *gaussian,
+                               size_t          count)
+{
+  for (size_t i = 0; i < count; i++)
+    {
+      if (gaussian[i] != 0)
+        {
+          uint32_t candidate =
+            ((uint32_t) adjusted[i] * MILAN_FIXED_ONE + gaussian[i] / 2) /
+            gaussian[i];
+          int32_t deviation = (int32_t) candidate - (int32_t) MILAN_FIXED_ONE;
+
+          if (deviation < 0)
+            deviation = -deviation;
+          if (deviation < 328)
+            {
+              uint32_t divisor = samples + 1;
+
+              map[i] =
+                (uint16_t) (((divisor >> 1) + (uint32_t) map[i] * samples +
+                             candidate) /
+                            divisor);
+            }
+        }
+    }
+}
+
+static int
+first_update_frame_core (const uint16_t *normalized_live,
+                          const uint16_t *setup_map,
+                          const uint16_t *application_map,
+                          const uint16_t *application_gain_map,
+                          uint16_t       *persistent_auxiliary_gain,
+                          uint32_t        auxiliary_samples,
+                          GoodixMilanPreprocessState *state,
+                          uint32_t        calibration_ready,
+                          size_t          rows,
+                          size_t          columns,
+                          uint16_t       *gain_map,
+                          uint16_t       *output)
+{
+  size_t count;
+  uint32_t *ratio = NULL;
+  uint16_t *adjusted = NULL;
+  uint16_t *application_adjusted = NULL;
+  uint16_t *difference = NULL;
+  uint16_t *gaussian = NULL;
+  uint16_t *application_gaussian = NULL;
+  uint16_t *median = NULL;
+  int calibration_admitted = 0;
+
+  if (!normalized_live || !setup_map || !gain_map || !output ||
+      gain_map == output || rows < 2 || columns < 2 ||
+      rows > PTRDIFF_MAX || columns > PTRDIFF_MAX ||
+      columns > SIZE_MAX / rows)
+    return -1;
+
+  count = rows * columns;
+  if (count > SIZE_MAX / sizeof(uint16_t))
+    return -1;
+
+  ratio = malloc (count * sizeof(*ratio));
+  adjusted = malloc (count * sizeof(*adjusted));
+  application_adjusted = state
+                           ? malloc (count * sizeof(*application_adjusted))
+                           : NULL;
+  difference = calloc (count, sizeof(*difference));
+  gaussian = malloc (count * sizeof(*gaussian));
+  application_gaussian = state
+                           ? malloc (count * sizeof(*application_gaussian))
+                           : NULL;
+  median = malloc (count * sizeof(*median));
+  if (!ratio || !adjusted || (state && !application_adjusted) || !difference ||
+      !gaussian || (state && !application_gaussian) || !median)
+    goto allocation_failed;
+
+  profile9_update_source (normalized_live, setup_map, count, difference);
+
+  median3x3_core (difference, rows, columns, median);
+  for (size_t i = 0; i < count; i++)
+    {
+      uint32_t gain = MILAN_FIXED_ONE;
+
+      if (difference[i] != 0 && median[i] != 0)
+        {
+          int32_t deviation = (int32_t) difference[i] - (int32_t) median[i];
+
+          if (deviation < 0)
+            deviation = -deviation;
+          if (deviation > 1800)
+            gain = ((uint32_t) difference[i] * MILAN_FIXED_ONE +
+                    median[i] / 2) /
+                   median[i];
+          if (gain > INT16_MAX)
+            gain = INT16_MAX;
+        }
+
+      gain_map[i] = (uint16_t) gain;
+      ratio[i] = gain != 0
+                   ? ((uint32_t) difference[i] * MILAN_FIXED_ONE + gain / 2) /
+                       gain
+                   : (uint32_t) difference[i] << 13;
+      adjusted[i] = (uint16_t) ratio[i];
+    }
+
+  update_gaussian_core (adjusted, rows, columns, output, gaussian);
+  if (state)
+    {
+      calibration_admitted =
+        profile9_calibration_admit (ratio, rows, columns, state);
+      if (calibration_admitted)
+        {
+          for (size_t i = 0; i < count; i++)
+            {
+              uint32_t combined_gain =
+                ((uint32_t) gain_map[i] * application_gain_map[i] + 0x1000) >>
+                13;
+              uint32_t value =
+                combined_gain != 0
+                  ? ((uint32_t) difference[i] * MILAN_FIXED_ONE +
+                     combined_gain / 2) /
+                      combined_gain
+                  : (uint32_t) difference[i] << 13;
+
+              application_adjusted[i] = (uint16_t) value;
+            }
+          update_gaussian_core (application_adjusted, rows, columns, output,
+                                application_gaussian);
+          profile9_update_auxiliary_map (
+            state->auxiliary_gain_map, state->auxiliary_sample_count,
+            application_adjusted, application_gaussian, count);
+          profile9_update_auxiliary_map (
+            state->secondary_auxiliary_gain_map,
+            state->auxiliary_sample_count, adjusted, gaussian, count);
+          if (state->auxiliary_sample_count < 30)
+            state->auxiliary_sample_count++;
+          state->update_state = 1;
+        }
+      for (size_t i = 0; i < count; i++)
+        {
+          gain_map[i] = goodix_milan_profile9_combine_gain (
+            gain_map[i], application_gain_map[i],
+            state->auxiliary_gain_map[i], calibration_ready);
+        }
+      if (calibration_admitted)
+        profile9_update_calibration (ratio, count, state);
+    }
+  else
+    {
+      if (persistent_auxiliary_gain)
+        profile9_update_auxiliary_map (persistent_auxiliary_gain,
+                                       auxiliary_samples, adjusted, gaussian,
+                                       count);
+      for (size_t i = 0; i < count; i++)
+        {
+          uint32_t auxiliary_gain = MILAN_FIXED_ONE;
+
+          if (persistent_auxiliary_gain)
+            auxiliary_gain = persistent_auxiliary_gain[i];
+          else if (gaussian[i] != 0)
+            {
+              uint32_t candidate =
+                ((uint32_t) adjusted[i] * MILAN_FIXED_ONE + gaussian[i] / 2) /
+                gaussian[i];
+              int32_t deviation =
+                (int32_t) candidate - (int32_t) MILAN_FIXED_ONE;
+
+              if (deviation < 0)
+                deviation = -deviation;
+              if (deviation < 328)
+                auxiliary_gain = candidate;
+            }
+
+          gain_map[i] =
+            (uint16_t) (((uint32_t) gain_map[i] * auxiliary_gain + 0x1000) >>
+                        13);
+        }
+    }
+
+  for (size_t i = 0; i < count; i++)
+    output[i] = application_map && application_map[i] == 0
+                  ? difference[i]
+                  : gain_map[i] == 0
+                      ? (uint16_t) ((uint32_t) difference[i] << 14)
+                      : (uint16_t) (((uint32_t) difference[i] *
+                                        (MILAN_FIXED_ONE * 2) +
+                                      gain_map[i] / 2) /
+                                     gain_map[i]);
+
+  free (median);
+  free (application_gaussian);
+  free (gaussian);
+  free (difference);
+  free (application_adjusted);
+  free (adjusted);
+  free (ratio);
+  return 0;
+
+allocation_failed:
+  free (median);
+  free (application_gaussian);
+  free (gaussian);
+  free (difference);
+  free (application_adjusted);
+  free (adjusted);
+  free (ratio);
+  return -1;
+}
+
+int
+goodix_milan_preprocess_refine (const uint16_t *source,
+                            const uint8_t  *mask,
+                            uint16_t        valid_percent,
+                            size_t          rows,
+                            size_t          columns,
+                            uint8_t         *output)
+{
+  size_t count;
+  uint16_t *centered;
+  int result;
+
+  if (!source || !mask || !output || rows == 0 || columns == 0 ||
+      columns > SIZE_MAX / rows)
+    return -1;
+
+  count = rows * columns;
+  if (count > SIZE_MAX / sizeof(*centered))
+    return -1;
+  centered = malloc (count * sizeof(*centered));
+  if (!centered)
+    return -1;
+
+  for (size_t row = 0; row < rows; row++)
+    {
+      uint32_t sum = 0;
+      size_t contributors = 0;
+      size_t start = row * columns;
+
+      for (size_t column = 0; column < columns; column++)
+        {
+          size_t index = start + column;
+
+          if (valid_percent >= 96 || mask[index] != 0)
+            {
+              sum += source[index];
+              contributors++;
+            }
+        }
+
+      uint16_t mean = contributors != 0 ? (uint16_t) (sum / contributors) : 0;
+      for (size_t column = 0; column < columns; column++)
+        {
+          size_t index = start + column;
+          int value;
+
+          if (valid_percent < 96 && mask[index] == 0)
+            value = 5000;
+          else
+            value = (int) source[index] - mean + 5000;
+          centered[index] = (uint16_t) (value > 0 ? value : 0);
+        }
+    }
+
+  result = goodix_milan_preprocess_contrast (centered, mask, rows, columns,
+                                          output);
+  free (centered);
+  return result;
+}
+
+static int
+quality_combine_core (int  raw_coverage,
+                      int  valid_score,
+                      int  patch_score,
+                      int  mask_fraction,
+                      int  fraction_cutoff,
+                      int  final_adjustment,
+                      int  positive_only_adjustment,
+                      int *quality,
+                      int *coverage)
+{
+  int result;
+
+  if (!quality || !coverage || raw_coverage < 0 || valid_score < 0 ||
+      patch_score < 0 || mask_fraction < 0)
+    return -1;
+
+  result = patch_score;
+  if (mask_fraction < fraction_cutoff && patch_score < 70)
+    {
+      int factor = mask_fraction * 256 / fraction_cutoff;
+
+      result = result * factor >> 8;
+      result = result * factor >> 8;
+    }
+
+  if (valid_score - raw_coverage > 0x3333 && valid_score != 0)
+    {
+      result = raw_coverage * result / valid_score;
+      result = result * raw_coverage / valid_score;
+    }
+
+  if (!positive_only_adjustment || result > 0)
+    result += final_adjustment;
+  if (result < 0)
+    result = 0;
+  else if (result > 100)
+    result = 100;
+
+  *quality = result;
+  *coverage = raw_coverage * 100 >> 16;
+  return 0;
+}
+
+static void
+quality_gaussian7 (const uint8_t *source,
+                   size_t         rows,
+                   size_t         columns,
+                   uint16_t      *horizontal,
+                   uint8_t       *output)
+{
+  for (size_t row = 0; row < rows; row++)
+    {
+      for (size_t column = 0; column < columns; column++)
+        {
+          uint64_t sum = 0;
+
+          for (size_t tap = 0; tap < 5; tap++)
+            {
+              size_t x = goodix_milan_reflect101_index (
+                (ptrdiff_t) column + (ptrdiff_t) tap - 2, columns);
+
+              sum += ((uint64_t) source[row * columns + x] << 8) *
+                     milan_quality_gaussian7_kernel[tap];
+            }
+          horizontal[row * columns + column] = (uint16_t) (sum >> 16);
+        }
+    }
+
+  for (size_t row = 0; row < rows; row++)
+    {
+      for (size_t column = 0; column < columns; column++)
+        {
+          uint64_t sum = 0;
+
+          for (size_t tap = 0; tap < 5; tap++)
+            {
+              size_t y = goodix_milan_reflect101_index (
+                (ptrdiff_t) row + (ptrdiff_t) tap - 2, rows);
+
+              sum += (uint64_t) horizontal[y * columns + column] *
+                     milan_quality_gaussian7_kernel[tap];
+            }
+          output[row * columns + column] = (uint8_t) ((sum >> 16) >> 8);
+        }
+    }
+}
+
+static int
+quality_coverage_mask_core (const uint8_t *frame,
+                            size_t         rows,
+                            size_t         columns,
+                            uint16_t       threshold,
+                            uint8_t        mask_value,
+                            uint8_t       *mask,
+                            int           *raw_coverage)
+{
+  size_t count;
+  uint16_t *horizontal = NULL;
+  uint8_t *blurred = NULL;
+  int16_t *sobel_x = NULL;
+  int16_t *sobel_y = NULL;
+  uint16_t *gradient = NULL;
+  size_t selected = 0;
+
+  if (!frame || !mask || !raw_coverage || rows < 2 || columns < 2 ||
+      rows > PTRDIFF_MAX || columns > PTRDIFF_MAX ||
+      columns > SIZE_MAX / rows)
+    return -1;
+
+  count = rows * columns;
+  if (count > INT_MAX || count > SIZE_MAX / sizeof(uint16_t))
+    return -1;
+
+  horizontal = malloc (count * sizeof(*horizontal));
+  blurred = malloc (count);
+  sobel_x = malloc (count * sizeof(*sobel_x));
+  sobel_y = malloc (count * sizeof(*sobel_y));
+  gradient = malloc (count * sizeof(*gradient));
+  if (!horizontal || !blurred || !sobel_x || !sobel_y || !gradient)
+    goto allocation_failed;
+
+  quality_gaussian7 (frame, rows, columns, horizontal, blurred);
+  for (size_t row = 0; row < rows; row++)
+    {
+      for (size_t column = 0; column < columns; column++)
+        {
+          size_t index = row * columns + column;
+
+          if (column == 0 || column + 1 == columns)
+            sobel_x[index] = 0;
+          else
+            {
+              size_t previous_row =
+                goodix_milan_reflect101_index ((ptrdiff_t) row - 1, rows);
+              size_t next_row =
+                goodix_milan_reflect101_index ((ptrdiff_t) row + 1, rows);
+              int previous = blurred[previous_row * columns + column + 1] -
+                             blurred[previous_row * columns + column - 1];
+              int current = blurred[row * columns + column + 1] -
+                            blurred[row * columns + column - 1];
+              int next = blurred[next_row * columns + column + 1] -
+                         blurred[next_row * columns + column - 1];
+
+              sobel_x[index] = (int16_t) (previous + current * 2 + next);
+            }
+
+          if (row == 0 || row + 1 == rows)
+            sobel_y[index] = 0;
+          else
+            {
+              size_t previous_column =
+                goodix_milan_reflect101_index (
+                  (ptrdiff_t) column - 1, columns);
+              size_t next_column =
+                goodix_milan_reflect101_index (
+                  (ptrdiff_t) column + 1, columns);
+              int previous = blurred[(row + 1) * columns + previous_column] -
+                             blurred[(row - 1) * columns + previous_column];
+              int current = blurred[(row + 1) * columns + column] -
+                            blurred[(row - 1) * columns + column];
+              int next = blurred[(row + 1) * columns + next_column] -
+                         blurred[(row - 1) * columns + next_column];
+
+              sobel_y[index] = (int16_t) (previous + current * 2 + next);
+            }
+
+          int x = sobel_x[index];
+          int y = sobel_y[index];
+          gradient[index] = (uint16_t) ((x < 0 ? -x : x) / 2 +
+                                        (y < 0 ? -y : y) / 2);
+        }
+    }
+
+  for (size_t row = 0; row < rows; row++)
+    {
+      for (size_t column = 0; column < columns; column++)
+        {
+          uint32_t sum = 0;
+
+          for (ptrdiff_t y_offset = -7; y_offset <= 7; y_offset++)
+            {
+              size_t y = goodix_milan_reflect101_index (
+                (ptrdiff_t) row + y_offset, rows);
+
+              for (ptrdiff_t x_offset = -7; x_offset <= 7; x_offset++)
+                {
+                  size_t x =
+                    goodix_milan_reflect101_index (
+                      (ptrdiff_t) column + x_offset, columns);
+
+                  sum += gradient[y * columns + x];
+                }
+            }
+
+          uint16_t average = (uint16_t) ((sum * UINT32_C(291)) >> 16);
+          size_t index = row * columns + column;
+
+          mask[index] = average > threshold ? mask_value : 0;
+          selected += mask[index] != 0;
+        }
+    }
+
+  *raw_coverage = (int) ((selected * UINT32_C(0x10000)) / count);
+  free (gradient);
+  free (sobel_y);
+  free (sobel_x);
+  free (blurred);
+  free (horizontal);
+  return 0;
+
+allocation_failed:
+  free (gradient);
+  free (sobel_y);
+  free (sobel_x);
+  free (blurred);
+  free (horizontal);
+  return -1;
+}
+
+int
+goodix_milan_preprocess_quality_coverage_mask (const uint8_t *frame,
+                                           size_t         rows,
+                                           size_t         columns,
+                                           uint8_t       *mask,
+                                           int           *raw_coverage)
+{
+  return quality_coverage_mask_core (frame, rows, columns, 0x78, UINT8_MAX,
+                                     mask, raw_coverage);
+}
+
+int
+goodix_milan_preprocess_selection_mask (const uint8_t *frame,
+                                    size_t         rows,
+                                    size_t         columns,
+                                    uint8_t       *mask)
+{
+  int ignored_coverage;
+
+  return quality_coverage_mask_core (frame, rows, columns, 100, UINT8_MAX,
+                                     mask, &ignored_coverage);
+}
+
+static int
+quality_patch_score_core (const uint8_t *frame,
+                          const uint8_t *valid_mask,
+                          size_t         rows,
+                          size_t         columns,
+                          int            fixed_threshold,
+                          uint8_t       *refined_mask,
+                          int           *patch_score)
+{
+  size_t count;
+  int32_t *gradient_x = NULL;
+  int32_t *gradient_y = NULL;
+  int32_t *magnitude = NULL;
+  int32_t *patch_scores = NULL;
+  int score_histogram[101] = { 0 };
+  int64_t score_sum = 0;
+  int scored_patches = 0;
+
+  if (!frame || !valid_mask || !patch_score || rows < 25 || columns < 25 ||
+      columns > SIZE_MAX / rows)
+    return -1;
+
+  count = rows * columns;
+  if (count > SIZE_MAX / sizeof(*gradient_x))
+    return -1;
+  gradient_x = calloc (count, sizeof(*gradient_x));
+  gradient_y = calloc (count, sizeof(*gradient_y));
+  magnitude = calloc (count, sizeof(*magnitude));
+  patch_scores = malloc (count * sizeof(*patch_scores));
+  if (!gradient_x || !gradient_y || !magnitude || !patch_scores)
+    goto allocation_failed;
+  for (size_t i = 0; i < count; i++)
+    patch_scores[i] = -1;
+  if (refined_mask)
+    memcpy (refined_mask, valid_mask, count);
+
+  for (size_t row = 1; row + 1 < rows; row++)
+    {
+      for (size_t column = 1; column + 1 < columns; column++)
+        {
+          size_t index = row * columns + column;
+          int neighborhood_valid = 1;
+
+          for (ptrdiff_t y = -1; y <= 1 && neighborhood_valid; y++)
+            {
+              for (ptrdiff_t x = -1; x <= 1; x++)
+                {
+                  if (valid_mask[(size_t) ((ptrdiff_t) row + y) * columns +
+                                 (size_t) ((ptrdiff_t) column + x)] == 0)
+                    {
+                      neighborhood_valid = 0;
+                      break;
+                    }
+                }
+            }
+          if (!neighborhood_valid)
+            continue;
+
+          int x = (int) frame[index + 1] - (int) frame[index - 1];
+          int y = (int) frame[index + columns] -
+                  (int) frame[index - columns];
+          gradient_x[index] = x;
+          gradient_y[index] = y;
+          magnitude[index] = x * x + y * y;
+        }
+    }
+
+  for (size_t center_row = 12; center_row < rows - 12; center_row += 8)
+    {
+      for (size_t center_column = 12;
+           center_column < columns - 12;
+           center_column += 8)
+        {
+          size_t center = center_row * columns + center_column;
+          int64_t magnitude_sum = 0;
+          int valid_count = 0;
+
+          if (valid_mask[center] == 0)
+            continue;
+          for (size_t row = center_row - 12; row <= center_row + 12; row++)
+            {
+              for (size_t column = center_column - 12;
+                   column <= center_column + 12;
+                   column++)
+                {
+                  size_t index = row * columns + column;
+
+                  if (valid_mask[index] != 0)
+                    {
+                      magnitude_sum += magnitude[index];
+                      valid_count++;
+                    }
+                }
+            }
+          if (valid_count < (25 * 25) / 2)
+            continue;
+
+          int threshold = 25;
+          if (!fixed_threshold)
+            {
+              threshold =
+                (int) ((valid_count / 2 + magnitude_sum) / valid_count);
+              if (threshold < 25)
+                threshold = 25;
+            }
+
+          int selected_count = 0;
+          int64_t x_square_sum = 0;
+          int64_t y_square_sum = 0;
+          int64_t cross_sum = 0;
+          for (size_t row = center_row - 12; row <= center_row + 12; row++)
+            {
+              for (size_t column = center_column - 12;
+                   column <= center_column + 12;
+                   column++)
+                {
+                  size_t index = row * columns + column;
+
+                  if (magnitude[index] >= threshold)
+                    {
+                      int x = gradient_x[index];
+                      int y = gradient_y[index];
+
+                      x_square_sum += x * x;
+                      y_square_sum += y * y;
+                      cross_sum += x * y;
+                      selected_count++;
+                    }
+                }
+            }
+          if (selected_count < (25 * 25) / 6)
+            {
+              patch_scores[center] = 0;
+              score_histogram[0]++;
+              scored_patches++;
+              continue;
+            }
+
+          int64_t rounding = selected_count / 2;
+          int64_t x_square = (rounding + x_square_sum) / selected_count;
+          int64_t y_square = (rounding + y_square_sum) / selected_count;
+          int64_t cross = (rounding + cross_sum) / selected_count;
+          int64_t average_square = (x_square + y_square) / 2;
+          int64_t anisotropy =
+            ((x_square * y_square - cross * cross) * UINT32_C(0x10000)) /
+            (average_square * average_square + 1);
+
+          if (anisotropy < 0)
+            anisotropy = 0;
+          int64_t score = UINT32_C(0x10000) - anisotropy;
+          if (score < 0)
+            score = 0;
+          int score_percent = (int) ((score * 100) >> 16);
+          if (score_percent > 100)
+            score_percent = 100;
+          patch_scores[center] = (int32_t) score;
+          score_histogram[score_percent]++;
+          score_sum += score;
+          scored_patches++;
+        }
+    }
+
+  *patch_score = scored_patches != 0
+                   ? (int) (((((scored_patches / 2) + score_sum) /
+                               scored_patches) * 100) >> 16)
+                   : 0;
+  if (!fixed_threshold)
+    *patch_score += 5;
+  if (refined_mask)
+    {
+      int cumulative = 0;
+      int median_score = 0;
+
+      for (; median_score <= 100; median_score++)
+        {
+          cumulative += score_histogram[median_score];
+          if (cumulative >= scored_patches / 2)
+            break;
+        }
+      for (size_t center_row = 12; center_row < rows - 12; center_row += 8)
+        for (size_t center_column = 12;
+             center_column < columns - 12;
+             center_column += 8)
+          {
+            size_t center = center_row * columns + center_column;
+            int32_t score = patch_scores[center];
+
+            if (score < 0 || ((score * 100) >> 16) > median_score)
+              continue;
+            for (size_t row = center_row - 12; row < center_row + 12; row++)
+              for (size_t column = center_column - 12;
+                   column < center_column + 12;
+                   column++)
+                {
+                  size_t index = row * columns + column;
+
+                  if (refined_mask[index] != 0)
+                    refined_mask[index] = 0x20;
+                }
+          }
+      for (size_t i = 0; i < count; i++)
+        refined_mask[i] = refined_mask[i] == 0x20 ? UINT8_MAX : 0;
+    }
+  free (patch_scores);
+  free (magnitude);
+  free (gradient_y);
+  free (gradient_x);
+  return 0;
+
+allocation_failed:
+  free (patch_scores);
+  free (magnitude);
+  free (gradient_y);
+  free (gradient_x);
+  return -1;
+}
+
+static int
+quality_mask_fraction_core (const uint8_t *source,
+                            const uint8_t *valid_mask,
+                            size_t         rows,
+                            size_t         columns,
+                            int           *mask_fraction)
+{
+  size_t count = rows * columns;
+  uint8_t *classes = malloc (count);
+  int histogram[10] = { 0 };
+
+  if (!classes)
+    return -1;
+  memset (classes, 9, count);
+  for (size_t row = 1; row + 1 < rows; row++)
+    for (size_t column = 1; column + 1 < columns; column++)
+      {
+        size_t index = row * columns + column;
+
+        if (valid_mask[index] == 0)
+          continue;
+        int center = source[index];
+        int ring[8] = {
+          source[index - columns - 1] - center > 4,
+          source[index - columns] - center > 4,
+          source[index - columns + 1] - center > 4,
+          source[index + 1] - center > 4,
+          source[index + columns + 1] - center > 4,
+          source[index + columns] - center > 4,
+          source[index + columns - 1] - center > 4,
+          source[index - 1] - center > 4,
+        };
+        int transitions = 0;
+        int neighbors = 0;
+
+        for (size_t i = 0; i < 8; i++)
+          {
+            transitions += ring[i] != ring[(i + 1) & 7];
+            neighbors += ring[i];
+          }
+        if (transitions < 3)
+          classes[index] = (uint8_t) neighbors;
+      }
+  int classified = 0;
+  for (size_t i = 0; i < count; i++)
+    if (valid_mask[i] != 0)
+      {
+        histogram[classes[i]]++;
+        classified += classes[i] < 9;
+      }
+  *mask_fraction = classified != 0 ? histogram[4] * 100 / classified : 0;
+  free (classes);
+  return 0;
+}
+
+int
+goodix_milan_preprocess_quality (const uint8_t *frame,
+                             size_t         rows,
+                             size_t         columns,
+                             int           *quality,
+                             int           *coverage)
+{
+  size_t count;
+  uint8_t *coverage_mask = NULL;
+  uint8_t *valid_mask = NULL;
+  uint8_t *refined_mask = NULL;
+  int raw_coverage;
+  int original_valid_score;
+  int propagated_valid_score;
+  int patch_score;
+  int mask_fraction;
+  int result = -1;
+
+  if (!frame || !quality || !coverage || rows == 0 || columns == 0 ||
+      columns > SIZE_MAX / rows)
+    return -1;
+
+  count = rows * columns;
+  coverage_mask = malloc (count);
+  valid_mask = malloc (count);
+  refined_mask = malloc (count);
+  if (!coverage_mask || !valid_mask || !refined_mask)
+    goto out;
+
+  if (goodix_milan_preprocess_quality_coverage_mask (
+        frame, rows, columns, coverage_mask, &raw_coverage) != 0 ||
+      goodix_milan_preprocess_quality_valid_mask (
+        frame, rows, columns, valid_mask, &original_valid_score) != 0)
+    goto out;
+  propagated_valid_score =
+    goodix_milan_preprocess_quality_mask_coverage (valid_mask, count);
+  if (propagated_valid_score < 0 ||
+      quality_patch_score_core (
+        frame, valid_mask, rows, columns, 1, refined_mask, &patch_score) != 0 ||
+      quality_mask_fraction_core (
+        frame, refined_mask, rows, columns, &mask_fraction) != 0 ||
+      quality_combine_core (
+        raw_coverage, propagated_valid_score, patch_score, mask_fraction,
+        35, 7, 1, quality, coverage) != 0)
+    goto out;
+
+  result = 0;
+
+out:
+  free (refined_mask);
+  free (valid_mask);
+  free (coverage_mask);
+  return result;
+}
+
+int
+goodix_milan_feature_base_maps (const uint8_t *frame,
+                                       size_t         rows,
+                                       size_t         columns,
+                                       uint8_t       *high_bitmap,
+                                       uint8_t       *low_bitmap,
+                                       uint8_t       *feature_mask,
+                                       uint8_t       *inline_mask)
+{
+  size_t cropped_columns;
+  size_t cropped_count;
+  size_t map_columns;
+  size_t map_rows;
+  size_t map_count;
+  size_t bitmap_size;
+  uint8_t *cropped = NULL;
+  uint8_t *mask = NULL;
+  uint16_t *horizontal = NULL;
+  uint8_t *blurred = NULL;
+  int ignored_coverage;
+  int result = -1;
+
+  if (!frame || !high_bitmap || !low_bitmap || !feature_mask || rows < 2 ||
+      columns < 8 || columns > SIZE_MAX / rows)
+    return -1;
+
+  cropped_columns = (columns / 8) * 8;
+  cropped_count = cropped_columns * rows;
+  map_columns = cropped_columns / 2;
+  map_rows = rows / 2;
+  map_count = map_columns * map_rows;
+  bitmap_size = (map_count + 7) / 8;
+  cropped = malloc (cropped_count);
+  mask = malloc (cropped_count);
+  horizontal = malloc (cropped_count * sizeof(*horizontal));
+  blurred = malloc (cropped_count);
+  if (!cropped || !mask || !horizontal || !blurred)
+    goto out;
+
+  size_t crop_offset = (columns - cropped_columns) / 2;
+  for (size_t row = 0; row < rows; row++)
+    memcpy (cropped + row * cropped_columns,
+            frame + row * columns + crop_offset,
+            cropped_columns);
+
+  if (quality_coverage_mask_core (cropped, rows, cropped_columns, 0x6e, 1,
+                                  mask, &ignored_coverage) != 0)
+    goto out;
+
+  for (size_t row = 0; row < rows; row++)
+    {
+      for (size_t column = 0; column < cropped_columns; column++)
+        {
+          uint64_t sum = 0;
+
+          for (size_t tap = 0; tap < 3; tap++)
+            {
+              size_t x = goodix_milan_reflect101_index (
+                (ptrdiff_t) column + (ptrdiff_t) tap - 1, cropped_columns);
+
+              sum += ((uint64_t) cropped[row * cropped_columns + x] << 8) *
+                     milan_quality_gaussian6_kernel[tap];
+            }
+          horizontal[row * cropped_columns + column] =
+            (uint16_t) (sum >> 16);
+        }
+    }
+  for (size_t row = 0; row < rows; row++)
+    {
+      for (size_t column = 0; column < cropped_columns; column++)
+        {
+          uint64_t sum = 0;
+
+          for (size_t tap = 0; tap < 3; tap++)
+            {
+              size_t y = goodix_milan_reflect101_index (
+                (ptrdiff_t) row + (ptrdiff_t) tap - 1, rows);
+
+              sum += (uint64_t) horizontal[y * cropped_columns + column] *
+                     milan_quality_gaussian6_kernel[tap];
+            }
+          blurred[row * cropped_columns + column] =
+            (uint8_t) ((sum >> 16) >> 8);
+        }
+    }
+
+  memset (high_bitmap, 0, bitmap_size);
+  memset (low_bitmap, 0, bitmap_size);
+  for (size_t row = 0; row < map_rows; row++)
+    {
+      for (size_t column = 0; column < map_columns; column++)
+        {
+          size_t source_index = row * 2 * cropped_columns + column * 2;
+          size_t map_index = row * map_columns + column;
+          uint8_t bit = (uint8_t) (1U << (map_index & 7));
+
+          feature_mask[map_index] = mask[source_index];
+          if (blurred[source_index] >= 0xc9)
+            high_bitmap[map_index >> 3] |= bit;
+          if (blurred[source_index] >= 0x38)
+            low_bitmap[map_index >> 3] |= bit;
+        }
+    }
+  if (inline_mask)
+    {
+      size_t block_rows = (rows + 3) / 4;
+      size_t block_columns = (cropped_columns + 3) / 4;
+
+      memset (inline_mask, 0, (block_rows * block_columns + 7) / 8);
+      for (size_t block_row = 0; block_row < block_rows; block_row++)
+        for (size_t block_column = 0; block_column < block_columns;
+             block_column++)
+          {
+            size_t foreground = 0;
+            size_t pixels = 0;
+
+            for (size_t y = block_row * 4;
+                 y < rows && y < block_row * 4 + 4; y++)
+              for (size_t x = block_column * 4;
+                   x < cropped_columns && x < block_column * 4 + 4; x++)
+                {
+                  foreground += mask[y * cropped_columns + x] != 0;
+                  pixels++;
+                }
+            if (foreground * 2 >= pixels)
+              {
+                size_t bit = block_row * block_columns + block_column;
+
+                inline_mask[bit / 8] |= (uint8_t) (1U << (bit & 7));
+              }
+          }
+    }
+  result = 0;
+
+out:
+  free (blurred);
+  free (horizontal);
+  free (mask);
+  free (cropped);
+  return result;
+}
+
+
+static int
+milan_profile9_prepare_contrast_source (const uint16_t *source,
+                                         const uint8_t  *mask,
+                                         size_t          rows,
+                                         size_t          columns,
+                                         uint16_t       *output)
+{
+  const uint32_t gaussian_side = 6980;
+  const uint32_t gaussian_center = 51576;
+  size_t count = rows * columns;
+  uint32_t *sum_integral = NULL;
+  uint32_t *count_integral = NULL;
+  uint16_t *recentered = NULL;
+  uint16_t *smoothed = NULL;
+  uint16_t *horizontal = NULL;
+  int result = -1;
+
+  sum_integral = calloc (count, sizeof(*sum_integral));
+  count_integral = calloc (count, sizeof(*count_integral));
+  recentered = malloc (count * sizeof(*recentered));
+  smoothed = malloc (count * sizeof(*smoothed));
+  horizontal = malloc (count * sizeof(*horizontal));
+  if (!sum_integral || !count_integral || !recentered || !smoothed ||
+      !horizontal)
+    goto out;
+
+  for (size_t row = 0; row < rows; row++)
+    for (size_t column = 0; column < columns; column++)
+      {
+        size_t index = row * columns + column;
+        uint32_t value = mask[index] != 0 ? source[index] : 0;
+        uint32_t valid = mask[index] != 0;
+
+        if (column != 0)
+          {
+            value += sum_integral[index - 1];
+            valid += count_integral[index - 1];
+          }
+        if (row != 0)
+          {
+            value += sum_integral[index - columns];
+            valid += count_integral[index - columns];
+          }
+        if (row != 0 && column != 0)
+          {
+            value -= sum_integral[index - columns - 1];
+            valid -= count_integral[index - columns - 1];
+          }
+        sum_integral[index] = value;
+        count_integral[index] = valid;
+      }
+
+  for (size_t row = 0; row < rows; row++)
+    for (size_t column = 0; column < columns; column++)
+      {
+        size_t index = row * columns + column;
+        size_t first_row = row > 5 ? row - 5 : 0;
+        size_t last_row = row + 5 < rows ? row + 5 : rows - 1;
+        size_t first_column = column > 5 ? column - 5 : 0;
+        size_t last_column =
+          column + 5 < columns ? column + 5 : columns - 1;
+        uint32_t sum;
+        uint32_t valid;
+
+        if (mask[index] == 0)
+          {
+            recentered[index] = 3000;
+            continue;
+          }
+        sum = sum_integral[last_row * columns + last_column];
+        valid = count_integral[last_row * columns + last_column];
+        if (first_row != 0)
+          {
+            sum -= sum_integral[(first_row - 1) * columns + last_column];
+            valid -= count_integral[(first_row - 1) * columns + last_column];
+          }
+        if (first_column != 0)
+          {
+            sum -= sum_integral[last_row * columns + first_column - 1];
+            valid -= count_integral[last_row * columns + first_column - 1];
+          }
+        if (first_row != 0 && first_column != 0)
+          {
+            sum += sum_integral[(first_row - 1) * columns + first_column - 1];
+            valid +=
+              count_integral[(first_row - 1) * columns + first_column - 1];
+          }
+        uint32_t mean = valid != 0 ? (sum + valid / 2) / valid : 0;
+        int32_t value = (int32_t) source[index] - (int32_t) mean + 3000;
+
+        recentered[index] = (uint16_t) (value > 0 ? value : 0);
+      }
+
+  memcpy (smoothed, recentered, count * sizeof(*smoothed));
+  for (size_t row = 1; row + 1 < rows; row++)
+    for (size_t column = 1; column + 1 < columns; column++)
+      {
+        size_t index = row * columns + column;
+        uint32_t sum =
+          recentered[index - columns - 1] +
+          2U * recentered[index - columns] +
+          recentered[index - columns + 1] +
+          2U * recentered[index - 1] + 4U * recentered[index] +
+          2U * recentered[index + 1] + recentered[index + columns - 1] +
+          2U * recentered[index + columns] +
+          recentered[index + columns + 1];
+
+        smoothed[index] = (uint16_t) ((sum + 8) >> 4);
+      }
+
+  for (size_t row = 0; row < rows; row++)
+    for (size_t column = 0; column < columns; column++)
+      {
+        size_t left = goodix_milan_reflect101_index (
+          (ptrdiff_t) column - 1, columns);
+        size_t right = goodix_milan_reflect101_index (
+          (ptrdiff_t) column + 1, columns);
+        uint32_t sum = gaussian_side * smoothed[row * columns + left] +
+                       gaussian_center * smoothed[row * columns + column] +
+                       gaussian_side * smoothed[row * columns + right];
+
+        horizontal[row * columns + column] = (uint16_t) (sum >> 16);
+      }
+  for (size_t row = 0; row < rows; row++)
+    for (size_t column = 0; column < columns; column++)
+      {
+        size_t above = goodix_milan_reflect101_index (
+          (ptrdiff_t) row - 1, rows);
+        size_t below = goodix_milan_reflect101_index (
+          (ptrdiff_t) row + 1, rows);
+        uint32_t sum = gaussian_side * horizontal[above * columns + column] +
+                       gaussian_center * horizontal[row * columns + column] +
+                       gaussian_side * horizontal[below * columns + column];
+
+        output[row * columns + column] = (uint16_t) (sum >> 16);
+      }
+  result = 0;
+
+out:
+  free (horizontal);
+  free (smoothed);
+  free (recentered);
+  free (count_integral);
+  free (sum_integral);
+  return result;
+}
+
+static int
+milan_contrast_core (const uint16_t *source,
+                      const uint8_t  *mask,
+                      size_t          rows,
+                      size_t          columns,
+                      uint8_t         *output)
+{
+  size_t count;
+  uint16_t *horizontal_min;
+  uint16_t *horizontal_max;
+  uint16_t *vertical_min;
+  uint16_t *vertical_max;
+
+  if (!source || !mask || !output || rows == 0 || columns == 0 ||
+      columns > SIZE_MAX / rows)
+    return -1;
+
+  count = rows * columns;
+  if (count > SIZE_MAX / sizeof(uint16_t))
+    return -1;
+
+  horizontal_min = malloc (count * sizeof(*horizontal_min));
+  horizontal_max = malloc (count * sizeof(*horizontal_max));
+  vertical_min = malloc (count * sizeof(*vertical_min));
+  vertical_max = malloc (count * sizeof(*vertical_max));
+  if (!horizontal_min || !horizontal_max || !vertical_min || !vertical_max)
+    goto allocation_failed;
+
+  for (size_t row = 0; row < rows; row++)
+    {
+      for (size_t column = 0; column < columns; column++)
+        {
+          size_t first = column > 5 ? column - 5 : 0;
+          size_t last = column + 5 < columns ? column + 5 : columns - 1;
+          uint16_t minimum = UINT16_MAX;
+          uint16_t maximum = 0;
+
+          for (size_t x = first; x <= last; x++)
+            {
+              uint16_t value = source[row * columns + x];
+
+              if (value < minimum)
+                minimum = value;
+              if (value > maximum)
+                maximum = value;
+            }
+
+          horizontal_min[row * columns + column] = minimum;
+          horizontal_max[row * columns + column] = maximum;
+        }
+    }
+
+  for (size_t row = 0; row < rows; row++)
+    {
+      for (size_t column = 0; column < columns; column++)
+        {
+          size_t first = row > 5 ? row - 5 : 0;
+          size_t last = row + 5 < rows ? row + 5 : rows - 1;
+          uint16_t minimum = UINT16_MAX;
+          uint16_t maximum = 0;
+
+          for (size_t y = first; y <= last; y++)
+            {
+              uint16_t value = source[y * columns + column];
+
+              if (value < minimum)
+                minimum = value;
+              if (value > maximum)
+                maximum = value;
+            }
+
+          vertical_min[row * columns + column] = minimum;
+          vertical_max[row * columns + column] = maximum;
+        }
+    }
+
+  for (size_t i = 0; i < count; i++)
+    {
+      if (vertical_max[i] > horizontal_max[i])
+        horizontal_max[i] = vertical_max[i];
+      if (vertical_min[i] < horizontal_min[i])
+        horizontal_min[i] = vertical_min[i];
+    }
+
+  for (size_t row = 0; row < rows; row++)
+    {
+      for (size_t column = 0; column < columns; column++)
+        {
+          /* This pass uses the center and four diagonals, not a full 3x3. */
+          size_t index = row * columns + column;
+          uint16_t lower = horizontal_min[index];
+          uint16_t upper = horizontal_max[index];
+
+          for (int row_delta = -1; row_delta <= 1; row_delta += 2)
+            {
+              size_t neighbor_row;
+
+              if ((row_delta < 0 && row == 0) ||
+                  (row_delta > 0 && row + 1 == rows))
+                continue;
+              neighbor_row = row_delta < 0 ? row - 1 : row + 1;
+
+              for (int column_delta = -1; column_delta <= 1;
+                   column_delta += 2)
+                {
+                  size_t neighbor_column;
+                  size_t neighbor;
+
+                  if ((column_delta < 0 && column == 0) ||
+                      (column_delta > 0 && column + 1 == columns))
+                    continue;
+                  neighbor_column =
+                    column_delta < 0 ? column - 1 : column + 1;
+                  neighbor = neighbor_row * columns + neighbor_column;
+
+                  if (horizontal_min[neighbor] > lower)
+                    lower = horizontal_min[neighbor];
+                  if (horizontal_max[neighbor] < upper)
+                    upper = horizontal_max[neighbor];
+                }
+            }
+
+          if (mask[index] == 0)
+            output[index] = UINT8_MAX;
+          else if (upper == lower)
+            output[index] = 0;
+          else
+            {
+              int scaled =
+                ((int) source[index] - (int) lower) * UINT8_MAX /
+                ((int) upper - (int) lower);
+
+              if (scaled < 0)
+                scaled = 0;
+              else if (scaled > UINT8_MAX)
+                scaled = UINT8_MAX;
+              output[index] = (uint8_t) (UINT8_MAX - scaled);
+            }
+        }
+    }
+
+  free (vertical_max);
+  free (vertical_min);
+  free (horizontal_max);
+  free (horizontal_min);
+  return 0;
+
+allocation_failed:
+  free (vertical_max);
+  free (vertical_min);
+  free (horizontal_max);
+  free (horizontal_min);
+  return -1;
+}
+
+int
+goodix_milan_preprocess_contrast (const uint16_t *source,
+                              const uint8_t  *mask,
+                              size_t          rows,
+                              size_t          columns,
+                              uint8_t         *output)
+{
+  size_t count;
+  uint16_t *profile_source;
+  int result;
+
+  if (!source || !mask || !output || rows == 0 || columns == 0 ||
+      columns > SIZE_MAX / rows)
+    return -1;
+  count = rows * columns;
+  if (count > SIZE_MAX / sizeof(*profile_source))
+    return -1;
+  profile_source = malloc (count * sizeof(*profile_source));
+  if (!profile_source)
+    return -1;
+  result = milan_profile9_prepare_contrast_source (
+    source, mask, rows, columns, profile_source);
+  if (result == 0)
+    result = milan_contrast_core (
+      profile_source, mask, rows, columns, output);
+  free (profile_source);
+  return result;
+}
+
+static void
+milan_profile9_encode_metadata (uint8_t       *image,
+                                const uint8_t *mask,
+                                size_t         rows,
+                                size_t         columns,
+                                int            mode,
+                                int            apply_mask)
+{
+  if (!image || !mask || rows == 0 || columns < 8 || mode == 0)
+    return;
+  size_t prefix = columns - 8;
+  int prefix_ok = 1;
+
+  for (size_t column = 0; column < prefix; column++)
+    if ((image[column] & 1) != (column & 1))
+      {
+        prefix_ok = 0;
+        break;
+      }
+  if (!prefix_ok)
+    {
+      for (size_t column = prefix; column < columns; column++)
+        image[column] &= 0xfe;
+      for (size_t column = 0; column < prefix; column++)
+        image[column] = (uint8_t) ((image[column] & 0xfe) | (column & 1));
+    }
+
+  switch (mode)
+    {
+    case 1:
+      image[columns - 8] |= 1;
+      image[columns - 7] &= 0xfe;
+      break;
+    case 2:
+      image[columns - 8] |= 1;
+      image[columns - 7] |= 1;
+      break;
+    case 3:
+      image[columns - 8] &= 0xfe;
+      image[columns - 7] |= 1;
+      break;
+    case 4:
+      image[columns - 8] &= 0xfe;
+      image[columns - 7] &= 0xfe;
+      break;
+    case 5:
+      image[columns - 5] |= 1;
+      image[columns - 4] &= 0xfe;
+      image[columns - 3] &= 0xfe;
+      break;
+    case 6:
+      image[columns - 5] &= 0xfe;
+      image[columns - 4] |= 1;
+      image[columns - 3] &= 0xfe;
+      break;
+    case 7:
+      image[columns - 5] |= 1;
+      image[columns - 4] |= 1;
+      image[columns - 3] &= 0xfe;
+      break;
+    case 8:
+      image[columns - 5] &= 0xfe;
+      image[columns - 4] &= 0xfe;
+      image[columns - 3] |= 1;
+      break;
+    case 9:
+      image[columns - 5] |= 1;
+      image[columns - 4] &= 0xfe;
+      image[columns - 3] |= 1;
+      break;
+    default:
+      image[columns - 5] &= 0xfe;
+      image[columns - 4] &= 0xfe;
+      image[columns - 3] &= 0xfe;
+      break;
+    }
+  if (apply_mask)
+    {
+      int marker_was_set = (image[columns - 6] & 1) != 0;
+
+      image[columns - 6] |= 1;
+      for (size_t i = columns; i < rows * columns; i++)
+        {
+          if (!marker_was_set)
+            image[i] = (uint8_t) ((image[i] & 0xfe) | (mask[i] == 0));
+          else if (mask[i] != 0)
+            image[i] &= 0xfe;
+        }
+    }
+}
+
+/*
+ * Goodix 53x5 driver for libfprint - Milan post-render processing
+ * Copyright (C) 2026 goodix-fp-linux-dev contributors
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+static void
+milan_profile9_make_reciprocal_plane (const uint16_t *application_gain,
+                                      size_t          count,
+                                      uint16_t       *output)
+{
+  for (size_t i = 0; i < count; i++)
+    output[i] = application_gain[i] == 0
+                  ? (uint16_t) (UINT32_C(8000) << 13)
+                  : (uint16_t) ((UINT32_C(8000) * MILAN_FIXED_ONE +
+                                 application_gain[i] / 2) /
+                                application_gain[i]);
+}
+
+static int
+milan_profile9_secondary_working (
+  const uint16_t             *normalized_live,
+  const uint16_t             *setup_map,
+  const uint8_t              *render_mask,
+  const GoodixMilanPreprocessState *state,
+  size_t                      rows,
+  size_t                      columns,
+  uint16_t                   *output)
+{
+  size_t count = rows * columns;
+  uint16_t *difference = NULL;
+  uint16_t *median = NULL;
+  int result = -1;
+
+  difference = malloc (count * sizeof(*difference));
+  median = malloc (count * sizeof(*median));
+  if (!difference || !median)
+    goto out;
+
+  profile9_update_source (normalized_live, setup_map, count, difference);
+  median3x3_core (difference, rows, columns, median);
+  for (size_t i = 0; i < count; i++)
+    {
+      uint32_t gain = MILAN_FIXED_ONE;
+      uint32_t secondary_gain;
+
+      if (difference[i] != 0 && median[i] != 0)
+        {
+          int32_t deviation = (int32_t) difference[i] - (int32_t) median[i];
+
+          if (deviation < 0)
+            deviation = -deviation;
+          if (deviation > 1800)
+            gain = ((uint32_t) difference[i] * MILAN_FIXED_ONE +
+                    median[i] / 2) /
+                   median[i];
+          if (gain > INT16_MAX)
+            gain = INT16_MAX;
+        }
+      secondary_gain =
+        (gain * state->secondary_auxiliary_gain_map[i] + 0x1000) >> 13;
+      output[i] = render_mask[i] == 0
+                    ? difference[i]
+                    : secondary_gain == 0
+                        ? (uint16_t) ((uint32_t) difference[i] << 14)
+                        : (uint16_t) (((uint32_t) difference[i] *
+                                        (MILAN_FIXED_ONE * 2) +
+                                      secondary_gain / 2) /
+                                     secondary_gain);
+    }
+  result = 0;
+
+out:
+  free (median);
+  free (difference);
+  return result;
+}
+
+static int
+milan_profile9_diagnostic_contrast (const uint16_t *source,
+                                    const uint8_t  *render_mask,
+                                    size_t          rows,
+                                    size_t          columns,
+                                    uint8_t        *output)
+{
+  size_t count = rows * columns;
+  uint16_t *prepared = NULL;
+  int *histogram = NULL;
+  size_t selected = 0;
+  int lower_bin = 0;
+  int upper_bin = 4999;
+  int result = -1;
+
+  prepared = malloc (count * sizeof(*prepared));
+  histogram = calloc (5000, sizeof(*histogram));
+  if (!prepared || !histogram)
+    goto out;
+  if (milan_profile9_prepare_contrast_source (
+        source, render_mask, rows, columns, prepared) != 0)
+    goto out;
+
+  for (size_t i = 0; i < count; i++)
+    if (render_mask[i] != 0)
+      {
+        uint32_t bin = prepared[i] >> 2;
+
+        if (bin > 4999)
+          bin = 4999;
+        histogram[bin]++;
+        selected++;
+      }
+
+  size_t cumulative = 0;
+  for (upper_bin = 4999; upper_bin >= 0; upper_bin--)
+    {
+      cumulative += histogram[upper_bin];
+      if (selected * 15 <= cumulative * 100)
+        break;
+    }
+  if (upper_bin < 0)
+    upper_bin = 0;
+
+  cumulative = 0;
+  for (lower_bin = 0; lower_bin < 5000; lower_bin++)
+    {
+      cumulative += histogram[lower_bin];
+      if (selected * 5 <= cumulative * 100)
+        break;
+    }
+  if (lower_bin == 5000)
+    lower_bin = INT_MAX / 4;
+
+  int lower = lower_bin * 4;
+  int upper = upper_bin * 4;
+
+  if (upper - lower < 200)
+    upper = lower + 200;
+  for (size_t i = 0; i < count; i++)
+    {
+      int value = 0;
+
+      if (render_mask[i] != 0 && upper > lower)
+        {
+          value = ((int) prepared[i] - lower) * UINT8_MAX /
+                  (upper - lower);
+          if (value < 0)
+            value = 0;
+          else if (value > UINT8_MAX)
+            value = UINT8_MAX;
+        }
+      output[i] = (uint8_t) (UINT8_MAX - value);
+    }
+  result = 0;
+
+out:
+  free (histogram);
+  free (prepared);
+  return result;
+}
+
+static int
+milan_profile9_component_score (const uint8_t *frame,
+                                const uint8_t *residual_mask,
+                                size_t         rows,
+                                size_t         columns,
+                                int           *score)
+{
+  int patch_score;
+  int mask_fraction;
+
+  if (quality_patch_score_core (
+        frame, residual_mask, rows, columns, 1, NULL, &patch_score) != 0 ||
+      quality_mask_fraction_core (
+        frame, residual_mask, rows, columns, &mask_fraction) != 0)
+    return -1;
+
+  *score = patch_score;
+  if (*score < 70)
+    {
+      if (mask_fraction < 25)
+        {
+          int factor = mask_fraction * 256 / 25;
+
+          *score = *score * factor >> 8;
+          *score = *score * factor >> 8;
+        }
+      if (mask_fraction >= 30)
+        *score += 15;
+    }
+  if (*score < 0)
+    *score = 0;
+  else if (*score > 100)
+    *score = 100;
+  return 0;
+}
+
+static int
+milan_profile9_disagreement (const uint16_t *working,
+                             const uint8_t  *render_mask,
+                             size_t          rows,
+                             size_t          columns,
+                             uint8_t        *component_mask,
+                             int            *component_score,
+                             int            *component_flag,
+                             int            *disagreement)
+{
+  size_t count = rows * columns;
+  uint8_t *diagnostic = NULL;
+  uint8_t *gradient_mask = NULL;
+  size_t source_count = 0;
+  size_t missing_count = 0;
+  int ignored_coverage;
+  int result = -1;
+
+  diagnostic = malloc (count);
+  gradient_mask = malloc (count);
+  if (!diagnostic || !gradient_mask)
+    goto out;
+  if (milan_profile9_diagnostic_contrast (
+        working, render_mask, rows, columns, diagnostic) != 0 ||
+      quality_coverage_mask_core (
+        diagnostic, rows, columns, 80, UINT8_MAX, gradient_mask,
+        &ignored_coverage) != 0)
+    goto out;
+
+  for (size_t i = 0; i < count; i++)
+    {
+      component_mask[i] = render_mask[i] != 0 ? UINT8_MAX : 0;
+      if (render_mask[i] != 0)
+        {
+          source_count++;
+          if (gradient_mask[i] == 0)
+            missing_count++;
+          else
+            component_mask[i] = 0;
+        }
+    }
+
+  *component_score = 0;
+  *component_flag = 0;
+  if (missing_count * 100 > source_count * 30)
+    {
+      if (milan_profile9_component_score (
+            diagnostic, component_mask, rows, columns,
+            component_score) != 0)
+        goto out;
+      if (*component_score < 15)
+        *component_flag = 1;
+    }
+  *disagreement =
+    (int) (((*component_flag ? missing_count : source_count) * 100) / count);
+  result = 0;
+
+out:
+  free (gradient_mask);
+  free (diagnostic);
+  return result;
+}
+
+static int
+milan_profile9_rerender (const uint16_t *source,
+                         const uint8_t  *render_mask,
+                         size_t          rows,
+                         size_t          columns,
+                         int             refined,
+                         uint8_t        *output)
+{
+  size_t count = rows * columns;
+  uint16_t *centered = NULL;
+  size_t mask_count = 0;
+  int result;
+
+  if (!refined)
+    return milan_contrast_core (
+      source, render_mask, rows, columns, output);
+
+  centered = malloc (count * sizeof(*centered));
+  if (!centered)
+    return -1;
+  for (size_t i = 0; i < count; i++)
+    mask_count += render_mask[i] != 0;
+  int mask_percent = (int) (mask_count * 100 / count);
+
+  for (size_t row = 0; row < rows; row++)
+    {
+      uint32_t sum = 0;
+      size_t contributors = 0;
+
+      for (size_t column = 0; column < columns; column++)
+        {
+          size_t index = row * columns + column;
+
+          if (mask_percent >= 96 || render_mask[index] != 0)
+            {
+              sum += source[index];
+              contributors++;
+            }
+        }
+      uint16_t mean = contributors != 0 ? (uint16_t) (sum / contributors) : 0;
+
+      for (size_t column = 0; column < columns; column++)
+        {
+          size_t index = row * columns + column;
+          int value;
+
+          if (mask_percent < 96 && render_mask[index] == 0)
+            value = 5000;
+          else
+            value = (int) source[index] - mean + 5000;
+          centered[index] = (uint16_t) (value > 0 ? value : 0);
+        }
+    }
+  result = milan_contrast_core (
+    centered, render_mask, rows, columns, output);
+  free (centered);
+  return result;
+}
+
+static int
+milan_profile9_mean_absolute_difference (const uint8_t *first,
+                                         const uint8_t *second,
+                                         const uint8_t *mask,
+                                         size_t         count)
+{
+  uint64_t sum = 0;
+  size_t samples = 0;
+
+  for (size_t i = 0; i < count; i++)
+    if (mask[i] != 0)
+      {
+        int difference = (int) first[i] - (int) second[i];
+
+        sum += difference < 0 ? -difference : difference;
+        samples++;
+      }
+  return samples != 0 ? (int) ((sum + samples / 2) / samples) : 0;
+}
+
+static int
+milan_profile9_post_render (GoodixMilanPreprocessState *state,
+                            const uint16_t             *normalized_live,
+                            const uint16_t             *setup_map,
+                            const uint8_t              *render_mask,
+                            const uint16_t             *working,
+                            const uint16_t             *reciprocal_plane,
+                            const uint8_t              *selected,
+                            const uint8_t              *selection_mask,
+                            int                         selected_refined,
+                            GoodixMilanPreprocessPurpose purpose,
+                            uint32_t                     calibration_ready)
+{
+  const size_t rows = GOODIX_MILAN_SENSOR_ROWS;
+  const size_t columns = GOODIX_MILAN_SENSOR_COLUMNS;
+  const size_t count = GOODIX_MILAN_SENSOR_PIXELS;
+  uint16_t *secondary_working = NULL;
+  uint16_t *nested_gain = NULL;
+  uint16_t *nested_output = NULL;
+  uint8_t *primary_render = NULL;
+  uint8_t *fallback_render = NULL;
+  uint8_t *component_mask = NULL;
+  const uint8_t *quality_mask;
+  size_t mask_count = 0;
+  uint32_t saved_sample_count;
+  uint32_t auxiliary_samples;
+  int component_score;
+  int component_flag;
+  int disagreement;
+  int primary_metric;
+  int fallback_metric = 200;
+  int quality_gate;
+  int status = 0;
+  int result = -1;
+
+  (void) purpose;
+  secondary_working = malloc (count * sizeof(*secondary_working));
+  primary_render = malloc (count);
+  fallback_render = malloc (count);
+  component_mask = malloc (count);
+  if (!secondary_working || !primary_render || !fallback_render ||
+      !component_mask)
+    goto out;
+
+  if (milan_profile9_secondary_working (
+        normalized_live, setup_map, render_mask, state, rows, columns,
+        secondary_working) != 0 ||
+      milan_profile9_disagreement (
+        working, render_mask, rows, columns, component_mask,
+        &component_score, &component_flag, &disagreement) != 0 ||
+      milan_profile9_rerender (
+        secondary_working, render_mask, rows, columns, selected_refined,
+        primary_render) != 0)
+    goto out;
+
+  quality_mask = component_flag ? component_mask : selection_mask;
+  primary_metric = milan_profile9_mean_absolute_difference (
+    selected, primary_render, quality_mask, count);
+  quality_gate = primary_metric > 75;
+  if (!quality_gate && primary_metric > 55)
+    {
+      if (milan_contrast_core (
+            reciprocal_plane, render_mask, rows, columns,
+            fallback_render) != 0)
+        goto out;
+      fallback_metric = milan_profile9_mean_absolute_difference (
+        selected, fallback_render, quality_mask, count);
+      quality_gate = fallback_metric < 80;
+    }
+
+  state->post_render.primary_metric = primary_metric;
+  state->post_render.fallback_metric = fallback_metric;
+  state->post_render.disagreement = disagreement;
+  state->post_render.component_score = component_score;
+  state->post_render.component_flag = component_flag;
+  state->post_render.quality_gate = quality_gate;
+
+  if (!quality_gate)
+    {
+      result = 0;
+      goto out;
+    }
+
+  for (size_t i = 0; i < count; i++)
+    mask_count += render_mask[i] != 0;
+  int mask_percent = (int) (mask_count * 100 / count);
+  int normalized_disagreement = mask_percent != 0
+                                  ? disagreement * 100 / mask_percent
+                                  : disagreement;
+
+  if (disagreement > 40 || normalized_disagreement > 33)
+    status = GOODIX_MILAN_PREPROCESS_RETRY;
+
+  saved_sample_count = state->sample_count;
+  if (saved_sample_count < 100 && disagreement > 90)
+    {
+      auxiliary_samples = state->auxiliary_sample_count;
+      nested_gain = malloc (count * sizeof(*nested_gain));
+      nested_output = malloc (count * sizeof(*nested_output));
+      if (!nested_gain || !nested_output)
+        goto out;
+      state->sample_count = 5;
+      if (first_update_frame_core (
+            normalized_live, setup_map, state->calibration_map,
+            state->application_gain_map, state->auxiliary_gain_map,
+            auxiliary_samples, state, calibration_ready, rows, columns,
+            nested_gain, nested_output) != 0)
+        {
+          state->sample_count = saved_sample_count;
+          goto out;
+        }
+      state->sample_count = saved_sample_count;
+      state->post_render.update_applied = 1;
+    }
+  state->post_render.status = status;
+  result = status;
+
+out:
+  free (component_mask);
+  free (fallback_render);
+  free (primary_render);
+  free (nested_output);
+  free (nested_gain);
+  free (secondary_working);
+  return result;
+}

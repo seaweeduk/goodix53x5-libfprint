@@ -1,0 +1,610 @@
+#!/usr/bin/env python3
+"""Corpus-agnostic profile-9 Milan historical authority runner."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+CORPUS_SCHEMA = "milan-parity-corpus/v1"
+CASE_SCHEMA = "milan-parity-case/v1"
+RECORD_SCHEMA = "milan-parity-record/v1"
+NATIVE_REPLAY_SCHEMA = "milan-parity-native-replay/v1"
+AUTHORITY_MODEL = "canonical-zero-layered-v1"
+ENROLLMENT_AUTHORITY = "defined-byte-deterministic-replacement-v1"
+POLICY = {
+    "anti_fake_mode": 1,
+    "boundary_policy": "canonical-zero-v1",
+    "print_schema": 3,
+    "profile": 9,
+    "subtype": 12,
+}
+METADATA = {"tcode": 0x79, "dac_high": 0x7D, "dac_low": 0xC6}
+UINT32_MAX = 0xFFFFFFFF
+MAX_RECORD_BYTES = 1 << 20
+AUTHORITY_COMMIT = "be2e3ae78ce5942006155aae9dc97e6462f115a2"
+
+
+class RunnerError(RuntimeError):
+    pass
+
+
+def canonical(value) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=True) + "\n").encode("ascii")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def load_canonical(path: Path, label: str):
+    try:
+        raw = path.read_bytes()
+        value = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise RunnerError(f"cannot read {label}: {error}") from error
+    if raw != canonical(value):
+        raise RunnerError(f"{label} is not canonical JSON")
+    return value
+
+
+def load_json(path: Path, label: str):
+    try:
+        return json.loads(path.read_bytes())
+    except (OSError, json.JSONDecodeError) as error:
+        raise RunnerError(f"cannot read {label}: {error}") from error
+
+
+def require_object(value, label: str):
+    if not isinstance(value, dict):
+        raise RunnerError(f"{label} must be an object")
+    return value
+
+
+def contained(root: Path, relative: str, label: str) -> Path:
+    if not isinstance(relative, str):
+        raise RunnerError(f"{label} path must be a string")
+    member = Path(relative)
+    if member.is_absolute() or ".." in member.parts:
+        raise RunnerError(f"{label} path must be relative and contained")
+    unresolved = root / member
+    current = root
+    for part in member.parts:
+        current = current / part
+        if current.is_symlink():
+            raise RunnerError(f"{label} must not traverse a symlink")
+    resolved = unresolved.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise RunnerError(f"{label} escapes the corpus") from error
+    return resolved
+
+
+def verify_artifact(root: Path, artifact, label: str) -> Path:
+    artifact = require_object(artifact, label)
+    if set(("path", "sha256", "bytes")) - artifact.keys():
+        raise RunnerError(f"{label} is missing path, sha256, or bytes")
+    if (not isinstance(artifact["sha256"], str) or
+            not re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]) or
+            not isinstance(artifact["bytes"], int) or artifact["bytes"] < 0):
+        raise RunnerError(f"{label} has an invalid identity")
+    path = contained(root, artifact["path"], label)
+    try:
+        metadata = path.stat()
+    except OSError as error:
+        raise RunnerError(f"{label} is unavailable: {error}") from error
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_size != artifact["bytes"] or
+            sha256_file(path) != artifact["sha256"]):
+        raise RunnerError(f"{label} identity differs")
+    return path
+
+
+def load_case(root: Path, case_id: str):
+    try:
+        metadata = root.stat()
+    except OSError as error:
+        raise RunnerError(f"corpus root is unavailable: {error}") from error
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise RunnerError("corpus root is not a directory")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", case_id):
+        raise RunnerError("case ID is invalid")
+    corpus = require_object(load_canonical(root / "corpus.json", "corpus.json"),
+                            "corpus")
+    if corpus.get("schema") != CORPUS_SCHEMA or corpus.get("policy") != POLICY:
+        raise RunnerError("corpus schema or fixed profile-9 policy differs")
+    descriptors = corpus.get("cases")
+    if not isinstance(descriptors, list):
+        raise RunnerError("corpus cases must be an array")
+    selected = [item for item in descriptors
+                if isinstance(item, dict) and item.get("id") == case_id]
+    if len(selected) != 1:
+        raise RunnerError(f"case {case_id} is absent or duplicated")
+    input_path = contained(root, selected[0].get("input"), "case input")
+    case = require_object(load_canonical(input_path, f"case {case_id} input.json"),
+                          f"case {case_id}")
+    if (case.get("schema") != CASE_SCHEMA or case.get("id") != case_id or
+            case.get("policy") != POLICY):
+        raise RunnerError("case schema, identity, or fixed profile-9 policy differs")
+    device = require_object(case.get("device"), "case device")
+    if device.get("width") != 108 or device.get("height") != 88:
+        raise RunnerError("case dimensions must be 108x88")
+    artifacts = require_object(case.get("artifacts"), "case artifacts")
+    verified = {name: verify_artifact(root, artifact, f"artifact {name}")
+                for name, artifact in artifacts.items()}
+    return case, verified
+
+
+def artifact(verified: dict[str, Path], name, label: str) -> Path:
+    if not isinstance(name, str) or name not in verified:
+        raise RunnerError(f"{label} must name an explicit case artifact")
+    return verified[name]
+
+
+def native_contract(case, verified: dict[str, Path]):
+    replay = require_object(case.get("replay"), "case replay")
+    native = require_object(replay.get("native"), "case replay.native")
+    if (native.get("schema") != NATIVE_REPLAY_SCHEMA or
+            native.get("authority_model") != AUTHORITY_MODEL):
+        raise RunnerError(
+            "case replay.native must select milan-parity-native-replay/v1 "
+            "and canonical-zero-layered-v1")
+    dll_digest = native.get("dll_sha256")
+    if not isinstance(dll_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", dll_digest):
+        raise RunnerError("case replay.native.dll_sha256 must pin the DLL identity")
+    purpose = replay.get("purpose")
+    operation = case.get("operation")
+    if operation == "enroll":
+        if purpose != "enroll":
+            raise RunnerError("enrollment replay purpose must be enroll")
+        return replay, native, None
+    if operation not in {"verify", "identify", "study", "persistence"}:
+        raise RunnerError(f"native DLL runner does not support operation {operation!r}")
+    if purpose != "identify":
+        raise RunnerError("identify/study replay purpose must be identify")
+    if {key: replay.get(key) for key in METADATA} != METADATA:
+        raise RunnerError("replay metadata must equal tcode=121,dac_high=125,dac_low=198")
+    setup = artifact(verified, replay.get("setup"), "replay setup")
+    live_names = replay.get("live")
+    if not isinstance(live_names, list) or len(live_names) != 1:
+        raise RunnerError("DLL identify/study authority requires exactly one live artifact")
+    live = artifact(verified, live_names[0], "replay live")
+    gallery = replay.get("gallery")
+    if not isinstance(gallery, list) or not gallery:
+        raise RunnerError("DLL identify/study authority requires an explicit gallery")
+    entries = []
+    for position, entry in enumerate(gallery):
+        if not isinstance(entry, dict):
+            raise RunnerError(f"gallery entry {position} must be an object")
+        index = entry.get("index")
+        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index <= UINT32_MAX:
+            raise RunnerError(f"gallery entry {position} index must be a uint32")
+        template = artifact(verified, entry.get("artifact"),
+                            f"replay gallery entry {position}")
+        queue_occupied = entry.get("queue_occupied_after_match_u64", 0)
+        if (not isinstance(queue_occupied, int) or isinstance(queue_occupied, bool) or
+                queue_occupied not in {0, 1}):
+            raise RunnerError(
+                f"gallery entry {position} queue occupancy must be zero or one")
+        entries.append((setup, live, template, index, queue_occupied))
+    return replay, native, entries
+
+
+def verify_dll(path: Path, expected: str) -> None:
+    try:
+        metadata = path.stat()
+    except OSError as error:
+        raise RunnerError(f"explicit DLL is unavailable: {error}") from error
+    if (not stat.S_ISREG(metadata.st_mode) or path.is_symlink() or
+            sha256_file(path) != expected):
+        raise RunnerError("explicit DLL SHA-256 differs from case replay metadata")
+
+
+def validate_record(value, case_id: str, label: str):
+    value = require_object(value, label)
+    if (value.get("schema") != RECORD_SCHEMA or value.get("case_id") != case_id or
+            value.get("policy") != POLICY or not isinstance(value.get("result"), dict)):
+        raise RunnerError(f"{label} identity or policy differs")
+    phases = value.get("phases")
+    if not isinstance(phases, list) or not phases:
+        raise RunnerError(f"{label} phases must be non-empty")
+    names = []
+    for phase in phases:
+        if (not isinstance(phase, dict) or not isinstance(phase.get("name"), str) or
+                not isinstance(phase.get("outputs"), dict)):
+            raise RunnerError(f"{label} contains an invalid phase")
+        names.append(phase["name"])
+    if len(names) != len(set(names)):
+        raise RunnerError(f"{label} contains duplicate phase names")
+    validate_record_privacy(value, label)
+    return value
+
+
+def validate_record_privacy(value, label: str, key: str = "") -> None:
+    if isinstance(value, dict):
+        for child_key, child in value.items():
+            if not isinstance(child_key, str):
+                raise RunnerError(f"{label} contains a non-string key")
+            validate_record_privacy(child, label, child_key)
+    elif isinstance(value, list):
+        if len(value) > 256:
+            raise RunnerError(f"{label} contains an oversized array")
+        for child in value:
+            validate_record_privacy(child, label, key)
+    elif isinstance(value, str):
+        if len(value) > 1024:
+            raise RunnerError(f"{label} contains oversized text")
+        if key.lower() in {"image_bytes", "template_bytes", "payload", "raw_bytes"}:
+            raise RunnerError(f"{label} embeds private biometric bytes")
+    elif value is not None and not isinstance(value, (bool, int)):
+        raise RunnerError(f"{label} contains a non-canonical scalar")
+
+
+def run_enrollment_authority(root: Path, case_id: str, dll: Path, native):
+    if not isinstance(native.get("enrollment_authority"), dict):
+        raise RunnerError(
+            "enrollment requires model defined-byte-deterministic-replacement-v1; "
+            "ordinary DLL enrollment is not controlled-zero authority")
+    authority = native["enrollment_authority"]
+    if authority.get("model") != ENROLLMENT_AUTHORITY:
+        raise RunnerError(
+            "enrollment requires model defined-byte-deterministic-replacement-v1; "
+            "ordinary DLL enrollment is not controlled-zero authority")
+    expected = authority.get("runner_sha256")
+    if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise RunnerError("enrollment authority must pin runner_sha256")
+    runner_value = os.environ.get("MILAN_PARITY_ENROLLMENT_AUTHORITY_RUNNER")
+    if not runner_value:
+        raise RunnerError(
+            "enrollment requires MILAN_PARITY_ENROLLMENT_AUTHORITY_RUNNER; the "
+            "digest-pinned runner must enforce DLL-defined projections and the "
+            "deterministic canonical-zero replacement")
+    runner = Path(runner_value).expanduser().resolve()
+    if (not runner.is_file() or not os.access(runner, os.X_OK) or
+            sha256_file(runner) != expected):
+        raise RunnerError("enrollment authority runner is absent, non-executable, or changed")
+    if runner == Path(__file__).resolve():
+        raise RunnerError("enrollment authority runner must be independent")
+    command = [str(runner), "--corpus", str(root), "--case", case_id,
+               "--dll", str(dll)]
+    authority_repo = os.environ.get("MILAN_PARITY_ENROLLMENT_AUTHORITY_REPO")
+    if authority_repo:
+        command.extend(("--repo", str(Path(authority_repo).expanduser().resolve())))
+    records = []
+    for _ in range(2):
+        process = subprocess.run(command, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, check=False, timeout=600)
+        if process.returncode:
+            raise RunnerError(
+                f"enrollment authority runner failed with status {process.returncode}")
+        if len(process.stdout) > MAX_RECORD_BYTES:
+            raise RunnerError("enrollment authority runner emitted an oversized record")
+        try:
+            record = json.loads(process.stdout)
+        except json.JSONDecodeError as error:
+            raise RunnerError("enrollment authority runner emitted invalid JSON") from error
+        if process.stdout != canonical(record):
+            raise RunnerError("enrollment authority runner record is not canonical JSON")
+        records.append(validate_record(record, case_id, "enrollment authority record"))
+    if records[0] != records[1]:
+        raise RunnerError("enrollment deterministic-replacement replay differs across fresh runs")
+    return records[0]
+
+
+def cache_root() -> Path:
+    root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "milan-parity"
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(root, 0o700)
+    return root
+
+
+def backend_executable(tool: Path) -> Path:
+    source = tool / "native" / "native-oracle.c"
+    build_script = tool / "build-native-runner"
+    digest = hashlib.sha256(source.read_bytes() + build_script.read_bytes()).hexdigest()
+    directory = cache_root() / "native-builds" / digest
+    executable = directory / "native-oracle.exe"
+    if executable.is_file():
+        return executable
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = directory / f".native-oracle-{os.getpid()}.exe"
+    try:
+        process = subprocess.run((str(build_script), "--output", str(temporary)),
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 check=False, timeout=120)
+        if process.returncode or not temporary.is_file():
+            raise RunnerError(f"MinGW native oracle build failed with status {process.returncode}")
+        os.replace(temporary, executable)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return executable
+
+
+def provenance(tool: Path, dll_value: str | None):
+    if not dll_value:
+        raise RunnerError("--provenance requires explicit --dll PATH")
+    dll = Path(dll_value).expanduser().resolve()
+    if not dll.is_file() or dll.is_symlink():
+        raise RunnerError("explicit DLL is unavailable for provenance")
+    wine_value = os.environ.get("MILAN_PARITY_WINE", "wine")
+    wine = shutil.which(wine_value)
+    if not wine:
+        raise RunnerError("Wine executable is unavailable")
+    version = subprocess.run((wine, "--version"), stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, check=True, timeout=30).stdout.decode(
+                                 "ascii", "strict").strip()
+    backend = backend_executable(tool)
+    sources = [Path(__file__).resolve(), tool / "native" / "native-oracle.c",
+               tool / "build-native-runner"]
+    source_digest = hashlib.sha256()
+    for source in sources:
+        source_digest.update(source.name.encode("ascii"))
+        source_digest.update(source.read_bytes())
+    return {
+        "architecture": "win64-x86_64",
+        "authority_commit": AUTHORITY_COMMIT,
+        "dll_sha256": sha256_file(dll),
+        "native_build_sha256": sha256_file(backend),
+        "native_source_sha256": source_digest.hexdigest(),
+        "policy": POLICY,
+        "schema": "milan-parity-native-provenance/v1",
+        "wine_version": version,
+    }
+
+
+def wine_prefix(native) -> Path:
+    value = native.get("wine_prefix")
+    if value is None:
+        value = os.environ.get("MILAN_PARITY_WINEPREFIX") or os.environ.get("WINEPREFIX")
+    if not isinstance(value, str) or not value:
+        raise RunnerError(
+            "an existing Wine prefix is required via replay.native.wine_prefix, "
+            "MILAN_PARITY_WINEPREFIX, or WINEPREFIX; native-runner never initializes one")
+    prefix = Path(value).expanduser()
+    if not prefix.is_absolute():
+        raise RunnerError("Wine prefix path must be absolute")
+    prefix = prefix.resolve()
+    if not prefix.is_dir() or not (prefix / "system.reg").is_file():
+        raise RunnerError("Wine prefix does not exist or is not initialized")
+    z_drive = prefix / "dosdevices" / "z:"
+    if not z_drive.is_symlink() or z_drive.resolve() != Path("/"):
+        raise RunnerError("existing Wine prefix must expose its standard z: root mapping")
+    return prefix
+
+
+def windows_path(path: Path) -> str:
+    return "Z:" + str(path.resolve()).replace("/", "\\")
+
+
+def output_identity(path: Path):
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        raise RunnerError("Wine oracle omitted a required output") from error
+    return size, sha256_file(path)
+
+
+def wrapped_output_identity(path: Path):
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        raise RunnerError("Wine oracle omitted a required output") from error
+    digest = hashlib.sha256(b"G53M\x03\x00")
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return size + 6, digest.hexdigest()
+
+
+def persisted_input_identity(path: Path):
+    with path.open("rb") as stream:
+        prefix = stream.read(6)
+    if prefix == b"G53M\x03\x00":
+        return output_identity(path)
+    return wrapped_output_identity(path)
+
+
+def run_dll_authority(tool: Path, root: Path, case, native, inputs, dll: Path):
+    setup, live, template, gallery_index, queue_occupied = inputs
+    prefix = wine_prefix(native)
+    wine_value = os.environ.get("MILAN_PARITY_WINE", "wine")
+    wine = shutil.which(wine_value)
+    if not wine:
+        raise RunnerError("Wine executable is unavailable")
+    executable = backend_executable(tool)
+    operation = "study"
+    lock_path = cache_root() / ("wine-prefix-" + hashlib.sha256(
+        str(prefix).encode("utf-8")).hexdigest() + ".lock")
+    work_parent = cache_root() / "work"
+    work_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock, tempfile.TemporaryDirectory(
+            prefix="milan-parity-native-", dir=work_parent) as temporary_value:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        output = Path(temporary_value).resolve()
+        environment = os.environ.copy()
+        environment.update({
+            "WINEPREFIX": str(prefix),
+            "WINEARCH": "win64",
+            "WINEDEBUG": "-all",
+            "WINEDLLOVERRIDES": "winemenubuilder.exe=d",
+        })
+        command = [wine, windows_path(executable), operation, windows_path(dll),
+                    windows_path(output), windows_path(setup), windows_path(live),
+                    windows_path(template), str(queue_occupied)]
+        process = subprocess.run(command, env=environment, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, check=False, timeout=300)
+        if process.returncode:
+            raise RunnerError(f"Wine DLL authority failed with status {process.returncode}")
+        oracle = require_object(load_json(output / "oracle-result.json",
+                                          "Wine oracle result"),
+                                "Wine oracle result")
+        expected_contract = {
+            "schema": "milan-parity-native-oracle/v1", "profile": 9,
+            "subtype": 12, "purpose": 0, "anti_fake_mode": 1,
+            "recognition_mode": 1, "normal_extraction": True,
+            "normal_antifake": True, "source_index": 2288, "sentinel": 0,
+            "in_range_bytes_preserved": True, "shadow_payload_bytes": 2289,
+            "matrix_header_size_field": 2288, "dll_allocator_owned": True,
+            "normal_destructor_compatible": True, "hook_hits": 1,
+        }
+        if any(oracle.get(key) != value for key, value in expected_contract.items()):
+            raise RunnerError("Wine oracle did not prove the fixed normal-boundary contract")
+        processed_size, processed_hash = output_identity(output / "processed.u8")
+        loaded_size, loaded_hash = persisted_input_identity(output / "loaded-before-match.bin")
+        matched_size, matched_hash = wrapped_output_identity(output / "after-match.bin")
+        studied_size, studied_hash = wrapped_output_identity(output / "after-study.bin")
+        if oracle.get("persistence_advanced"):
+            persistent_size, persistent_hash = wrapped_output_identity(
+                output / "next-persistent.bin")
+        else:
+            persistent_size, persistent_hash = persisted_input_identity(
+                output / "next-persistent.bin")
+        _, expected_loaded_hash = persisted_input_identity(template)
+        if processed_size != 108 * 88 or loaded_hash != expected_loaded_hash:
+            raise RunnerError("Wine oracle preprocessing or loaded-template identity differs")
+        identify = require_object(oracle.get("identify"), "Wine identify result")
+        preprocess = require_object(oracle.get("preprocess"), "Wine preprocess result")
+        study = require_object(oracle.get("study"), "Wine study result")
+        queue = require_object(oracle.get("queue"), "Wine queue result")
+        matched = identify.get("matched_index") == 0
+        if (identify.get("status") != 0 or
+                identify.get("matched_index") not in {0, UINT32_MAX} or
+                matched != (identify.get("score", 0) > 0)):
+            raise RunnerError("Wine identify score, decision, or index is inconsistent")
+        expected_called = matched
+        if (study.get("called") is not expected_called or
+                not isinstance(study.get("update"), int) or
+                not 0 <= study["update"] <= 5):
+            raise RunnerError("Wine study call or update code is inconsistent")
+        advanced = expected_called and study["update"] > 0
+        if (queue.get("injected") is not bool(queue_occupied) or
+                queue.get("occupied_before_study") != queue_occupied or
+                not isinstance(queue.get("occupied_after_study"), int) or
+                isinstance(queue.get("occupied_after_study"), bool) or
+                queue["occupied_after_study"] not in {0, 1}):
+            raise RunnerError("Wine queue injection or consumption differs")
+        if oracle.get("persistence_advanced") is not advanced:
+            raise RunnerError("Wine persistence gate is inconsistent")
+        if advanced:
+            if (persistent_size, persistent_hash) != (studied_size, studied_hash):
+                raise RunnerError("positive study update did not advance persistence")
+        elif (persistent_size, persistent_hash) != (loaded_size, loaded_hash):
+            raise RunnerError("non-positive study update changed persistence")
+
+        phases = [
+            {"name": "stage-01-preprocess",
+             "outputs": {"coverage_i32": preprocess["coverage"],
+                          "processed_image_sha256": processed_hash,
+                          "quality_i32": preprocess["quality"],
+                          "status_i32": preprocess["status"]}},
+            {"name": "stage-01-extract-antifake",
+             "outputs": {"active_record_count_u32": oracle["active_record_count"]}},
+            {"name": "stage-01-study",
+             "outputs": {"final_candidate_sha256": persistent_hash if advanced else None,
+                          "study_action_u32": study["update"]}},
+        ]
+        accepted = matched
+        status = 0 if accepted else 1
+        record = {
+            "schema": RECORD_SCHEMA,
+            "case_id": case["id"],
+            "policy": POLICY,
+            "phases": phases,
+            "result": {
+                "accepted": accepted,
+                "final_candidate_sha256": persistent_hash if advanced else None,
+                "gallery": [{"accepted": accepted,
+                              "after_match_sha256": matched_hash,
+                              "evaluated": True,
+                             "gallery_index_u32": gallery_index,
+                             "gallery_position_u64": 0,
+                             "score_i32": identify["score"], "valid": True}],
+                "score_i32": identify["score"], "status_u32": status,
+                "study_action_u32": study["update"],
+                "winner_index_u32": gallery_index if accepted else UINT32_MAX,
+                "winner_position_u32": 0 if accepted else UINT32_MAX,
+            },
+        }
+        return validate_record(record, case["id"], "native DLL record")
+
+
+def run_dll_gallery(tool: Path, root: Path, case, native, entries, dll: Path):
+    records = []
+    for entry in entries:
+        record = run_dll_authority(tool, root, case, native, entry, dll)
+        records.append(record)
+        if record["result"]["accepted"]:
+            break
+    phases = records[0]["phases"][:2] + records[-1]["phases"][2:]
+    for record in records[1:]:
+        if record["phases"][:2] != records[0]["phases"][:2]:
+            raise RunnerError("fresh controlled-zero probe phases differ across gallery rows")
+    gallery = []
+    for position, record in enumerate(records):
+        row = dict(record["result"]["gallery"][0])
+        row["gallery_position_u64"] = position
+        gallery.append(row)
+    winner_position = next((position for position, row in enumerate(gallery)
+                            if row["accepted"]), UINT32_MAX)
+    final = records[-1]["result"]
+    final["gallery"] = gallery
+    final["winner_position_u32"] = winner_position
+    if winner_position == UINT32_MAX:
+        final["winner_index_u32"] = UINT32_MAX
+    return validate_record({"schema": RECORD_SCHEMA, "case_id": case["id"],
+                            "policy": POLICY, "phases": phases, "result": final},
+                           case["id"], "native DLL gallery record")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="native-runner")
+    parser.add_argument("--corpus")
+    parser.add_argument("--case")
+    parser.add_argument("--dll")
+    parser.add_argument("--provenance", action="store_true")
+    args = parser.parse_args()
+
+    tool = Path(__file__).resolve().parent
+    if args.provenance:
+        if args.corpus or args.case:
+            raise RunnerError("--provenance does not accept corpus or case")
+        sys.stdout.buffer.write(canonical(provenance(tool, args.dll)))
+        return 0
+    if not args.corpus or not args.case or not args.dll:
+        raise RunnerError("--corpus, --case, and --dll are required")
+
+    root = Path(args.corpus).expanduser().resolve()
+    dll = Path(args.dll).expanduser().resolve()
+    case, verified = load_case(root, args.case)
+    _, native, inputs = native_contract(case, verified)
+    verify_dll(dll, native["dll_sha256"])
+    if case["operation"] == "enroll":
+        record = run_enrollment_authority(root, args.case, dll, native)
+    else:
+        record = run_dll_gallery(tool, root, case, native, inputs, dll)
+    sys.stdout.buffer.write(canonical(record))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (RunnerError, OSError, subprocess.SubprocessError) as error:
+        print(f"native runner: {error}", file=sys.stderr)
+        raise SystemExit(2)

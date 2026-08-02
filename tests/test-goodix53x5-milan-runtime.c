@@ -1,0 +1,899 @@
+/*
+ * Goodix 53x5 driver for libfprint - current Milan runtime contracts
+ * Copyright (C) 2026 goodix-fp-linux-dev contributors
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ */
+
+#include "drivers_api.h"
+#include "fpi-print.h"
+#include "drivers/goodix53x5/goodix53x5-match.h"
+#include "drivers/goodix53x5/goodix53x5-private.h"
+#include "drivers/goodix53x5/goodix53x5-print.h"
+#include "drivers/goodix53x5/goodix53x5-runtime.h"
+
+#include <glib.h>
+#include <stdint.h>
+#include <string.h>
+
+#define PIXELS GOODIX_MILAN_SENSOR_PIXELS
+
+void milan_runtime_test_auth_start (FpDevice *dev);
+void milan_runtime_test_enroll_start (FpDevice *dev);
+void milan_runtime_test_clear_pending_result_report (FpiDeviceGoodix53x5 *self);
+GoodixSigfmTemplateStatus milan_runtime_harness_match (
+  GoodixMatchInfo *probe, const guint8 *feature, gsize feature_len,
+  GoodixMilanMatchResult *match_result, GBytes **after_match,
+  GoodixStudyQueue *queue);
+GoodixSigfmTemplateStatus milan_runtime_harness_study (
+  GoodixMatchInfo *probe, const guint8 *feature, gsize feature_len,
+  const GoodixMilanMatchResult *match_result, gboolean study_eligible,
+  GoodixStudyQueue *queue, GBytes **after_study,
+  GoodixMilanStudyAction *action);
+GBytes *milan_runtime_harness_combine (GPtrArray *templates);
+void milan_runtime_harness_scan_ref (FpiSsm *ssm, FpDevice *dev);
+void milan_runtime_harness_scan_wait (FpiSsm *ssm, FpDevice *dev);
+void milan_runtime_harness_scan_capture (FpiSsm *ssm, FpDevice *dev);
+void milan_runtime_harness_scan_finger_up (FpiSsm *ssm, FpDevice *dev);
+void milan_runtime_harness_scan_deactivate (FpiSsm *ssm, FpDevice *dev);
+gboolean milan_runtime_harness_reinit (FpiSsm *ssm, FpDevice *dev);
+gboolean milan_runtime_harness_stale_error (const GError *error);
+
+typedef struct
+{
+  const gint32 *scores;
+  GBytes *const *expected_gallery;
+  gsize score_count;
+  gsize match_calls;
+  GBytes *study_candidate;
+  gboolean study_failure;
+  gboolean block_study;
+  gboolean study_entered;
+  gboolean release_study;
+  gboolean cancel_called;
+  gsize study_calls;
+  GoodixMilanStudyAction study_action;
+  gboolean fail_next_combine;
+  gsize combine_calls;
+  GMutex mutex;
+  GCond condition;
+} HarnessPlan;
+
+typedef struct
+{
+  gboolean done;
+  gboolean success;
+  gboolean matched;
+  guint reports;
+  FpPrint *match;
+  FpPrint *reported_match;
+  gboolean updated;
+  FpPrint *enrolled;
+  GError *error;
+} AsyncResult;
+
+typedef struct
+{
+  guint calls;
+  gint stage;
+  gint retry_code;
+} EnrollProgress;
+
+static HarnessPlan plan;
+static FpiSsm *paused_ssm;
+static gboolean pause_wait;
+static gboolean pause_finger_up;
+
+static void
+generate_frames (guint16 setup[PIXELS],
+                 guint16 live[PIXELS],
+                 guint   pattern)
+{
+  for (guint row = 0; row < GOODIX_MILAN_SENSOR_ROWS; row++)
+    for (guint column = 0; column < GOODIX_MILAN_SENSOR_COLUMNS; column++)
+      {
+        gsize index = (gsize) row * GOODIX_MILAN_SENSOR_COLUMNS + column;
+        guint16 baseline = (guint16) (
+          0x0700 + row * 3 + column * 2 +
+          (((row * 7) ^ (column * 13) ^ (pattern * 11)) & 0x3f));
+        gint wrapped = (column * 8 + row * 8 + pattern * 17) % 80;
+        gint first = ((gint) column - 32 - (gint) pattern) *
+                     ((gint) column - 32 - (gint) pattern) +
+                     ((gint) row - 28) * ((gint) row - 28);
+        gint second = ((gint) column - 72) * ((gint) column - 72) +
+                      ((gint) row - 55 + (gint) pattern) *
+                      ((gint) row - 55 + (gint) pattern);
+        guint16 delta = wrapped < 40 ? 300 : 1200;
+
+        if (first < 36 || second < 49)
+          delta = 1200;
+        setup[index] = baseline;
+        live[index] = (guint16) (baseline - delta);
+      }
+}
+
+static GBytes *
+generate_template (guint pattern)
+{
+  g_autofree GoodixMilanPreprocessState *state = g_new0 (
+    GoodixMilanPreprocessState, 1);
+  GoodixMilanProfileState profile = { 0 };
+  g_autofree guint16 *setup = g_new (guint16, PIXELS);
+  g_autofree guint16 *live = g_new (guint16, PIXELS);
+  g_autofree guint8 *processed = g_new (guint8, PIXELS);
+  g_autoptr(GPtrArray) features = g_ptr_array_new_with_free_func (
+    (GDestroyNotify) g_bytes_unref);
+  GoodixMatchInfo *info = NULL;
+  g_autoptr(GBytes) feature = NULL;
+  GBytes *combined;
+  gint quality = -1;
+  gint coverage = -1;
+
+  generate_frames (setup, live, pattern);
+  goodix_milan_preprocess_reset (state);
+  g_assert_cmpint (goodix_milan_preprocess (
+                     state, &profile, setup, live, GOODIX_MILAN_PURPOSE_ENROLL,
+                     processed, &quality, &coverage), ==, 0);
+  g_assert_cmpint (goodix_match_extract_native_result (
+                     processed, state, live, (guint16) pattern,
+                     (guint16) pattern, 0, GOODIX_MILAN_PRINT_SENSOR_TYPE,
+                     &info), ==, GOODIX_MILAN_EXTRACTION_OK);
+  feature = goodix_match_serialize_template (info);
+  g_assert_nonnull (feature);
+  g_ptr_array_add (features, g_bytes_ref (feature));
+  combined = goodix_match_combine_templates (features);
+  g_assert_nonnull (combined);
+  g_assert_true (goodix_milan_print_validate_template (combined, NULL, NULL));
+  goodix_match_free_info (info);
+  return combined;
+}
+
+static void
+reset_plan (const gint32 *scores,
+            GBytes *const *expected_gallery,
+            gsize score_count,
+            GBytes *study_candidate)
+{
+  g_mutex_lock (&plan.mutex);
+  plan.scores = scores;
+  plan.expected_gallery = expected_gallery;
+  plan.score_count = score_count;
+  plan.match_calls = 0;
+  plan.study_candidate = study_candidate;
+  plan.study_failure = FALSE;
+  plan.block_study = FALSE;
+  plan.study_entered = FALSE;
+  plan.release_study = FALSE;
+  plan.cancel_called = FALSE;
+  plan.study_calls = 0;
+  plan.study_action = GOODIX_MILAN_STUDY_APPEND;
+  plan.fail_next_combine = FALSE;
+  plan.combine_calls = 0;
+  g_mutex_unlock (&plan.mutex);
+}
+
+GoodixSigfmTemplateStatus
+milan_runtime_harness_match (GoodixMatchInfo             *probe,
+                             const guint8                *feature,
+                              gsize                        feature_len,
+                              GoodixMilanMatchResult      *match_result,
+                              GBytes                     **after_match,
+                              GoodixStudyQueue            *queue)
+{
+  GBytes *expected;
+  const guint8 *expected_data;
+  gsize expected_size;
+  gsize index;
+  gint32 score;
+
+  (void) probe;
+  (void) queue;
+  g_mutex_lock (&plan.mutex);
+  index = plan.match_calls++;
+  g_assert_cmpuint (index, <, plan.score_count);
+  score = plan.scores[index];
+  expected = plan.expected_gallery[index];
+  g_mutex_unlock (&plan.mutex);
+
+  expected_data = g_bytes_get_data (expected, &expected_size);
+  g_assert_cmpmem (feature, feature_len, expected_data, expected_size);
+  memset (match_result, 0, sizeof(*match_result));
+  match_result->score = score;
+  *after_match = g_bytes_new (feature, feature_len);
+  return GOODIX_SIGFM_TEMPLATE_OK;
+}
+
+GoodixSigfmTemplateStatus
+milan_runtime_harness_study (GoodixMatchInfo              *probe,
+                             const guint8                 *feature,
+                             gsize                         feature_len,
+                             const GoodixMilanMatchResult *match_result,
+                             gboolean                      study_eligible,
+                             GoodixStudyQueue             *queue,
+                             GBytes                      **after_study,
+                             GoodixMilanStudyAction       *action)
+{
+  GBytes *candidate;
+  gboolean failure;
+  GoodixMilanStudyAction study_action;
+
+  (void) probe;
+  (void) feature;
+  (void) feature_len;
+  (void) match_result;
+  (void) study_eligible;
+  (void) queue;
+  g_mutex_lock (&plan.mutex);
+  plan.study_calls++;
+  plan.study_entered = TRUE;
+  g_cond_broadcast (&plan.condition);
+  while (plan.block_study && !plan.release_study)
+    g_cond_wait (&plan.condition, &plan.mutex);
+  failure = plan.study_failure;
+  candidate = plan.study_candidate;
+  study_action = plan.study_action;
+  g_mutex_unlock (&plan.mutex);
+
+  if (failure)
+    return GOODIX_SIGFM_TEMPLATE_INVALID;
+  if (study_action != GOODIX_MILAN_STUDY_NONE)
+    {
+      g_assert_nonnull (candidate);
+      *after_study = g_bytes_ref (candidate);
+    }
+  *action = study_action;
+  return GOODIX_SIGFM_TEMPLATE_OK;
+}
+
+GBytes *
+milan_runtime_harness_combine (GPtrArray *templates)
+{
+  gboolean fail;
+
+  g_mutex_lock (&plan.mutex);
+  plan.combine_calls++;
+  fail = plan.fail_next_combine;
+  plan.fail_next_combine = FALSE;
+  g_mutex_unlock (&plan.mutex);
+  return fail ? NULL : goodix_match_combine_templates (templates);
+}
+
+void
+milan_runtime_harness_scan_ref (FpiSsm *ssm,
+                                FpDevice *dev)
+{
+  g_assert_nonnull (FPI_DEVICE_GOODIX53X5 (dev)->milan_generation);
+  fpi_ssm_next_state (ssm);
+}
+
+void
+milan_runtime_harness_scan_wait (FpiSsm *ssm,
+                                 FpDevice *dev)
+{
+  (void) dev;
+  if (pause_wait)
+    paused_ssm = ssm;
+  else
+    fpi_ssm_next_state (ssm);
+}
+
+void
+milan_runtime_harness_scan_capture (FpiSsm *ssm,
+                                    FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  g_autofree guint16 *setup = g_new (guint16, PIXELS);
+
+  g_clear_pointer (&self->captured_raw_image, g_free);
+  self->captured_raw_image = g_new (guint16, PIXELS);
+  generate_frames (setup, self->captured_raw_image, 0);
+  goodix_milan_generation_note_use (self->milan_generation);
+  fpi_ssm_next_state (ssm);
+}
+
+void
+milan_runtime_harness_scan_finger_up (FpiSsm *ssm,
+                                      FpDevice *dev)
+{
+  (void) dev;
+  if (pause_finger_up)
+    paused_ssm = ssm;
+  else
+    fpi_ssm_next_state (ssm);
+}
+
+void
+milan_runtime_harness_scan_deactivate (FpiSsm *ssm,
+                                       FpDevice *dev)
+{
+  (void) dev;
+  fpi_ssm_mark_completed (ssm);
+}
+
+gboolean
+milan_runtime_harness_reinit (FpiSsm *ssm,
+                              FpDevice *dev)
+{
+  (void) ssm;
+  (void) dev;
+  return FALSE;
+}
+
+gboolean
+milan_runtime_harness_stale_error (const GError *error)
+{
+  (void) error;
+  return FALSE;
+}
+
+static void
+harness_open (FpDevice *device)
+{
+  fpi_device_open_complete (device, NULL);
+}
+
+static void
+harness_close (FpDevice *device)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (device);
+
+  g_clear_object (&self->milan_task);
+  g_clear_object (&self->cancel);
+  milan_runtime_test_clear_pending_result_report (self);
+  g_clear_pointer (&self->reference_image, g_free);
+#ifdef GOODIX53X5_DEBUG
+  g_clear_pointer (&self->captured_image, g_free);
+#endif
+  g_clear_pointer (&self->captured_raw_image, g_free);
+  goodix_milan_generation_invalidate (&self->milan_generation);
+  g_clear_pointer (&self->enroll_features, g_ptr_array_unref);
+  fpi_device_close_complete (device, NULL);
+}
+
+static void
+harness_cancel (FpDevice *device)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (device);
+
+  self->action_epoch++;
+  if (self->cancel)
+    g_cancellable_cancel (self->cancel);
+  g_mutex_lock (&plan.mutex);
+  plan.cancel_called = TRUE;
+  g_cond_broadcast (&plan.condition);
+  g_mutex_unlock (&plan.mutex);
+}
+
+static const FpIdEntry harness_ids[] = {
+  { .virtual_envvar = "GOODIX53X5_MILAN_RUNTIME_TEST" },
+  { .virtual_envvar = NULL },
+};
+
+static FpDevice *
+new_device (void)
+{
+  FpDeviceClass *klass = g_type_class_ref (FPI_TYPE_DEVICE_GOODIX53X5);
+  FpDevice *device;
+  FpiDeviceGoodix53x5 *self;
+  g_autofree guint16 *live = g_new (guint16, PIXELS);
+
+  klass->type = FP_DEVICE_TYPE_VIRTUAL;
+  klass->id_table = harness_ids;
+  klass->open = harness_open;
+  klass->close = harness_close;
+  klass->verify = milan_runtime_test_auth_start;
+  klass->identify = milan_runtime_test_auth_start;
+  klass->enroll = milan_runtime_test_enroll_start;
+  klass->cancel = harness_cancel;
+  device = g_object_new (FPI_TYPE_DEVICE_GOODIX53X5, NULL);
+  g_type_class_unref (klass);
+  g_assert_true (fp_device_open_sync (device, NULL, NULL));
+
+  self = FPI_DEVICE_GOODIX53X5 (device);
+  self->milan_sensor_subtype = GOODIX_MILAN_PRINT_SENSOR_TYPE;
+  self->milan_generation = g_new0 (GoodixMilanGeneration, 1);
+  self->milan_generation->generation_id = 1;
+  self->last_milan_generation_id = 1;
+  self->milan_generation->admitted = TRUE;
+  self->milan_generation->setup_tx_on = g_new (guint16, PIXELS);
+  generate_frames (self->milan_generation->setup_tx_on, live, 0);
+  goodix_milan_preprocess_reset (&self->milan_generation->state);
+  return device;
+}
+
+static void
+replace_generation (FpiDeviceGoodix53x5 *self)
+{
+  guint64 generation_id = self->last_milan_generation_id + 1;
+  g_autofree guint16 *live = g_new (guint16, PIXELS);
+
+  goodix_milan_generation_invalidate (&self->milan_generation);
+  self->last_milan_generation_id = generation_id;
+  self->milan_generation = g_new0 (GoodixMilanGeneration, 1);
+  self->milan_generation->generation_id = generation_id;
+  self->milan_generation->admitted = TRUE;
+  self->milan_generation->setup_tx_on = g_new (guint16, PIXELS);
+  generate_frames (self->milan_generation->setup_tx_on, live, 0);
+  goodix_milan_preprocess_reset (&self->milan_generation->state);
+}
+
+static FpPrint *
+make_print (FpDevice *device,
+            GBytes *template_bytes)
+{
+  g_autoptr(GError) error = NULL;
+  g_autoptr(GVariant) data = goodix_milan_print_build_data (template_bytes,
+                                                            &error);
+  FpPrint *print = fp_print_new (device);
+
+  g_assert_no_error (error);
+  g_assert_nonnull (data);
+  g_assert_true (g_variant_is_of_type (data, G_VARIANT_TYPE ("(uuuusay)")));
+  fpi_print_set_type (print, FPI_PRINT_RAW);
+  g_object_set (print, "fpi-data", data, NULL);
+  return g_object_ref_sink (print);
+}
+
+static FpPrint *
+make_malformed_current_print (FpDevice *device)
+{
+  static const guint8 malformed[] = "G53M\x03\x00" "bad";
+  GVariant *payload = g_variant_new_fixed_array (
+    G_VARIANT_TYPE_BYTE, malformed, sizeof(malformed) - 1, 1);
+  g_autoptr(GVariant) data = g_variant_ref_sink (g_variant_new (
+    "(uuuus@ay)", 3U, 9U, 12U, 1U, "canonical-zero-v1", payload));
+  FpPrint *print = fp_print_new (device);
+
+  fpi_print_set_type (print, FPI_PRINT_RAW);
+  g_object_set (print, "fpi-data", data, NULL);
+  return g_object_ref_sink (print);
+}
+
+static GBytes *
+get_print_template (FpPrint *print)
+{
+  g_autoptr(GVariant) data = NULL;
+  g_autoptr(GError) error = NULL;
+  GBytes *template_bytes = NULL;
+
+  g_object_get (print, "fpi-data", &data, NULL);
+  g_assert_true (goodix_milan_print_parse_data (data, &template_bytes, &error));
+  g_assert_no_error (error);
+  return template_bytes;
+}
+
+static void
+match_report (FpDevice *device,
+              FpPrint *match,
+              FpPrint *print,
+              gpointer user_data,
+              GError *error)
+{
+  AsyncResult *result = user_data;
+
+  (void) device;
+  (void) print;
+  (void) error;
+  result->reports++;
+  result->reported_match = match;
+}
+
+static void
+verify_done (GObject *source,
+             GAsyncResult *async,
+             gpointer user_data)
+{
+  AsyncResult *result = user_data;
+
+  result->success = fp_device_verify_finish_with_update (
+    FP_DEVICE (source), async, &result->matched, NULL, &result->updated,
+    &result->error);
+  result->done = TRUE;
+}
+
+static void
+identify_done (GObject *source,
+               GAsyncResult *async,
+               gpointer user_data)
+{
+  AsyncResult *result = user_data;
+
+  result->success = fp_device_identify_finish_with_update (
+    FP_DEVICE (source), async, &result->match, NULL, &result->updated,
+    &result->error);
+  result->done = TRUE;
+}
+
+static void
+enroll_done (GObject *source,
+             GAsyncResult *async,
+             gpointer user_data)
+{
+  AsyncResult *result = user_data;
+
+  result->enrolled = fp_device_enroll_finish (
+    FP_DEVICE (source), async, &result->error);
+  result->success = result->enrolled != NULL;
+  result->done = TRUE;
+}
+
+static void
+enroll_progress (FpDevice *device,
+                 gint completed_stages,
+                 FpPrint *print,
+                 gpointer user_data,
+                 GError *error)
+{
+  EnrollProgress *progress = user_data;
+
+  (void) device;
+  (void) print;
+  progress->calls++;
+  progress->stage = completed_stages;
+  progress->retry_code = error ? error->code : -1;
+}
+
+static void
+wait_done (AsyncResult *result)
+{
+  while (!result->done)
+    g_main_context_iteration (NULL, TRUE);
+}
+
+static void
+wait_paused (void)
+{
+  while (!paused_ssm)
+    g_main_context_iteration (NULL, TRUE);
+}
+
+static void
+wait_study (void)
+{
+  g_mutex_lock (&plan.mutex);
+  while (!plan.study_entered)
+    g_cond_wait (&plan.condition, &plan.mutex);
+  g_mutex_unlock (&plan.mutex);
+}
+
+static void
+wait_cancelled (void)
+{
+  g_mutex_lock (&plan.mutex);
+  while (!plan.cancel_called)
+    {
+      g_mutex_unlock (&plan.mutex);
+      g_assert_true (g_main_context_iteration (NULL, FALSE));
+      g_mutex_lock (&plan.mutex);
+    }
+  g_mutex_unlock (&plan.mutex);
+}
+
+static void
+release_study (void)
+{
+  g_mutex_lock (&plan.mutex);
+  plan.release_study = TRUE;
+  g_cond_broadcast (&plan.condition);
+  g_mutex_unlock (&plan.mutex);
+}
+
+static void
+clear_result (AsyncResult *result)
+{
+  g_clear_object (&result->match);
+  g_clear_object (&result->enrolled);
+  g_clear_error (&result->error);
+  memset (result, 0, sizeof(*result));
+}
+
+static void
+close_device (FpDevice *device)
+{
+  g_assert_true (fp_device_close_sync (device, NULL, NULL));
+}
+
+static void
+test_auth_gallery_outcomes (void)
+{
+  static const gint32 first_positive[] = { -4, 37, 999 };
+  static const gint32 all_negative[] = { -4, 0, -7 };
+  static const gint32 positive[] = { 37 };
+  g_autoptr(FpDevice) device = new_device ();
+  g_autoptr(GBytes) stored0 = generate_template (0);
+  g_autoptr(GBytes) stored1 = generate_template (1);
+  g_autoptr(GBytes) stored2 = generate_template (2);
+  g_autoptr(GBytes) update = generate_template (3);
+  GBytes *templates[] = { stored0, stored1, stored2 };
+  g_autoptr(GPtrArray) gallery = g_ptr_array_new_with_free_func (g_object_unref);
+  AsyncResult result = { 0 };
+
+  g_assert_false (g_bytes_equal (stored0, stored1));
+  g_assert_false (g_bytes_equal (stored1, stored2));
+  g_assert_false (g_bytes_equal (stored1, update));
+  for (gsize i = 0; i < G_N_ELEMENTS (templates); i++)
+    g_ptr_array_add (gallery, make_print (device, templates[i]));
+
+  reset_plan (first_positive, templates, G_N_ELEMENTS (first_positive), update);
+  fp_device_identify (device, gallery, NULL, match_report, &result, NULL,
+                      identify_done, &result);
+  wait_done (&result);
+  g_assert_true (result.success);
+  g_assert_true (result.match == g_ptr_array_index (gallery, 1));
+  g_assert_true (result.reported_match == result.match);
+  g_assert_cmpuint (result.reports, ==, 1);
+  g_assert_true (result.updated);
+  g_autoptr(GBytes) updated = get_print_template (result.match);
+  g_assert_true (g_bytes_equal (updated, update));
+  g_autoptr(GBytes) unchanged0 = get_print_template (g_ptr_array_index (gallery, 0));
+  g_autoptr(GBytes) unchanged2 = get_print_template (g_ptr_array_index (gallery, 2));
+  g_assert_true (g_bytes_equal (unchanged0, stored0));
+  g_assert_true (g_bytes_equal (unchanged2, stored2));
+  g_assert_cmpuint (plan.match_calls, ==, 2);
+  g_assert_cmpuint (plan.study_calls, ==, 1);
+  clear_result (&result);
+  templates[1] = update;
+
+  reset_plan (all_negative, templates, G_N_ELEMENTS (all_negative), NULL);
+  fp_device_identify (device, gallery, NULL, match_report, &result, NULL,
+                      identify_done, &result);
+  wait_done (&result);
+  g_assert_true (result.success);
+  g_assert_null (result.match);
+  g_assert_false (result.updated);
+  g_assert_cmpuint (result.reports, ==, 1);
+  g_assert_cmpuint (plan.match_calls, ==, 3);
+  g_assert_cmpuint (plan.study_calls, ==, 0);
+  clear_result (&result);
+
+  reset_plan (positive, templates, G_N_ELEMENTS (positive), NULL);
+  plan.study_action = GOODIX_MILAN_STUDY_NONE;
+  fp_device_verify (device, g_ptr_array_index (gallery, 0), NULL,
+                    match_report, &result, NULL, verify_done, &result);
+  wait_done (&result);
+  g_assert_true (result.success);
+  g_assert_true (result.matched);
+  g_assert_false (result.updated);
+  g_autoptr(GBytes) action0 = get_print_template (g_ptr_array_index (gallery, 0));
+  g_assert_true (g_bytes_equal (action0, stored0));
+  g_assert_cmpuint (plan.study_calls, ==, 1);
+  clear_result (&result);
+
+  reset_plan (positive, templates, G_N_ELEMENTS (positive), update);
+  plan.study_failure = TRUE;
+  g_test_expect_message ("libfprint-goodix53x5", G_LOG_LEVEL_WARNING,
+                         "*learning was discarded after a positive match*");
+  fp_device_verify (device, g_ptr_array_index (gallery, 0), NULL,
+                    match_report, &result, NULL, verify_done, &result);
+  wait_done (&result);
+  g_test_assert_expected_messages ();
+  g_assert_true (result.success);
+  g_assert_true (result.matched);
+  g_assert_cmpuint (result.reports, ==, 1);
+  g_assert_false (result.updated);
+  g_assert_cmpuint (plan.match_calls, ==, 1);
+  g_assert_cmpuint (plan.study_calls, ==, 1);
+  clear_result (&result);
+  close_device (device);
+}
+
+static void
+test_malformed_current_print (void)
+{
+  g_autoptr(FpDevice) device = new_device ();
+  g_autoptr(FpPrint) print = make_malformed_current_print (device);
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (device);
+  AsyncResult result = { 0 };
+  guint32 sample_count = self->milan_generation->state.sample_count;
+
+  reset_plan (NULL, NULL, 0, NULL);
+  fp_device_verify (device, print, NULL, match_report, &result, NULL,
+                    verify_done, &result);
+  wait_done (&result);
+  g_assert_false (result.success);
+  g_assert_error (result.error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_DATA_INVALID);
+  g_assert_cmpuint (result.reports, ==, 0);
+  g_assert_false (result.updated);
+  g_assert_cmpuint (plan.match_calls, ==, 0);
+  g_assert_cmpuint (plan.study_calls, ==, 0);
+  g_assert_cmpuint (self->milan_generation->state.sample_count, ==,
+                    sample_count);
+  clear_result (&result);
+  close_device (device);
+}
+
+static void
+test_cancellation_no_publication (void)
+{
+  static const gint32 positive[] = { 37 };
+  g_autoptr(FpDevice) device = new_device ();
+  g_autoptr(GBytes) stored = generate_template (0);
+  g_autoptr(GBytes) update = generate_template (1);
+  GBytes *templates[] = { stored };
+  g_autoptr(FpPrint) print = make_print (device, stored);
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (device);
+  AsyncResult result = { 0 };
+  guint32 sample_count = self->milan_generation->state.sample_count;
+  guint64 action_epoch;
+
+  reset_plan (positive, templates, G_N_ELEMENTS (positive), update);
+  pause_wait = TRUE;
+  g_autoptr(GCancellable) cancel = g_cancellable_new ();
+  fp_device_verify (device, print, cancel, match_report, &result, NULL,
+                    verify_done, &result);
+  wait_paused ();
+  g_cancellable_cancel (cancel);
+  fpi_ssm_mark_failed (paused_ssm, g_error_new_literal (
+    G_IO_ERROR, G_IO_ERROR_CANCELLED, "early cancellation"));
+  paused_ssm = NULL;
+  pause_wait = FALSE;
+  wait_done (&result);
+  g_assert_cmpuint (result.reports, ==, 0);
+  g_assert_false (result.updated);
+  g_assert_cmpuint (plan.match_calls, ==, 0);
+  g_assert_cmpuint (self->milan_generation->state.sample_count, ==,
+                    sample_count);
+  clear_result (&result);
+
+  reset_plan (positive, templates, G_N_ELEMENTS (positive), update);
+  plan.block_study = TRUE;
+  cancel = g_cancellable_new ();
+  fp_device_verify (device, print, cancel, match_report, &result, NULL,
+                    verify_done, &result);
+  wait_study ();
+  action_epoch = self->action_epoch;
+  g_cancellable_cancel (cancel);
+  wait_cancelled ();
+  g_assert_cmpuint (self->action_epoch, ==, action_epoch + 1);
+  release_study ();
+  wait_done (&result);
+  g_assert_cmpuint (result.reports, ==, 0);
+  g_assert_false (result.updated);
+  g_assert_cmpuint (plan.match_calls, ==, 1);
+  g_assert_cmpuint (plan.study_calls, ==, 1);
+  g_assert_cmpuint (self->milan_generation->state.sample_count, ==,
+                    sample_count);
+  clear_result (&result);
+  close_device (device);
+}
+
+static void
+test_enrollment_combine_retry (void)
+{
+  g_autoptr(FpDevice) device = new_device ();
+  g_autoptr(FpPrint) print = g_object_ref_sink (fp_print_new (device));
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (device);
+  AsyncResult result = { 0 };
+  EnrollProgress progress = { 0 };
+
+  reset_plan (NULL, NULL, 0, NULL);
+  plan.fail_next_combine = TRUE;
+  pause_finger_up = TRUE;
+  fp_device_enroll (device, print, NULL, enroll_progress, &progress, NULL,
+                    enroll_done, &result);
+  wait_paused ();
+  g_assert_cmpuint (plan.combine_calls, ==, 1);
+  g_assert_cmpuint (progress.calls, ==, 1);
+  g_assert_cmpint (progress.stage, ==, 0);
+  g_assert_cmpint (progress.retry_code, ==, FP_DEVICE_RETRY_REMOVE_FINGER);
+  g_assert_cmpint (self->enroll_stage, ==, 0);
+  g_assert_cmpuint (self->enroll_features->len, ==, 0);
+  g_assert_cmpuint (self->milan_generation->enrollment_stages, ==, 0);
+
+  fpi_ssm_mark_failed (paused_ssm, g_error_new_literal (
+    G_IO_ERROR, G_IO_ERROR_CANCELLED, "combine retry observed"));
+  paused_ssm = NULL;
+  pause_finger_up = FALSE;
+  wait_done (&result);
+  g_assert_false (result.success);
+  g_assert_null (result.enrolled);
+  clear_result (&result);
+  close_device (device);
+}
+
+typedef enum
+{
+  STALE_ACTION_EPOCH,
+  STALE_GENERATION,
+  STALE_TASK_AND_SSM,
+} StaleKind;
+
+static void
+test_stale_result_guards (void)
+{
+  static const gint32 positive[] = { 37 };
+  static const StaleKind rows[] = {
+    STALE_ACTION_EPOCH,
+    STALE_GENERATION,
+    STALE_TASK_AND_SSM,
+  };
+
+  for (gsize row = 0; row < G_N_ELEMENTS (rows); row++)
+    {
+      g_autoptr(FpDevice) device = new_device ();
+      g_autoptr(GBytes) stored = generate_template (0);
+      g_autoptr(GBytes) update = generate_template (1);
+      GBytes *templates[] = { stored };
+      g_autoptr(FpPrint) print = make_print (device, stored);
+      FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (device);
+      AsyncResult result = { 0 };
+      guint32 sample_count = self->milan_generation->state.sample_count;
+      FpiSsm *original_ssm;
+      FpiSsm *replacement_ssm = NULL;
+      GTask *replacement_task = NULL;
+
+      reset_plan (positive, templates, G_N_ELEMENTS (positive), update);
+      plan.block_study = TRUE;
+      fp_device_verify (device, print, NULL, match_report, &result, NULL,
+                        verify_done, &result);
+      wait_study ();
+      original_ssm = self->task_ssm;
+      if (rows[row] == STALE_ACTION_EPOCH)
+        self->action_epoch++;
+      else if (rows[row] == STALE_GENERATION)
+        {
+          replace_generation (self);
+          sample_count = self->milan_generation->state.sample_count;
+        }
+      else
+        {
+          replacement_ssm = fpi_ssm_new (device,
+                                          milan_runtime_harness_scan_ref, 1);
+          replacement_task = g_task_new (device, NULL, NULL, NULL);
+          g_clear_object (&self->milan_task);
+          self->milan_task = g_object_ref (replacement_task);
+          self->task_ssm = replacement_ssm;
+        }
+      release_study ();
+
+      if (rows[row] == STALE_TASK_AND_SSM)
+        {
+          while (self->captured_raw_image)
+            g_main_context_iteration (NULL, TRUE);
+          g_clear_object (&self->milan_task);
+          g_task_return_boolean (replacement_task, TRUE);
+          g_clear_object (&replacement_task);
+          self->task_ssm = original_ssm;
+          fpi_ssm_free (replacement_ssm);
+          fpi_ssm_mark_failed (original_ssm, g_error_new_literal (
+            G_IO_ERROR, G_IO_ERROR_CANCELLED, "task/SSM owner replaced"));
+        }
+      wait_done (&result);
+      g_test_message ("stale row=%u", (guint) rows[row]);
+      g_assert_cmpuint (result.reports, ==, 0);
+      g_assert_false (result.updated);
+      g_assert_cmpuint (self->milan_generation->state.sample_count, ==,
+                        sample_count);
+      g_assert_false (self->pending_result_report);
+      clear_result (&result);
+      close_device (device);
+    }
+}
+
+int
+main (int argc,
+      char **argv)
+{
+  gint status;
+
+  g_test_init (&argc, &argv, NULL);
+  g_mutex_init (&plan.mutex);
+  g_cond_init (&plan.condition);
+  g_test_add_func ("/goodix53x5/milan/runtime/auth-gallery-outcomes",
+                   test_auth_gallery_outcomes);
+  g_test_add_func ("/goodix53x5/milan/runtime/malformed-current-print",
+                   test_malformed_current_print);
+  g_test_add_func ("/goodix53x5/milan/runtime/cancellation-no-publication",
+                   test_cancellation_no_publication);
+  g_test_add_func ("/goodix53x5/milan/runtime/enrollment-combine-retry",
+                   test_enrollment_combine_retry);
+  g_test_add_func ("/goodix53x5/milan/runtime/stale-result-guards",
+                   test_stale_result_guards);
+  status = g_test_run ();
+  g_cond_clear (&plan.condition);
+  g_mutex_clear (&plan.mutex);
+  return status;
+}

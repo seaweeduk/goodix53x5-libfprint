@@ -1,0 +1,224 @@
+name: OpenCode PR Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  review:
+    if: |
+      !github.event.pull_request.draft &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run OpenCode PR review
+        uses: anomalyco/opencode/github@latest
+        env:
+          OPENCODE_AUTH_CONTENT: ${{ secrets.OPENCODE_AUTH_CONTENT }}
+          OPENCODE_CONFIG_CONTENT: |
+            {
+              "references": {
+                "react": {
+                  "repository": "react/react",
+                  "description": "Consult only when React hooks, rendering, effects, concurrency, portals, or external-store behavior needs source verification"
+                },
+                "fastapi": {
+                  "repository": "fastapi/fastapi",
+                  "description": "Consult only when FastAPI routing, dependencies, streaming, WebSockets, middleware, or lifespan behavior needs source verification"
+                },
+                "sqlalchemy": {
+                  "repository": "sqlalchemy/sqlalchemy",
+                  "description": "Consult only when SQLAlchemy ORM, async sessions, relationships, transactions, events, or dialect behavior needs source verification"
+                },
+                "alembic": {
+                  "repository": "sqlalchemy/alembic",
+                  "description": "Consult only when Alembic migrations, revision execution, operations, or autogeneration behavior needs source verification"
+                },
+                "pydantic": {
+                  "repository": "pydantic/pydantic",
+                  "description": "Consult only when Pydantic validation, serialization, validators, computed fields, or schema behavior needs source verification"
+                },
+                "google-genai": {
+                  "repository": "googleapis/python-genai",
+                  "description": "Consult only when Google Gen AI Python streaming, tools, uploads, media generation, errors, or usage metadata needs source verification"
+                },
+                "openai-python": {
+                  "repository": "openai/openai-python",
+                  "description": "Consult only when OpenAI Python streaming, typed chunks, tool-call deltas, errors, or client lifecycle needs source verification"
+                },
+                "mcp-python": {
+                  "repository": "modelcontextprotocol/python-sdk",
+                  "description": "Consult only when MCP Python sessions, transports, OAuth, tool calls, cancellation, or cleanup behavior needs source verification"
+                },
+                "libfprint": {
+                  "repository": "https://gitlab.freedesktop.org/libfprint/libfprint.git",
+                  "description": "Consult only when libfprint driver, device state machine, USB transport, image, or private API behavior needs source verification"
+                },
+                "opencv": {
+                  "repository": "opencv/opencv",
+                  "description": "Consult only when OpenCV image processing, CLAHE, SIFT, descriptor matching, or version compatibility needs source verification"
+                },
+                "pygobject": {
+                  "repository": "https://gitlab.gnome.org/GNOME/pygobject.git",
+                  "description": "Consult only when PyGObject or GObject introspection behavior needs source verification"
+                },
+                "libadwaita": {
+                  "repository": "https://gitlab.gnome.org/GNOME/libadwaita.git",
+                  "description": "Consult only when Adwaita widgets, GNOME UI patterns, or GTK integration behavior need verification"
+                },
+                "streamdown": {
+                  "repository": "vercel/streamdown",
+                  "description": "Consult only when Streamdown streaming Markdown rendering or API behavior needs verification"
+                },
+                "ai-sdk": {
+                  "repository": "vercel/ai",
+                  "description": "Consult only when Vercel AI SDK chat, tools, streaming, or UI message behavior needs verification"
+                },
+                "tanstack-query": {
+                  "repository": "TanStack/query",
+                  "description": "Consult only when TanStack Query cache, mutation, invalidation, hydration, or server-state behavior needs verification"
+                },
+                "tanstack-router": {
+                  "repository": "TanStack/router",
+                  "description": "Consult only when TanStack Router or Start routing, loaders, type-safety, SSR, or server-function behavior needs verification"
+                },
+                "tanstack-virtual": {
+                  "repository": "TanStack/virtual",
+                  "description": "Consult only when TanStack Virtual measurement, scrolling, virtualization, or list performance behavior needs verification"
+                },
+                "tanstack-store": {
+                  "repository": "TanStack/store",
+                  "description": "Consult only when TanStack Store state, subscriptions, derived state, or framework integration behavior needs verification"
+                },
+                "tanstack-form": {
+                  "repository": "TanStack/form",
+                  "description": "Consult only when TanStack Form validation, field state, submission, or framework integration behavior needs verification"
+                },
+                "tanstack-table": {
+                  "repository": "TanStack/table",
+                  "description": "Consult only when TanStack Table columns, row models, sorting, filtering, or table state behavior needs verification"
+                },
+                "opencode": {
+                  "repository": "anomalyco/opencode",
+                  "description": "Consult only when OpenCode internals, config, storage, agents, tools, plugins, or runtime behavior need source verification"
+                },
+                "tremor": {
+                  "repository": "tremorlabs/tremor-npm",
+                  "description": "Consult only when @tremor/react dashboard components, charts, tables, styling, or tooltip behavior needs verification"
+                },
+                "recharts": {
+                  "repository": "recharts/recharts",
+                  "description": "Consult only when Recharts APIs, chart behavior, rendering, responsiveness, or integration details need verification"
+                },
+                "yt-dlp": {
+                  "repository": "yt-dlp/yt-dlp",
+                  "description": "Consult only when yt-dlp extractor behavior, options, downloads, or media-platform quirks need source verification"
+                },
+                "instaloader": {
+                  "repository": "instaloader/instaloader",
+                  "description": "Consult only when Instaloader APIs, sessions, rate limits, or Instagram download behavior need source verification"
+                },
+                "hyprland": {
+                  "repository": "hyprwm/Hyprland",
+                  "description": "Use for Hyprland compositor behavior, configuration, plugins, protocols, troubleshooting, and source-level details"
+                },
+                "hypridle": {
+                  "repository": "hyprwm/hypridle",
+                  "description": "Use for hypridle idle daemon behavior, listener and timer configuration, troubleshooting, and source-level details"
+                },
+                "hyprlock": {
+                  "repository": "hyprwm/hyprlock",
+                  "description": "Use for hyprlock lock screen behavior, authentication, rendering, configuration, troubleshooting, and source-level details"
+                }
+              },
+              "provider": {
+                "openai": {
+                  "models": {
+                    "gpt-5.6-sol": {
+                      "options": {
+                        "reasoningEffort": "high"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        with:
+          model: openai/gpt-5.6-sol
+          variant: high
+          share: false
+          prompt: |
+            Review this pull request.
+
+            If an AGENTS.md file exists, read it at the start of the review.
+            Review the diff in the context of the full codebase, including unchanged code it interacts with or affects.
+
+            Relevant upstream source repositories may be available as project references in the system context. Use them selectively when a finding depends on framework, SDK, protocol, or library behavior that needs source-level verification. Do not inspect every reference.
+
+            Focus on actionable findings:
+            - Correctness bugs and behavioral regressions
+            - Security, privacy, permission, or data-loss risks
+            - Material performance or reliability risks
+            - Unnecessary complexity or scope introduced by this pull request
+
+            Prefer the smallest change that fully implements the intended behavior. Examine whether added abstractions, wrappers, compatibility paths, fallbacks, validation, state, configuration, dependencies, or unrelated edits are required by a concrete current requirement.
+
+            Report unnecessary complexity when you can identify a concrete simpler implementation that preserves the required behavior. The better solution may be a local simplification or a broader refactor of the existing code directly involved in the change.
+
+            Watch for pull requests that patch around a flawed abstraction, add another special case, or preserve unnecessary machinery when reworking the affected design would reduce total complexity. Prefer removing or simplifying existing code over layering new behavior on top when the broader change is well-scoped and produces a clearer system.
+
+            Do not assume that fewer changed lines are inherently better. Judge the total resulting design, not just the size of the patch. Do not propose unrelated cleanup or speculative rewrites without a concrete connection to the behavior being changed.
+
+            Do not run test suites; automated checks handle that separately.
+            Do not report formatting, lint, generic style preferences, speculative concerns, or pre-existing issues unless this pull request makes them worse or newly reachable.
+
+            Do not narrate the review process or mention instructions, tools, files that were absent, or checks you did not run. In particular, do not mention whether AGENTS.md existed, whether tests were run, or whether project references were consulted. Discuss only the changed code, its behavior, and actionable findings.
+
+            Output format:
+            - Use clean GitHub-flavored Markdown
+            - Start with one concise paragraph summarizing the changed behavior and overall assessment
+            - List findings by number, with severity, file/line, why it matters, and a suggested fix
+            - Avoid generic filler and repeated summaries
+
+            If there are no actionable findings, respond with "LGTM 👍" on its own line, then leave a blank line before adding a concise explanation of why the changed behavior appears correct. Discuss the code and behavior, not the review process.
+
+      - name: Persist rotated OpenCode auth
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          auth_file="$HOME/.local/share/opencode/auth.json"
+          if [ ! -s "$auth_file" ]; then
+            echo "::notice::OpenCode auth file was not updated; skipping auth persistence."
+            exit 0
+          fi
+
+          filtered_auth="$(jq -ce 'if .openai then {openai: .openai} else empty end' "$auth_file")" || {
+            echo "::warning::OpenCode auth file does not contain OpenAI auth; skipping auth persistence."
+            exit 0
+          }
+          echo "::add-mask::$filtered_auth"
+
+          oidc_response="$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=opencode-github-action")"
+          oidc_token="$(jq -r '.value' <<<"$oidc_response")"
+          echo "::add-mask::$oidc_token"
+
+          app_response="$(curl -fsSL -X POST -H "Authorization: Bearer $oidc_token" https://api.opencode.ai/exchange_github_app_token)"
+          app_token="$(jq -r '.token' <<<"$app_response")"
+          echo "::add-mask::$app_token"
+
+          printf '%s' "$filtered_auth" | GH_TOKEN="$app_token" gh secret set OPENCODE_AUTH_CONTENT --repo "$GITHUB_REPOSITORY"

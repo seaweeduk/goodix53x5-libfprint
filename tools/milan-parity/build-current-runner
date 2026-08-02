@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=
+output=
+debug=0
+while (( $# )); do
+  case "$1" in
+    --repo) repo=$2; shift 2 ;;
+    --output) output=$2; shift 2 ;;
+    --debug) debug=$2; shift 2 ;;
+    *) printf 'usage: %s --repo PATH --output PATH [--debug 0|1]\n' "$0" >&2; exit 2 ;;
+  esac
+done
+if [[ -z $repo || -z $output || ( $debug != 0 && $debug != 1 ) ]]; then
+  printf 'usage: %s --repo PATH --output PATH [--debug 0|1]\n' "$0" >&2
+  exit 2
+fi
+
+driver="$repo/drivers/goodix53x5"
+libfprint="$repo/.build/libfprint"
+build="$libfprint/builddir"
+if [[ ! -d $driver || ! -d $build ]]; then
+  printf 'current runner requires driver source and an existing .build/libfprint/builddir under %s\n' "$repo" >&2
+  exit 2
+fi
+
+mkdir -p "$(dirname "$output")"
+mapfile -t sources < <(
+  printf '%s\n' \
+    goodix53x5-antifake-classifier.c goodix53x5-antifake-construction.c \
+    goodix53x5-antifake-feature.c goodix53x5-antifake-mask.c \
+    goodix53x5-antifake-morphology.c goodix53x5-antifake-pair.c \
+    goodix53x5-antifake-signal.c \
+    goodix53x5-enrollment-propagation.c goodix53x5-enrollment-template.c \
+    goodix53x5-feature-enhancement.c goodix53x5-feature-extraction.c \
+    goodix53x5-feature-extrema.c goodix53x5-feature-mask.c \
+    goodix53x5-feature-materialization.c goodix53x5-feature-record.c \
+    goodix53x5-match-admission.c goodix53x5-match-candidate.c \
+    goodix53x5-match-correspondence.c goodix53x5-match-fallback.c \
+    goodix53x5-match-geometry.c goodix53x5-match-info.c \
+    goodix53x5-match-lifecycle.c goodix53x5-match-overlap.c \
+    goodix53x5-match-policy.c goodix53x5-match-rescue.c goodix53x5-match-score.c \
+    goodix53x5-match-selection.c goodix53x5-match-study.c \
+    goodix53x5-matcher.c goodix53x5-milan.c goodix53x5-preprocess-classification.c \
+    goodix53x5-preprocess-gain.c goodix53x5-preprocess-selection.c \
+    goodix53x5-preprocess-validity.c goodix53x5-print.c goodix53x5-relations.c \
+    goodix53x5-runtime.c goodix53x5-study-policy.c goodix53x5-study-queue.c \
+    goodix53x5-study.c goodix53x5-template-codec.c \
+    goodix53x5-template-lifecycle.c goodix53x5-transform.c
+)
+for index in "${!sources[@]}"; do
+  sources[$index]="$driver/${sources[$index]}"
+done
+
+cflags=()
+if [[ $debug == 1 ]]; then
+  cflags+=( -DGOODIX53X5_DEBUG )
+fi
+
+cc -std=c17 -O2 -Wall -Wextra -Werror "${cflags[@]}" \
+  -I"$driver" -I"$build" -I"$build/libfprint" -I"$libfprint" -I"$libfprint/libfprint" \
+  $(pkg-config --cflags glib-2.0 gio-2.0 gobject-2.0 gusb) \
+  "${sources[@]}" "$repo/tools/milan-parity/current/current-runner.c" \
+  $(pkg-config --libs glib-2.0 gio-2.0 gobject-2.0 gusb) -o "$output"
