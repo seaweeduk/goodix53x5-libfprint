@@ -143,6 +143,12 @@ Saved fingerprints under `/var/lib/fprint` are left in place.
 
 ## Credits
 
+- [Berkekbgz](https://github.com/berkekbgz) for reversing the native Chicago
+  matcher in [libfprint-goodix-spi](https://github.com/berkekbgz/libfprint-goodix-spi)
+  and for his advice
+- [AndyHazz](https://github.com/AndyHazz) for the original
+  [Goodix 53x5 libfprint driver](https://github.com/AndyHazz/goodix53x5-libfprint),
+  from which this repository was forked
 - Protocol research and earlier Goodix Linux work from
   [goodix-fp-linux-dev](https://github.com/goodix-fp-linux-dev)
 - libfprint and fprintd from the
