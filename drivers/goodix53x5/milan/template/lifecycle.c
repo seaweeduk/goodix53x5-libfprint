@@ -297,12 +297,34 @@ goodix_milan_template_normalize (
     return -1;
   unpacked = malloc (sizeof(*unpacked));
   if (!unpacked || goodix_milan_template_unpack (
-        current_template, current_template_size, unpacked) != 0 ||
-      unpacked->metadata.graph_established != 1 ||
-      unpacked->metadata.graph_reference_index < 0 ||
-      (size_t) unpacked->metadata.graph_reference_index >=
-        unpacked->feature_count ||
-      goodix_milan_template_normalize_unpacked (
+        current_template, current_template_size, unpacked) != 0)
+    goto out;
+  if (unpacked->metadata.graph_established == 1)
+    {
+      if (unpacked->metadata.graph_reference_index < 0 ||
+          (size_t) unpacked->metadata.graph_reference_index >=
+            unpacked->feature_count)
+        goto out;
+    }
+  else
+    {
+      if (unpacked->metadata.sensor_type != 12 ||
+          unpacked->metadata.graph_established != 0 ||
+          unpacked->metadata.graph_reference_index != -1 ||
+          unpacked->relation_count != 0)
+        goto out;
+      for (size_t i = 0; i < unpacked->feature_count; i++)
+        {
+          int32_t active;
+
+          if (goodix_milan_template_read_feature_scalar (
+                unpacked->feature_elements[i],
+                unpacked->feature_element_sizes[i], 0xb5, &active) != 0 ||
+              active != 0)
+            goto out;
+        }
+    }
+  if (goodix_milan_template_normalize_unpacked (
         unpacked, feature_copies,
         unpacked->normalization_overlap_counts) != 0)
     goto out;
