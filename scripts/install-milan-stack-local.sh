@@ -66,6 +66,8 @@ MANAGED_BY=goodix53x5-milan-stack
 PREFIX=$MILAN_PREFIX
 BUILD_MANIFEST_SHA256=$(milan_sha256 "$stage_prefix/manifest/build.env")
 EOF
+chown -hR "$(id -u):$(id -g)" -- "$stage_prefix"
+chmod -R u-s,g-s,go-w -- "$stage_prefix"
 cp "$expected_dropin" "$stage_dropin"
 chmod 0644 "$stage_dropin"
 rm -f -- "$expected_dropin"
