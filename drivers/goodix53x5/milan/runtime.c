@@ -14,7 +14,7 @@
 
 #include <string.h>
 
-#ifdef GOODIX53X5_DEBUG
+#if defined(GOODIX53X5_DEBUG) || defined(GOODIX53X5_PARITY)
 static void
 goodix_milan_runtime_hash_bytes (GBytes *bytes,
                                  gchar   digest[65])
@@ -423,6 +423,8 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
 #ifdef GOODIX53X5_DEBUG
       result->queue_occupied_after_match = goodix_study_queue_occupied (queue);
       result->after_match_template = after_match ? g_bytes_ref (after_match) : NULL;
+#endif
+#if defined(GOODIX53X5_DEBUG) || defined(GOODIX53X5_PARITY)
       goodix_milan_runtime_hash_bytes (
         after_match, result->after_match_sha256);
 #endif

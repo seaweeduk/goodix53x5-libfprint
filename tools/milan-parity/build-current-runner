@@ -50,7 +50,7 @@ for index in "${!sources[@]}"; do
   sources[$index]="$driver/${sources[$index]}"
 done
 
-cflags=()
+cflags=( -DGOODIX53X5_PARITY )
 if [[ $debug == 1 ]]; then
   cflags+=( -DGOODIX53X5_DEBUG )
 fi

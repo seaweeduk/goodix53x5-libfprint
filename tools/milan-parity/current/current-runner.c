@@ -341,10 +341,14 @@ main (int argc, char **argv)
               first_gallery = FALSE;
               g_string_append_printf (
                 final_gallery,
-                "{\"accepted\":%s,\"evaluated\":%s,\"gallery_index_u32\":%u,"
+                "{\"accepted\":%s,\"after_match_sha256\":%s%s%s,"
+                "\"evaluated\":%s,\"gallery_index_u32\":%u,"
                 "\"gallery_position_u64\":%" G_GSIZE_FORMAT ",\"score_i32\":%d,"
                 "\"valid\":%s}",
                 result->accepted ? "true" : "false",
+                result->after_match_sha256[0] ? "\"" : "null",
+                result->after_match_sha256,
+                result->after_match_sha256[0] ? "\"" : "",
                 result->evaluated ? "true" : "false", result->gallery_index,
                 result->gallery_position, result->score,
                 result->valid ? "true" : "false");
