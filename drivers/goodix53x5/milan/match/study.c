@@ -306,8 +306,6 @@ typedef struct
 {
   GBytes *current;
   GoodixMatchInfo *live_features[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY];
-  gsize live_order[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY];
-  gsize live_count;
 } GoodixStudyFollowupContext;
 
 static gboolean
@@ -316,7 +314,6 @@ goodix_match_set_live_feature (GoodixStudyFollowupContext *context,
                                const GoodixMatchInfo      *source)
 {
   GoodixMatchInfo *copy;
-  gsize position = SIZE_MAX;
 
   if (!context || index >= GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY ||
       !goodix_match_info_is_complete (source))
@@ -327,23 +324,6 @@ goodix_match_set_live_feature (GoodixStudyFollowupContext *context,
       goodix_match_free_info (copy);
       return FALSE;
     }
-  for (gsize i = 0; i < context->live_count; i++)
-    if (context->live_order[i] == index)
-      {
-        position = i;
-        break;
-      }
-  if (position != SIZE_MAX)
-    {
-      memmove (context->live_order + position,
-               context->live_order + position + 1,
-               (context->live_count - position - 1) * sizeof(gsize));
-      context->live_count--;
-    }
-  memmove (context->live_order + 1, context->live_order,
-           context->live_count * sizeof(gsize));
-  context->live_order[0] = index;
-  context->live_count++;
   g_clear_pointer (&context->live_features[index], goodix_match_free_info);
   context->live_features[index] = copy;
   return TRUE;
@@ -351,8 +331,9 @@ goodix_match_set_live_feature (GoodixStudyFollowupContext *context,
 
 static GoodixSigfmTemplateStatus
 goodix_match_live_gallery_result (GoodixMatchInfo                 *probe,
-                                  GoodixStudyFollowupContext      *context,
-                                  GoodixMilanMatchResult          *match_result,
+                                   GoodixStudyFollowupContext      *context,
+                                   gsize                            triggering_index,
+                                   GoodixMilanMatchResult          *match_result,
                                   GBytes                         **updated_feature)
 {
   const GoodixMilanFeatureRecord *live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
@@ -392,8 +373,7 @@ goodix_match_live_gallery_result (GoodixMatchInfo                 *probe,
         probe->extraction_metadata.coverage,
         probe->extraction_metadata.optional_c7, current_milan,
         current_milan_size, live_records,
-        live_record_counts, live_partition_counts, context->live_order,
-        context->live_count,
+        live_record_counts, live_partition_counts, triggering_index,
         match_result) != 0)
     return GOODIX_SIGFM_TEMPLATE_INVALID;
 
@@ -438,11 +418,10 @@ goodix_match_study_followup (GoodixMatchInfo *queued,
   gsize probe_size;
 
   (void) physical_slot;
-  (void) triggering_index;
   *selected_index = SIZE_MAX;
   memset (&match_result, 0, sizeof(match_result));
   status = goodix_match_live_gallery_result (
-    queued, context, &match_result, &after_match);
+    queued, context, triggering_index, &match_result, &after_match);
   if (status != GOODIX_SIGFM_TEMPLATE_OK || !after_match)
     goto invalid;
 

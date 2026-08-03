@@ -395,6 +395,11 @@ goodix_match_info_copy (GoodixMatchInfo       *destination,
   copy.records = g_memdup2 (
     source->records,
     (gsize) source->record_count * sizeof(*source->records));
+  for (int i = 0; i < source->record_count; i++)
+    {
+      memset (copy.records[i].payload + 24, 0, 4);
+      memset (copy.records[i].payload + 36, 0, 8);
+    }
   copy.record_count = source->record_count;
   copy.partition_count = source->partition_count;
   memcpy (copy.feature_bitmaps.high_bitmap,
