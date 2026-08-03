@@ -139,13 +139,31 @@ EOF
 )
 milan_verify_manifest "$payload_prefix" "$repo_dir"
 
+for intermediate in "$staging/libfprint-overlay" "$fprintd_source" "$fprintd_build"; do
+  [[ -d "$intermediate" && ! -L "$intermediate" ]] ||
+    milan_die "refusing unexpected build intermediate: $intermediate"
+  milan_safe_remove_tree "$intermediate" "$staging"
+done
+
 build_id="$(date -u +%Y%m%dT%H%M%SZ)-$build_kind-${overlay_revision:0:12}"
 published="$MILAN_STACK_ROOT/builds/$build_id"
-[[ ! -e "$published" ]] || published="$published-$$"
+[[ ! -e "$published" && ! -L "$published" ]] || published="$published-$$"
+[[ ! -e "$published" && ! -L "$published" ]] || milan_die "build publication path already exists: $published"
 mv "$staging" "$published"
 trap - EXIT
 link_tmp="$MILAN_STACK_ROOT/builds/.current.$$"
 ln -s "$(basename "$published")" "$link_tmp"
 mv -Tf "$link_tmp" "$MILAN_STACK_ROOT/builds/current"
+shopt -s dotglob
+for obsolete in "$MILAN_STACK_ROOT/builds"/*; do
+  [[ "$obsolete" != "$published" && "$obsolete" != "$MILAN_STACK_ROOT/builds/current" ]] || continue
+  if [[ -L "$obsolete" ]]; then
+    rm -- "$obsolete"
+    continue
+  fi
+  [[ -d "$obsolete" ]] || continue
+  milan_safe_remove_tree "$obsolete" "$MILAN_STACK_ROOT/builds"
+done
+shopt -u dotglob
 milan_note "published verified $build_kind Milan stack: $published"
 milan_note "no running service was changed"
