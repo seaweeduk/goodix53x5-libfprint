@@ -29,10 +29,23 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Prepare OpenCode auth
+        shell: bash
+        env:
+          OPENCODE_AUTH_CONTENT: ${{ secrets.OPENCODE_AUTH_CONTENT }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          auth_dir="$HOME/.local/share/opencode"
+          auth_file="$auth_dir/auth.json"
+          install -d -m 700 "$auth_dir"
+          printf '%s' "$OPENCODE_AUTH_CONTENT" | jq -e . > "$auth_file"
+          chmod 600 "$auth_file"
+
       - name: Run OpenCode
         uses: anomalyco/opencode/github@latest
         env:
-          OPENCODE_AUTH_CONTENT: ${{ secrets.OPENCODE_AUTH_CONTENT }}
           OPENCODE_CONFIG_CONTENT: |
             {
               "provider": {
