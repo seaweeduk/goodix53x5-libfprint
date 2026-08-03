@@ -1,6 +1,12 @@
 .build/
 builddir/
 results/
-tools/
+tools/*
+!tools/milan-parity/
+!tools/milan-parity/**
+tools/milan-parity/private/
+tools/milan-parity/**/__pycache__/
+tools/milan-parity/**/*.pyc
 AGENTS.md
 *.pkg.tar.zst
+*.psk

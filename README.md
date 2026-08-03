@@ -1,246 +1,174 @@
-# Goodix HTK32 (27c6:5335 / 27c6:5385 / 27c6:5395) libfprint Driver
+# Goodix 53x5 libfprint Driver
 
-A libfprint driver for Goodix HTK32 fingerprint sensors using the `27c6:5335`, `27c6:5385`, or `27c6:5395` USB IDs.
+**A native Linux implementation of Goodix's Windows Milan biometric stack,
+reverse-engineered and validated byte for byte.**
 
-This fork is specifically validated and tuned for the **Dell XPS 13 9305** with the `27c6:5335` sensor. Other HTK32 devices may still work, but the testing and changes here were made on this 9305/5335 combination rather than the broader upstream hardware list.
+This out-of-tree libfprint driver supports Goodix HTK32 USB fingerprint sensors
+with IDs `27c6:5335`, `27c6:5385`, and `27c6:5395`. It implements the sensor
+protocol, image processing, enrollment, matching, anti-fake processing, and
+adaptive template updates without requiring Windows or proprietary Goodix
+binaries at runtime.
 
-## Hardware
+> [!IMPORTANT]
+> All development in this repository was performed with AI assistance. The
+> implementation is tested against the native Windows Milan behavior with
+> deterministic, byte-level parity checks; generated code is not treated as
+> evidence of correctness by itself.
 
-- **Vendor ID:** `0x27c6`
-- **Product IDs:** `0x5335`, `0x5385`, `0x5395`
-- **Sensor:** 108 x 88 pixels, capacitive press-type
-- **Known devices:** Dell XPS 13 9305, Dell XPS 13 7390 2-in-1, Dell XPS 15 9570
+## Supported Hardware
 
-Check if you have this sensor:
-```
-lsusb | grep -E '27c6:(5335|5385|5395)'
-```
+The project is currently validated on a **Dell XPS 13 9305** with a
+`27c6:5335` sensor. IDs `27c6:5385` and `27c6:5395` are registered by the driver
+but have not received the same hardware validation.
 
-## How It Works
+Before installing on an unlisted Goodix USB device, run:
 
-The sensor provides raw 12-bit capacitive images encrypted with a TLS-like protocol (GTLS). The driver:
-
-1. Initializes the sensor: PSK exchange, GTLS handshake, config upload, FDT calibration
-2. Detects finger placement via FDT (Finger Detection Threshold) events
-3. Captures and decrypts a TX-off no-finger reference and live fingerprint images
-4. Subtracts the TX-off reference, normalizes the live capture, and extracts **SIGFM** features
-5. Matches using **SIGFM** (SIFT-based fingerprint matching via OpenCV)
-
-Fingerprint matching uses SIFT keypoints with CLAHE preprocessing, Lowe's ratio test, mutual nearest-neighbor filtering, and pairwise geometric verification. The driver uses this SIGFM path instead of libfprint's usual minutiae matcher for the small 108x88 captures.
-
-The current preprocessing pipeline is shown below:
-
-<img src="images/goodix53x5-preprocessing-pipeline.png?v=20260610" alt="Goodix 53x5 preprocessing pipeline" width="1000">
-
-## Dependencies
-
-- **libfprint** source tree (tested with v1.94.10)
-- **OpenCV 4 or 5** (`opencv_core`, `opencv_features2d`/`opencv_features`, `opencv_flann`, `opencv_imgproc`)
-- **OpenSSL 3.0+**
-- Standard libfprint build dependencies: Meson, Ninja, pkg-config, GLib, and libgusb
-
-### Build Packages
-
-**Arch Linux:**
-```
-sudo pacman -S --needed git base-devel meson ninja pkgconf glib2 libgusb opencv openssl fprintd
+```sh
+sudo ./scripts/goodix53x5-detect.sh
 ```
 
-**Fedora:**
-```
-sudo dnf install git gcc gcc-c++ meson ninja-build pkgconf-pkg-config glib2-devel libgusb-devel opencv-devel openssl-devel fprintd
-```
+If it reports `COMPATIBLE CANDIDATE`, either:
 
-**Ubuntu/Debian:**
-```
-sudo apt install git build-essential meson ninja-build pkg-config libglib2.0-dev libgusb-dev libopencv-dev libssl-dev fprintd
-```
+- [Open a compatibility issue](https://github.com/seaweeduk/goodix53x5-libfprint/issues/new)
+  with its output, your laptop model, and Linux distribution; or
+- Submit a PR adding the ID to `drivers/goodix53x5/goodix53x5.c` and the Goodix
+  entries in `meson-integration.patch`, with probe and hardware-test results.
 
-The minimal build command below disables libfprint's generated udev rules and hwdb install, so Debian/Ubuntu users should not need the `udev.pc` build dependency. If you enable udev rules/hwdb or build libfprint's default driver set, Debian 13 provides `udev.pc` in `systemd-dev`.
+> [!NOTE]
+> On the same challenging dataset, Milan's adaptive learning raised the
+> genuine-accept rate from roughly **82.5-85% before learning** to **98.5% and
+> 99% in learned runs**, with **zero false accepts** in those runs. This indicates
+> that template study and updates contribute significantly over time. These are
+> project experiments, not certification results or guarantees for other
+> hardware and datasets.
 
-## Installation
+## How Milan Works
 
-### Quick Start
+The sensor sends encrypted 108 x 88, 12-bit capacitive images over USB. Milan
+turns those small captures into a fingerprint template that can improve after
+successful matches.
 
-```bash
-# Clone libfprint
-git clone https://gitlab.freedesktop.org/libfprint/libfprint.git
-cd libfprint
+<img src="images/milan-driver/01-capture.png" alt="Empty sensor references and a raw fingerprint capture becoming a clear processed image" width="800">
 
-# Copy this driver into libfprint
-/path/to/goodix53x5-libfprint/install.sh .
+**Capture and reveal.** Empty reference frames describe the sensor itself.
+Milan uses that baseline to remove the sensor background, expose ridge detail,
+check the image, and extract a compact fingerprint representation.
 
-meson setup builddir \
-  --prefix=/usr \
-  -Ddrivers=goodix53x5 \
-  -Dudev_hwdb=disabled \
-  -Dudev_rules=disabled \
-  -Dintrospection=false \
-  -Dinstalled-tests=false \
-  -Ddoc=false
-ninja -C builddir
-sudo ninja -C builddir install
-sudo systemctl restart fprintd
-```
+<img src="images/milan-driver/02-enroll.png" alt="Eight accepted fingerprint touches being combined into a Milan template" width="800">
 
-`-Ddrivers=goodix53x5` avoids building unrelated libfprint drivers and their dependencies. `-Dudev_hwdb=disabled -Dudev_rules=disabled` avoids requiring `udev.pc`; the Goodix 53x5 driver itself is a USB/libgusb driver and does not use udev APIs.
+**Build the first template.** Enrollment collects eight accepted touches.
+Different positions and pressure reveal different parts of the finger; weak or
+repetitive captures are retried. The resulting template stores extracted
+features and their relationships, not a gallery of fingerprint photographs.
 
-Use `--prefix=/usr` so the installed libfprint replaces the system library used by `fprintd`. A default Meson setup may install into `/usr/local`, which `fprintd` may not load.
+<img src="images/milan-driver/03-study.png" alt="A new fingerprint touch being matched and, after success, used to improve the saved template" width="800">
 
-### Updating
+**Recognize and improve.** A new touch is checked against the enrolled
+template. Rejected scans never teach the system. After a confirmed match, Milan
+can retain useful new variation and save the improved template for future
+unlocks. The template has a fixed capacity, so new evidence is appended while
+space remains and can replace existing evidence once it is full.
 
-If you already installed this driver, update this repository, copy the newer driver files into libfprint, then rebuild libfprint:
+Under the hood, the driver initializes the sensor and its GTLS session,
+calibrates finger detection, runs Milan preprocessing and anti-fake checks,
+extracts and relates features, performs matching and study, then stores the
+result through libfprint. Successful learning updates are persisted by the
+paired fprintd build.
 
-```bash
-cd /path/to/goodix53x5-libfprint
-git pull
-./install.sh /path/to/libfprint
+The Milan implementation was reconstructed from the native Windows behavior.
+The reference DLL is used only as a private interoperability oracle and is not
+included in, discovered by, or required to run this repository.
 
-cd /path/to/libfprint/builddir
-meson setup --reconfigure .. \
-  --prefix=/usr \
-  -Ddrivers=goodix53x5 \
-  -Dudev_hwdb=disabled \
-  -Dudev_rules=disabled \
-  -Dintrospection=false \
-  -Dinstalled-tests=false \
-  -Ddoc=false
-ninja
-sudo ninja install
-sudo systemctl restart fprintd
-```
+## Install
 
-If `install.sh` cannot apply the Meson integration patch automatically, it prints the manual edits needed for that libfprint tree.
+The supported installation builds pinned libfprint `v1.94.10` and fprintd
+`v1.94.5` sources, then installs them as an isolated paired stack under
+`/opt/goodix53x5-milan`:
 
-## Troubleshooting
+Existing prints from the retired matcher and Milan template versions older than
+version 3 are incompatible. Delete them before switching implementations, then
+re-enroll after installation:
 
-### Uninstalling
-
-To remove the copied driver files from a libfprint source tree:
-
-```bash
-/path/to/goodix53x5-libfprint/uninstall.sh /path/to/libfprint
+```sh
+fprintd-delete "$USER"
 ```
 
-The uninstall script removes `libfprint/drivers/goodix53x5/` and `libfprint/sigfm/`. It will print the manual Meson cleanup steps needed to remove the driver registration, SIGFM/OpenCV build block, and helper mapping.
-
-Preview the removals without deleting files:
-
-```bash
-/path/to/goodix53x5-libfprint/uninstall.sh --dry-run /path/to/libfprint
+```sh
+./install.sh
 ```
 
-### Manual Integration
+The installer does not overwrite distribution files under `/usr`. It adds a
+managed systemd drop-in so fprintd uses the paired stack while keeping print
+state in `/var/lib/fprint`.
 
-1. Copy `drivers/goodix53x5/` into `libfprint/libfprint/drivers/goodix53x5/`
-2. Copy `sigfm/` into `libfprint/libfprint/sigfm/`
-3. Edit `libfprint/libfprint/meson.build`:
-   - Add to the `driver_sources` dictionary:
-     ```meson
-     'goodix53x5' :
-         [ 'drivers/goodix53x5/goodix53x5.c', 'drivers/goodix53x5/goodix53x5-proto.c', 'drivers/goodix53x5/goodix53x5-crypto.c', 'drivers/goodix53x5/goodix53x5-transport.c', 'drivers/goodix53x5/goodix53x5-commands.c', 'drivers/goodix53x5/goodix53x5-session.c', 'drivers/goodix53x5/goodix53x5-scan.c', 'drivers/goodix53x5/goodix53x5-enroll.c', 'drivers/goodix53x5/goodix53x5-auth.c', 'drivers/goodix53x5/goodix53x5-match.c', 'drivers/goodix53x5/goodix53x5-calibration.c', 'drivers/goodix53x5/goodix53x5-image.c' ],
-     ```
-   - Add SIGFM static library build (before `libfprint_drivers`):
-     ```meson
-     opencv_pc = dependency('opencv5', required: false)
-     if not opencv_pc.found()
-         opencv_pc = dependency('opencv4')
-     endif
-     opencv_includes = opencv_pc.partial_dependency(compile_args: true, includes: true)
-     opencv_core = cc.find_library('opencv_core')
-     # OpenCV 5 renamed the features2d module to features
-     opencv_features2d = cc.find_library('opencv_features2d', required: false)
-     if not opencv_features2d.found()
-         opencv_features2d = cc.find_library('opencv_features')
-     endif
-     opencv_flann = cc.find_library('opencv_flann')
-     opencv_imgproc = cc.find_library('opencv_imgproc')
-     opencv_dep = declare_dependency(
-         dependencies: [opencv_includes, opencv_core, opencv_features2d, opencv_flann, opencv_imgproc],
-     )
-     libsigfm = static_library('sigfm',
-         'sigfm/sigfm.cpp',
-         dependencies: [opencv_dep],
-         cpp_args: ['-std=c++17'],
-         install: false)
-     ```
-   - Add `libsigfm` to `link_with` for both `libfprint_drivers` and the main `libfprint` library
-   - Add `opencv_dep` to the main library `dependencies`
-4. Edit root `meson.build`:
-    - Add `'goodix53x5'` to the default drivers list
-    - Add `'goodix53x5' : [ 'openssl' ]` to `driver_helper_mapping`
-5. Reconfigure and build
+Build dependencies include a C toolchain, Git, Meson, Ninja, pkg-config,
+GLib/GIO, GUsb, OpenSSL 3, and the development dependencies required by
+libfprint and fprintd, including Polkit's GObject library.
 
-## Development
+For stack layout, build controls, status checks, and rollback behavior, see the
+[Milan stack guide](scripts/MILAN-STACK.md).
 
-### Local Build
+## Enroll And Verify
 
-For development, build libfprint with this driver inside this repository:
+Use your desktop environment's fingerprint settings or fprintd directly:
 
-```bash
-./scripts/build-local.sh
-```
-
-This clones/prepares libfprint under `.build/libfprint`, copies the current driver and `sigfm` sources into that tree, applies `meson-integration.patch`, and runs `ninja`. Override the libfprint ref with `GOODIX_LIBFPRINT_REF`, for example:
-
-```bash
-GOODIX_LIBFPRINT_REF=v1.94.10 ./scripts/build-local.sh
-```
-
-## Enrollment and Verification
-
-After installation, use your desktop environment's fingerprint settings (GNOME, KDE, etc.) or the command line:
-
-```bash
-# Enroll a finger (8 samples required)
+```sh
 fprintd-enroll
-
-# Verify
 fprintd-verify
 ```
 
-## Technical Notes
+## Windows Dual Boot
 
-- **TX-off preprocessing** subtracts a no-finger reference frame from each live 12-bit capture, then normalizes the unclipped interior pixels using the 3%..97% percentile range.
-- **Clipped non-contact areas** at raw value `4095` are excluded from normalization and filled from the unclipped interior's 99th-percentile residual. This renders non-contact regions flat white instead of preserving the inverted reference grid.
-- **Enrollment coverage** rejects samples with more than 10% clipped/non-contact pixels and asks for another touch, so stored templates keep useful ridge coverage.
-- **SIGFM matching** uses OpenCV SIFT features with CLAHE contrast enhancement, Lowe's ratio test, mutual nearest-neighbor filtering, and pairwise geometric verification. Verify/identify accept a print when the best enrolled-sample score is `>= 150` (`GOODIX_SIGFM_BEST_MIN`).
-- **8 enrollment samples** are stored as serialized SIGFM feature templates, not raw or processed images. If you enrolled with an older preprocessing/template format, re-enroll your fingers after installing this version.
+Normal Linux-only installations retain the automatic all-zero PSK setup. An
+optional Windows key file enables shared-key operation without changing the
+default path. See the [Windows dual-boot migration guide](WINDOWS-DUAL-BOOT.md).
 
-## File Structure
+## Limitations And Security
 
+- This is an experimental, out-of-tree driver tied to pinned libfprint and
+  fprintd revisions.
+- Hardware validation currently covers only the Dell XPS 13 9305 with the
+  `27c6:5335` sensor.
+- Fingerprint images and matching are handled on the host. This is not a
+  match-on-chip or secure-element design.
+- A plaintext imported GTLS key is protected by filesystem permissions, not a
+  TPM or DPAPI. Do not publish it or commit it to a repository.
+- A compromised root or kernel environment can bypass authentication or access
+  biometric data. Fingerprint unlock should be treated as a convenience factor,
+  not the only protection for sensitive data.
+
+## Development
+
+Release builds exclude capture writers and parity diagnostics. The complete
+opt-in procedure for collecting private biometric debug data is kept in the
+[debug capture guide](DEBUG-CAPTURE-GUIDE.md), not in this README.
+
+The [Milan parity harness](tools/milan-parity/README.md) documents the retained
+byte-parity contracts and replay tooling.
+
+## Uninstall
+
+Remove only the managed shadow stack and systemd drop-in:
+
+```sh
+./uninstall.sh
 ```
-drivers/goodix53x5/
-  goodix53x5.h              - Public driver type declaration
-  goodix53x5.c              - libfprint entry points: ID table, class init, vfuncs
-  goodix53x5-private.h      - Private device state and shared driver constants
-  goodix53x5-transport.c/.h - USB I/O, chunked send/receive, command sub-SSM
-  goodix53x5-commands.c/.h  - Named device commands and reply parsers
-  goodix53x5-session.c/.h   - Open/initialization SSM, reinit after sleep, suspend/resume
-  goodix53x5-scan.c/.h      - FDT finger detection and image capture SSMs
-  goodix53x5-enroll.c/.h    - Enrollment SSM and template assembly
-  goodix53x5-auth.c/.h      - Verify/identify SSM and result reporting
-  goodix53x5-match.c/.h     - SIGFM template format, serialization, scoring
-  goodix53x5-calibration.c/.h - OTP parsing, config patching, FDT base math
-  goodix53x5-image.c/.h     - Raw12 decode, TX-off subtraction, normalization
-  goodix53x5-proto.c/.h     - Wire protocol: message building, reassembly, parsing
-  goodix53x5-crypto.c/.h    - Crypto: GTLS, AES, HMAC, CRC, GEA decryption
 
-sigfm/
-  sigfm.hpp              - SIGFM C API header
-  sigfm.cpp              - SIFT feature extraction and matching (with CLAHE)
-  binary.hpp             - Binary serialization for print storage
-  img-info.hpp           - SigfmImgInfo struct (keypoints + descriptors)
-
-images/
-  goodix53x5-preprocessing-pipeline.png - Preprocessing pipeline visualization
-```
+Saved fingerprints under `/var/lib/fprint` are left in place.
 
 ## Credits
 
-- SIGFM matching library from [goodix-fp-linux-dev/sigfm](https://github.com/goodix-fp-linux-dev/sigfm), by Matthieu Charette, Natasha England-Elbro, and Timur Mangliev
-- Protocol reverse-engineering from [goodix-fp-linux-dev](https://github.com/goodix-fp-linux-dev)
+- [Berkekbgz](https://github.com/berkekbgz) for reversing the native Chicago
+  matcher in [libfprint-goodix-spi](https://github.com/berkekbgz/libfprint-goodix-spi)
+  and for his advice
+- [AndyHazz](https://github.com/AndyHazz) for the original
+  [Goodix 53x5 libfprint driver](https://github.com/AndyHazz/goodix53x5-libfprint),
+  from which this repository was forked
+- Protocol research and earlier Goodix Linux work from
+  [goodix-fp-linux-dev](https://github.com/goodix-fp-linux-dev)
+- libfprint and fprintd from the
+  [freedesktop.org fingerprint stack](https://fprint.freedesktop.org/)
 
 ## License
 
-LGPL-2.1-or-later (same as libfprint)
+LGPL-2.1-or-later, matching libfprint.

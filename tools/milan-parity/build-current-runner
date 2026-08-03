@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=
+output=
+debug=0
+while (( $# )); do
+  case "$1" in
+    --repo) repo=$2; shift 2 ;;
+    --output) output=$2; shift 2 ;;
+    --debug) debug=$2; shift 2 ;;
+    *) printf 'usage: %s --repo PATH --output PATH [--debug 0|1]\n' "$0" >&2; exit 2 ;;
+  esac
+done
+if [[ -z $repo || -z $output || ( $debug != 0 && $debug != 1 ) ]]; then
+  printf 'usage: %s --repo PATH --output PATH [--debug 0|1]\n' "$0" >&2
+  exit 2
+fi
+
+driver="$repo/drivers/goodix53x5"
+libfprint="$repo/.build/libfprint"
+build="$libfprint/builddir"
+if [[ ! -d $driver || ! -d $build ]]; then
+  printf 'current runner requires driver source and an existing .build/libfprint/builddir under %s\n' "$repo" >&2
+  exit 2
+fi
+
+mkdir -p "$(dirname "$output")"
+mapfile -t sources < <(
+  printf '%s\n' \
+    milan/antifake/classifier.c milan/antifake/construction.c \
+    milan/antifake/feature.c milan/antifake/mask.c \
+    milan/antifake/morphology.c milan/antifake/pair.c milan/antifake/signal.c \
+    milan/enrollment/propagation.c milan/enrollment/template.c \
+    milan/feature/enhancement.c milan/feature/extraction.c \
+    milan/feature/extrema.c milan/feature/mask.c \
+    milan/feature/materialization.c milan/feature/record.c \
+    milan/match/admission.c milan/match/candidate.c \
+    milan/match/correspondence.c milan/match/fallback.c \
+    milan/match/geometry.c milan/match/info.c milan/match/lifecycle.c \
+    milan/match/overlap.c milan/match/policy.c milan/match/rescue.c \
+    milan/match/score.c milan/match/selection.c milan/match/study.c \
+    milan/match/match.c milan/core.c milan/preprocess/classification.c \
+    milan/preprocess/gain.c milan/preprocess/selection.c \
+    milan/preprocess/validity.c milan/print.c milan/relations.c milan/runtime.c \
+    milan/study/policy.c milan/study/queue.c milan/study/study.c \
+    milan/template/codec.c milan/template/lifecycle.c milan/transform.c
+)
+for index in "${!sources[@]}"; do
+  sources[$index]="$driver/${sources[$index]}"
+done
+
+cflags=()
+if [[ $debug == 1 ]]; then
+  cflags+=( -DGOODIX53X5_DEBUG )
+fi
+
+cc -std=c17 -O2 -Wall -Wextra -Werror "${cflags[@]}" \
+  -I"$driver" -I"$build" -I"$build/libfprint" -I"$libfprint" -I"$libfprint/libfprint" \
+  $(pkg-config --cflags glib-2.0 gio-2.0 gobject-2.0 gusb) \
+  "${sources[@]}" "$repo/tools/milan-parity/current/current-runner.c" \
+  $(pkg-config --libs glib-2.0 gio-2.0 gobject-2.0 gusb) -o "$output"
