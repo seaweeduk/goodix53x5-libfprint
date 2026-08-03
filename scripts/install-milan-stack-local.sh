@@ -95,8 +95,20 @@ rollback() {
 trap rollback EXIT
 
 # Verification is complete; the service is stopped only for the atomic switch.
-milan_systemctl stop fprintd.service
-transaction_started=1
+fprintd_was_active=0
+if milan_systemctl is-active --quiet fprintd.service; then
+  fprintd_was_active=1
+fi
+if milan_systemctl stop fprintd.service; then
+  transaction_started=1
+else
+  stop_rc=$?
+  if [[ "$fprintd_was_active" == 1 ]] &&
+     ! milan_systemctl is-active --quiet fprintd.service; then
+    milan_systemctl start fprintd.service >/dev/null 2>&1 || true
+  fi
+  exit "$stop_rc"
+fi
 if [[ -e "$actual_prefix" ]]; then
   mv "$actual_prefix" "$backup_prefix"
   old_prefix_moved=1
