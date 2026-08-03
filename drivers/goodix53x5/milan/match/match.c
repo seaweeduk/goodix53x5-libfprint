@@ -698,8 +698,7 @@ milan_match_prepared_probe (
   const GoodixMilanFeatureRecord *const live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   const size_t live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   const size_t live_partition_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
-  const size_t *live_order,
-  size_t live_order_count,
+  size_t triggering_index,
   size_t        *matched_feature_index,
   int32_t       *score,
   int32_t        match_transform[6],
@@ -776,11 +775,8 @@ milan_match_prepared_probe (
       !contributor_feature_mask || !lifecycle_update_feature_mask ||
       !retained_evidence_count || !retained_evidence_feature_indices ||
       !retained_evidence_transforms || !retained_evidence_flag ||
-      !study_finalization_gate || !study_action_gate ||
-      !queue_candidate_eligible ||
-      live_order_count > GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY ||
-      (live_order_count != 0 &&
-       (!live_records || !live_partition_counts || !live_order)))
+       !study_finalization_gate || !study_action_gate ||
+       !queue_candidate_eligible)
     return -1;
   *matched_feature_index = SIZE_MAX;
   *score = -7;
@@ -830,6 +826,13 @@ milan_match_prepared_probe (
       score_denominator = 42;
       goodix_milan_matcher_policy_init (&matcher_policy,
                                         probe_feature->fields.optional_c7);
+      if (triggering_index != SIZE_MAX)
+        {
+          if (triggering_index >= enrolled->feature_count)
+            goto out;
+          matcher_policy.configuration[13] = 0;
+          matcher_policy.configuration[14] = (int32_t) triggering_index;
+        }
       goodix_milan_matcher_late_context_init (
         &late_policy_context, probe_feature->fields.optional_c7);
       sibling_tail_hamming_limit =
@@ -856,38 +859,8 @@ milan_match_prepared_probe (
     {
       size_t feature_index = SIZE_MAX;
 
-      if (live_records)
-        {
-          if (live_order && order_index < live_order_count)
-            {
-              feature_index = live_order[order_index];
-              if (feature_index >= enrolled->feature_count ||
-                  !live_records[feature_index])
-                goto out;
-            }
-          else
-            {
-              size_t stored_order = order_index - live_order_count;
-
-              for (size_t i = 0; i < enrolled->feature_count; i++)
-                {
-                  size_t candidate = goodix_milan_template_read_u32 (
-                    enrolled->tail_state + i * sizeof(uint32_t));
-
-                  if (candidate >= enrolled->feature_count ||
-                      live_records[candidate])
-                    continue;
-                  if (stored_order-- == 0)
-                    {
-                      feature_index = candidate;
-                      break;
-                    }
-                }
-            }
-        }
-      else
-        feature_index = goodix_milan_template_read_u32 (
-          enrolled->tail_state + order_index * sizeof(uint32_t));
+      feature_index = goodix_milan_template_read_u32 (
+        enrolled->tail_state + order_index * sizeof(uint32_t));
 
       if (order_index >= GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT ||
           feature_index >= GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT)
@@ -1944,8 +1917,7 @@ milan_match_probe_result_internal (
   const GoodixMilanFeatureRecord *const live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   const size_t                   live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   const size_t                   live_partition_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
-  const size_t                  *live_order,
-  size_t                         live_order_count,
+  size_t                         triggering_index,
   GoodixMilanMatchResult        *match_result
 #ifdef GOODIX53X5_DEBUG
   , GoodixMilanMatchDiagnostics *diagnostics
@@ -1979,7 +1951,7 @@ milan_match_probe_result_internal (
     image_quality, image_coverage, probe_antifake, caller_blocking_enabled,
     enrolled_template,
     enrolled_template_size, live_records, live_record_counts,
-    live_partition_counts, live_order, live_order_count,
+    live_partition_counts, triggering_index,
     &match_result->matched_feature_index,
     &match_result->score, match_result->match_transform,
     &match_result->relation.relation_count,
@@ -2027,7 +1999,7 @@ goodix_milan_match_probe_result (
     probe_inline_mask, probe_rescue_mask, probe_records, probe_record_count,
     probe_partition_count, image_quality, image_coverage, probe_optional_c7,
     probe_antifake, probe_antifake != NULL,
-    enrolled_template, enrolled_template_size, NULL, NULL, NULL, NULL, 0,
+    enrolled_template, enrolled_template_size, NULL, NULL, NULL, SIZE_MAX,
     match_result
 #ifdef GOODIX53X5_DEBUG
     , NULL
@@ -2060,7 +2032,7 @@ goodix_milan_match_probe_result_debug (
     probe_inline_mask, probe_rescue_mask, probe_records, probe_record_count,
     probe_partition_count, image_quality, image_coverage, probe_optional_c7,
     probe_antifake, probe_antifake != NULL,
-    enrolled_template, enrolled_template_size, NULL, NULL, NULL, NULL, 0,
+    enrolled_template, enrolled_template_size, NULL, NULL, NULL, SIZE_MAX,
     match_result, diagnostics);
 }
 #endif
@@ -2083,8 +2055,7 @@ goodix_milan_match_live_probe_result (
   const GoodixMilanFeatureRecord *const live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   const size_t                   live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   const size_t                   live_partition_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
-  const size_t                  *live_order,
-  size_t                         live_order_count,
+  size_t                         triggering_index,
   GoodixMilanMatchResult        *match_result)
 {
   return milan_match_probe_result_internal (
@@ -2092,7 +2063,7 @@ goodix_milan_match_live_probe_result (
     probe_inline_mask, probe_rescue_mask, probe_records, probe_record_count,
     probe_partition_count, image_quality, image_coverage, probe_optional_c7,
     NULL, 0, enrolled_template, enrolled_template_size, live_records,
-    live_record_counts, live_partition_counts, live_order, live_order_count,
+    live_record_counts, live_partition_counts, triggering_index,
     match_result
 #ifdef GOODIX53X5_DEBUG
     , NULL
@@ -2119,8 +2090,7 @@ goodix_milan_match_live_probe_result_debug (
   const GoodixMilanFeatureRecord *const live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   const size_t                   live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   const size_t                   live_partition_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
-  const size_t                  *live_order,
-  size_t                         live_order_count,
+  size_t                         triggering_index,
   GoodixMilanMatchResult        *match_result,
   GoodixMilanMatchDiagnostics   *diagnostics)
 {
@@ -2129,7 +2099,7 @@ goodix_milan_match_live_probe_result_debug (
     probe_inline_mask, probe_rescue_mask, probe_records, probe_record_count,
     probe_partition_count, image_quality, image_coverage, probe_optional_c7,
     NULL, 0, enrolled_template, enrolled_template_size, live_records,
-    live_record_counts, live_partition_counts, live_order, live_order_count,
+    live_record_counts, live_partition_counts, triggering_index,
     match_result, diagnostics);
 }
 #endif

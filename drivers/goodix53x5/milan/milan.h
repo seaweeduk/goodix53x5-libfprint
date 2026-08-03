@@ -923,8 +923,7 @@ int goodix_milan_match_live_probe_result (
   const GoodixMilanFeatureRecord *const live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   const size_t                   live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   const size_t                   live_partition_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
-  const size_t                  *live_order,
-  size_t                         live_order_count,
+  size_t                         triggering_index,
   GoodixMilanMatchResult        *match_result);
 
 #ifdef GOODIX53X5_DEBUG
@@ -945,8 +944,7 @@ int goodix_milan_match_live_probe_result_debug (
   const GoodixMilanFeatureRecord *const live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   const size_t                   live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   const size_t                   live_partition_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
-  const size_t                  *live_order,
-  size_t                         live_order_count,
+  size_t                         triggering_index,
   GoodixMilanMatchResult        *match_result,
   GoodixMilanMatchDiagnostics   *diagnostics);
 #endif
