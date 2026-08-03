@@ -464,11 +464,13 @@ static int
 run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
               const wchar_t *base_path, const wchar_t *live_path,
               const wchar_t *template_path, int study_enabled,
-              int enqueue_current_probe)
+              int enqueue_current_probe, const wchar_t *const *prelude_paths,
+              int prelude_count)
 {
   oracle_api api;
   uint16_t *base = NULL;
   uint16_t *live = NULL;
+  uint16_t *prelude = NULL;
   uint8_t *template_input = NULL;
   size_t template_input_size = 0;
   const uint8_t *packed_input = NULL;
@@ -530,9 +532,19 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
       packed_input = template_input;
       packed_input_size = template_input_size;
     }
-  if (!open_api (&api, dll_path) ||
-      !start_generation (&api, base) ||
-      api.template_unpack (packed_input, (int32_t) packed_input_size, NULL,
+  if (!open_api (&api, dll_path) || !start_generation (&api, base))
+    goto out;
+  for (int i = 0; i < prelude_count; i++)
+    {
+      prelude = read_frame (prelude_paths[i]);
+      if (!prelude ||
+          !preprocess_frame (&api, prelude, processed_data, &processed,
+                             preprocess_quality))
+        goto out;
+      free (prelude);
+      prelude = NULL;
+    }
+  if (api.template_unpack (packed_input, (int32_t) packed_input_size, NULL,
                            &template_object) != 0 ||
       !template_object ||
       !preprocess_frame (&api, live, processed_data, &processed,
@@ -623,7 +635,8 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
     "\"source_index\":2288,\"sentinel\":0,"
     "\"in_range_bytes_preserved\":true,\"shadow_payload_bytes\":2289,"
     "\"matrix_header_size_field\":2288,\"dll_allocator_owned\":true,"
-    "\"normal_destructor_compatible\":true,\"hook_hits\":%d,"
+    "\"normal_destructor_compatible\":true,\"prelude_frames\":%d,"
+    "\"hook_hits\":%d,"
     "\"active_record_count\":%d,"
     "\"preprocess\":{\"status\":0,\"quality\":%ld,\"coverage\":%ld},"
     "\"identify\":{\"status\":%ld,\"matched_index\":%lu,"
@@ -633,7 +646,8 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
     "\"occupied_before_study\":%d,\"occupied_after_study\":%d},"
     "\"persistence_advanced\":%s,"
     "\"preprocessor_exit_status\":%ld}\n",
-    boundary_hook_hits, boundary_record_count, (long) preprocess_quality[1],
+    prelude_count, boundary_hook_hits, boundary_record_count,
+    (long) preprocess_quality[1],
     (long) preprocess_quality[0], (long) identify_status,
     (unsigned long) matched_index, (long) score,
     (unsigned long) identify_quality[1],
@@ -664,6 +678,7 @@ out:
   free (template_input);
   free (base);
   free (live);
+  free (prelude);
   close_api (&api);
   return ok;
 }
@@ -674,12 +689,12 @@ wmain (int argc, wchar_t **argv)
   int study_enabled;
 
   setvbuf (stdout, NULL, _IONBF, 0);
-  if (argc != 8 ||
+  if (argc < 8 ||
       (wcscmp (argv[1], L"identify") != 0 &&
        wcscmp (argv[1], L"study") != 0))
     {
       fwprintf (stderr,
-                L"usage: %ls identify|study DLL OUTPUT BASE LIVE TEMPLATE ENQUEUE\n",
+                L"usage: %ls identify|study DLL OUTPUT BASE LIVE TEMPLATE ENQUEUE [PRELUDE...]\n",
                 argv[0]);
       return 2;
     }
@@ -688,7 +703,8 @@ wmain (int argc, wchar_t **argv)
   if (!enqueue_current_probe && wcscmp (argv[7], L"0") != 0)
     return 2;
   if (!run_boundary (argv[2], argv[3], argv[4], argv[5], argv[6],
-                      study_enabled, enqueue_current_probe))
+                     study_enabled, enqueue_current_probe,
+                     (const wchar_t *const *) &argv[8], argc - 8))
     {
       fwprintf (stderr, L"native oracle failed\n");
       return 1;

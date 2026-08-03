@@ -139,6 +139,11 @@ See [`DEBUG-CAPTURE-GUIDE.md`](../../DEBUG-CAPTURE-GUIDE.md) for the complete
 managed-stack installation, fprintd configuration, smoke capture, fresh
 enrollment, privacy, troubleshooting, and release rollback procedure.
 
+`validate-dump` replays repeated uses of one preprocessing generation
+chronologically when all earlier raw frames are present. Earlier frames are
+preprocessing-only preludes; matching and study remain scoped to the target
+operation and its captured input gallery.
+
 ## Storage
 
 ```sh
