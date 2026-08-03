@@ -44,7 +44,7 @@
 #define GOODIX_FDT_BASE_LEN 24
 
 /* Enroll stages */
-#define GOODIX_ENROLL_SAMPLES 8
+#define GOODIX_ENROLL_SAMPLES 12
 
 /* PSK white box for writing the default all-zero PSK. */
 #define GOODIX_PSK_WHITE_BOX_LEN 96

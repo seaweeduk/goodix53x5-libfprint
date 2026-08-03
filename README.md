@@ -54,9 +54,9 @@ successful matches.
 Milan uses that baseline to remove the sensor background, expose ridge detail,
 check the image, and extract a compact fingerprint representation.
 
-<img src="images/milan-driver/02-enroll.png" alt="Eight accepted fingerprint touches being combined into a Milan template" width="800">
+<img src="images/milan-driver/02-enroll.png" alt="Accepted fingerprint touches being combined into a Milan template" width="800">
 
-**Build the first template.** Enrollment collects eight accepted touches.
+**Build the first template.** Enrollment collects twelve accepted touches.
 Different positions and pressure reveal different parts of the finger; weak or
 repetitive captures are retried. The resulting template stores extracted
 features and their relationships, not a gallery of fingerprint photographs.
