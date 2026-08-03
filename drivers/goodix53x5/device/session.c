@@ -874,8 +874,9 @@ goodix_session_suspend (FpDevice *dev)
     }
   else
     {
-      /* Not in a blocking read (e.g. mid-capture), complete immediately */
-      fpi_device_suspend_complete (dev, NULL);
+      /* Mid-capture state cannot survive the generation reset. */
+      fpi_device_suspend_complete (
+        dev, fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
     }
 }
 
