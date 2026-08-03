@@ -237,6 +237,7 @@ goodix_auth_task_done (GObject      *source_object,
             self->task_ssm == data->ssm &&
             self->action_epoch == data->action_epoch &&
             fpi_device_get_current_action (dev) == data->action &&
+            !fpi_device_action_is_cancelled (dev) &&
             self->cancel && !g_cancellable_is_cancelled (self->cancel) &&
             self->milan_generation &&
             self->milan_generation->generation_id == data->generation_id;
