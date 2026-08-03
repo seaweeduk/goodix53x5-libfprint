@@ -29,6 +29,55 @@ mkdir -p "$actual_parent" "$actual_systemd_dir"
 exec 9>"$actual_parent/.goodix53x5-milan.install.lock"
 flock -n 9 || milan_die "another Milan install/remove is active"
 
+record_capture_build_manifest() {
+  local assignment campaign_dir candidate debug dump_dir environment manifest
+  local manifest_user tool
+
+  debug="$(milan_manifest_value "$actual_prefix/manifest/build.env" GOODIX53X5_DEBUG)"
+  [[ "$debug" == 1 ]] || return 0
+  if ! environment="$(milan_systemctl show fprintd.service --property=Environment --value --no-pager 2>/dev/null)"; then
+    return 0
+  fi
+  dump_dir=""
+  for assignment in $environment; do
+    case "$assignment" in
+      GOODIX53X5_DUMP_DIR=*) dump_dir="${assignment#GOODIX53X5_DUMP_DIR=}" ;;
+    esac
+  done
+  [[ -n "$dump_dir" ]] || return 0
+  milan_require_absolute "capture dump directory" "$dump_dir"
+  campaign_dir="$(dirname "$dump_dir")"
+  [[ -d "$campaign_dir" ]] || milan_die "capture campaign directory does not exist: $campaign_dir"
+  tool="$repo_dir/tools/milan-parity/milan-parity"
+  [[ -x "$tool" ]] || milan_die "Milan parity tool is unavailable: $tool"
+  manifest="$campaign_dir/driver-build.json"
+  candidate="$campaign_dir/.driver-build.json.$$"
+  [[ ! -e "$candidate" ]] || milan_die "capture manifest candidate already exists: $candidate"
+  manifest_user="${SUDO_USER:-root}"
+  if [[ "$manifest_user" != root ]]; then
+    milan_require_command runuser
+    runuser -u "$manifest_user" -- "$tool" build-manifest \
+      --repo "$repo_dir" \
+      --library "$actual_prefix/lib/libfprint-2.so.2.0.0" \
+      --output "$candidate" --debug
+  else
+    "$tool" build-manifest --repo "$repo_dir" \
+      --library "$actual_prefix/lib/libfprint-2.so.2.0.0" \
+      --output "$candidate" --debug
+  fi
+  if [[ -e "$manifest" ]]; then
+    if ! cmp -s "$candidate" "$manifest"; then
+      rm -f -- "$candidate"
+      milan_die "capture campaign already records a different build: $manifest"
+    fi
+    rm -f -- "$candidate"
+    milan_note "capture build manifest already matches $manifest"
+  else
+    mv "$candidate" "$manifest"
+    milan_note "recorded capture build manifest at $manifest"
+  fi
+}
+
 if [[ -e "$actual_prefix" ]]; then
   milan_verify_owned_marker "$actual_prefix"
 fi
@@ -41,6 +90,7 @@ if [[ -e "$actual_prefix" && -e "$dropin" ]] &&
    cmp -s "$payload_prefix/manifest/build.env" "$actual_prefix/manifest/build.env" &&
    milan_render_dropin "$repo_dir" | cmp -s - "$dropin"; then
   "$script_dir/status-milan-stack-local.sh" --installed
+  record_capture_build_manifest
   milan_note "paired Milan stack is already installed"
   exit 0
 fi
@@ -130,5 +180,6 @@ trap - EXIT
 
 [[ ! -e "$backup_prefix" ]] || milan_safe_remove_tree "$backup_prefix" "$actual_parent"
 rm -f -- "$backup_dropin"
+record_capture_build_manifest
 milan_note "installed paired Milan shadow stack under $MILAN_PREFIX"
 milan_note "preserved StateDirectory=fprint and /var/lib/fprint"
