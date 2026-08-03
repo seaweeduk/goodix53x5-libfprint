@@ -37,6 +37,7 @@ QUICK_BUDGET = 1 << 30
 FULL_BUDGET = 5 << 30
 SUCCESS_RETAINED_BUDGET = 100 << 20
 UINT32_MAX = (1 << 32) - 1
+RUNTIME_STATUS_CANCELLED = 4
 RUNTIME_FILE_RE = re.compile(
     r"^runtime-(?P<action>[a-z]+)-(?P<epoch>\d+)-(?P<generation>\d+)-"
     r"(?P<stage>\d+)-(?P<timestamp>-?\d+)-(?P<crc>[0-9a-f]{8})\.json$")
@@ -761,17 +762,23 @@ def journal_cursor(unit: str) -> str:
 def validate_capture_files(operation: list[str], names: list[str], status: int) -> None:
     command = Path(operation[0]).name.lower()
     runtime = [name for name in names if name.startswith("runtime-") and name.endswith(".json")]
+    runtime_stages = {
+        int(match["stage"])
+        for name in runtime
+        if (match := RUNTIME_FILE_RE.fullmatch(name)) and match["action"] == "enroll"
+    }
     raw_references = [name for name in names if name.startswith("raw12-ref-")]
     if not runtime or not raw_references:
         raise HarnessError("debug capture omitted runtime records or raw reference frames")
     if "enroll" in command and status == 0:
-        for stage in range(1, 9):
+        for stage in range(1, 13):
             if not any(name.startswith(f"raw12-enroll-stage-{stage}-") for name in names):
                 raise HarnessError(f"successful enrollment omitted accepted raw stage {stage}")
             if not any(name.startswith(f"enroll-stage-{stage}-") for name in names):
                 raise HarnessError(f"successful enrollment omitted accepted processed stage {stage}")
-        if len(runtime) < 8:
-            raise HarnessError("successful enrollment omitted runtime stage records")
+            if stage not in runtime_stages:
+                raise HarnessError(
+                    f"successful enrollment omitted accepted runtime stage {stage}")
     elif "verify" in command or "identify" in command:
         action = "identify" if "identify" in command else "verify"
         if not any(name.startswith(f"raw12-{action}-") for name in names) or not any(
@@ -1170,6 +1177,8 @@ def run_validate_dump(args: argparse.Namespace) -> None:
             checks = []
             template_map = templates_by_identity.get(identity, {})
             template_errors = []
+            gallery_admission_errors = []
+            gallery_admission_unavailable = []
             if runtime.get("probe_sha256"):
                 probe = artifact_with_digest(template_map.get(("probe", None), []),
                                              runtime["probe_sha256"])
@@ -1188,11 +1197,44 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                                                     expected)
                     if expected and not artifact:
                         template_errors.append(f"{role}-{position}")
+                input_expected = row.get("input_template_sha256")
+                input_artifact = artifact_with_digest(
+                    template_map.get(("input", position), []), input_expected)
+                if not input_expected or not input_artifact:
+                    gallery_admission_unavailable.append(position)
+                elif (runtime.get("status_u32") != RUNTIME_STATUS_CANCELLED and
+                      (row.get("valid") is not True or row.get("evaluated") is not True)):
+                    gallery_admission_errors.append(position)
             checks.append({"name": "template-integrity",
                            "status": ("skipped" if not templates_enabled else
                                       "fail" if template_errors else "pass"),
-                           "detail": ("template dumping was not enabled" if not templates_enabled else
-                                      template_errors or "all referenced templates match")})
+                            "detail": ("template dumping was not enabled" if not templates_enabled else
+                                       template_errors or
+                                       "all referenced template artifact digests match")})
+            if not runtime.get("gallery"):
+                gallery_admission = {"name": "gallery-admission", "status": "skipped",
+                                     "detail": "operation has no gallery"}
+            elif runtime.get("status_u32") == RUNTIME_STATUS_CANCELLED:
+                gallery_admission = {"name": "gallery-admission", "status": "skipped",
+                                     "detail": "cancelled operation may leave gallery rows unevaluated"}
+            elif gallery_admission_errors:
+                gallery_admission = {
+                    "name": "gallery-admission", "status": "fail",
+                    "detail": ("captured digest-matched gallery inputs were rejected before "
+                               f"evaluation: {gallery_admission_errors}"),
+                }
+            elif gallery_admission_unavailable:
+                gallery_admission = {
+                    "name": "gallery-admission", "status": "skipped",
+                    "detail": ("exact gallery input artifacts are unavailable: "
+                               f"{gallery_admission_unavailable}"),
+                }
+            else:
+                gallery_admission = {
+                    "name": "gallery-admission", "status": "pass",
+                    "detail": "all captured gallery inputs were admitted and evaluated",
+                }
+            checks.append(gallery_admission)
             native_check = {"name": "native-parity", "status": "skipped", "detail": ""}
             action = runtime["action"]
             live = (artifact_with_digest(auth_raw.get(action, []),
@@ -1217,7 +1259,7 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                 "purpose_u32": 0, "sensor_subtype_u16": 12, "tcode_u16": 121,
             }
             if action == "enroll":
-                native_check["detail"] = "enrollment authority requires a complete eight-stage chain"
+                native_check["detail"] = "enrollment authority requires a complete twelve-stage chain"
             elif not required_metadata.issubset(runtime):
                 native_check["detail"] = "runtime record predates self-contained replay metadata"
             elif runtime["generation_use_index_u64"] != 1:
