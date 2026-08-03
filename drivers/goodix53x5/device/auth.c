@@ -552,6 +552,7 @@ goodix_verify_ssm_done (FpiSsm   *ssm,
   FpiDeviceAction action = fpi_device_get_current_action (dev);
   gboolean base_recovery =
     self->milan_base_recovery != GOODIX_MILAN_BASE_RECOVERY_NONE;
+  gboolean suppressed_stale_error = FALSE;
   gboolean updated = FALSE;
 
   self->task_ssm = NULL;
@@ -567,6 +568,7 @@ goodix_verify_ssm_done (FpiSsm   *ssm,
       !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
     {
       fp_warn ("Post-match cleanup error (non-fatal): %s", error->message);
+      suppressed_stale_error = goodix_error_indicates_stale_device (error);
       g_clear_error (&error);
     }
   if (!error)
@@ -587,7 +589,7 @@ goodix_verify_ssm_done (FpiSsm   *ssm,
   self->verify_wait_finger_up = FALSE;
   self->milan_base_recovery = GOODIX_MILAN_BASE_RECOVERY_NONE;
   if (!error)
-    self->needs_reinit = FALSE;
+    self->needs_reinit = suppressed_stale_error;
   else if (goodix_error_indicates_stale_device (error))
     self->needs_reinit = TRUE;
   goodix_debug_timing_action_done (self, dev,
