@@ -65,7 +65,11 @@ typedef struct
   GBytes                       *input_template;
   GBytes                       *after_match_template;
   gchar                         input_template_sha256[65];
+#endif
+#if defined(GOODIX53X5_DEBUG) || defined(GOODIX53X5_PARITY)
   gchar                         after_match_sha256[65];
+#endif
+#ifdef GOODIX53X5_DEBUG
   guint32                       queue_state_before_match;
   guint32                       queue_counter_before_match;
   gsize                         queue_occupied_before_match;
