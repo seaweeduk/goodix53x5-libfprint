@@ -29,7 +29,8 @@ fi
 [[ -e "$actual_prefix" && -e "$dropin" ]] || milan_die "refusing partial or unmanaged removal"
 milan_verify_owned_marker "$actual_prefix"
 expected_dropin="$actual_systemd_dir/.$MILAN_DROPIN_NAME.expected.$$"
-milan_render_dropin "$repo_dir" "$expected_dropin"
+milan_render_dropin "$repo_dir" > "$expected_dropin"
+chmod 0644 "$expected_dropin"
 cmp -s "$expected_dropin" "$dropin" || {
   rm -f -- "$expected_dropin"
   milan_die "refusing unmanaged or modified drop-in: $dropin"

@@ -177,13 +177,12 @@ milan_run_stage() {
 }
 
 milan_render_dropin() {
-  local repo_dir="$1" destination="$2" line
+  local repo_dir="$1" line
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line//@GOODIX_MILAN_PREFIX@/$MILAN_PREFIX}"
     printf '%s\n' "$line"
-  done < "$repo_dir/scripts/98-goodix53x5-milan-stack.conf.in" > "$destination"
-  chmod 0644 "$destination"
+  done < "$repo_dir/scripts/98-goodix53x5-milan-stack.conf.in"
 }
 
 milan_assert_safe_symlinks() {
