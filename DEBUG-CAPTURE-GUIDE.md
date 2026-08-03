@@ -238,7 +238,7 @@ native_parity=pass compared=6 failed=0 unavailable=9
 native_coverage actions=5:6 scores=25,40,42,48,52,88 queues=0->1:6
 learning_continuity=partial reobserved=5 pending=1 failed=0
 skipped_checks:
-  8 native-parity: enrollment authority requires a complete eight-stage chain
+  8 native-parity: enrollment authority requires a complete twelve-stage chain
   1 candidate-reobserved: no later gallery contains the exact learned candidate
   1 native-parity: required setup, live frame, or gallery template is missing
 report=/home/user/.local/state/milan-parity/reports/dump-<inventory>.json
