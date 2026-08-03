@@ -185,6 +185,12 @@ def native_contract(case, verified: dict[str, Path]):
     if not isinstance(live_names, list) or len(live_names) != 1:
         raise RunnerError("DLL identify/study authority requires exactly one live artifact")
     live = artifact(verified, live_names[0], "replay live")
+    prelude_names = replay.get("prelude", [])
+    if (not isinstance(prelude_names, list) or len(prelude_names) > 255 or
+            any(not isinstance(name, str) for name in prelude_names)):
+        raise RunnerError("DLL identify/study prelude must be an artifact-name array")
+    preludes = [artifact(verified, name, f"replay prelude {position}")
+                for position, name in enumerate(prelude_names)]
     gallery = replay.get("gallery")
     if not isinstance(gallery, list) or not gallery:
         raise RunnerError("DLL identify/study authority requires an explicit gallery")
@@ -202,7 +208,7 @@ def native_contract(case, verified: dict[str, Path]):
                 queue_occupied not in {0, 1}):
             raise RunnerError(
                 f"gallery entry {position} queue occupancy must be zero or one")
-        entries.append((setup, live, template, index, queue_occupied))
+        entries.append((setup, preludes, live, template, index, queue_occupied))
     return replay, native, entries
 
 
@@ -421,7 +427,7 @@ def persisted_input_identity(path: Path):
 
 
 def run_dll_authority(tool: Path, root: Path, case, native, inputs, dll: Path):
-    setup, live, template, gallery_index, queue_occupied = inputs
+    setup, preludes, live, template, gallery_index, queue_occupied = inputs
     prefix = wine_prefix(native)
     wine_value = os.environ.get("MILAN_PARITY_WINE", "wine")
     wine = shutil.which(wine_value)
@@ -446,7 +452,8 @@ def run_dll_authority(tool: Path, root: Path, case, native, inputs, dll: Path):
         })
         command = [wine, windows_path(executable), operation, windows_path(dll),
                     windows_path(output), windows_path(setup), windows_path(live),
-                    windows_path(template), str(queue_occupied)]
+                    windows_path(template), str(queue_occupied),
+                    *(windows_path(prelude) for prelude in preludes)]
         process = subprocess.run(command, env=environment, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, check=False, timeout=300)
         if process.returncode:
@@ -461,7 +468,8 @@ def run_dll_authority(tool: Path, root: Path, case, native, inputs, dll: Path):
             "normal_antifake": True, "source_index": 2288, "sentinel": 0,
             "in_range_bytes_preserved": True, "shadow_payload_bytes": 2289,
             "matrix_header_size_field": 2288, "dll_allocator_owned": True,
-            "normal_destructor_compatible": True, "hook_hits": 1,
+            "normal_destructor_compatible": True, "prelude_frames": len(preludes),
+            "hook_hits": 1,
         }
         if any(oracle.get(key) != value for key, value in expected_contract.items()):
             raise RunnerError("Wine oracle did not prove the fixed normal-boundary contract")

@@ -27,6 +27,14 @@ order. At the validated pre-anti-fake boundary, the runner replaces the
 DLL-owned 2,288-byte matrix allocation with a DLL-owned 2,289-byte shadow,
 preserves bytes 0 through 2,287, and sets source index 2,288 to zero.
 
+Cases whose target frame is not the first use of its preprocessing generation
+may name earlier raw-frame artifacts in replay field `prelude`. The runner
+processes them in array order after one `preprocessor_init` and before the target
+frame, without extracting, matching, or studying them. This reconstructs DLL
+preprocessing history while leaving the target gallery and persistence state
+explicit. Capture validation derives the ordered prelude only when all preceding
+generation uses and their exact raw artifacts are available.
+
 Enrollment is not a controlled-zero DLL authority. Enrollment cases must add:
 
 ```json

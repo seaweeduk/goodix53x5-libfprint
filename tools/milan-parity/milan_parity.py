@@ -977,8 +977,21 @@ def artifact_with_digest(entries: list[tuple[str, Path]], digest: Any) -> Path |
     return next((path for actual, path in entries if actual == digest), None)
 
 
+def runtime_raw_artifact(runtime: dict[str, Any],
+                         auth_raw: dict[str, list[tuple[str, Path]]],
+                         enroll_raw: dict[int, list[tuple[str, Path]]]) -> Path | None:
+    action = runtime.get("action")
+    if action in {"identify", "verify"}:
+        return artifact_with_digest(auth_raw[action], runtime.get("live_raw_sha256"))
+    if action == "enroll" and isinstance(runtime.get("stage_u32"), int):
+        return artifact_with_digest(enroll_raw.get(runtime["stage_u32"], []),
+                                    runtime.get("live_raw_sha256"))
+    return None
+
+
 def native_case_for_dump(state: Path, dump: Path, runtime_path: Path,
                          runtime: dict[str, Any], setup: Path, live: Path,
+                         prelude: list[Path],
                          templates: dict[tuple[str, int | None], list[tuple[str, Path]]],
                          dll_sha256: str, wine_prefix: Path) -> dict[str, Any]:
     identity = (runtime["action_epoch_u64"], runtime["generation_id_u64"],
@@ -992,6 +1005,11 @@ def native_case_for_dump(state: Path, dump: Path, runtime_path: Path,
         "setup": admit_artifact(root, str(setup), image_format="pgm12"),
         "live": admit_artifact(root, str(live), image_format="pgm12"),
     }
+    prelude_names = []
+    for position, path in enumerate(prelude):
+        name = f"prelude-{position:03d}"
+        artifacts[name] = admit_artifact(root, str(path), image_format="pgm12")
+        prelude_names.append(name)
     gallery = []
     for position, observed in enumerate(runtime["gallery"]):
         template = artifact_with_digest(templates.get(("input", position), []),
@@ -1013,6 +1031,8 @@ def native_case_for_dump(state: Path, dump: Path, runtime_path: Path,
                    "authority_model": "canonical-zero-layered-v1",
                    "dll_sha256": dll_sha256, "wine_prefix": str(wine_prefix)},
     }
+    if prelude_names:
+        replay["prelude"] = prelude_names
     case = {"schema": CASE_SCHEMA, "id": case_id, "operation": runtime["action"],
             "order": 0, "policy": POLICY, "artifacts": artifacts, "replay": replay,
             "device": {"usb_product": "5335", "chip_id": "dump",
@@ -1248,6 +1268,35 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                          artifact_with_digest(enroll_processed.get(runtime["stage_u32"], []),
                                               runtime.get("processed_image_sha256")))
             setup = artifact_with_digest(references, runtime.get("setup_txon_sha256"))
+            prelude = []
+            prelude_error = None
+            generation_use_index = runtime.get("generation_use_index_u64")
+            if (isinstance(generation_use_index, int) and
+                    not isinstance(generation_use_index, bool) and
+                    generation_use_index > 1):
+                prior_by_use: dict[int, Path] = {}
+                for prior_timestamp, _, prior_runtime in runtimes:
+                    if prior_timestamp >= timestamp:
+                        break
+                    if prior_runtime.get("generation_id_u64") != runtime["generation_id_u64"]:
+                        continue
+                    prior_use = prior_runtime.get("generation_use_index_u64")
+                    if (not isinstance(prior_use, int) or isinstance(prior_use, bool) or
+                            not 1 <= prior_use < generation_use_index or
+                            prior_runtime.get("setup_txon_sha256") !=
+                            runtime.get("setup_txon_sha256") or
+                            prior_runtime.get("purpose_u32") != runtime.get("purpose_u32")):
+                        continue
+                    prior_raw = runtime_raw_artifact(prior_runtime, auth_raw, enroll_raw)
+                    if prior_raw is None or prior_use in prior_by_use:
+                        prelude_error = "earlier generation replay frames are incomplete"
+                        break
+                    prior_by_use[prior_use] = prior_raw
+                expected_uses = list(range(1, generation_use_index))
+                if not prelude_error and sorted(prior_by_use) != expected_uses:
+                    prelude_error = "earlier generation replay frames are incomplete"
+                elif not prelude_error:
+                    prelude = [prior_by_use[index] for index in expected_uses]
             required_metadata = {
                 "dac_high_u16", "dac_low_u16", "generation_use_index_u64",
                 "live_raw_sha256", "probe_record_count_u32", "processed_image_sha256",
@@ -1262,8 +1311,11 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                 native_check["detail"] = "enrollment authority requires a complete twelve-stage chain"
             elif not required_metadata.issubset(runtime):
                 native_check["detail"] = "runtime record predates self-contained replay metadata"
-            elif runtime["generation_use_index_u64"] != 1:
-                native_check["detail"] = "operation requires earlier generation uses for replay"
+            elif (not isinstance(generation_use_index, int) or
+                  isinstance(generation_use_index, bool) or generation_use_index < 1):
+                native_check["detail"] = "operation has invalid generation replay metadata"
+            elif prelude_error:
+                native_check["detail"] = prelude_error
             elif any(runtime.get(key) != value for key, value in fixed_metadata.items()):
                 native_check["detail"] = "operation does not use the fixed native authority metadata"
             elif any(row.get("valid") is not True or row.get("evaluated") is not True
@@ -1276,6 +1328,7 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                 native_check["detail"] = "required setup, live frame, or gallery template is missing"
             else:
                 case = native_case_for_dump(state, dump, runtime_path, runtime, setup, live,
+                                            prelude,
                                             template_map, args.approved_dll_sha256, prefix)
                 actual = execute_runner(Path(args.native_runner).resolve(),
                                         validate_corpus(str(case["root"])), case["case_id"],
