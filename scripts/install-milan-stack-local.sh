@@ -29,22 +29,17 @@ mkdir -p "$actual_parent" "$actual_systemd_dir"
 exec 9>"$actual_parent/.goodix53x5-milan.install.lock"
 flock -n 9 || milan_die "another Milan install/remove is active"
 
-expected_dropin="$MILAN_STACK_ROOT/.install-dropin.$$"
-milan_render_dropin "$repo_dir" "$expected_dropin"
-trap 'rm -f -- "$expected_dropin"' EXIT
 if [[ -e "$actual_prefix" ]]; then
   milan_verify_owned_marker "$actual_prefix"
 fi
 if [[ -e "$dropin" ]]; then
   [[ -e "$actual_prefix" ]] || milan_die "refusing unmanaged drop-in without owned prefix: $dropin"
-  cmp -s "$expected_dropin" "$dropin" || milan_die "refusing unmanaged or modified drop-in: $dropin"
+  milan_render_dropin "$repo_dir" | cmp -s - "$dropin" || milan_die "refusing unmanaged or modified drop-in: $dropin"
 fi
 
 if [[ -e "$actual_prefix" && -e "$dropin" ]] &&
    cmp -s "$payload_prefix/manifest/build.env" "$actual_prefix/manifest/build.env" &&
-   cmp -s "$expected_dropin" "$dropin"; then
-  rm -f -- "$expected_dropin"
-  trap - EXIT
+   milan_render_dropin "$repo_dir" | cmp -s - "$dropin"; then
   "$script_dir/status-milan-stack-local.sh" --installed
   milan_note "paired Milan stack is already installed"
   exit 0
@@ -68,9 +63,8 @@ BUILD_MANIFEST_SHA256=$(milan_sha256 "$stage_prefix/manifest/build.env")
 EOF
 chown -hR "$(id -u):$(id -g)" -- "$stage_prefix"
 chmod -R u-s,g-s,go-w -- "$stage_prefix"
-cp "$expected_dropin" "$stage_dropin"
+milan_render_dropin "$repo_dir" > "$stage_dropin"
 chmod 0644 "$stage_dropin"
-rm -f -- "$expected_dropin"
 milan_verify_owned_marker "$stage_prefix"
 milan_verify_manifest "$stage_prefix" "$repo_dir"
 
@@ -95,7 +89,7 @@ rollback() {
     milan_systemctl restart fprintd.service >/dev/null 2>&1 || true
   fi
   [[ ! -e "$stage_prefix" ]] || milan_safe_remove_tree "$stage_prefix" "$actual_parent"
-  rm -f -- "$stage_dropin" "$expected_dropin"
+  rm -f -- "$stage_dropin"
   exit "$rc"
 }
 trap rollback EXIT

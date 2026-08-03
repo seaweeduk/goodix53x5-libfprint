@@ -22,7 +22,7 @@ verify_build() {
 }
 
 verify_destination_guards() {
-  local actual_prefix actual_systemd_dir dropin expected
+  local actual_prefix actual_systemd_dir dropin
 
   actual_prefix="$(milan_actual_prefix)"
   actual_systemd_dir="$(milan_actual_systemd_dir)"
@@ -30,13 +30,8 @@ verify_destination_guards() {
   [[ ! -e "$actual_prefix" ]] || milan_verify_owned_marker "$actual_prefix"
   if [[ -e "$dropin" ]]; then
     [[ -e "$actual_prefix" ]] || milan_die "unmanaged drop-in without owned prefix"
-    expected="$MILAN_STACK_ROOT/.expected-dropin.$$"
-    milan_render_dropin "$repo_dir" "$expected"
-    cmp -s "$expected" "$dropin" || {
-      rm -f -- "$expected"
+    milan_render_dropin "$repo_dir" | cmp -s - "$dropin" ||
       milan_die "unmanaged or modified drop-in"
-    }
-    rm -f -- "$expected"
   fi
 }
 
@@ -56,10 +51,8 @@ case "$mode" in
     milan_verify_owned_marker "$actual_prefix"
     milan_verify_manifest "$actual_prefix" "$repo_dir"
     [[ -f "$dropin" ]] || milan_die "managed drop-in is missing"
-    expected="$MILAN_STACK_ROOT/.expected-dropin.$$"
-    milan_render_dropin "$repo_dir" "$expected"
-    cmp -s "$expected" "$dropin" || milan_die "managed drop-in differs from template"
-    rm -f -- "$expected"
+    milan_render_dropin "$repo_dir" | cmp -s - "$dropin" ||
+      milan_die "managed drop-in differs from template"
     milan_verify_active_shadow
     milan_note "installed shadow stack and service configuration verified"
     ;;
