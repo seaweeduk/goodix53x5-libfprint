@@ -193,6 +193,10 @@ milan_assert_safe_symlinks() {
     case "$target" in
       /*|../*|*/../*|*/..) milan_die "payload symlink escapes prefix: $link -> $target" ;;
     esac
+    case "$link" in
+      "$prefix/lib/libfprint-2.so.2"|"$prefix/lib/libfprint-2.so") ;;
+      *) milan_die "unexpected payload symlink: $link" ;;
+    esac
   done < <(find "$prefix" -type l -print0)
 }
 
@@ -237,7 +241,7 @@ milan_verify_manifest() {
   (cd "$prefix" && sha256sum --check manifest/SHA256SUMS >/dev/null) || milan_die "payload digest verification failed"
   while IFS= read -r -d '' file; do
     file="${file#"$prefix/"}"
-    grep -Fq "  ./$file" "$sums" || grep -Fq "  $file" "$sums" || milan_die "unmanifested payload file: $file"
+    grep -Fxq -- "./$file" < <(cut -c 67- "$sums") || milan_die "unmanifested payload file: $file"
   done < <(find "$prefix" -type f ! -path "$sums" ! -name "$MILAN_OWNED_MARKER" -print0)
   [[ "$(readlink "$prefix/lib/libfprint-2.so.2")" == libfprint-2.so.2.0.0 ]] || milan_die "invalid soname symlink"
   [[ "$(readlink "$prefix/lib/libfprint-2.so")" == libfprint-2.so.2 ]] || milan_die "invalid linker symlink"
