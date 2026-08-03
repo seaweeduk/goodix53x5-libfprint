@@ -155,16 +155,5 @@ available space. `gc` removes partial work, Wine work, stale builds, and bounded
 success-report history without accepting a corpus path and therefore cannot
 delete a corpus or generation.
 
-## Self-Test
-
-```sh
-python3 -m unittest discover -s tools/milan-parity/tests -v
-```
-
-The tests compile release and debug current runners and require byte-identical
-algorithm records. They also build the MinGW oracle, exercise privacy and
-identity failures, and prove score, decision, study-action, and template-hash
-mutations fail at the intended field.
-
 Private convenience assets may live under `tools/milan-parity/private/`, which
 is ignored by Git. Do not put private material in another tracked location.
