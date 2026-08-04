@@ -10,6 +10,7 @@ jobs:
       !github.event.pull_request.draft &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       id-token: write
       contents: read
@@ -24,10 +25,24 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Prepare OpenCode auth
+        shell: bash
+        env:
+          OPENCODE_AUTH_CONTENT: ${{ secrets.OPENCODE_AUTH_CONTENT }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          auth_dir="$HOME/.local/share/opencode"
+          auth_file="$auth_dir/auth.json"
+          install -d -m 700 "$auth_dir"
+          printf '%s' "$OPENCODE_AUTH_CONTENT" | jq -e . > "$auth_file"
+          chmod 600 "$auth_file"
+
       - name: Run OpenCode PR review
         uses: anomalyco/opencode/github@latest
         env:
-          OPENCODE_AUTH_CONTENT: ${{ secrets.OPENCODE_AUTH_CONTENT }}
+          OPENCODE_PERMISSION: '{"*":"allow","doom_loop":"deny","question":"deny"}'
           OPENCODE_CONFIG_CONTENT: |
             {
               "references": {
