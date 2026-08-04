@@ -1550,10 +1550,12 @@ milan_match_prepared_probe (
   if (enrolled->metadata.sensor_type == 12)
     {
       *queue_candidate_eligible =
+        match_selection.rejection_evidence == 0 &&
         matcher_policy.configuration[13] == 1 &&
         late_policy_context.probe_low_class == 0 && image_coverage > 65 &&
         image_quality > 15 && late_policy_context.accumulated_high_class < 4 &&
-        late_policy_status_counter < 3;
+        late_policy_status_counter < 3 &&
+        enrolled->metadata.queue_state == 0;
 #ifdef GOODIX53X5_DEBUG
       if (diagnostics)
         {

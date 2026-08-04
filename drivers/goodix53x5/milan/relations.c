@@ -80,6 +80,14 @@ goodix_milan_match_reference_transform (
   if (!enrolled || matched_feature_index >= enrolled->feature_count ||
       !match_transform || !relation_values)
     return -1;
+  if (enrolled->metadata.graph_established == 0 &&
+      enrolled->metadata.graph_reference_index == -1 &&
+      enrolled->relation_count == 0)
+    {
+      relation_values[0] = 0;
+      memcpy (relation_values + 1, identity, sizeof(identity));
+      return 1;
+    }
   if (enrolled->metadata.graph_established != 1 ||
       enrolled->metadata.graph_reference_index < 0)
     return -1;

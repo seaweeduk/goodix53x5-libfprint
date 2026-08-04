@@ -223,6 +223,9 @@ main (int argc, char **argv)
       g_autofree gchar *probe_hash = NULL;
       g_autofree gchar *phase_name = NULL;
       g_autofree gchar *phase_outputs = NULL;
+      gboolean target_stage = live_paths[stage + 1] == NULL;
+      gsize phase_number = purpose == GOODIX_MILAN_PURPOSE_IDENTIFY
+                             ? 1 : stage + 1;
       gint quality = 0;
       gint coverage = 0;
       gint preprocess_status;
@@ -247,12 +250,14 @@ main (int argc, char **argv)
         &phase_state, &phase_profile, setup, live, stage_purpose, processed,
         &quality, &coverage);
       processed_hash = hash_data (processed, GOODIX_MILAN_SENSOR_PIXELS);
-      phase_name = g_strdup_printf ("stage-%02" G_GSIZE_FORMAT "-preprocess", stage + 1);
+      phase_name = g_strdup_printf ("stage-%02" G_GSIZE_FORMAT "-preprocess",
+                                    phase_number);
       phase_outputs = g_strdup_printf (
         "{\"coverage_i32\":%d,\"processed_image_sha256\":\"%s\",\"quality_i32\":%d,"
         "\"status_i32\":%d}", coverage, processed_hash, quality,
         preprocess_status);
-      append_phase (phases, &first_phase, phase_name, phase_outputs);
+      if (target_stage)
+        append_phase (phases, &first_phase, phase_name, phase_outputs);
 
       input = goodix_milan_runtime_input_new (
         stage + 1, 1, stage_purpose, &state, &profile, setup, live,
@@ -283,16 +288,16 @@ main (int argc, char **argv)
           state = output->preprocess_state;
           profile = output->profile_state;
         }
-      if (output->probe_template)
+      if (target_stage && output->probe_template)
         {
           probe_hash = hash_bytes (output->probe_template);
           g_free (phase_name);
           g_free (phase_outputs);
           phase_name = g_strdup_printf (
-            stage_purpose == GOODIX_MILAN_PURPOSE_ENROLL
-              ? "stage-%02" G_GSIZE_FORMAT "-extract"
-              : "stage-%02" G_GSIZE_FORMAT "-extract-antifake",
-            stage + 1);
+              stage_purpose == GOODIX_MILAN_PURPOSE_ENROLL
+                ? "stage-%02" G_GSIZE_FORMAT "-extract"
+                : "stage-%02" G_GSIZE_FORMAT "-extract-antifake",
+            phase_number);
           if (stage_purpose == GOODIX_MILAN_PURPOSE_ENROLL)
             phase_outputs = g_strdup_printf (
               "{\"partition0_count_u32\":%u,\"partition1_count_u32\":%u,"
@@ -328,7 +333,7 @@ main (int argc, char **argv)
             accepted_stages, combined_hash);
           append_phase (phases, &first_phase, phase_name, phase_outputs);
         }
-      if (stage_purpose == GOODIX_MILAN_PURPOSE_IDENTIFY &&
+      if (target_stage && stage_purpose == GOODIX_MILAN_PURPOSE_IDENTIFY &&
           purpose == GOODIX_MILAN_PURPOSE_IDENTIFY)
         {
           for (gsize position = 0; position < output->gallery_results->len; position++)
@@ -362,7 +367,7 @@ main (int argc, char **argv)
             final_candidate_hash = hash_bytes (output->final_candidate);
         }
       goodix_milan_runtime_output_free (output);
-      if (purpose == GOODIX_MILAN_PURPOSE_IDENTIFY)
+      if (purpose == GOODIX_MILAN_PURPOSE_IDENTIFY && target_stage)
         break;
     }
   if (purpose == GOODIX_MILAN_PURPOSE_IDENTIFY)
