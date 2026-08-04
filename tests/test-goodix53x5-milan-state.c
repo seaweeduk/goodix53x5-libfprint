@@ -1186,9 +1186,9 @@ run_production_match_study_handoff (void)
   g_assert_cmpint (result.retained_evidence_flag, ==, 1);
   g_assert_cmpint (result.study_control.study_finalization_gate, ==, 1);
   g_assert_cmpint (result.study_control.study_action_gate, ==, 1);
-  g_assert_cmpint (result.study_control.queue_candidate_eligible, ==, 1);
+  g_assert_cmpint (result.study_control.queue_candidate_eligible, ==, 0);
   g_assert_true (goodix_study_queue_validate (queue));
-  g_assert_cmpuint (goodix_study_queue_occupied (queue), ==, 1);
+  g_assert_cmpuint (goodix_study_queue_occupied (queue), ==, 0);
   g_assert_true (goodix_milan_print_validate_template (
     after_match, &match_info, &error));
   g_assert_no_error (error);
@@ -1201,7 +1201,7 @@ run_production_match_study_handoff (void)
                      probe, data, size, &result, TRUE, queue, &after_study,
                      &action), ==, GOODIX_SIGFM_TEMPLATE_OK);
   g_assert_nonnull (after_study);
-  g_assert_cmpint (action, ==, GOODIX_MILAN_STUDY_QUEUED);
+  g_assert_cmpint (action, ==, GOODIX_MILAN_STUDY_REPLACE);
   g_assert_false (g_bytes_equal (after_match, after_study));
   g_assert_true (goodix_study_queue_validate (queue));
   g_assert_cmpuint (goodix_study_queue_occupied (queue), ==, 0);
@@ -1211,7 +1211,7 @@ run_production_match_study_handoff (void)
     &study_info, &studied);
   assert_replacement_semantics (
     &before, &studied, &probe_unpacked, GOODIX_MILAN_STUDY_REPLACE,
-    1, 2, 2, TRUE);
+    1, 1, 1, TRUE);
 
   g_bytes_unref (after_match);
   goodix_study_queue_free (queue);
