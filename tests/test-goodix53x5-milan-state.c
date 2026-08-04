@@ -419,7 +419,8 @@ study_feature_element (guint    seed,
                        gint32   active,
                        gint32   state,
                        gint32   residual,
-                       gint32   ordinal)
+                       gint32   ordinal,
+                       gint32   marker)
 {
   const gsize record_count = matchable ? 150 : 1;
   guint8 high[286];
@@ -471,6 +472,7 @@ study_feature_element (guint    seed,
   fields.tagged_values[5] = state;
   fields.tagged_values[6] = residual;
   fields.tagged_values[7] = ordinal;
+  goodix_milan_antifake_set_calibration_scalar (&antifake, marker);
 
   g_assert_cmpint (goodix_milan_template_pack_feature_element (
                      high, enhanced, inline_mask, low, records, record_count,
@@ -481,11 +483,12 @@ study_feature_element (guint    seed,
 
 static GoodixMatchInfo *
 study_match_info (guint seed,
-                  gboolean matchable)
+                  gboolean matchable,
+                  gint32   marker)
 {
   GoodixMatchInfo *info = goodix_match_info_new_empty ();
   g_autoptr(GBytes) feature = study_feature_element (
-    seed, matchable, 0, 0, 0, 0);
+    seed, matchable, 0, 0, 0, 0, marker);
   const guint8 *feature_data;
   gsize feature_size;
   guint8 tail[0x520] = { 0 };
@@ -552,7 +555,7 @@ study_gallery (GoodixMilanStudyAction action,
 
       features[i] = study_feature_element (
         matchable ? 9 : (guint) i + 1, matchable, 1, state, residual,
-        (gint32) i);
+        (gint32) i, 0);
       feature_data[i] = g_bytes_get_data (features[i], &feature_sizes[i]);
       capacity += feature_sizes[i];
       goodix_milan_template_write_u32 (tail + i * 4, (guint32) i);
@@ -905,7 +908,7 @@ static GBytes *
 run_study_action_case (const StudyActionCase *test_case)
 {
   g_autoptr(GBytes) gallery = study_gallery (test_case->action, FALSE);
-  GoodixMatchInfo *probe = study_match_info (9, FALSE);
+  GoodixMatchInfo *probe = study_match_info (9, FALSE, 0);
   GoodixStudyQueue *queue = goodix_study_queue_new (0, 7);
   GoodixMilanMatchResult result = study_primary_result (
     test_case->retained_flag);
@@ -974,12 +977,14 @@ test_study_actions (void)
 static GBytes *
 run_queued_study_case (void)
 {
+  static const gint32 primary_marker = INT32_C (0x13579bdf);
+  static const gint32 queued_marker = INT32_C (0x2468ace0);
   g_autoptr(GBytes) baseline_gallery = study_gallery (
     GOODIX_MILAN_STUDY_REPLACE_NO_RELATION, FALSE);
   g_autoptr(GBytes) queued_gallery = study_gallery (
     GOODIX_MILAN_STUDY_REPLACE_NO_RELATION, FALSE);
-  GoodixMatchInfo *primary = study_match_info (9, TRUE);
-  GoodixMatchInfo *queued = study_match_info (9, TRUE);
+  GoodixMatchInfo *primary = study_match_info (9, TRUE, primary_marker);
+  GoodixMatchInfo *queued = study_match_info (9, TRUE, queued_marker);
   GoodixStudyQueue *baseline_queue = goodix_study_queue_new (0, 7);
   GoodixStudyQueue *queue = goodix_study_queue_new (0, 7);
   GoodixMilanMatchResult primary_result = study_primary_result (0);
@@ -1003,9 +1008,38 @@ run_queued_study_case (void)
   GoodixMilanUnpackedTemplate unpacked;
   GoodixMilanUnpackedTemplate baseline_unpacked;
   GoodixMilanUnpackedTemplate probe_unpacked;
+  GoodixMilanUnpackedTemplate queued_probe_unpacked;
+  GoodixMilanFeatureView primary_feature;
+  GoodixMilanFeatureView queued_feature;
+  GoodixMilanFeatureView selected_feature;
 
   unpack_study_template (baseline_gallery, &before);
   unpack_study_template (primary->template, &probe_unpacked);
+  unpack_study_template (queued->template, &queued_probe_unpacked);
+  g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                     probe_unpacked.feature_elements[0],
+                     probe_unpacked.feature_element_sizes[0],
+                     &primary_feature), ==, 0);
+  g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                     queued_probe_unpacked.feature_elements[0],
+                     queued_probe_unpacked.feature_element_sizes[0],
+                     &queued_feature), ==, 0);
+  g_assert_cmpint (goodix_milan_antifake_calibration_scalar (
+                     &primary->antifake), ==,
+                   primary_marker);
+  g_assert_cmpint (goodix_milan_antifake_calibration_scalar (
+                     &queued->antifake), ==,
+                   queued_marker);
+  g_assert_cmpint (goodix_milan_antifake_calibration_scalar (
+                     &primary->antifake), !=,
+                   goodix_milan_antifake_calibration_scalar (
+                     &queued->antifake));
+  g_assert_cmpint (goodix_milan_antifake_calibration_scalar (
+                     primary_feature.antifake), ==,
+                   primary_marker);
+  g_assert_cmpint (goodix_milan_antifake_calibration_scalar (
+                     queued_feature.antifake), ==,
+                   queued_marker);
   gallery_data = g_bytes_get_data (baseline_gallery, &gallery_size);
   g_assert_cmpint (goodix_match_study_feature_queued (
                      primary, gallery_data, gallery_size, &primary_result, TRUE,
@@ -1066,8 +1100,18 @@ run_queued_study_case (void)
     updated, GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT - 2,
     &info, &unpacked);
   assert_replacement_semantics (
-    &before, &unpacked, &probe_unpacked,
+    &before, &unpacked, &queued_probe_unpacked,
     GOODIX_MILAN_STUDY_REPLACE_NO_RELATION, 1, 2, 1, FALSE);
+  g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                     unpacked.feature_elements[1],
+                     unpacked.feature_element_sizes[1], &selected_feature), ==,
+                   0);
+  g_assert_cmpint (goodix_milan_antifake_calibration_scalar (
+                     selected_feature.antifake), ==,
+                   queued_marker);
+  g_assert_cmpint (goodix_milan_antifake_calibration_scalar (
+                     selected_feature.antifake), !=,
+                   primary_marker);
 
   g_bytes_unref (baseline);
   goodix_study_queue_free (queue);
@@ -1099,7 +1143,7 @@ run_production_match_study_handoff (void)
   g_autoptr(GBytes) gallery = study_gallery (
     GOODIX_MILAN_STUDY_REPLACE_NO_RELATION, TRUE);
   g_autoptr(GError) error = NULL;
-  GoodixMatchInfo *probe = study_match_info (9, TRUE);
+  GoodixMatchInfo *probe = study_match_info (9, TRUE, 0);
   GoodixStudyQueue *queue = goodix_study_queue_new (0, 7);
   GoodixMilanMatchResult result;
   GoodixMilanStudyAction action = GOODIX_MILAN_STUDY_NONE;
