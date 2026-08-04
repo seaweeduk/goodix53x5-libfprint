@@ -88,6 +88,8 @@ milan_run_stage "test libfprint update result" meson test -C "$libfprint_build" 
   --print-errorlogs fpi-device
 milan_run_stage "test Milan synthetic public contract" meson test -C "$libfprint_build" \
   --print-errorlogs goodix53x5-milan-synthetic
+milan_run_stage "test Milan state invariants" meson test -C "$libfprint_build" \
+  --print-errorlogs goodix53x5-milan-state
 milan_run_stage "test Milan runtime public contract" meson test -C "$libfprint_build" \
   --print-errorlogs goodix53x5-milan-runtime
 

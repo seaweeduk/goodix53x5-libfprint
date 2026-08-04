@@ -58,6 +58,12 @@ if ! cmp -s "$repo_dir/tests/test-goodix53x5-milan-synthetic.c" \
      "$libfprint_dir/tests/test-goodix53x5-milan-synthetic.c"
 fi
 
+if ! cmp -s "$repo_dir/tests/test-goodix53x5-milan-state.c" \
+             "$libfprint_dir/tests/test-goodix53x5-milan-state.c"; then
+  cp "$repo_dir/tests/test-goodix53x5-milan-state.c" \
+     "$libfprint_dir/tests/test-goodix53x5-milan-state.c"
+fi
+
 if ! cmp -s "$repo_dir/tests/test-goodix53x5-milan-runtime.c" \
              "$libfprint_dir/tests/test-goodix53x5-milan-runtime.c"; then
   cp "$repo_dir/tests/test-goodix53x5-milan-runtime.c" \

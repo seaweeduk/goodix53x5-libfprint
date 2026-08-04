@@ -110,7 +110,7 @@ diff --git a/tests/meson.build b/tests/meson.build
 index 00aa566..f0c5dcf 100644
 --- a/tests/meson.build
 +++ b/tests/meson.build
-@@ -324,3 +324,46 @@ foreach test_name: unit_tests
+@@ -324,3 +324,59 @@ foreach test_name: unit_tests
 +if 'goodix53x5' in drivers
 +    goodix53x5_milan_synthetic = executable(
 +        'test-goodix53x5-milan-synthetic',
@@ -122,6 +122,19 @@ index 00aa566..f0c5dcf 100644
 +    )
 +    test('goodix53x5-milan-synthetic',
 +        goodix53x5_milan_synthetic,
++        suite: ['unit-tests'],
++        env: envs)
++
++    goodix53x5_milan_state = executable(
++        'test-goodix53x5-milan-state',
++        'test-goodix53x5-milan-state.c',
++        dependencies: libfprint_private_dep,
++        c_args: common_cflags + goodix53x5_cflags,
++        link_with: libfprint_drivers,
++        install: false,
++    )
++    test('goodix53x5-milan-state',
++        goodix53x5_milan_state,
 +        suite: ['unit-tests'],
 +        env: envs)
 +
