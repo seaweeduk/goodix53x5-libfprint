@@ -21,7 +21,8 @@ mapping. The runner does not run `wineboot`, create, clone, or select a default
 prefix. `MILAN_PARITY_WINE` may select the Wine executable.
 
 Identify, verify, study, and persistence cases require one setup artifact, one
-live artifact, and one gallery entry. They use the normal DLL preprocessing,
+live artifact, and one or more gallery entries. Each gallery entry is replayed
+independently from the same explicit setup, chronology, and live input. They use the normal DLL preprocessing,
 extraction, `identifyImage`, optional `templateStudy`, packing, and destruction
 order. At the validated pre-anti-fake boundary, the runner replaces the
 DLL-owned 2,288-byte matrix allocation with a DLL-owned 2,289-byte shadow,
@@ -34,6 +35,16 @@ frame, without extracting, matching, or studying them. This reconstructs DLL
 preprocessing history while leaving the target gallery and persistence state
 explicit. Capture validation derives the ordered prelude only when all preceding
 generation uses and their exact raw artifacts are available.
+
+The optional `prelude_purposes` field preserves mixed-purpose preprocessing
+chronology. When present, it must be an array with the same length as `prelude`;
+each item must be the integer `0` (identify) or `1` (enroll). When omitted, every
+prelude purpose defaults to `0` for backward compatibility. The runner passes
+each pair to the Windows oracle as `PURPOSE:WINDOWS_PATH`; because the purpose
+and separator occupy exactly the first two characters, a drive colon in a path
+such as `1:Z:\corpus\frame.raw` is unambiguous. Unsupported values are
+rejected. The target retains the case's identify purpose (`0`); this does not
+enable another sensor subtype, profile, anti-fake mode, or target operation.
 
 Enrollment is not a controlled-zero DLL authority. Enrollment cases must add:
 

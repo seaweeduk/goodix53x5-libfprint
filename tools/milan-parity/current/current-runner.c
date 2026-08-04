@@ -26,7 +26,9 @@ static gchar **gallery_values;
 static gint tcode;
 static gint dac_high;
 static gint dac_low;
+static gint profile_number = GOODIX_MILAN_PRINT_PROFILE;
 static gint subtype = GOODIX_MILAN_PRINT_SENSOR_TYPE;
+static gint prelude_count;
 
 static GOptionEntry options[] = {
   { "case-id", 0, 0, G_OPTION_ARG_STRING, &case_id, "Opaque case ID", "ID" },
@@ -39,7 +41,10 @@ static GOptionEntry options[] = {
   { "tcode", 0, 0, G_OPTION_ARG_INT, &tcode, "tcode", "U16" },
   { "dac-high", 0, 0, G_OPTION_ARG_INT, &dac_high, "DAC high", "U16" },
   { "dac-low", 0, 0, G_OPTION_ARG_INT, &dac_low, "DAC low", "U16" },
+  { "profile", 0, 0, G_OPTION_ARG_INT, &profile_number, "Milan profile", "U16" },
   { "subtype", 0, 0, G_OPTION_ARG_INT, &subtype, "sensor subtype", "U16" },
+  { "prelude-count", 0, 0, G_OPTION_ARG_INT, &prelude_count,
+    "number of preprocessing-only live frames", "COUNT" },
   { NULL }
 };
 
@@ -112,6 +117,19 @@ append_phase (GString     *phases,
 }
 
 static gboolean
+parse_purpose (const gchar                  *value,
+               GoodixMilanPreprocessPurpose *purpose)
+{
+  if (g_str_equal (value, "0") || g_str_equal (value, "identify"))
+    *purpose = GOODIX_MILAN_PURPOSE_IDENTIFY;
+  else if (g_str_equal (value, "1") || g_str_equal (value, "enroll"))
+    *purpose = GOODIX_MILAN_PURPOSE_ENROLL;
+  else
+    return FALSE;
+  return TRUE;
+}
+
+static gboolean
 parse_gallery (GPtrArray  *owned_bytes,
                GPtrArray  *owned_inputs,
                GError    **error)
@@ -169,6 +187,7 @@ main (int argc, char **argv)
   g_autoptr(GBytes) final_enrollment = NULL;
   gboolean first_phase = TRUE;
   guint accepted_stages = 0;
+  guint enrollment_stage = 0;
   GoodixMilanRuntimeStatus final_status = GOODIX_MILAN_RUNTIME_INVALID_DATA;
   gint32 final_score = 0;
   guint final_winner = G_MAXUINT;
@@ -185,20 +204,38 @@ main (int argc, char **argv)
     goto fail;
   if (!case_id || !purpose_name || !setup_path || !live_paths || !live_paths[0] ||
       tcode < 0 || tcode > G_MAXUINT16 || dac_high < 0 || dac_high > G_MAXUINT16 ||
-      dac_low < 0 || dac_low > G_MAXUINT16 || subtype < 0 || subtype > G_MAXUINT16)
+      dac_low < 0 || dac_low > G_MAXUINT16 ||
+      profile_number < 0 || profile_number > G_MAXUINT16 ||
+      subtype < 0 || subtype > G_MAXUINT16)
     {
       g_set_error_literal (&error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
                            "required runner argument is missing or out of range");
       goto fail;
     }
-  if (g_str_equal (purpose_name, "enroll"))
-    purpose = GOODIX_MILAN_PURPOSE_ENROLL;
-  else if (g_str_equal (purpose_name, "identify"))
-    purpose = GOODIX_MILAN_PURPOSE_IDENTIFY;
-  else
+  if (!parse_purpose (purpose_name, &purpose))
     {
       g_set_error_literal (&error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
                            "purpose must be identify or enroll");
+      goto fail;
+    }
+  if (profile_number != GOODIX_MILAN_PRINT_PROFILE ||
+      subtype != GOODIX_MILAN_PRINT_SENSOR_TYPE)
+    {
+      g_set_error_literal (&error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
+                           "current runner supports only profile 9 and sensor subtype 12");
+      goto fail;
+    }
+  if (live_purpose_values &&
+      g_strv_length (live_purpose_values) != g_strv_length (live_paths))
+    {
+      g_set_error_literal (&error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
+                           "live purpose count must equal live frame count");
+      goto fail;
+    }
+  if (prelude_count < 0 || (gsize) prelude_count >= g_strv_length (live_paths))
+    {
+      g_set_error_literal (&error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
+                           "prelude count must leave at least one target frame");
       goto fail;
     }
   if (!load_frame (setup_path, setup, &error) ||
@@ -224,25 +261,29 @@ main (int argc, char **argv)
       g_autofree gchar *phase_name = NULL;
       g_autofree gchar *phase_outputs = NULL;
       gboolean target_stage = live_paths[stage + 1] == NULL;
-      gsize phase_number = purpose == GOODIX_MILAN_PURPOSE_IDENTIFY
-                             ? 1 : stage + 1;
+      gboolean prelude_stage = stage < (gsize) prelude_count;
+      gboolean emit_stage;
+      gsize phase_number;
       gint quality = 0;
       gint coverage = 0;
       gint preprocess_status;
 
       if (live_purpose_values && live_purpose_values[stage])
         {
-          if (g_str_equal (live_purpose_values[stage], "enroll"))
-            stage_purpose = GOODIX_MILAN_PURPOSE_ENROLL;
-          else if (g_str_equal (live_purpose_values[stage], "identify"))
-            stage_purpose = GOODIX_MILAN_PURPOSE_IDENTIFY;
-          else
+          if (!parse_purpose (live_purpose_values[stage], &stage_purpose))
             {
               g_set_error_literal (&error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
-                                   "live purpose must be identify or enroll");
+                                    "live purpose must be 0/identify or 1/enroll");
               goto fail;
             }
         }
+      if (!prelude_stage && stage_purpose == GOODIX_MILAN_PURPOSE_ENROLL)
+        enrollment_stage++;
+      emit_stage = purpose == GOODIX_MILAN_PURPOSE_ENROLL
+                     ? !prelude_stage
+                     : target_stage;
+      phase_number = purpose == GOODIX_MILAN_PURPOSE_IDENTIFY
+                       ? 1 : enrollment_stage;
 
       if (!load_frame (live_paths[stage], live, &error))
         goto fail;
@@ -256,8 +297,23 @@ main (int argc, char **argv)
         "{\"coverage_i32\":%d,\"processed_image_sha256\":\"%s\",\"quality_i32\":%d,"
         "\"status_i32\":%d}", coverage, processed_hash, quality,
         preprocess_status);
-      if (target_stage)
+      if (emit_stage)
         append_phase (phases, &first_phase, phase_name, phase_outputs);
+
+      if (prelude_stage)
+        {
+          if (preprocess_status != 0 &&
+              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY)
+            {
+              g_set_error_literal (&error, G_OPTION_ERROR,
+                                   G_OPTION_ERROR_FAILED,
+                                   "preprocessing prelude failed");
+              goto fail;
+            }
+          state = phase_state;
+          profile = phase_profile;
+          continue;
+        }
 
       input = goodix_milan_runtime_input_new (
         stage + 1, 1, stage_purpose, &state, &profile, setup, live,
@@ -288,7 +344,7 @@ main (int argc, char **argv)
           state = output->preprocess_state;
           profile = output->profile_state;
         }
-      if (target_stage && output->probe_template)
+      if (emit_stage && output->probe_template)
         {
           probe_hash = hash_bytes (output->probe_template);
           g_free (phase_name);
@@ -309,7 +365,7 @@ main (int argc, char **argv)
               "{\"active_record_count_u32\":%u}", output->probe_record_count);
           append_phase (phases, &first_phase, phase_name, phase_outputs);
         }
-      if (stage_purpose == GOODIX_MILAN_PURPOSE_ENROLL &&
+      if (!prelude_stage && stage_purpose == GOODIX_MILAN_PURPOSE_ENROLL &&
           goodix_milan_runtime_enrollment_admitted (output))
         {
           g_autofree gchar *combined_hash = NULL;
@@ -327,11 +383,13 @@ main (int argc, char **argv)
           combined_hash = hash_bytes (final_enrollment);
           g_free (phase_name);
           g_free (phase_outputs);
-          phase_name = g_strdup_printf ("stage-%02" G_GSIZE_FORMAT "-template", stage + 1);
+          phase_name = g_strdup_printf ("stage-%02" G_GSIZE_FORMAT "-template",
+                                        phase_number);
           phase_outputs = g_strdup_printf (
             "{\"accepted_stage_u32\":%u,\"template_sha256\":\"%s\"}",
             accepted_stages, combined_hash);
-          append_phase (phases, &first_phase, phase_name, phase_outputs);
+          if (emit_stage)
+            append_phase (phases, &first_phase, phase_name, phase_outputs);
         }
       if (target_stage && stage_purpose == GOODIX_MILAN_PURPOSE_IDENTIFY &&
           purpose == GOODIX_MILAN_PURPOSE_IDENTIFY)
