@@ -1,0 +1,6 @@
+# Managed-By: goodix53x5-milan-stack
+# This layer selects only the paired shadow executable and libfprint.
+[Service]
+ExecStart=
+ExecStart=@GOODIX_MILAN_PREFIX@/fprintd/fprintd
+Environment=LD_LIBRARY_PATH=@GOODIX_MILAN_PREFIX@/lib

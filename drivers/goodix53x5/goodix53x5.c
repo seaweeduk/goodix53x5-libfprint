@@ -20,10 +20,13 @@
 #define FP_COMPONENT "goodix53x5"
 
 #include "drivers_api.h"
-#include "goodix53x5-private.h"
-#include "goodix53x5-session.h"
-#include "goodix53x5-enroll.h"
-#include "goodix53x5-auth.h"
+#include "driver-private.h"
+#include "device/session.h"
+#include "device/enroll.h"
+#include "device/auth.h"
+
+#include <string.h>
+#include <openssl/crypto.h>
 
 G_DEFINE_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5,
                FP_TYPE_DEVICE)
@@ -46,6 +49,10 @@ goodix_close (FpDevice *dev)
 
   self->blocking_ssm = NULL;
   self->suspend_pending = FALSE;
+  self->action_epoch++;
+  if (self->cancel)
+    g_cancellable_cancel (self->cancel);
+  g_clear_object (&self->milan_task);
   g_clear_object (&self->cancel);
   goodix_clear_pending_result_report (self);
   g_clear_pointer (&self->fdt_event_data, g_free);
@@ -54,8 +61,15 @@ goodix_close (FpDevice *dev)
   g_clear_pointer (&self->fw_version, g_free);
   g_clear_pointer (&self->rx.buf, g_free);
   g_clear_pointer (&self->reference_image, g_free);
+#ifdef GOODIX53X5_DEBUG
   g_clear_pointer (&self->captured_image, g_free);
+#endif
+  g_clear_pointer (&self->captured_raw_image, g_free);
+  goodix_milan_generation_invalidate (&self->milan_generation);
   g_clear_pointer (&self->enroll_features, g_ptr_array_unref);
+  OPENSSL_cleanse (self->psk, sizeof (self->psk));
+  OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
+  self->psk_imported = FALSE;
 
   if (self->cmd)
     {
@@ -65,6 +79,7 @@ goodix_close (FpDevice *dev)
 
   self->action_result_reported = FALSE;
   self->verify_wait_finger_up = FALSE;
+  self->milan_base_recovery = GOODIX_MILAN_BASE_RECOVERY_NONE;
 
   g_usb_device_release_interface (fpi_device_get_usb_device (dev),
                                   GOODIX_USB_INTERFACE, 0, &error);
@@ -109,7 +124,10 @@ goodix_cancel (FpDevice *dev)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
   if (self->cancel)
-    g_cancellable_cancel (self->cancel);
+    {
+      self->action_epoch++;
+      g_cancellable_cancel (self->cancel);
+    }
 }
 
 /* ========================================================================
@@ -119,6 +137,7 @@ goodix_cancel (FpDevice *dev)
 static void
 fpi_device_goodix53x5_init (FpiDeviceGoodix53x5 *self)
 {
+  memset (self->psk, 0, sizeof (self->psk));
 }
 
 static const FpIdEntry goodix53x5_id_table[] = {
