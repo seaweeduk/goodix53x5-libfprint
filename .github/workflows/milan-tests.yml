@@ -1,0 +1,62 @@
+name: Milan Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: milan-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            build-essential \
+            git \
+            libcairo2-dev \
+            libglib2.0-dev \
+            libgusb-dev \
+            libssl-dev \
+            meson \
+            ninja-build \
+            pkg-config
+
+      - name: Checkout pinned libfprint
+        run: |
+          mkdir -p .build
+          git clone --branch v1.94.10 --depth 1 \
+            https://gitlab.freedesktop.org/libfprint/libfprint.git \
+            .build/libfprint
+
+      - name: Build Milan test targets
+        env:
+          GOODIX53X5_DEBUG: "0"
+          GOODIX_LIBFPRINT_OFFLINE: "1"
+        run: ./scripts/build-local.sh
+
+      - name: Run Milan tests
+        run: |
+          meson test -C .build/libfprint/builddir \
+            --print-errorlogs \
+            goodix53x5-milan-synthetic \
+            goodix53x5-milan-state \
+            goodix53x5-milan-runtime
