@@ -42,6 +42,9 @@
 #define QUEUE_CAPACITY 20
 #define FEATURE_MATRIX_OFFSET 0x20
 #define FEATURE_MATRIX_BYTES 2288
+#define PREPROCESS_RETRY_VALIDATION_A 0x29aa
+#define PREPROCESS_RETRY_VALIDATION_B 0x29bb
+#define PREPROCESS_RETRY_STATEFUL     0x7531
 #define FEATURE_MATRIX_ALLOCATION (0x20 + FEATURE_MATRIX_BYTES)
 #define FEATURE_MATRIX_SHADOW_ALLOCATION (FEATURE_MATRIX_ALLOCATION + 1)
 #define FEATURE_RECORD_LIMIT 150
@@ -339,7 +342,7 @@ start_generation (oracle_api *api, const uint16_t *base)
   return 1;
 }
 
-static int
+static int32_t
 preprocess_frame (oracle_api *api, uint16_t *raw,
                   uint8_t processed_data[PROCESSED_FRAME_SIZE],
                   image_descriptor *processed,
@@ -365,7 +368,7 @@ preprocess_frame (oracle_api *api, uint16_t *raw,
   quality_coverage[0] = 0;
   quality_coverage[1] = 0;
   return api->preprocessor (&source, &purpose, api->auxiliary, processed,
-                            quality_coverage, 0, 0) == 0;
+                            quality_coverage, 0, 0);
 }
 
 static int
@@ -536,10 +539,17 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
     goto out;
   for (int i = 0; i < prelude_count; i++)
     {
+      int32_t prelude_status;
+
       prelude = read_frame (prelude_paths[i]);
-      if (!prelude ||
-          !preprocess_frame (&api, prelude, processed_data, &processed,
-                             preprocess_quality))
+      if (!prelude)
+        goto out;
+      prelude_status = preprocess_frame (
+        &api, prelude, processed_data, &processed, preprocess_quality);
+      if (prelude_status != 0 &&
+          prelude_status != PREPROCESS_RETRY_VALIDATION_A &&
+          prelude_status != PREPROCESS_RETRY_VALIDATION_B &&
+          prelude_status != PREPROCESS_RETRY_STATEFUL)
         goto out;
       free (prelude);
       prelude = NULL;
@@ -547,8 +557,8 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
   if (api.template_unpack (packed_input, (int32_t) packed_input_size, NULL,
                            &template_object) != 0 ||
       !template_object ||
-      !preprocess_frame (&api, live, processed_data, &processed,
-                         preprocess_quality))
+      preprocess_frame (&api, live, processed_data, &processed,
+                        preprocess_quality) != 0)
     goto out;
 
   boundary_module = api.module;

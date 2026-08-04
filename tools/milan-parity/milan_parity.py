@@ -1222,8 +1222,10 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                     template_map.get(("input", position), []), input_expected)
                 if not input_expected or not input_artifact:
                     gallery_admission_unavailable.append(position)
+                elif (row.get("evaluated") is True and row.get("valid") is not True):
+                    gallery_admission_errors.append(position)
                 elif (runtime.get("status_u32") != RUNTIME_STATUS_CANCELLED and
-                      (row.get("valid") is not True or row.get("evaluated") is not True)):
+                      row.get("evaluated") is not True):
                     gallery_admission_errors.append(position)
             checks.append({"name": "template-integrity",
                            "status": ("skipped" if not templates_enabled else
@@ -1234,15 +1236,15 @@ def run_validate_dump(args: argparse.Namespace) -> None:
             if not runtime.get("gallery"):
                 gallery_admission = {"name": "gallery-admission", "status": "skipped",
                                      "detail": "operation has no gallery"}
-            elif runtime.get("status_u32") == RUNTIME_STATUS_CANCELLED:
-                gallery_admission = {"name": "gallery-admission", "status": "skipped",
-                                     "detail": "cancelled operation may leave gallery rows unevaluated"}
             elif gallery_admission_errors:
                 gallery_admission = {
                     "name": "gallery-admission", "status": "fail",
-                    "detail": ("captured digest-matched gallery inputs were rejected before "
-                               f"evaluation: {gallery_admission_errors}"),
+                    "detail": ("captured digest-matched gallery inputs were rejected: "
+                               f"{gallery_admission_errors}"),
                 }
+            elif runtime.get("status_u32") == RUNTIME_STATUS_CANCELLED:
+                gallery_admission = {"name": "gallery-admission", "status": "skipped",
+                                     "detail": "cancelled operation may leave gallery rows unevaluated"}
             elif gallery_admission_unavailable:
                 gallery_admission = {
                     "name": "gallery-admission", "status": "skipped",
@@ -1275,6 +1277,7 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                     not isinstance(generation_use_index, bool) and
                     generation_use_index > 1):
                 prior_by_use: dict[int, Path] = {}
+                observed_prior_uses = set()
                 for prior_timestamp, _, prior_runtime in runtimes:
                     if prior_timestamp >= timestamp:
                         break
@@ -1287,16 +1290,23 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                             runtime.get("setup_txon_sha256") or
                             prior_runtime.get("purpose_u32") != runtime.get("purpose_u32")):
                         continue
+                    if prior_use in observed_prior_uses:
+                        prelude_error = "earlier generation replay uses are duplicated"
+                        break
+                    observed_prior_uses.add(prior_use)
+                    if prior_runtime.get("status_u32") == RUNTIME_STATUS_CANCELLED:
+                        continue
                     prior_raw = runtime_raw_artifact(prior_runtime, auth_raw, enroll_raw)
-                    if prior_raw is None or prior_use in prior_by_use:
+                    if prior_raw is None:
                         prelude_error = "earlier generation replay frames are incomplete"
                         break
                     prior_by_use[prior_use] = prior_raw
                 expected_uses = list(range(1, generation_use_index))
-                if not prelude_error and sorted(prior_by_use) != expected_uses:
+                if not prelude_error and sorted(observed_prior_uses) != expected_uses:
                     prelude_error = "earlier generation replay frames are incomplete"
                 elif not prelude_error:
-                    prelude = [prior_by_use[index] for index in expected_uses]
+                    prelude = [prior_by_use[index] for index in expected_uses
+                               if index in prior_by_use]
             required_metadata = {
                 "dac_high_u16", "dac_low_u16", "generation_use_index_u64",
                 "live_raw_sha256", "probe_record_count_u32", "processed_image_sha256",
