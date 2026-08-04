@@ -14,6 +14,7 @@
 #include "drivers/goodix53x5/milan/match/selection.h"
 #include "drivers/goodix53x5/milan/milan.h"
 #include "drivers/goodix53x5/milan/preprocess/gain.h"
+#include "drivers/goodix53x5/milan/private.h"
 #include "drivers/goodix53x5/milan/print.h"
 #include "drivers/goodix53x5/milan/study/policy.h"
 #include "drivers/goodix53x5/milan/study/queue.h"
@@ -561,14 +562,22 @@ distinct_fixture_scalar (int32_t probe_value,
 }
 
 static GoodixMatchInfo *
-make_distinct_antifake_fixture (const GoodixMatchInfo *probe)
+make_distinct_append_fixture (const GoodixMatchInfo *probe)
 {
+  static const struct
+  {
+    size_t field;
+    uint8_t tag;
+  } probe_owned_fields[] = {
+    { 2, 0xb7 }, { 3, 0xb8 }, { 4, 0xb9 }, { 8, 0xbd }, { 10, 0xc0 },
+  };
   const gsize header_size = 6;
   GoodixMatchInfo *fixture = goodix_match_info_new_empty ();
   g_autofree GoodixMilanUnpackedTemplate *unpacked = g_new0 (
     GoodixMilanUnpackedTemplate, 1);
   g_autofree guint8 *feature_element = NULL;
   g_autofree guint8 *packed = NULL;
+  GoodixMilanFeatureView serialized_view;
   GoodixMilanAntifakeBlob *serialized_antifake;
   GBytes *wrapped;
   gsize wrapped_size;
@@ -591,6 +600,7 @@ make_distinct_antifake_fixture (const GoodixMatchInfo *probe)
     &fixture->antifake,
     distinct_fixture_scalar (goodix_milan_antifake_pair_score (&probe->antifake),
                              -0x11223344));
+  goodix_milan_antifake_mask (&fixture->antifake)[0] ^= 1;
   g_assert_cmpint (goodix_milan_antifake_texture (&fixture->antifake),
                    !=, goodix_milan_antifake_texture (&probe->antifake));
   g_assert_cmpint (goodix_milan_antifake_mean (&fixture->antifake),
@@ -604,9 +614,32 @@ make_distinct_antifake_fixture (const GoodixMatchInfo *probe)
   g_assert_cmpuint (unpacked->feature_count, ==, 1);
   feature_element = g_memdup2 (unpacked->feature_elements[0],
                                unpacked->feature_element_sizes[0]);
-  serialized_antifake = goodix_milan_template_mutable_feature_antifake (
-    feature_element, unpacked->feature_element_sizes[0]);
-  g_assert_nonnull (serialized_antifake);
+  g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                     feature_element, unpacked->feature_element_sizes[0],
+                     &serialized_view), ==, 0);
+  g_assert_cmpuint (serialized_view.record_count, >, 0);
+  ((guint8 *) serialized_view.high_bitmap)[285] ^= 1;
+  ((guint8 *) serialized_view.enhanced_bitmap)[285] ^= 1;
+  ((guint8 *) serialized_view.inline_mask)[71] ^= 1;
+  ((guint8 *) serialized_view.low_bitmap)[285] ^= 1;
+  ((guint8 *) serialized_view.packed_records)[
+    serialized_view.record_count * 32 - 1] ^= 1;
+  for (size_t i = 0; i < G_N_ELEMENTS (probe_owned_fields); i++)
+    {
+      int32_t value =
+        serialized_view.fields.tagged_values[probe_owned_fields[i].field];
+
+      g_assert_cmpint (goodix_milan_template_patch_feature_scalar (
+                         feature_element, unpacked->feature_element_sizes[0],
+                         probe_owned_fields[i].tag,
+                         value == 0 ? 1 : value - 1), ==, 0);
+    }
+  g_assert_cmpint (goodix_milan_template_patch_feature_scalar (
+                     feature_element, unpacked->feature_element_sizes[0],
+                     0xbe,
+                     distinct_fixture_scalar (
+                       serialized_view.fields.tagged_values[9], 1)), ==, 0);
+  serialized_antifake = (GoodixMilanAntifakeBlob *) serialized_view.antifake;
   memcpy (serialized_antifake, &fixture->antifake, sizeof(*serialized_antifake));
   unpacked->feature_elements[0] = feature_element;
   wrapped_size = g_bytes_get_size (fixture->template);
@@ -639,6 +672,7 @@ assert_antifake_append_ownership (const GoodixMilanAntifakeBlob *actual,
   };
   const guint8 *actual_data = goodix_milan_antifake_const_data (actual);
   const guint8 *probe_data = goodix_milan_antifake_const_data (probe);
+  const guint8 *matched_data = goodix_milan_antifake_const_data (matched);
   size_t start = 0;
 
   for (size_t i = 0; i < G_N_ELEMENTS (inherited_scalar_offsets); i++)
@@ -651,6 +685,10 @@ assert_antifake_append_ownership (const GoodixMilanAntifakeBlob *actual,
     }
   g_assert_cmpmem (actual_data + start, GOODIX_MILAN_ANTIFAKE_SIZE - start,
                    probe_data + start, GOODIX_MILAN_ANTIFAKE_SIZE - start);
+  g_assert_cmpint (actual_data[GOODIX_MILAN_ANTIFAKE_MASK_OFFSET],
+                   ==, probe_data[GOODIX_MILAN_ANTIFAKE_MASK_OFFSET]);
+  g_assert_cmpint (actual_data[GOODIX_MILAN_ANTIFAKE_MASK_OFFSET],
+                   !=, matched_data[GOODIX_MILAN_ANTIFAKE_MASK_OFFSET]);
   g_assert_cmpint (goodix_milan_antifake_texture (actual),
                    ==, goodix_milan_antifake_texture (matched));
   g_assert_cmpint (goodix_milan_antifake_mean (actual),
@@ -659,6 +697,14 @@ assert_antifake_append_ownership (const GoodixMilanAntifakeBlob *actual,
                    ==, goodix_milan_antifake_threshold (matched));
   g_assert_cmpint (goodix_milan_antifake_pair_score (actual),
                    ==, goodix_milan_antifake_pair_score (matched));
+  g_assert_cmpint (goodix_milan_antifake_texture (actual),
+                   !=, goodix_milan_antifake_texture (probe));
+  g_assert_cmpint (goodix_milan_antifake_mean (actual),
+                   !=, goodix_milan_antifake_mean (probe));
+  g_assert_cmpint (goodix_milan_antifake_threshold (actual),
+                   !=, goodix_milan_antifake_threshold (probe));
+  g_assert_cmpint (goodix_milan_antifake_pair_score (actual),
+                   !=, goodix_milan_antifake_pair_score (probe));
   g_assert_cmpint (goodix_milan_antifake_texture (matched),
                    !=, goodix_milan_antifake_texture (probe));
   g_assert_cmpint (goodix_milan_antifake_mean (matched),
@@ -753,18 +799,38 @@ assert_generic_append_material (GBytes *probe,
                      after_template->feature_element_sizes[inserted_index],
                      &inserted_view), ==, 0);
   g_assert_cmpuint (inserted_view.record_count, ==, probe_view.record_count);
+  g_assert_cmpuint (matched_view.record_count, ==, probe_view.record_count);
   g_assert_cmpmem (inserted_view.high_bitmap, 286, probe_view.high_bitmap, 286);
+  g_assert_cmpint (memcmp (inserted_view.high_bitmap,
+                           matched_view.high_bitmap, 286), !=, 0);
   g_assert_cmpmem (inserted_view.enhanced_bitmap, 286,
                    probe_view.enhanced_bitmap, 286);
+  g_assert_cmpint (memcmp (inserted_view.enhanced_bitmap,
+                           matched_view.enhanced_bitmap, 286), !=, 0);
   g_assert_cmpmem (inserted_view.inline_mask, 72, probe_view.inline_mask, 72);
+  g_assert_cmpint (memcmp (inserted_view.inline_mask,
+                           matched_view.inline_mask, 72), !=, 0);
   g_assert_cmpmem (inserted_view.low_bitmap, 286, probe_view.low_bitmap, 286);
+  g_assert_cmpint (memcmp (inserted_view.low_bitmap,
+                           matched_view.low_bitmap, 286), !=, 0);
   g_assert_cmpmem (inserted_view.packed_records, inserted_view.record_count * 32,
                    probe_view.packed_records, probe_view.record_count * 32);
+  g_assert_cmpint (memcmp (inserted_view.packed_records,
+                           matched_view.packed_records,
+                           inserted_view.record_count * 32), !=, 0);
   for (size_t i = 0; i < G_N_ELEMENTS (probe_owned_fields); i++)
-    g_assert_cmpint (inserted_view.fields.tagged_values[probe_owned_fields[i]],
-                     ==, probe_view.fields.tagged_values[probe_owned_fields[i]]);
+    {
+      size_t field = probe_owned_fields[i];
+
+      g_assert_cmpint (inserted_view.fields.tagged_values[field],
+                       ==, probe_view.fields.tagged_values[field]);
+      g_assert_cmpint (inserted_view.fields.tagged_values[field],
+                       !=, matched_view.fields.tagged_values[field]);
+    }
   g_assert_cmpint (inserted_view.fields.tagged_values[0],
                    ==, matched_view.fields.tagged_values[0]);
+  g_assert_cmpint (inserted_view.fields.tagged_values[0],
+                   !=, probe_view.fields.tagged_values[0]);
   g_assert_cmpint (inserted_view.fields.tagged_values[1],
                    ==, (int32_t) before_template->metadata.registration_count);
   g_assert_cmpint (inserted_view.fields.tagged_values[5], ==, 1);
@@ -773,6 +839,8 @@ assert_generic_append_material (GBytes *probe,
                    ==, (int32_t) before_template->feature_count);
   g_assert_cmpint (inserted_view.fields.tagged_values[9],
                    ==, matched_view.fields.tagged_values[9]);
+  g_assert_cmpint (inserted_view.fields.tagged_values[9],
+                   !=, probe_view.fields.tagged_values[9]);
   assert_antifake_append_ownership (inserted_view.antifake,
                                     probe_view.antifake,
                                     matched_view.antifake);
@@ -877,7 +945,7 @@ static void
 test_generated_production_replay (void)
 {
   GoodixMatchInfo *info = generate_match_info ();
-  GoodixMatchInfo *matched_info = make_distinct_antifake_fixture (info);
+  GoodixMatchInfo *matched_info = make_distinct_append_fixture (info);
   g_autoptr(GBytes) extracted = goodix_match_serialize_template (info);
   g_autoptr(GBytes) matched_extracted = goodix_match_serialize_template (
     matched_info);
