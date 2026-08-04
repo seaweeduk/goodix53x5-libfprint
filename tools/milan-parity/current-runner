@@ -31,6 +31,14 @@ def artifact_path(root: Path, case, name: str) -> Path:
     return (root / artifact["path"]).resolve()
 
 
+def replay_purpose(value, label: str) -> int:
+    if value == "identify":
+        return 0
+    if value == "enroll":
+        return 1
+    raise SystemExit(f"{label} must be identify or enroll")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True)
@@ -46,6 +54,21 @@ def main():
     replay = case.get("replay")
     if not isinstance(replay, dict):
         raise SystemExit(f"case {args.case} has no current replay contract")
+    policy = case.get("policy")
+    if not isinstance(policy, dict) or policy.get("profile") != 9:
+        raise SystemExit(f"case {args.case} must use profile 9")
+    if policy.get("subtype") != 12:
+        raise SystemExit(f"case {args.case} must use sensor subtype 12")
+    purpose = replay_purpose(replay.get("purpose"), "replay purpose")
+    prelude = replay.get("prelude", [])
+    if not isinstance(prelude, list) or any(not isinstance(name, str) for name in prelude):
+        raise SystemExit("replay prelude must be an artifact-name list")
+    prelude_purposes = replay.get("prelude_purposes", [0] * len(prelude))
+    if (not isinstance(prelude_purposes, list) or
+            len(prelude_purposes) != len(prelude) or
+            any(not isinstance(value, int) or isinstance(value, bool) or value not in {0, 1}
+                for value in prelude_purposes)):
+        raise SystemExit("replay prelude_purposes must be a same-length integer 0/1 list")
     source_digest = digest_sources(repo, tool)
     debug = os.environ.get("GOODIX53X5_DEBUG", "0")
     if debug not in {"0", "1"}:
@@ -61,13 +84,14 @@ def main():
     command = [str(backend), "--case-id", args.case, "--purpose", replay["purpose"],
                "--setup", str(artifact_path(root, case, replay["setup"])),
                "--tcode", str(replay["tcode"]), "--dac-high", str(replay["dac_high"]),
-               "--dac-low", str(replay["dac_low"]), "--subtype", "12"]
-    for name in replay.get("prelude", []):
+               "--dac-low", str(replay["dac_low"]), "--profile", "9", "--subtype", "12"]
+    command.extend(("--prelude-count", str(len(prelude))))
+    for name, frame_purpose in zip(prelude, prelude_purposes):
         command.extend(("--live", str(artifact_path(root, case, name)),
-                        "--live-purpose", "identify"))
+                        "--live-purpose", str(frame_purpose)))
     for name in replay["live"]:
         command.extend(("--live", str(artifact_path(root, case, name))))
-        command.extend(("--live-purpose", replay["purpose"]))
+        command.extend(("--live-purpose", str(purpose)))
     for gallery in replay.get("gallery", []):
         command.extend(("--gallery", f"{gallery['index']}={artifact_path(root, case, gallery['artifact'])}"))
     process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)

@@ -37,7 +37,10 @@ QUICK_BUDGET = 1 << 30
 FULL_BUDGET = 5 << 30
 SUCCESS_RETAINED_BUDGET = 100 << 20
 UINT32_MAX = (1 << 32) - 1
+UINT64_MAX = (1 << 64) - 1
 RUNTIME_STATUS_CANCELLED = 4
+RUNTIME_PURPOSE_IDENTIFY = 0
+RUNTIME_PURPOSE_ENROLL = 1
 RUNTIME_FILE_RE = re.compile(
     r"^runtime-(?P<action>[a-z]+)-(?P<epoch>\d+)-(?P<generation>\d+)-"
     r"(?P<stage>\d+)-(?P<timestamp>-?\d+)-(?P<crc>[0-9a-f]{8})\.json$")
@@ -989,15 +992,146 @@ def runtime_raw_artifact(runtime: dict[str, Any],
     return None
 
 
+def runtime_generation_prelude(
+        runtimes: list[tuple[int, Path, dict[str, Any]]], position: int,
+        auth_raw: dict[str, list[tuple[str, Path]]],
+        enroll_raw: dict[int, list[tuple[str, Path]]],
+) -> tuple[list[tuple[Path, int]], str | None]:
+    runtime = runtimes[position][2]
+    use_index = runtime.get("generation_use_index_u64")
+    if (not isinstance(use_index, int) or isinstance(use_index, bool) or
+            use_index <= 1):
+        return [], None
+    if (not isinstance(runtime.get("setup_txon_sha256"), str) or
+            not re.fullmatch(r"[0-9a-f]{64}", runtime["setup_txon_sha256"])):
+        return [], "operation has invalid generation setup identity"
+    generation_key = (runtime.get("generation_id_u64"),
+                      runtime.get("setup_txon_sha256"))
+    expected_use = use_index - 1
+    reversed_prelude: list[tuple[Path, int]] = []
+    for prior_position in range(position - 1, -1, -1):
+        prior_runtime = runtimes[prior_position][2]
+        prior_key = (prior_runtime.get("generation_id_u64"),
+                     prior_runtime.get("setup_txon_sha256"))
+        if prior_key != generation_key:
+            return [], "earlier generation replay chronology crosses a generation/setup boundary"
+        prior_use = prior_runtime.get("generation_use_index_u64")
+        if (not isinstance(prior_use, int) or isinstance(prior_use, bool) or
+                prior_use != expected_use):
+            return [], "earlier generation replay use indexes are not contiguous"
+        if prior_runtime.get("status_u32") != RUNTIME_STATUS_CANCELLED:
+            prior_raw = runtime_raw_artifact(prior_runtime, auth_raw, enroll_raw)
+            if prior_raw is None:
+                return [], "earlier generation replay frames are incomplete"
+            reversed_prelude.append((prior_raw, prior_runtime["purpose_u32"]))
+        expected_use -= 1
+        if expected_use == 0:
+            reversed_prelude.reverse()
+            return reversed_prelude, None
+    return [], "earlier generation replay frames are incomplete"
+
+
+def gallery_capture_checks(
+        runtime: dict[str, Any],
+        templates: dict[tuple[str, int | None], list[tuple[str, Path]]],
+) -> tuple[list[str], dict[str, Any], dict[str, Any], list[int]]:
+    gallery = runtime.get("gallery", [])
+    template_errors = []
+    admission_errors = []
+    incomplete_evaluated = []
+    for position, row in enumerate(gallery):
+        evaluated = row.get("evaluated") is True
+        invalid = row.get("valid") is not True
+        if row.get("gallery_position_u64") != position:
+            admission_errors.append(f"{position}:position")
+        if evaluated and invalid:
+            admission_errors.append(f"{position}:invalid")
+        elif (runtime.get("status_u32") != RUNTIME_STATUS_CANCELLED and
+              not evaluated):
+            admission_errors.append(f"{position}:not-evaluated")
+        elif evaluated:
+            score = row.get("score_i32")
+            accepted = row.get("accepted")
+            if (not isinstance(score, int) or isinstance(score, bool) or
+                    accepted is not (score > 0)):
+                admission_errors.append(f"{position}:acceptance-score")
+
+        input_expected = row.get("input_template_sha256")
+        input_artifact = artifact_with_digest(
+            templates.get(("input", position), []), input_expected)
+        if evaluated and (not input_expected or not input_artifact):
+            incomplete_evaluated.append(position)
+        for role, field in (("input", "input_template_sha256"),
+                            ("after-match", "after_match_sha256")):
+            expected = row.get(field)
+            artifact = artifact_with_digest(templates.get((role, position), []),
+                                            expected)
+            if expected and not artifact:
+                template_errors.append(f"{role}-{position}")
+
+    if gallery and runtime.get("status_u32") != RUNTIME_STATUS_CANCELLED:
+        accepted_rows = [(position, row) for position, row in enumerate(gallery)
+                         if row.get("accepted") is True]
+        fully_evaluated = all(row.get("evaluated") is True and
+                              row.get("valid") is True for row in gallery)
+        if accepted_rows:
+            position, winner = accepted_rows[0]
+            if (len(accepted_rows) != 1 or position != len(gallery) - 1 or
+                    runtime.get("status_u32") != 0 or
+                    runtime.get("score_i32") != winner.get("score_i32") or
+                    runtime.get("winner_index_u32") != winner.get("gallery_index_u32") or
+                    runtime.get("winner_position_u64") != winner.get("gallery_position_u64")):
+                admission_errors.append("result:winner")
+        elif fully_evaluated and (
+                runtime.get("status_u32") != 1 or
+                runtime.get("score_i32") != gallery[-1].get("score_i32") or
+                runtime.get("winner_index_u32") != UINT32_MAX or
+                runtime.get("winner_position_u64") != UINT64_MAX):
+            admission_errors.append("result:no-match")
+
+    if not gallery:
+        admission = {"name": "gallery-admission", "status": "skipped",
+                     "detail": "operation has no gallery"}
+        completeness = {"name": "capture-completeness", "status": "skipped",
+                        "detail": "operation has no gallery"}
+    else:
+        if admission_errors:
+            admission = {
+                "name": "gallery-admission", "status": "fail",
+                "detail": ("gallery rows or aggregate result were inconsistent: "
+                           f"{admission_errors}"),
+            }
+        elif runtime.get("status_u32") == RUNTIME_STATUS_CANCELLED:
+            admission = {
+                "name": "gallery-admission", "status": "skipped",
+                "detail": "cancelled operation may leave gallery rows unevaluated",
+            }
+        else:
+            admission = {
+                "name": "gallery-admission", "status": "pass",
+                "detail": "all gallery inputs were admitted and evaluated",
+            }
+        completeness = {
+            "name": "capture-completeness",
+            "status": "fail" if incomplete_evaluated else "pass",
+            "detail": (("evaluated gallery rows lack their exact input artifacts: "
+                        f"{incomplete_evaluated}") if incomplete_evaluated else
+                       "every evaluated gallery row has its exact input artifact"),
+        }
+    return template_errors, admission, completeness, incomplete_evaluated
+
+
 def native_case_for_dump(state: Path, dump: Path, runtime_path: Path,
                          runtime: dict[str, Any], setup: Path, live: Path,
-                         prelude: list[Path],
+                         prelude: list[tuple[Path, int]],
                          templates: dict[tuple[str, int | None], list[tuple[str, Path]]],
                          dll_sha256: str, wine_prefix: Path) -> dict[str, Any]:
     identity = (runtime["action_epoch_u64"], runtime["generation_id_u64"],
                 runtime["stage_u32"])
+    runtime_digest = sha256_file(runtime_path)
     root = state / "work" / (
-        f"dump-{sha256_bytes(str(dump).encode())[:12]}-{identity[0]}-{identity[1]}-{identity[2]}")
+        f"dump-{sha256_bytes(str(dump).encode())[:12]}-{identity[0]}-{identity[1]}-"
+        f"{identity[2]}-{runtime_digest[:12]}")
     if root.exists():
         shutil.rmtree(root)
     root.mkdir(mode=0o700, parents=True)
@@ -1006,10 +1140,12 @@ def native_case_for_dump(state: Path, dump: Path, runtime_path: Path,
         "live": admit_artifact(root, str(live), image_format="pgm12"),
     }
     prelude_names = []
-    for position, path in enumerate(prelude):
+    prelude_purposes = []
+    for position, (path, purpose) in enumerate(prelude):
         name = f"prelude-{position:03d}"
         artifacts[name] = admit_artifact(root, str(path), image_format="pgm12")
         prelude_names.append(name)
+        prelude_purposes.append(purpose)
     gallery = []
     for position, observed in enumerate(runtime["gallery"]):
         template = artifact_with_digest(templates.get(("input", position), []),
@@ -1022,7 +1158,8 @@ def native_case_for_dump(state: Path, dump: Path, runtime_path: Path,
                         "queue_occupied_after_match_u64":
                             observed["queue_occupied_after_u64"]
                             if observed["accepted"] else 0})
-    case_id = f"dump-{identity[0]}-{identity[1]}-{identity[2]}"
+    case_id = (f"dump-{identity[0]}-{identity[1]}-{identity[2]}-"
+               f"{runtime_digest[:12]}")
     replay = {
         "purpose": "identify", "setup": "setup", "live": ["live"],
         "gallery": gallery, "tcode": runtime["tcode_u16"],
@@ -1033,6 +1170,7 @@ def native_case_for_dump(state: Path, dump: Path, runtime_path: Path,
     }
     if prelude_names:
         replay["prelude"] = prelude_names
+        replay["prelude_purposes"] = prelude_purposes
     case = {"schema": CASE_SCHEMA, "id": case_id, "operation": runtime["action"],
             "order": 0, "policy": POLICY, "artifacts": artifacts, "replay": replay,
             "device": {"usb_product": "5335", "chip_id": "dump",
@@ -1134,6 +1272,25 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                     (value.get("action"), value.get("action_epoch_u64"),
                      value.get("generation_id_u64"), value.get("stage_u32")) != identity):
                 raise HarnessError(f"runtime identity differs: {path.name}")
+            if (value.get("profile_u16") != POLICY["profile"] or
+                    value.get("sensor_subtype_u16") != POLICY["subtype"] or
+                    not isinstance(value.get("purpose_u32"), int) or
+                    isinstance(value.get("purpose_u32"), bool) or
+                    value["purpose_u32"] not in {
+                        RUNTIME_PURPOSE_IDENTIFY, RUNTIME_PURPOSE_ENROLL} or
+                    value["action"] not in {"enroll", "identify", "verify"} or
+                    value["purpose_u32"] != (RUNTIME_PURPOSE_ENROLL
+                                             if value["action"] == "enroll" else
+                                             RUNTIME_PURPOSE_IDENTIFY)):
+                raise HarnessError(
+                    f"runtime policy is unsupported (requires profile 9/subtype 12): {path.name}")
+            gallery = value.get("gallery")
+            if (not isinstance(gallery, list) or
+                    any(not isinstance(row, dict) or
+                        any(not isinstance(row.get(field), bool)
+                            for field in ("accepted", "evaluated", "valid"))
+                        for row in gallery)):
+                raise HarnessError(f"runtime gallery schema is unsupported: {path.name}")
             runtimes.append((int(match["timestamp"]), path, value))
             continue
         match = TEMPLATE_FILE_RE.fullmatch(path.name)
@@ -1185,20 +1342,21 @@ def run_validate_dump(args: argparse.Namespace) -> None:
     inventory_sha256 = sha256_bytes(canonical(inventory))
     templates_enabled = bool(templates_by_identity)
     runtimes.sort(key=lambda item: item[0])
+    timestamps = [timestamp for timestamp, _, _ in runtimes]
+    if len(timestamps) != len(set(timestamps)):
+        raise HarnessError("runtime chronology is ambiguous because timestamps are duplicated")
     operations = []
     dll = Path(args.dll).expanduser().resolve() if args.dll else None
     prefix = Path(args.wine_prefix).expanduser().resolve() if args.wine_prefix else None
     if dll and (not args.approved_dll_sha256 or sha256_file(dll) != args.approved_dll_sha256):
         raise HarnessError("selected DLL is absent or not explicitly approved")
     with locked_state(args.state_root) as state:
-        for timestamp, runtime_path, runtime in runtimes:
+        for runtime_position, (timestamp, runtime_path, runtime) in enumerate(runtimes):
             identity = (runtime["action"], runtime["action_epoch_u64"],
                         runtime["generation_id_u64"], runtime["stage_u32"])
             checks = []
             template_map = templates_by_identity.get(identity, {})
             template_errors = []
-            gallery_admission_errors = []
-            gallery_admission_unavailable = []
             if runtime.get("probe_sha256"):
                 probe = artifact_with_digest(template_map.get(("probe", None), []),
                                              runtime["probe_sha256"])
@@ -1209,54 +1367,17 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                                              runtime["candidate_sha256"])
                 if not final:
                     template_errors.append("final")
-            for position, row in enumerate(runtime.get("gallery", [])):
-                for role, field in (("input", "input_template_sha256"),
-                                    ("after-match", "after_match_sha256")):
-                    expected = row.get(field)
-                    artifact = artifact_with_digest(template_map.get((role, position), []),
-                                                    expected)
-                    if expected and not artifact:
-                        template_errors.append(f"{role}-{position}")
-                input_expected = row.get("input_template_sha256")
-                input_artifact = artifact_with_digest(
-                    template_map.get(("input", position), []), input_expected)
-                if not input_expected or not input_artifact:
-                    gallery_admission_unavailable.append(position)
-                elif (row.get("evaluated") is True and row.get("valid") is not True):
-                    gallery_admission_errors.append(position)
-                elif (runtime.get("status_u32") != RUNTIME_STATUS_CANCELLED and
-                      row.get("evaluated") is not True):
-                    gallery_admission_errors.append(position)
+            gallery_template_errors, gallery_admission, capture_completeness, \
+                incomplete_gallery_inputs = gallery_capture_checks(runtime, template_map)
+            template_errors.extend(gallery_template_errors)
             checks.append({"name": "template-integrity",
                            "status": ("skipped" if not templates_enabled else
                                       "fail" if template_errors else "pass"),
                             "detail": ("template dumping was not enabled" if not templates_enabled else
                                        template_errors or
                                        "all referenced template artifact digests match")})
-            if not runtime.get("gallery"):
-                gallery_admission = {"name": "gallery-admission", "status": "skipped",
-                                     "detail": "operation has no gallery"}
-            elif gallery_admission_errors:
-                gallery_admission = {
-                    "name": "gallery-admission", "status": "fail",
-                    "detail": ("captured digest-matched gallery inputs were rejected: "
-                               f"{gallery_admission_errors}"),
-                }
-            elif runtime.get("status_u32") == RUNTIME_STATUS_CANCELLED:
-                gallery_admission = {"name": "gallery-admission", "status": "skipped",
-                                     "detail": "cancelled operation may leave gallery rows unevaluated"}
-            elif gallery_admission_unavailable:
-                gallery_admission = {
-                    "name": "gallery-admission", "status": "skipped",
-                    "detail": ("exact gallery input artifacts are unavailable: "
-                               f"{gallery_admission_unavailable}"),
-                }
-            else:
-                gallery_admission = {
-                    "name": "gallery-admission", "status": "pass",
-                    "detail": "all captured gallery inputs were admitted and evaluated",
-                }
             checks.append(gallery_admission)
+            checks.append(capture_completeness)
             native_check = {"name": "native-parity", "status": "skipped", "detail": ""}
             action = runtime["action"]
             live = (artifact_with_digest(auth_raw.get(action, []),
@@ -1270,43 +1391,9 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                          artifact_with_digest(enroll_processed.get(runtime["stage_u32"], []),
                                               runtime.get("processed_image_sha256")))
             setup = artifact_with_digest(references, runtime.get("setup_txon_sha256"))
-            prelude = []
-            prelude_error = None
             generation_use_index = runtime.get("generation_use_index_u64")
-            if (isinstance(generation_use_index, int) and
-                    not isinstance(generation_use_index, bool) and
-                    generation_use_index > 1):
-                prior_by_use: dict[int, Path] = {}
-                observed_prior_uses = set()
-                for prior_timestamp, _, prior_runtime in runtimes:
-                    if prior_timestamp >= timestamp:
-                        break
-                    if prior_runtime.get("generation_id_u64") != runtime["generation_id_u64"]:
-                        continue
-                    prior_use = prior_runtime.get("generation_use_index_u64")
-                    if (not isinstance(prior_use, int) or isinstance(prior_use, bool) or
-                            not 1 <= prior_use < generation_use_index or
-                            prior_runtime.get("setup_txon_sha256") !=
-                            runtime.get("setup_txon_sha256") or
-                            prior_runtime.get("purpose_u32") != runtime.get("purpose_u32")):
-                        continue
-                    if prior_use in observed_prior_uses:
-                        prelude_error = "earlier generation replay uses are duplicated"
-                        break
-                    observed_prior_uses.add(prior_use)
-                    if prior_runtime.get("status_u32") == RUNTIME_STATUS_CANCELLED:
-                        continue
-                    prior_raw = runtime_raw_artifact(prior_runtime, auth_raw, enroll_raw)
-                    if prior_raw is None:
-                        prelude_error = "earlier generation replay frames are incomplete"
-                        break
-                    prior_by_use[prior_use] = prior_raw
-                expected_uses = list(range(1, generation_use_index))
-                if not prelude_error and sorted(observed_prior_uses) != expected_uses:
-                    prelude_error = "earlier generation replay frames are incomplete"
-                elif not prelude_error:
-                    prelude = [prior_by_use[index] for index in expected_uses
-                               if index in prior_by_use]
+            prelude, prelude_error = runtime_generation_prelude(
+                runtimes, runtime_position, auth_raw, enroll_raw)
             required_metadata = {
                 "dac_high_u16", "dac_low_u16", "generation_use_index_u64",
                 "live_raw_sha256", "probe_record_count_u32", "processed_image_sha256",
@@ -1319,6 +1406,8 @@ def run_validate_dump(args: argparse.Namespace) -> None:
             }
             if action == "enroll":
                 native_check["detail"] = "enrollment authority requires a complete twelve-stage chain"
+            elif runtime.get("status_u32") == RUNTIME_STATUS_CANCELLED:
+                native_check["detail"] = "cancelled operations are excluded from native target replay"
             elif not required_metadata.issubset(runtime):
                 native_check["detail"] = "runtime record predates self-contained replay metadata"
             elif (not isinstance(generation_use_index, int) or
@@ -1331,11 +1420,12 @@ def run_validate_dump(args: argparse.Namespace) -> None:
             elif any(row.get("valid") is not True or row.get("evaluated") is not True
                      for row in runtime.get("gallery", [])):
                 native_check["detail"] = "native authority cannot replay invalid or unevaluated gallery rows"
-            elif not dll or not prefix:
-                native_check["detail"] = "DLL or Wine prefix was not supplied"
-            elif (template_errors or not live or not processed or not setup or
+            elif (template_errors or incomplete_gallery_inputs or not live or
+                  not processed or not setup or
                   not runtime.get("gallery")):
                 native_check["detail"] = "required setup, live frame, or gallery template is missing"
+            elif not dll or not prefix:
+                native_check["detail"] = "DLL or Wine prefix was not supplied"
             else:
                 case = native_case_for_dump(state, dump, runtime_path, runtime, setup, live,
                                             prelude,
@@ -1566,6 +1656,7 @@ def run_admit(args: argparse.Namespace) -> None:
               "native": native}
     if prelude_names:
         replay["prelude"] = prelude_names
+        replay["prelude_purposes"] = [RUNTIME_PURPOSE_IDENTIFY] * len(prelude_names)
     case = {"schema": CASE_SCHEMA, "id": args.case_id, "operation": args.operation,
             "order": args.order, "policy": POLICY,
             "device": {"usb_product": args.usb_product, "chip_id": args.chip_id,

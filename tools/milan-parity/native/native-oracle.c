@@ -29,6 +29,8 @@
 #define DAC_HIGH 0x7d
 #define DAC_LOW 0xc6
 #define ANTIFAKE_MODE 1
+#define PURPOSE_IDENTIFY 0
+#define PURPOSE_ENROLL 1
 
 /* These RVAs are valid only for the case-pinned 2.0.310.900 DLL identity. */
 #define IDENTIFY_PRE_ANTIFAKE_RVA 0x1dbd
@@ -346,10 +348,12 @@ static int32_t
 preprocess_frame (oracle_api *api, uint16_t *raw,
                   uint8_t processed_data[PROCESSED_FRAME_SIZE],
                   image_descriptor *processed,
-                  int32_t quality_coverage[2])
+                  int32_t quality_coverage[2], int32_t purpose)
 {
   image_descriptor source = { 0 };
-  int32_t purpose = 0;
+
+  if (purpose != PURPOSE_IDENTIFY && purpose != PURPOSE_ENROLL)
+    return -1;
 
   source.data = raw;
   memcpy (source.format, source_format, sizeof (source.format));
@@ -369,6 +373,18 @@ preprocess_frame (oracle_api *api, uint16_t *raw,
   quality_coverage[1] = 0;
   return api->preprocessor (&source, &purpose, api->auxiliary, processed,
                             quality_coverage, 0, 0);
+}
+
+static int
+parse_prelude_argument (const wchar_t *argument, int32_t *purpose,
+                        const wchar_t **path)
+{
+  if (!argument || (argument[0] != L'0' && argument[0] != L'1') ||
+      argument[1] != L':' || argument[2] == L'\0')
+    return 0;
+  *purpose = argument[0] - L'0';
+  *path = argument + 2;
+  return 1;
 }
 
 static int
@@ -467,7 +483,8 @@ static int
 run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
               const wchar_t *base_path, const wchar_t *live_path,
               const wchar_t *template_path, int study_enabled,
-              int enqueue_current_probe, const wchar_t *const *prelude_paths,
+              int enqueue_current_probe,
+              const wchar_t *const *prelude_arguments,
               int prelude_count)
 {
   oracle_api api;
@@ -540,12 +557,18 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
   for (int i = 0; i < prelude_count; i++)
     {
       int32_t prelude_status;
+      int32_t prelude_purpose;
+      const wchar_t *prelude_path;
 
-      prelude = read_frame (prelude_paths[i]);
+      if (!parse_prelude_argument (prelude_arguments[i], &prelude_purpose,
+                                   &prelude_path))
+        goto out;
+      prelude = read_frame (prelude_path);
       if (!prelude)
         goto out;
       prelude_status = preprocess_frame (
-        &api, prelude, processed_data, &processed, preprocess_quality);
+        &api, prelude, processed_data, &processed, preprocess_quality,
+        prelude_purpose);
       if (prelude_status != 0 &&
           prelude_status != PREPROCESS_RETRY_VALIDATION_A &&
           prelude_status != PREPROCESS_RETRY_VALIDATION_B &&
@@ -558,7 +581,7 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
                            &template_object) != 0 ||
       !template_object ||
       preprocess_frame (&api, live, processed_data, &processed,
-                        preprocess_quality) != 0)
+                        preprocess_quality, PURPOSE_IDENTIFY) != 0)
     goto out;
 
   boundary_module = api.module;
@@ -704,7 +727,7 @@ wmain (int argc, wchar_t **argv)
        wcscmp (argv[1], L"study") != 0))
     {
       fwprintf (stderr,
-                L"usage: %ls identify|study DLL OUTPUT BASE LIVE TEMPLATE ENQUEUE [PRELUDE...]\n",
+                L"usage: %ls identify|study DLL OUTPUT BASE LIVE TEMPLATE ENQUEUE [PURPOSE:PRELUDE...]\n",
                 argv[0]);
       return 2;
     }
@@ -712,6 +735,17 @@ wmain (int argc, wchar_t **argv)
   int enqueue_current_probe = wcscmp (argv[7], L"1") == 0;
   if (!enqueue_current_probe && wcscmp (argv[7], L"0") != 0)
     return 2;
+  for (int i = 8; i < argc; i++)
+    {
+      int32_t purpose;
+      const wchar_t *path;
+
+      if (!parse_prelude_argument (argv[i], &purpose, &path))
+        {
+          fwprintf (stderr, L"invalid prelude argument: %ls\n", argv[i]);
+          return 2;
+        }
+    }
   if (!run_boundary (argv[2], argv[3], argv[4], argv[5], argv[6],
                      study_enabled, enqueue_current_probe,
                      (const wchar_t *const *) &argv[8], argc - 8))

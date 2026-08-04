@@ -189,8 +189,20 @@ def native_contract(case, verified: dict[str, Path]):
     if (not isinstance(prelude_names, list) or len(prelude_names) > 255 or
             any(not isinstance(name, str) for name in prelude_names)):
         raise RunnerError("DLL identify/study prelude must be an artifact-name array")
-    preludes = [artifact(verified, name, f"replay prelude {position}")
-                for position, name in enumerate(prelude_names)]
+    if "prelude_purposes" not in replay:
+        prelude_purposes = [0] * len(prelude_names)
+    else:
+        prelude_purposes = replay["prelude_purposes"]
+    if (not isinstance(prelude_purposes, list) or
+            len(prelude_purposes) != len(prelude_names) or
+            any(not isinstance(purpose, int) or isinstance(purpose, bool) or
+                purpose not in {0, 1} for purpose in prelude_purposes)):
+        raise RunnerError(
+            "DLL identify/study prelude_purposes must be a same-length "
+            "integer array containing only zero or one")
+    preludes = [(artifact(verified, name, f"replay prelude {position}"), purpose)
+                for position, (name, purpose) in
+                enumerate(zip(prelude_names, prelude_purposes))]
     gallery = replay.get("gallery")
     if not isinstance(gallery, list) or not gallery:
         raise RunnerError("DLL identify/study authority requires an explicit gallery")
@@ -453,7 +465,8 @@ def run_dll_authority(tool: Path, root: Path, case, native, inputs, dll: Path):
         command = [wine, windows_path(executable), operation, windows_path(dll),
                     windows_path(output), windows_path(setup), windows_path(live),
                     windows_path(template), str(queue_occupied),
-                    *(windows_path(prelude) for prelude in preludes)]
+                    *(f"{purpose}:{windows_path(prelude)}"
+                      for prelude, purpose in preludes)]
         process = subprocess.run(command, env=environment, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, check=False, timeout=300)
         if process.returncode:
