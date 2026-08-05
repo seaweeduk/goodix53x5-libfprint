@@ -30,3 +30,16 @@ one-sample notification rather than a per-probe operation.
 Despite its logged name, no OS thermal-notification registration is proven.
 The known callers are FDT down/up/reverse handlers reacting to sensor-base
 comparisons.
+
+## Linux Parity Status
+
+The Linux driver captures a fresh FDT/image reference set on every device open
+and updates its FDT-down base after finger lift. It does not implement this
+native event-driven full-base refresh within a long-lived authentication claim.
+This can leave the original image reference in use while a lock screen waits
+for an extended period, although no multi-hour lock failure has been observed
+on the profile-9/type-12 sensor.
+
+Native-style event counting and synchronous `update_allbase` refresh are
+deferred unless runtime captures show baseline drift, elevated MAD, or degraded
+first-touch matching during a long-lived claim.

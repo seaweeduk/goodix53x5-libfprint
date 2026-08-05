@@ -13,22 +13,32 @@
 For profile 9 / chip subtype `0x0c`, the function allocates two full-size
 16-bit image buffers and performs this sequence:
 
-1. Read FDT base with TX enabled at `0x180015d58`.
-2. Capture one no-finger image at `0x180015d91` using low DAC from context
+1. Invoke mode `4` through callback slot `+0x40` at `0x180015d2b..0x180015d3a`. Profile 9
+   installs `FUN_1800059c0`, which calls `FUN_180005094` (`Milan_DlCfg`) to
+   build and upload the OTP-patched 256-byte sensor configuration.
+2. Read FDT base with TX enabled at `0x180015d58`.
+3. Capture one no-finger image at `0x180015d91` using low DAC from context
    `+0x310`, TX enabled, HV enabled, and the non-finger capture mode.
-3. Read FDT base with TX disabled at `0x180015dad`.
-4. Capture one no-finger image at `0x180015e4f` with the same low-DAC/HV/mode
+4. Read FDT base with TX disabled at `0x180015dad`.
+5. Capture one no-finger image at `0x180015e4f` with the same low-DAC/HV/mode
    settings but TX disabled.
-5. Validate the image pair through `FUN_180014ce8` at `0x180015e7c`, using
+6. Validate the image pair through `FUN_180014ce8` at `0x180015e7c`, using
    threshold word `+0x314`.
-6. Read FDT base with TX enabled again at `0x180015ed7` and validate it against
+7. Read FDT base with TX enabled again at `0x180015ed7` and validate it against
    the prior TX-off FDT base.
-7. On success, copy only the first, TX-on image into retained context buffer
+8. On success, copy only the first, TX-on image into retained context buffer
    `+0x248` at `0x180015f45..0x180015f52`; set image-base-valid byte `+0x237`
    at `0x180015f82`.
 
 The TX-off image is validation input and is freed. It is not averaged with the
 TX-on image and is not retained as the engine reference.
+
+`FUN_180005094` applies the profile-9 OTP patches before calling
+`thunk_FUN_18001aed8` (`Dlcfg`) with length `0x100` and timeout `500`.
+`FUN_18001aed8` retries the same category-9 configuration download once after
+an unsuccessful response, for at most two command attempts. A final failure
+returns `-1`, preventing `MilanHV_update_allbase` from entering the FDT/image
+sequence.
 
 ## Settings
 

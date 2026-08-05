@@ -23,3 +23,15 @@
 The normal D0 exit/entry pair preserves hardware image-base state. Whether a
 particular suspend/hibernate/removal also causes `ReleaseHardware` is decided by
 UMDF/Windows scheduling outside this callback.
+
+## Linux Parity Status
+
+The Linux suspend callback cancels an active transfer or state machine and
+marks the sensor for reinitialization. It does not currently send the native
+D0-exit sleep action or an EC power-isolation command before completing an
+active-operation suspend.
+
+Observed suspend/resume behavior is reliable on the profile-9/type-12 sensor,
+including lock-screen use. Adding asynchronous sleep/EC cleanup is deferred
+unless hardware evidence shows a suspend-entry or resume failure, because it
+would need to sequence new USB transfers after cancelling an in-flight one.
