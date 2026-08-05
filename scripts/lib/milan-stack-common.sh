@@ -5,10 +5,13 @@ MILAN_FPRINTD_REVISION="b54a007ccf58ac0ae074c7151b223f35cbd17306"
 MILAN_LIBFPRINT_SOURCE_TREE="2d08bc33d953cd17b315c5f5199aa7a0d0504506"
 MILAN_FPRINTD_SOURCE_TREE="ff82f8c3c2ab936ddafec9e88e650c04cd6f4f1d"
 MILAN_LIBFPRINT_PATCH_SHA256="fa9a4a89df02894a01013dc787d06cdbb74a4908b8e3cdc5da745e0265fb2f72"
+MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256="743c13782228869b8b5ea834caa096abadd38e5542303d7af8bc7acb4c925ae0"
 MILAN_FPRINTD_PATCH_SHA256="5d87cd806587fa5f035847a38ba3155b38f9a612a3070d9abfa6f83114e58db8"
 MILAN_PREFIX="/opt/goodix53x5-milan"
 MILAN_SYSTEMD_DIR="/etc/systemd/system/fprintd.service.d"
 MILAN_DROPIN_NAME="98-goodix53x5-milan-stack.conf"
+MILAN_UDEV_DIR="/etc/udev/rules.d"
+MILAN_UDEV_RULE_NAME="99-goodix53x5-milan-persist.rules"
 MILAN_PAYLOAD_MARKER=".goodix53x5-milan-payload"
 MILAN_OWNED_MARKER=".goodix53x5-milan-owned"
 
@@ -76,6 +79,7 @@ milan_validate_test_overrides() {
   local name
 
   for name in GOODIX_MILAN_INSTALL_ROOT GOODIX_MILAN_SYSTEMD_DIR \
+              GOODIX_MILAN_UDEV_DIR GOODIX_MILAN_SYSFS_USB_DEVICES \
               GOODIX_MILAN_SYSTEMCTL GOODIX_MILAN_LDD GOODIX_MILAN_TEST_EUID \
               GOODIX_MILAN_TEST_FPRINTD_REVISION; do
     if [[ -n "${!name:-}" && "${GOODIX_MILAN_SELF_TEST:-0}" != 1 ]]; then
@@ -85,6 +89,7 @@ milan_validate_test_overrides() {
   if [[ "${GOODIX_MILAN_SELF_TEST:-0}" == 1 ]]; then
     MILAN_PREFIX="${GOODIX_MILAN_TEST_PREFIX:-$MILAN_PREFIX}"
     MILAN_SYSTEMD_DIR="${GOODIX_MILAN_SYSTEMD_DIR:-$MILAN_SYSTEMD_DIR}"
+    MILAN_UDEV_DIR="${GOODIX_MILAN_UDEV_DIR:-$MILAN_UDEV_DIR}"
   fi
 }
 milan_validate_test_overrides
@@ -120,6 +125,10 @@ milan_actual_systemd_dir() {
   milan_root_path "$MILAN_INSTALL_ROOT" "$MILAN_SYSTEMD_DIR"
 }
 
+milan_actual_udev_dir() {
+  milan_root_path "$MILAN_INSTALL_ROOT" "$MILAN_UDEV_DIR"
+}
+
 milan_sha256() {
   sha256sum "$1" | cut -d ' ' -f 1
 }
@@ -129,11 +138,12 @@ milan_overlay_input_sha256() {
 
   (
     cd "$repo_dir"
-    find drivers/goodix53x5 tests -type f -print0 |
+    find drivers/goodix53x5 tests udev -type f -print0 |
       LC_ALL=C sort -z |
       xargs -0 sha256sum
     sha256sum meson-integration.patch scripts/build-local.sh \
       patches/libfprint/libfprint-update-result.patch \
+      patches/libfprint/libfprint-goodix53x5-usb-persist.patch \
       patches/fprintd/1.94.5-milan-update-save.patch
   ) | sha256sum | cut -d ' ' -f 1
 }
@@ -149,10 +159,13 @@ milan_manifest_value() {
 milan_verify_repo_inputs() {
   local repo_dir="$1"
   local lib_patch="$repo_dir/patches/libfprint/libfprint-update-result.patch"
+  local persist_patch="$repo_dir/patches/libfprint/libfprint-goodix53x5-usb-persist.patch"
   local daemon_patch="$repo_dir/patches/fprintd/1.94.5-milan-update-save.patch"
 
   [[ "$(milan_sha256 "$lib_patch")" == "$MILAN_LIBFPRINT_PATCH_SHA256" ]] ||
     milan_die "libfprint patch digest mismatch"
+  [[ "$(milan_sha256 "$persist_patch")" == "$MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256" ]] ||
+    milan_die "libfprint USB persist patch digest mismatch"
   [[ "$(milan_sha256 "$daemon_patch")" == "$MILAN_FPRINTD_PATCH_SHA256" ]] ||
     milan_die "fprintd patch digest mismatch"
   (cd "$(dirname "$daemon_patch")" && sha256sum --check "$(basename "$daemon_patch").sha256" >/dev/null) ||
@@ -233,6 +246,7 @@ milan_verify_manifest() {
   [[ "$(milan_manifest_value "$manifest" FPRINTD_REVISION)" == "$MILAN_FPRINTD_REVISION" ]] || milan_die "fprintd revision mismatch"
   [[ "$(milan_manifest_value "$manifest" FPRINTD_SOURCE_TREE)" == "$MILAN_FPRINTD_SOURCE_TREE" ]] || milan_die "fprintd source tree mismatch"
   [[ "$(milan_manifest_value "$manifest" LIBFPRINT_PATCH_SHA256)" == "$MILAN_LIBFPRINT_PATCH_SHA256" ]] || milan_die "libfprint patch manifest mismatch"
+  [[ "$(milan_manifest_value "$manifest" LIBFPRINT_USB_PERSIST_PATCH_SHA256)" == "$MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256" ]] || milan_die "libfprint USB persist patch manifest mismatch"
   [[ "$(milan_manifest_value "$manifest" FPRINTD_PATCH_SHA256)" == "$MILAN_FPRINTD_PATCH_SHA256" ]] || milan_die "fprintd patch manifest mismatch"
   [[ "$(milan_manifest_value "$manifest" OVERLAY_INPUT_SHA256)" == "$(milan_overlay_input_sha256 "$repo_dir")" ]] || milan_die "overlay input mismatch"
   debug="$(milan_manifest_value "$manifest" GOODIX53X5_DEBUG)"
@@ -272,6 +286,42 @@ milan_require_root() {
 
 milan_systemctl() {
   timeout --foreground 300 "$MILAN_SYSTEMCTL" "$@"
+}
+
+milan_apply_usb_persist() {
+  local value="$1" root="${GOODIX_MILAN_SYSFS_USB_DEVICES:-/sys/bus/usb/devices}"
+  local device product vendor
+
+  [[ "$value" == 0 || "$value" == 1 ]] || milan_die "invalid USB persist value: $value"
+  [[ -d "$root" ]] || return 0
+  for device in "$root"/*; do
+    [[ -f "$device/idVendor" && -f "$device/idProduct" && -e "$device/power/persist" ]] || continue
+    read -r vendor < "$device/idVendor"
+    read -r product < "$device/idProduct"
+    [[ "${vendor,,}" == 27c6 ]] || continue
+    case "${product,,}" in
+      5335|5385|5395) printf '%s\n' "$value" > "$device/power/persist" ;;
+    esac
+  done
+}
+
+milan_verify_usb_persist() {
+  local root="${GOODIX_MILAN_SYSFS_USB_DEVICES:-/sys/bus/usb/devices}"
+  local device product value vendor
+
+  [[ -d "$root" ]] || return 0
+  for device in "$root"/*; do
+    [[ -f "$device/idVendor" && -f "$device/idProduct" && -r "$device/power/persist" ]] || continue
+    read -r vendor < "$device/idVendor"
+    read -r product < "$device/idProduct"
+    [[ "${vendor,,}" == 27c6 ]] || continue
+    case "${product,,}" in
+      5335|5385|5395)
+        read -r value < "$device/power/persist"
+        [[ "$value" == 1 ]] || milan_die "USB persistence is disabled for $vendor:$product at $device"
+        ;;
+    esac
+  done
 }
 
 milan_verify_state_directory() {

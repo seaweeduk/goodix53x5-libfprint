@@ -51,6 +51,7 @@ else
 fi
 milan_verify_git_pristine "$fprintd_pristine" "$MILAN_FPRINTD_REVISION" "fprintd"
 "$repo_dir/patches/libfprint/verify-update-result-patch.sh" "$libfprint_pristine"
+"$repo_dir/patches/libfprint/verify-goodix53x5-usb-persist-patch.sh" "$libfprint_pristine"
 "$repo_dir/patches/fprintd/verify-update-save-patch.sh" "$fprintd_pristine"
 
 mkdir -p "$MILAN_STACK_ROOT/builds"
@@ -78,6 +79,8 @@ libfprint_source="$staging/libfprint-overlay/libfprint"
 libfprint_build="$libfprint_source/builddir"
 git -C "$libfprint_source" apply --reverse --check \
   "$repo_dir/patches/libfprint/libfprint-update-result.patch"
+git -C "$libfprint_source" apply --reverse --check \
+  "$repo_dir/patches/libfprint/libfprint-goodix53x5-usb-persist.patch"
 milan_run_stage "configure paired shadow libfprint" meson setup "$libfprint_build" \
   "$libfprint_source" --reconfigure --prefix="$MILAN_PREFIX" --libdir=lib \
   -Ddrivers=goodix53x5 -Dudev_hwdb=disabled -Dudev_rules=disabled \
@@ -108,9 +111,11 @@ milan_run_stage "build paired fprintd daemon" meson devenv -C "$libfprint_build"
 
 payload="$staging/payload"
 payload_prefix="$(milan_root_path "$payload" "$MILAN_PREFIX")"
-mkdir -p "$payload_prefix/fprintd" "$payload_prefix/manifest"
+payload_udev_dir="$payload_prefix/share/udev/rules.d"
+mkdir -p "$payload_prefix/fprintd" "$payload_prefix/manifest" "$payload_udev_dir"
 milan_run_stage "stage shadow libfprint" env DESTDIR="$payload" ninja -C "$libfprint_build" install
 install -m 0755 "$fprintd_build/src/fprintd" "$payload_prefix/fprintd/fprintd"
+install -m 0644 "$repo_dir/udev/$MILAN_UDEV_RULE_NAME" "$payload_udev_dir/$MILAN_UDEV_RULE_NAME"
 printf '%s\n' goodix53x5-milan-stack-payload-v1 > "$payload_prefix/$MILAN_PAYLOAD_MARKER"
 
 overlay_revision="$(git -C "$repo_dir" rev-parse HEAD)"
@@ -124,6 +129,7 @@ LIBFPRINT_SOURCE_TREE=$(git -C "$libfprint_pristine" rev-parse HEAD^{tree})
 FPRINTD_REVISION=$MILAN_FPRINTD_REVISION
 FPRINTD_SOURCE_TREE=$(git -C "$fprintd_pristine" rev-parse HEAD^{tree})
 LIBFPRINT_PATCH_SHA256=$MILAN_LIBFPRINT_PATCH_SHA256
+LIBFPRINT_USB_PERSIST_PATCH_SHA256=$MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256
 FPRINTD_PATCH_SHA256=$MILAN_FPRINTD_PATCH_SHA256
 OVERLAY_REVISION=$overlay_revision
 OVERLAY_INPUT_SHA256=$overlay_input_sha256
