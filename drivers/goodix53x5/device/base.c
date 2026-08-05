@@ -588,7 +588,6 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
       {
         g_autofree guint16 *frame =
           goodix_base_decode_reply (dev, "TX-off base", &error);
-        guint64 mad;
 
         if (!frame)
           {
@@ -597,16 +596,6 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
           }
         goodix_milan_base_attempt_take_frame (&data->attempt, FALSE, &frame,
                                               GOODIX_SENSOR_PIXELS);
-        if (!goodix_milan_base_pair_mad (data->attempt.tx_on,
-                                         data->attempt.tx_on_values,
-                                         data->attempt.tx_off,
-                                         data->attempt.tx_off_values,
-                                         &mad, &error))
-          {
-            goodix_milan_base_attempt_reset (&data->attempt);
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
 
         if (goodix_debug_dump_txon_ref_enabled ())
           goodix_debug_dump_raw12 ("raw12-ref-txon", data->attempt.tx_on,
@@ -620,11 +609,10 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
             if (error)
               fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
             else
-              fpi_ssm_mark_failed (ssm,
-                                   fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
-                                                             "Milan base pair rejected: MAD=%" G_GUINT64_FORMAT " (limit %u)",
-                                                             mad,
-                                                             GOODIX_MILAN_BASE_MAD_LIMIT));
+              {
+                goodix_milan_base_attempt_reset (&data->attempt);
+                fpi_ssm_jump_to_state (ssm, GOODIX_BASE_RECOVERY_FDT_TX_ON);
+              }
             return;
           }
         fpi_ssm_next_state (ssm);
@@ -658,6 +646,16 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
               ssm, dev, data, fdt_tx_on_after, touch_flag, "tx-on-after");
             return;
           }
+
+        /* Native update_allbase derives every FDT base from this first
+         * TX-on sample after the complete sequence is admitted. */
+        goodix_device_generate_fdt_base (data->fdt_tx_on_before,
+                                         GOODIX_FDT_BASE_LEN,
+                                         self->calib.fdt_base_down);
+        memcpy (self->calib.fdt_base_up, self->calib.fdt_base_down,
+                GOODIX_FDT_BASE_LEN);
+        memcpy (self->calib.fdt_base_manual, self->calib.fdt_base_down,
+                GOODIX_FDT_BASE_LEN);
         data->attempt.stage = GOODIX_MILAN_BASE_STAGE_PUBLISH;
         if (!goodix_milan_generation_allocate_id (&self->last_milan_generation_id,
                                                    &generation_id, &error) ||
