@@ -311,8 +311,8 @@ goodix_match_extract_planes (const guint8  *image,
         7945 + 150 * 32 + GOODIX_MILAN_OPTIONAL_C7_LEN + 1433,
         &milan_template_size) != 0)
     goto out;
-  info->template = goodix_match_wrap_template (
-    milan_template, milan_template_size);
+  info->template = g_bytes_new_take (milan_template, milan_template_size);
+  milan_template = NULL;
   info->record_count = (int) record_count;
   info->partition_count = (int) zero_count;
   memcpy (info->feature_bitmaps.high_bitmap, high,

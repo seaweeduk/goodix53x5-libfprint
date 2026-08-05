@@ -8,7 +8,6 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
-#include "drivers/goodix53x5/milan/enrollment/template-private.h"
 #include "drivers/goodix53x5/milan/match/info-private.h"
 #include "drivers/goodix53x5/milan/match/match.h"
 #include "drivers/goodix53x5/milan/print.h"
@@ -503,7 +502,7 @@ study_match_info (guint seed,
   g_assert_cmpint (goodix_milan_template_pack_one_feature (
                      feature_data, feature_size, tail, sizeof(tail), packed,
                      1433 + feature_size, &packed_size), ==, 0);
-  info->template = goodix_match_wrap_template (packed, packed_size);
+  info->template = g_bytes_new_take (g_steal_pointer (&packed), packed_size);
   info->record_count = (gint) view.record_count;
   info->partition_count = view.fields.tagged_values[2];
   info->records = g_new0 (GoodixMilanFeatureRecord, view.record_count);
@@ -542,7 +541,7 @@ study_gallery (GoodixMilanStudyAction action,
   g_autofree guint8 *packed = NULL;
   gsize capacity = 1433 + G_N_ELEMENTS (relations) * 45;
   gsize packed_size = 0;
-  GBytes *wrapped;
+  GBytes *template_bytes;
 
   for (gsize i = 0; i < N_FEATURES; i++)
     {
@@ -586,10 +585,10 @@ study_gallery (GoodixMilanStudyAction action,
                      feature_data, feature_sizes, N_FEATURES, relations,
                      G_N_ELEMENTS (relations), &metadata, tail, sizeof(tail),
                      packed, capacity, &packed_size), ==, 0);
-  wrapped = goodix_match_wrap_template (packed, packed_size);
+  template_bytes = g_bytes_new_take (g_steal_pointer (&packed), packed_size);
   for (gsize i = 0; i < N_FEATURES; i++)
     g_bytes_unref (features[i]);
-  return wrapped;
+  return template_bytes;
 }
 
 static void
@@ -599,11 +598,8 @@ assert_study_template (GBytes                       *bytes,
                        GoodixMilanUnpackedTemplate  *unpacked)
 {
   g_autoptr(GError) error = NULL;
-  GoodixSigfmTemplateStatus status;
-  const guint8 *wrapped;
-  const guint8 *payload;
-  gsize wrapped_size;
-  gsize payload_size;
+  const guint8 *template_data;
+  gsize template_size;
 
   g_assert_true (goodix_milan_print_validate_template (bytes, info, &error));
   g_assert_no_error (error);
@@ -619,30 +615,21 @@ assert_study_template (GBytes                       *bytes,
                           (GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT - 1) / 2);
   g_assert_cmpuint (info->graph_established, ==, 1);
   g_assert_cmpint (info->graph_reference_index, ==, 0);
-  wrapped = g_bytes_get_data (bytes, &wrapped_size);
-  payload = goodix_match_unwrap_template (
-    wrapped, wrapped_size, &payload_size, &status);
-  g_assert_nonnull (payload);
+  template_data = g_bytes_get_data (bytes, &template_size);
   g_assert_cmpint (goodix_milan_template_unpack (
-                     payload, payload_size, unpacked), ==, 0);
+                     template_data, template_size, unpacked), ==, 0);
 }
 
 static void
 unpack_study_template (GBytes                      *bytes,
                        GoodixMilanUnpackedTemplate *unpacked)
 {
-  GoodixSigfmTemplateStatus status;
-  const guint8 *wrapped;
-  const guint8 *payload;
-  gsize wrapped_size;
-  gsize payload_size;
+  const guint8 *template_data;
+  gsize template_size;
 
-  wrapped = g_bytes_get_data (bytes, &wrapped_size);
-  payload = goodix_match_unwrap_template (
-    wrapped, wrapped_size, &payload_size, &status);
-  g_assert_nonnull (payload);
+  template_data = g_bytes_get_data (bytes, &template_size);
   g_assert_cmpint (goodix_milan_template_unpack (
-                     payload, payload_size, unpacked), ==, 0);
+                     template_data, template_size, unpacked), ==, 0);
 }
 
 static void
@@ -999,7 +986,6 @@ run_queued_study_case (void)
   gsize gallery_size;
   gsize baseline_size;
   gsize baseline_payload_size;
-  GoodixSigfmTemplateStatus unwrap_status;
   const GoodixMilanFeatureRecord *live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
   size_t live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
   size_t live_partition_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
@@ -1054,9 +1040,8 @@ run_queued_study_case (void)
     GOODIX_MILAN_STUDY_REPLACE_NO_RELATION, 1, 1, 0, FALSE);
 
   baseline_data = g_bytes_get_data (baseline, &baseline_size);
-  baseline_payload = goodix_match_unwrap_template (
-    baseline_data, baseline_size, &baseline_payload_size, &unwrap_status);
-  g_assert_nonnull (baseline_payload);
+  baseline_payload = baseline_data;
+  baseline_payload_size = baseline_size;
   live_records[1] = primary->records;
   live_record_counts[1] = (size_t) primary->record_count;
   live_partition_counts[1] = (size_t) primary->partition_count;

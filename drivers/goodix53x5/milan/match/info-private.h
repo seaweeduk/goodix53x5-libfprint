@@ -10,7 +10,6 @@
 
 #pragma once
 
-#include "milan/enrollment/template-private.h"
 #include "milan/match/match.h"
 #include "milan/match/rescue.h"
 

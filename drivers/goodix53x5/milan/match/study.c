@@ -21,7 +21,6 @@
 
 #include "drivers_api.h"
 #include "driver-private.h"
-#include "milan/enrollment/template-private.h"
 #include "milan/match/match.h"
 #include "milan/match/info-private.h"
 #include "milan/match/lifecycle-private.h"
@@ -109,7 +108,6 @@ goodix_match_study_feature_internal (
   gboolean                      finalize_study,
   GoodixMilanStudyTransientState *transient_state)
 {
-  GoodixSigfmTemplateStatus status;
   const guint8 *enrolled_milan;
   const guint8 *probe_milan;
   gsize enrolled_milan_len;
@@ -138,23 +136,20 @@ goodix_match_study_feature_internal (
   if (!probe_feature || !feature || !match_result ||
       !updated_feature || !action)
     return GOODIX_SIGFM_TEMPLATE_INVALID;
-  enrolled_milan = goodix_match_unwrap_template (
-    feature, feature_len, &enrolled_milan_len, &status);
-  if (!enrolled_milan)
-    return status;
+  enrolled_milan = feature;
+  enrolled_milan_len = feature_len;
+  if (enrolled_milan_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE)
+    return GOODIX_SIGFM_TEMPLATE_INVALID;
   if (!study_eligible)
     return GOODIX_SIGFM_TEMPLATE_OK;
   if (match_result->score <= 0)
     return GOODIX_SIGFM_TEMPLATE_INVALID;
 
-  probe_milan = goodix_match_unwrap_template (
-    probe_feature, probe_feature_len, &probe_milan_len, &status);
-  if (!probe_milan)
-    return status;
-  if (probe_milan_len > GOODIX_MILAN_TEMPLATE_MAX_LEN - 45 -
-                          GOODIX_MILAN_TEMPLATE_HEADER_LEN ||
-      enrolled_milan_len > GOODIX_MILAN_TEMPLATE_MAX_LEN - probe_milan_len -
-                              45 - GOODIX_MILAN_TEMPLATE_HEADER_LEN)
+  probe_milan = probe_feature;
+  probe_milan_len = probe_feature_len;
+  if (probe_milan_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE - 45 ||
+      enrolled_milan_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE - probe_milan_len -
+                              45)
     return GOODIX_SIGFM_TEMPLATE_INVALID;
 
   enrolled = g_malloc (sizeof(*enrolled));
@@ -282,9 +277,8 @@ goodix_match_study_feature_internal (
   if (packed_size == 0 ||
       goodix_milan_template_unpack (packed, packed_size, updated) != 0)
     goto invalid;
-  *updated_feature = goodix_match_wrap_template (packed, packed_size);
-  if (!*updated_feature)
-    goto invalid;
+  *updated_feature = g_bytes_new_take (packed, packed_size);
+  packed = NULL;
 
   g_free (packed);
   g_free (updated);
@@ -339,7 +333,6 @@ goodix_match_live_gallery_result (GoodixMatchInfo                 *probe,
   const GoodixMilanFeatureRecord *live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
   size_t live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
   size_t live_partition_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
-  GoodixSigfmTemplateStatus status;
   const guint8 *current_data;
   const guint8 *current_milan;
   guint8 *updated_milan = NULL;
@@ -351,10 +344,10 @@ goodix_match_live_gallery_result (GoodixMatchInfo                 *probe,
   if (!goodix_match_info_is_complete (probe) || !context || !context->current)
     return GOODIX_SIGFM_TEMPLATE_INVALID;
   current_data = g_bytes_get_data (context->current, &current_size);
-  current_milan = goodix_match_unwrap_template (
-    current_data, current_size, &current_milan_size, &status);
-  if (!current_milan)
-    return status;
+  current_milan = current_data;
+  current_milan_size = current_size;
+  if (current_milan_size > GOODIX_MILAN_TEMPLATE_MAX_SIZE)
+    return GOODIX_SIGFM_TEMPLATE_INVALID;
   for (size_t i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
     if (context->live_features[i])
       {
@@ -393,9 +386,13 @@ goodix_match_live_gallery_result (GoodixMatchInfo                 *probe,
       current_milan = updated_milan;
       current_milan_size = updated_milan_size;
     }
-  *updated_feature = goodix_match_wrap_template (
-    current_milan, current_milan_size);
-  g_free (updated_milan);
+  if (updated_milan)
+    {
+      *updated_feature = g_bytes_new_take (updated_milan, current_milan_size);
+      updated_milan = NULL;
+    }
+  else
+    *updated_feature = g_bytes_ref (context->current);
   return *updated_feature ? GOODIX_SIGFM_TEMPLATE_OK
                           : GOODIX_SIGFM_TEMPLATE_INVALID;
 }
@@ -474,19 +471,15 @@ static gboolean
 goodix_match_template_at_capacity (GBytes *feature)
 {
   GoodixMilanUnpackedTemplate *unpacked;
-  GoodixSigfmTemplateStatus status;
-  const guint8 *wrapped_data;
-  const guint8 *template_payload;
-  gsize wrapped_size;
-  gsize template_payload_size;
+  const guint8 *template_data;
+  gsize template_size;
   gboolean at_capacity = FALSE;
 
-  wrapped_data = g_bytes_get_data (feature, &wrapped_size);
-  template_payload = goodix_match_unwrap_template (wrapped_data, wrapped_size, &template_payload_size, &status);
-  if (!template_payload)
+  template_data = g_bytes_get_data (feature, &template_size);
+  if (template_size > GOODIX_MILAN_TEMPLATE_MAX_SIZE)
     return FALSE;
   unpacked = g_malloc (sizeof(*unpacked));
-  if (goodix_milan_template_unpack (template_payload, template_payload_size, unpacked) == 0)
+  if (goodix_milan_template_unpack (template_data, template_size, unpacked) == 0)
     at_capacity = unpacked->feature_count == unpacked->metadata.maximum_features;
   g_free (unpacked);
   return at_capacity;
@@ -497,26 +490,26 @@ goodix_match_finalize_study (GBytes                 *feature,
                              const GoodixStudyQueue *queue,
                              gboolean                finalize_transaction)
 {
-  GoodixSigfmTemplateStatus status;
-  const guint8 *wrapped_data;
-  const guint8 *template_payload;
+  const guint8 *template_data;
   guint8 *packed = NULL;
-  gsize wrapped_size;
-  gsize template_payload_size;
+  gsize template_size;
   size_t packed_size = 0;
   GBytes *result = NULL;
 
-  wrapped_data = g_bytes_get_data (feature, &wrapped_size);
-  template_payload = goodix_match_unwrap_template (wrapped_data, wrapped_size, &template_payload_size, &status);
-  if (!template_payload || !queue || !goodix_study_queue_validate (queue))
+  template_data = g_bytes_get_data (feature, &template_size);
+  if (template_size > GOODIX_MILAN_TEMPLATE_MAX_SIZE || !queue ||
+      !goodix_study_queue_validate (queue))
     return NULL;
-  packed = g_malloc (template_payload_size);
+  packed = g_malloc (template_size);
   if (goodix_milan_study_finalize (
-        template_payload, template_payload_size, queue->enabled_state,
-        queue->transaction_counter, finalize_transaction, packed, template_payload_size,
+        template_data, template_size, queue->enabled_state,
+        queue->transaction_counter, finalize_transaction, packed, template_size,
         &packed_size) == 0 &&
-      packed_size == template_payload_size)
-    result = goodix_match_wrap_template (packed, packed_size);
+      packed_size == template_size)
+    {
+      result = g_bytes_new_take (packed, packed_size);
+      packed = NULL;
+    }
   g_free (packed);
   return result;
 }
