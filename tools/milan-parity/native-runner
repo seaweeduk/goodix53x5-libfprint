@@ -485,12 +485,8 @@ def run_dll_authority(tool: Path, root: Path, case, native, inputs, dll: Path):
         loaded_size, loaded_hash = output_identity(output / "loaded-before-match.bin")
         matched_size, matched_hash = output_identity(output / "after-match.bin")
         studied_size, studied_hash = output_identity(output / "after-study.bin")
-        if oracle.get("persistence_advanced"):
-            persistent_size, persistent_hash = output_identity(
-                output / "next-persistent.bin")
-        else:
-            persistent_size, persistent_hash = output_identity(
-                output / "next-persistent.bin")
+        persistent_size, persistent_hash = output_identity(
+            output / "next-persistent.bin")
         _, expected_loaded_hash = packed_input_identity(template)
         if processed_size != 108 * 88 or loaded_hash != expected_loaded_hash:
             raise RunnerError("Wine oracle preprocessing or loaded-template identity differs")
