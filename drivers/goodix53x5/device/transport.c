@@ -225,6 +225,28 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
     {
       if (!self->suspend_pending &&
           g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
+          self->open_finger_up_timed_out &&
+          !fpi_device_action_is_cancelled (dev) &&
+          transfer->ssm == self->blocking_ssm)
+        {
+          g_clear_error (&error);
+          self->open_finger_up_timed_out = FALSE;
+          self->blocking_ssm = NULL;
+          if (fpi_device_get_current_action (dev) == FPI_DEVICE_ACTION_OPEN)
+            fpi_ssm_mark_failed (
+              transfer->ssm,
+              fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                        "Finger removal timed out during device setup"));
+          else
+            fpi_ssm_mark_failed (
+              transfer->ssm,
+              fpi_device_retry_new_msg (FP_DEVICE_RETRY_REMOVE_FINGER,
+                                        "Remove your finger and try again"));
+          return;
+        }
+
+      if (!self->suspend_pending &&
+          g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
           self->action_result_reported &&
           !self->verify_wait_finger_up &&
           transfer->ssm == self->blocking_ssm)
