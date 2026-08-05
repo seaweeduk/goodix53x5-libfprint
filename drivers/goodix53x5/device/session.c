@@ -642,7 +642,11 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
       if (self->milan_base_recovery ==
           GOODIX_MILAN_BASE_RECOVERY_REMOVE_FINGER)
-        goodix_scan_start_finger_up_subsm (ssm, dev);
+        {
+          fpi_device_report_finger_status_changes (
+            dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
+          goodix_scan_start_finger_up_subsm (ssm, dev);
+        }
       else
         goodix_scan_start_deactivate_subsm (ssm, dev);
       break;
@@ -726,6 +730,7 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
       OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
       self->psk_imported = FALSE;
       goodix_debug_timing_open_done (self, dev, error->message);
+      fpi_device_report_finger_status (dev, FP_FINGER_STATUS_NONE);
 
       if (!self->open_recovery_attempted &&
           !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
