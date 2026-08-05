@@ -302,7 +302,6 @@ milan_apply_usb_persist() {
     case "${product,,}" in
       5335|5385|5395)
         if [[ ! -e "$device/power/persist" ]]; then
-          [[ "$value" == 0 ]] && continue
           milan_die "USB persistence is unavailable for $vendor:$product at $device"
         fi
         printf '%s\n' "$value" > "$device/power/persist"
