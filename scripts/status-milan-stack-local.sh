@@ -22,16 +22,22 @@ verify_build() {
 }
 
 verify_destination_guards() {
-  local actual_prefix actual_systemd_dir dropin
+  local actual_prefix actual_systemd_dir dropin udev_rule
 
   actual_prefix="$(milan_actual_prefix)"
   actual_systemd_dir="$(milan_actual_systemd_dir)"
   dropin="$actual_systemd_dir/$MILAN_DROPIN_NAME"
+  udev_rule="$(milan_actual_udev_dir)/$MILAN_UDEV_RULE_NAME"
   [[ ! -e "$actual_prefix" ]] || milan_verify_owned_marker "$actual_prefix"
   if [[ -e "$dropin" ]]; then
     [[ -e "$actual_prefix" ]] || milan_die "unmanaged drop-in without owned prefix"
     milan_render_dropin "$repo_dir" | cmp -s - "$dropin" ||
       milan_die "unmanaged or modified drop-in"
+  fi
+  if [[ -e "$udev_rule" ]]; then
+    [[ -e "$actual_prefix" ]] || milan_die "unmanaged USB persistence rule without owned prefix"
+    cmp -s "$actual_prefix/share/udev/rules.d/$MILAN_UDEV_RULE_NAME" "$udev_rule" ||
+      milan_die "unmanaged or modified USB persistence rule"
   fi
 }
 
@@ -48,12 +54,17 @@ case "$mode" in
   --installed)
     actual_prefix="$(milan_actual_prefix)"
     dropin="$(milan_actual_systemd_dir)/$MILAN_DROPIN_NAME"
+    udev_rule="$(milan_actual_udev_dir)/$MILAN_UDEV_RULE_NAME"
     milan_verify_owned_marker "$actual_prefix"
     milan_verify_manifest "$actual_prefix" "$repo_dir"
     [[ -f "$dropin" ]] || milan_die "managed drop-in is missing"
     milan_render_dropin "$repo_dir" | cmp -s - "$dropin" ||
       milan_die "managed drop-in differs from template"
+    [[ -f "$udev_rule" ]] || milan_die "managed USB persistence rule is missing"
+    cmp -s "$actual_prefix/share/udev/rules.d/$MILAN_UDEV_RULE_NAME" "$udev_rule" ||
+      milan_die "managed USB persistence rule differs from payload"
     milan_verify_active_shadow
+    milan_verify_usb_persist
     milan_note "installed shadow stack and service configuration verified"
     ;;
   --packaged)

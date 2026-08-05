@@ -11,7 +11,7 @@ milan_require_root
 milan_validate_prefix
 milan_reject_ephemeral_root "GOODIX_MILAN_STACK_ROOT" "$MILAN_STACK_ROOT"
 milan_require_absolute "install root" "$MILAN_INSTALL_ROOT"
-for command in flock timeout "$MILAN_SYSTEMCTL"; do
+for command in flock timeout udevadm "$MILAN_SYSTEMCTL"; do
   milan_require_command "$command"
 done
 
@@ -25,7 +25,11 @@ actual_prefix="$(milan_actual_prefix)"
 actual_parent="$(dirname "$actual_prefix")"
 actual_systemd_dir="$(milan_actual_systemd_dir)"
 dropin="$actual_systemd_dir/$MILAN_DROPIN_NAME"
-mkdir -p "$actual_parent" "$actual_systemd_dir"
+actual_udev_dir="$(milan_actual_udev_dir)"
+udev_rule="$actual_udev_dir/$MILAN_UDEV_RULE_NAME"
+payload_udev_rule="$payload_prefix/share/udev/rules.d/$MILAN_UDEV_RULE_NAME"
+[[ -f "$payload_udev_rule" ]] || milan_die "payload USB persistence rule is missing"
+mkdir -p "$actual_parent" "$actual_systemd_dir" "$actual_udev_dir"
 exec 9>"$actual_parent/.goodix53x5-milan.install.lock"
 flock -n 9 || milan_die "another Milan install/remove is active"
 
@@ -85,10 +89,15 @@ if [[ -e "$dropin" ]]; then
   [[ -e "$actual_prefix" ]] || milan_die "refusing unmanaged drop-in without owned prefix: $dropin"
   milan_render_dropin "$repo_dir" | cmp -s - "$dropin" || milan_die "refusing unmanaged or modified drop-in: $dropin"
 fi
+if [[ -e "$udev_rule" ]]; then
+  [[ -e "$actual_prefix" ]] || milan_die "refusing unmanaged USB persistence rule: $udev_rule"
+  cmp -s "$payload_udev_rule" "$udev_rule" || milan_die "refusing unmanaged or modified USB persistence rule: $udev_rule"
+fi
 
-if [[ -e "$actual_prefix" && -e "$dropin" ]] &&
+if [[ -e "$actual_prefix" && -e "$dropin" && -e "$udev_rule" ]] &&
    cmp -s "$payload_prefix/manifest/build.env" "$actual_prefix/manifest/build.env" &&
-   milan_render_dropin "$repo_dir" | cmp -s - "$dropin"; then
+   milan_render_dropin "$repo_dir" | cmp -s - "$dropin" &&
+   cmp -s "$payload_udev_rule" "$udev_rule"; then
   "$script_dir/status-milan-stack-local.sh" --installed
   record_capture_build_manifest
   milan_note "paired Milan stack is already installed"
@@ -99,7 +108,10 @@ stage_prefix="$actual_parent/.goodix53x5-milan.stage.$$"
 backup_prefix="$actual_parent/.goodix53x5-milan.backup.$$"
 stage_dropin="$actual_systemd_dir/.$MILAN_DROPIN_NAME.stage.$$"
 backup_dropin="$actual_systemd_dir/.$MILAN_DROPIN_NAME.backup.$$"
-for path in "$stage_prefix" "$backup_prefix" "$stage_dropin" "$backup_dropin"; do
+stage_udev_rule="$actual_udev_dir/.$MILAN_UDEV_RULE_NAME.stage.$$"
+backup_udev_rule="$actual_udev_dir/.$MILAN_UDEV_RULE_NAME.backup.$$"
+for path in "$stage_prefix" "$backup_prefix" "$stage_dropin" "$backup_dropin" \
+            "$stage_udev_rule" "$backup_udev_rule"; do
   [[ ! -e "$path" ]] || milan_die "transaction path already exists: $path"
 done
 
@@ -115,6 +127,8 @@ chown -hR "$(id -u):$(id -g)" -- "$stage_prefix"
 chmod -R u-s,g-s,go-w -- "$stage_prefix"
 milan_render_dropin "$repo_dir" > "$stage_dropin"
 chmod 0644 "$stage_dropin"
+cp "$stage_prefix/share/udev/rules.d/$MILAN_UDEV_RULE_NAME" "$stage_udev_rule"
+chmod 0644 "$stage_udev_rule"
 milan_verify_owned_marker "$stage_prefix"
 milan_verify_manifest "$stage_prefix" "$repo_dir"
 
@@ -124,6 +138,8 @@ old_prefix_moved=0
 new_prefix_active=0
 old_dropin_moved=0
 new_dropin_active=0
+old_udev_rule_moved=0
+new_udev_rule_active=0
 rollback() {
   local rc=$?
   set +e
@@ -135,11 +151,19 @@ rollback() {
     [[ "$old_prefix_moved" == 0 || ! -e "$backup_prefix" ]] || mv "$backup_prefix" "$actual_prefix"
     [[ "$new_dropin_active" == 0 ]] || rm -f -- "$dropin"
     [[ "$old_dropin_moved" == 0 || ! -e "$backup_dropin" ]] || mv "$backup_dropin" "$dropin"
+    [[ "$new_udev_rule_active" == 0 ]] || rm -f -- "$udev_rule"
+    [[ "$old_udev_rule_moved" == 0 || ! -e "$backup_udev_rule" ]] || mv "$backup_udev_rule" "$udev_rule"
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+    if [[ -e "$udev_rule" ]]; then
+      milan_apply_usb_persist 1 >/dev/null 2>&1 || true
+    else
+      milan_apply_usb_persist 0 >/dev/null 2>&1 || true
+    fi
     milan_systemctl daemon-reload >/dev/null 2>&1 || true
     milan_systemctl restart fprintd.service >/dev/null 2>&1 || true
   fi
   [[ ! -e "$stage_prefix" ]] || milan_safe_remove_tree "$stage_prefix" "$actual_parent"
-  rm -f -- "$stage_dropin"
+  rm -f -- "$stage_dropin" "$stage_udev_rule"
   exit "$rc"
 }
 trap rollback EXIT
@@ -171,15 +195,25 @@ if [[ -e "$dropin" ]]; then
 fi
 mv "$stage_dropin" "$dropin"
 new_dropin_active=1
+if [[ -e "$udev_rule" ]]; then
+  mv "$udev_rule" "$backup_udev_rule"
+  old_udev_rule_moved=1
+fi
+mv "$stage_udev_rule" "$udev_rule"
+new_udev_rule_active=1
 milan_verify_manifest "$actual_prefix" "$repo_dir"
+udevadm control --reload-rules
 milan_systemctl daemon-reload
 milan_systemctl restart fprintd.service
 milan_verify_active_shadow
+milan_apply_usb_persist 1
+milan_verify_usb_persist
 committed=1
 trap - EXIT
 
 [[ ! -e "$backup_prefix" ]] || milan_safe_remove_tree "$backup_prefix" "$actual_parent"
-rm -f -- "$backup_dropin"
+rm -f -- "$backup_dropin" "$backup_udev_rule"
 record_capture_build_manifest
 milan_note "installed paired Milan shadow stack under $MILAN_PREFIX"
+milan_note "enabled hibernate USB persistence for supported Milan sensors"
 milan_note "preserved StateDirectory=fprint and /var/lib/fprint"

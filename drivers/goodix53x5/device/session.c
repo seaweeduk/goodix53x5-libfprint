@@ -24,13 +24,16 @@
 #include "device/transport.h"
 #include "device/commands.h"
 #include "device/calibration.h"
+#include "device/base.h"
+#include "device/scan.h"
 #include "device/session.h"
 
 #include <string.h>
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 
-#define GOODIX_OPEN_FDT_MAX_RETRIES 16
+#define GOODIX_OPEN_BASE_MAX_RETRIES 16
+#define GOODIX_OPEN_FINGER_UP_TIMEOUT_MS 5000
 #define GOODIX_PSK_STATE_FILE "/var/lib/fprint/goodix53x5.psk"
 
 /* Open SSM — full device initialization */
@@ -51,12 +54,13 @@ typedef enum {
   GOODIX_OPEN_GTLS_SEND_VERIFY,
   GOODIX_OPEN_GTLS_RECV_DONE,
   GOODIX_OPEN_UPLOAD_CONFIG,
-  GOODIX_OPEN_FDT_TX_ON,
-  GOODIX_OPEN_VALIDATE_FDT,
-  GOODIX_OPEN_FDT_TX_ON_2,
-  GOODIX_OPEN_VALIDATE_FDT_2,
-  GOODIX_OPEN_GENERATE_FDT_BASE,
+  GOODIX_OPEN_VALIDATE_CONFIG,
+  GOODIX_OPEN_CAPTURE_REF,
+  GOODIX_OPEN_CAPTURE_REF_DONE,
+  GOODIX_OPEN_RETRY_REF_AFTER_CLEANUP,
   GOODIX_OPEN_SLEEP,
+  GOODIX_OPEN_EC_POWER_OFF,
+  GOODIX_OPEN_EC_POWER_OFF_DONE,
   GOODIX_OPEN_NUM_STATES,
 } GoodixOpenState;
 
@@ -99,24 +103,51 @@ goodix_open_state_name (GoodixOpenState state)
       return "gtls_recv_done";
     case GOODIX_OPEN_UPLOAD_CONFIG:
       return "upload_config";
-    case GOODIX_OPEN_FDT_TX_ON:
-      return "fdt_tx_on";
-    case GOODIX_OPEN_VALIDATE_FDT:
-      return "validate_fdt";
-    case GOODIX_OPEN_FDT_TX_ON_2:
-      return "fdt_tx_on_2";
-    case GOODIX_OPEN_VALIDATE_FDT_2:
-      return "validate_fdt_2";
-    case GOODIX_OPEN_GENERATE_FDT_BASE:
-      return "generate_fdt_base";
+    case GOODIX_OPEN_VALIDATE_CONFIG:
+      return "validate_config";
+    case GOODIX_OPEN_CAPTURE_REF:
+      return "capture_ref";
+    case GOODIX_OPEN_CAPTURE_REF_DONE:
+      return "capture_ref_done";
+    case GOODIX_OPEN_RETRY_REF_AFTER_CLEANUP:
+      return "retry_ref_after_cleanup";
     case GOODIX_OPEN_SLEEP:
       return "sleep";
+    case GOODIX_OPEN_EC_POWER_OFF:
+      return "ec_power_off";
+    case GOODIX_OPEN_EC_POWER_OFF_DONE:
+      return "ec_power_off_done";
     case GOODIX_OPEN_NUM_STATES:
     default:
       return "unknown";
     }
 }
 #endif
+
+static void
+goodix_open_clear_finger_up_timeout (FpiDeviceGoodix53x5 *self)
+{
+  g_clear_pointer (&self->open_finger_up_timeout, g_source_destroy);
+  self->open_finger_up_timed_out = FALSE;
+}
+
+static void
+goodix_open_finger_up_timeout_cb (FpDevice *dev,
+                                  gpointer  user_data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  (void) user_data;
+  self->open_finger_up_timeout = NULL;
+  if (fpi_device_action_is_cancelled (dev))
+    return;
+
+  fp_warn ("Timed out after %u ms waiting for finger removal during device setup",
+           GOODIX_OPEN_FINGER_UP_TIMEOUT_MS);
+  self->open_finger_up_timed_out = TRUE;
+  if (self->cancel)
+    g_cancellable_cancel (self->cancel);
+}
 
 /* PSK white box for writing the default all-zero PSK. */
 static const guint8 goodix_psk_white_box[GOODIX_PSK_WHITE_BOX_LEN] = {
@@ -215,11 +246,19 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       {
         GError *error = NULL;
 
+        if (!self->open_usb_reset_required)
+          {
+            fpi_ssm_next_state (ssm);
+            return;
+          }
+
         if (!g_usb_device_reset (fpi_device_get_usb_device (dev), &error))
           {
             fpi_ssm_mark_failed (ssm, error);
             return;
           }
+
+        self->open_usb_reset_required = FALSE;
       }
 
       fpi_ssm_next_state (ssm);
@@ -577,7 +616,9 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         self->gtls.hmac_client_counter = self->gtls.hmac_client_counter_init;
         self->gtls.hmac_server_counter = self->gtls.hmac_server_counter_init;
         self->gtls.state = 5;
-        self->open_fdt_retries = 0;
+        self->open_base_retries = 0;
+        self->open_base_failed = FALSE;
+        self->open_ref_powered = FALSE;
 
         fp_info ("GTLS handshake completed");
 
@@ -592,9 +633,8 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       }
       break;
 
-    case GOODIX_OPEN_FDT_TX_ON:
+    case GOODIX_OPEN_VALIDATE_CONFIG:
       {
-        /* Validate the config upload reply before the first FDT TX-on */
         if (!goodix_cmd_parse_config_reply (dev))
           {
             fpi_ssm_mark_failed (ssm,
@@ -603,98 +643,81 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
             return;
           }
 
-        /* FDT manual operation with TX enabled */
-        goodix_cmd_fdt_manual (ssm, dev, TRUE, self->calib.fdt_base_manual);
-      }
-      break;
-
-    case GOODIX_OPEN_VALIDATE_FDT:
-      {
-        /* Parse FDT response and save */
-        g_autoptr(GError) error = NULL;
-        const guint8 *pl;
-        gsize pl_len;
-
-        if (!goodix_cmd_parse_fdt_manual_reply (dev, &pl, &pl_len, &error))
-          {
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
-
-        /* FDT data is the payload after 4 bytes of irq+touch_flag */
-        g_free (self->fdt_data_tx_on);
-        self->fdt_data_tx_on = g_memdup2 (pl + 4, GOODIX_FDT_BASE_LEN);
-
         fpi_ssm_next_state (ssm);
       }
       break;
 
-    case GOODIX_OPEN_FDT_TX_ON_2:
-      /* Second FDT TX on */
-      goodix_cmd_fdt_manual (ssm, dev, TRUE, self->calib.fdt_base_manual);
+    case GOODIX_OPEN_CAPTURE_REF:
+      goodix_milan_base_start_ensure_subsm (ssm, dev);
       break;
 
-    case GOODIX_OPEN_VALIDATE_FDT_2:
-      {
-        /* Parse and validate second FDT */
-        g_autoptr(GError) error = NULL;
-        const guint8 *pl;
-        gsize pl_len;
+    case GOODIX_OPEN_CAPTURE_REF_DONE:
+      self->open_ref_powered = TRUE;
+      if (self->milan_base_recovery == GOODIX_MILAN_BASE_RECOVERY_NONE)
+        {
+          fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_SLEEP);
+          return;
+        }
 
-        if (!goodix_cmd_parse_fdt_manual_reply (dev, &pl, &pl_len, &error))
-          {
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
+      if (++self->open_base_retries > GOODIX_OPEN_BASE_MAX_RETRIES)
+        {
+          self->open_base_failed = TRUE;
+          fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_SLEEP);
+          return;
+        }
 
-        /* Validate against the open-time FDT base we just recorded. */
-        if (!goodix_device_is_fdt_base_valid (pl + 4,
-                                              self->fdt_data_tx_on,
-                                              GOODIX_FDT_BASE_LEN,
-                                              self->calib.delta_fdt))
-          {
-            if (self->open_fdt_retries++ < GOODIX_OPEN_FDT_MAX_RETRIES)
-              {
-                fp_warn ("Open FDT validation unstable, retrying (%u/%u)",
-                         self->open_fdt_retries,
-                         GOODIX_OPEN_FDT_MAX_RETRIES);
-                g_free (self->fdt_data_tx_on);
-                self->fdt_data_tx_on = g_memdup2 (pl + 4,
-                                                  GOODIX_FDT_BASE_LEN);
-                fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_FDT_TX_ON_2);
-                return;
-              }
-
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
-                                                           "Open FDT baseline did not stabilize"));
-            return;
-          }
-
-        fpi_ssm_next_state (ssm);
-      }
+      if (self->milan_base_recovery ==
+          GOODIX_MILAN_BASE_RECOVERY_REMOVE_FINGER)
+        {
+          fpi_device_report_finger_status_changes (
+            dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
+          goodix_open_clear_finger_up_timeout (self);
+          self->open_finger_up_timeout = fpi_device_add_timeout (
+            dev, GOODIX_OPEN_FINGER_UP_TIMEOUT_MS,
+            goodix_open_finger_up_timeout_cb, NULL, NULL);
+          g_source_set_name (self->open_finger_up_timeout,
+                             "goodix-open-finger-up-timeout");
+          goodix_scan_start_finger_up_subsm (ssm, dev);
+        }
+      else
+        goodix_scan_start_deactivate_subsm (ssm, dev);
       break;
 
-    case GOODIX_OPEN_GENERATE_FDT_BASE:
-      {
-        /* Generate FDT base from TX-on data */
-        if (self->fdt_data_tx_on)
-          {
-            guint8 fdt_base[GOODIX_FDT_BASE_LEN];
-            goodix_device_generate_fdt_base (self->fdt_data_tx_on,
-                                             GOODIX_FDT_BASE_LEN, fdt_base);
-            memcpy (self->calib.fdt_base_down, fdt_base, GOODIX_FDT_BASE_LEN);
-            memcpy (self->calib.fdt_base_up, fdt_base, GOODIX_FDT_BASE_LEN);
-            memcpy (self->calib.fdt_base_manual, fdt_base,
-                    GOODIX_FDT_BASE_LEN);
-          }
-
-        fpi_ssm_next_state (ssm);
-      }
+    case GOODIX_OPEN_RETRY_REF_AFTER_CLEANUP:
+      goodix_open_clear_finger_up_timeout (self);
+      self->open_ref_powered = FALSE;
+      fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_CAPTURE_REF);
       break;
 
     case GOODIX_OPEN_SLEEP:
-      goodix_cmd_set_sleep_mode (ssm, dev);
+      goodix_open_clear_finger_up_timeout (self);
+      if (self->open_ref_powered)
+        goodix_cmd_set_sleep_mode (ssm, dev);
+      else
+        fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_NUM_STATES);
+      break;
+
+    case GOODIX_OPEN_EC_POWER_OFF:
+      goodix_cmd_ec_control (ssm, dev, FALSE);
+      break;
+
+    case GOODIX_OPEN_EC_POWER_OFF_DONE:
+      if (!goodix_cmd_parse_ec_control_reply (dev))
+        {
+          fpi_ssm_mark_failed (
+            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                           "Open EC power-off failed"));
+          return;
+        }
+      self->open_ref_powered = FALSE;
+      if (self->open_base_failed)
+        {
+          fpi_ssm_mark_failed (
+            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                           "Open reference acquisition did not stabilize"));
+          return;
+        }
+      fpi_ssm_next_state (ssm);
       break;
 
     case GOODIX_OPEN_NUM_STATES:
@@ -732,25 +755,45 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
   self->task_ssm = NULL;
-
-  /* Clean up temp data */
-  g_clear_pointer (&self->fdt_data_tx_on, g_free);
+  goodix_open_clear_finger_up_timeout (self);
 
   if (error)
     {
+      self->open_ref_powered = FALSE;
       goodix_milan_generation_invalidate (&self->milan_generation);
       OPENSSL_cleanse (self->psk, sizeof (self->psk));
       OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
       self->psk_imported = FALSE;
-      fp_warn ("Device open failed: %s", error->message);
-
       goodix_debug_timing_open_done (self, dev, error->message);
+      fpi_device_report_finger_status (dev, FP_FINGER_STATUS_NONE);
+
+      if (!self->open_recovery_attempted &&
+          !fpi_device_action_is_cancelled (dev) &&
+          !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
+          error->domain != FP_DEVICE_RETRY)
+        {
+          self->open_recovery_attempted = TRUE;
+          if (self->usb_interface_claimed)
+            {
+              g_usb_device_release_interface (fpi_device_get_usb_device (dev),
+                                              GOODIX_USB_INTERFACE, 0, NULL);
+              self->usb_interface_claimed = FALSE;
+            }
+          self->open_usb_reset_required = TRUE;
+          g_clear_error (&error);
+          goodix_start_open_ssm (dev);
+          return;
+        }
+
+      fp_warn ("Device open failed: %s", error->message);
       goodix_cleanup_failed_open (dev);
       fpi_device_open_complete (dev, error);
       return;
     }
 
   fp_info ("Device initialization complete");
+  self->open_ref_powered = FALSE;
+  self->open_usb_reset_required = FALSE;
   goodix_debug_timing_open_done (self, dev, NULL);
   self->needs_reinit = FALSE;
   fpi_device_open_complete (dev, NULL);
@@ -762,8 +805,12 @@ goodix_start_open_ssm (FpDevice *dev)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiSsm *ssm;
 
-  ssm = fpi_ssm_new (dev, goodix_open_ssm_handler,
-                      GOODIX_OPEN_NUM_STATES);
+  g_clear_object (&self->cancel);
+  self->cancel = g_cancellable_new ();
+  ssm = fpi_ssm_new_full (dev, goodix_open_ssm_handler,
+                          GOODIX_OPEN_NUM_STATES,
+                          GOODIX_OPEN_SLEEP,
+                          "goodix-open");
   self->task_ssm = ssm;
   fpi_ssm_start (ssm, goodix_open_ssm_done);
 }
@@ -796,6 +843,8 @@ goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
   fp_info ("Reinitializing device after system sleep");
   self->action_epoch++;
   goodix_milan_generation_invalidate (&self->milan_generation);
+  self->open_recovery_attempted = FALSE;
+  self->open_usb_reset_required = TRUE;
 
   if (self->usb_interface_claimed)
     {
@@ -812,8 +861,10 @@ goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
       self->usb_interface_claimed = FALSE;
     }
 
-  sub = fpi_ssm_new (dev, goodix_open_ssm_handler,
-                     GOODIX_OPEN_NUM_STATES);
+  sub = fpi_ssm_new_full (dev, goodix_open_ssm_handler,
+                          GOODIX_OPEN_NUM_STATES,
+                          GOODIX_OPEN_SLEEP,
+                          "goodix-reinit");
   fpi_ssm_start_subsm (ssm, sub);
   return TRUE;
 }

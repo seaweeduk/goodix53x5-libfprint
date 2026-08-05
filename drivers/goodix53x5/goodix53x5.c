@@ -38,6 +38,10 @@ G_DEFINE_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5,
 static void
 goodix_open (FpDevice *dev)
 {
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  self->open_recovery_attempted = FALSE;
+  self->open_usb_reset_required = FALSE;
   goodix_start_open_ssm (dev);
 }
 
@@ -50,13 +54,14 @@ goodix_close (FpDevice *dev)
   self->blocking_ssm = NULL;
   self->suspend_pending = FALSE;
   self->action_epoch++;
+  g_clear_pointer (&self->open_finger_up_timeout, g_source_destroy);
+  self->open_finger_up_timed_out = FALSE;
   if (self->cancel)
     g_cancellable_cancel (self->cancel);
   g_clear_object (&self->milan_task);
   g_clear_object (&self->cancel);
   goodix_clear_pending_result_report (self);
   g_clear_pointer (&self->fdt_event_data, g_free);
-  g_clear_pointer (&self->fdt_data_tx_on, g_free);
   g_clear_pointer (&self->otp_data, g_free);
   g_clear_pointer (&self->fw_version, g_free);
   g_clear_pointer (&self->rx.buf, g_free);
@@ -158,7 +163,8 @@ fpi_device_goodix53x5_class_init (FpiDeviceGoodix53x5Class *klass)
   dev_class->scan_type = FP_SCAN_TYPE_PRESS;
   dev_class->id_table = goodix53x5_id_table;
   dev_class->nr_enroll_stages = GOODIX_ENROLL_SAMPLES;
-  dev_class->temp_hot_seconds = -1; /* Disable thermal throttling — small sensor */
+  /* Native Milan has no equivalent time-based thermal cutoff. */
+  dev_class->temp_hot_seconds = -1;
   dev_class->features = FP_DEVICE_FEATURE_VERIFY | FP_DEVICE_FEATURE_IDENTIFY;
 
   dev_class->open = goodix_open;
