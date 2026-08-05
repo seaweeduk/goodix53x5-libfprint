@@ -273,12 +273,12 @@ external action 5, 11 features/seven relations, final order
 `[10,9,8,7,2,1,0,4,5,6,3]`, and packed SHA-256
 `c971239885adccdcaece80b31dc9e5e3abea6b0cc428b1b82307cb05fe12b181`.
 
-Native's callback gallery is current but prematurely finalized: after removing
-its six-byte wrapper it is byte-identical to the primary-only DLL finalized
-payload `081c3e...`. Native consequently returns selected 9 with direct/lifecycle
-mask `0x300` instead of DLL `0x200`, adding feature-8 `be` and reordering the
-prefix. Its Q is also a serialized `G53M` feature rather than the DLL full live
-deep copy. A gallery-only unfinalized substitution yields `39/8`, mask `0x181`,
+Native's callback gallery is current but prematurely finalized: it is
+byte-identical to the primary-only DLL finalized payload `081c3e...`. Native
+consequently returns selected 9 with direct/lifecycle mask `0x300` instead of DLL
+`0x200`, adding feature-8 `be` and reordering the prefix. Its Q is also a
+serialized one-feature packed template rather than the DLL full live deep copy.
+A gallery-only unfinalized substitution yields `39/8`, mask `0x181`,
 so deferral alone is insufficient. The bounded implementation task is to retain
 full prepared/live Q and one mutable G transaction, preserve matcher
 direct/aggregate and selector normalization semantics, defer order/tail and final
