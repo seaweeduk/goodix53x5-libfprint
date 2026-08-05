@@ -12,63 +12,12 @@
 
 #include "drivers_api.h"
 #include "milan/enrollment/propagation.h"
-#include "milan/enrollment/template-private.h"
 #include "milan/match/match.h"
 #include "milan/match/info-private.h"
 #include "milan/milan.h"
 #include "milan/relations.h"
 
 #include <string.h>
-
-GBytes *
-goodix_match_wrap_template (const guint8 *template,
-                            gsize         template_len)
-{
-  guint8 *wrapped;
-  guint16 version = GUINT16_TO_LE (GOODIX_MILAN_TEMPLATE_VERSION);
-
-  if (!template || template_len == 0 ||
-      template_len > GOODIX_MILAN_TEMPLATE_MAX_LEN -
-                       GOODIX_MILAN_TEMPLATE_HEADER_LEN)
-    return NULL;
-  wrapped = g_malloc (GOODIX_MILAN_TEMPLATE_HEADER_LEN + template_len);
-  memcpy (wrapped, GOODIX_MILAN_TEMPLATE_MAGIC,
-          GOODIX_MILAN_TEMPLATE_MAGIC_LEN);
-  memcpy (wrapped + GOODIX_MILAN_TEMPLATE_MAGIC_LEN, &version,
-          sizeof (version));
-  memcpy (wrapped + GOODIX_MILAN_TEMPLATE_HEADER_LEN, template, template_len);
-  return g_bytes_new_take (wrapped,
-                           GOODIX_MILAN_TEMPLATE_HEADER_LEN + template_len);
-}
-
-const guint8 *
-goodix_match_unwrap_template (const guint8              *template,
-                              gsize                      template_len,
-                              gsize                     *template_payload_len,
-                              GoodixSigfmTemplateStatus *status)
-{
-  guint16 version;
-
-  *status = GOODIX_SIGFM_TEMPLATE_INVALID;
-  if (!template || template_len <= GOODIX_MILAN_TEMPLATE_HEADER_LEN ||
-      template_len > GOODIX_MILAN_TEMPLATE_MAX_LEN ||
-      memcmp (template, GOODIX_MILAN_TEMPLATE_MAGIC,
-              GOODIX_MILAN_TEMPLATE_MAGIC_LEN) != 0)
-    {
-      *status = GOODIX_SIGFM_TEMPLATE_INCOMPATIBLE;
-      return NULL;
-    }
-  memcpy (&version, template + GOODIX_MILAN_TEMPLATE_MAGIC_LEN,
-          sizeof (version));
-  if (GUINT16_FROM_LE (version) != GOODIX_MILAN_TEMPLATE_VERSION)
-    {
-      *status = GOODIX_SIGFM_TEMPLATE_INCOMPATIBLE;
-      return NULL;
-    }
-  *template_payload_len = template_len - GOODIX_MILAN_TEMPLATE_HEADER_LEN;
-  *status = GOODIX_SIGFM_TEMPLATE_OK;
-  return template + GOODIX_MILAN_TEMPLATE_HEADER_LEN;
-}
 
 GBytes *
 goodix_match_serialize_template (GoodixMatchInfo *info)
@@ -228,19 +177,19 @@ goodix_match_combine_templates (GPtrArray *templates)
     goodix_milan_relation_slot_unset (&relation_matrix->slots[i]);
   for (guint i = 0; i < templates->len; i++)
     {
-      GBytes *wrapped = g_ptr_array_index (templates, i);
-      gsize wrapped_size;
-      gsize template_payload_size;
-      const guint8 *wrapped_data = g_bytes_get_data (wrapped, &wrapped_size);
-      GoodixSigfmTemplateStatus status;
-      const guint8 *template_payload = goodix_match_unwrap_template (
-        wrapped_data, wrapped_size, &template_payload_size, &status);
+      GBytes *template_bytes = g_ptr_array_index (templates, i);
+      gsize template_size;
+      const guint8 *template_data = g_bytes_get_data (template_bytes,
+                                                       &template_size);
 
-      if (!template_payload || goodix_milan_template_unpack (
-            template_payload, template_payload_size, unpacked) != 0 || unpacked->feature_count != 1)
+      if (template_size > GOODIX_MILAN_TEMPLATE_MAX_SIZE ||
+          goodix_milan_template_unpack (
+            template_data, template_size, unpacked) != 0 ||
+          unpacked->feature_count != 1)
         goto out;
       element_sizes[i] = unpacked->feature_element_sizes[0];
-      if (element_sizes[i] < 55)
+      if (element_sizes[i] < 55 ||
+          element_sizes[i] > GOODIX_MILAN_TEMPLATE_MAX_SIZE - combined_capacity)
         goto out;
       element_copies[i] = g_memdup2 (unpacked->feature_elements[0],
                                      element_sizes[i]);
@@ -442,6 +391,9 @@ goodix_match_combine_templates (GPtrArray *templates)
         relation_matrix, relations, G_N_ELEMENTS (relations),
         &relation_count) != 0)
     goto out;
+  if (relation_count >
+      (GOODIX_MILAN_TEMPLATE_MAX_SIZE - combined_capacity) / 45)
+    goto out;
   combined_capacity += relation_count * 45;
   combined = g_malloc (combined_capacity);
   if (goodix_milan_template_pack (
@@ -450,7 +402,8 @@ goodix_match_combine_templates (GPtrArray *templates)
         tail_state, sizeof(tail_state), combined, combined_capacity,
         &combined_size) != 0)
     goto out;
-  result = goodix_match_wrap_template (combined, combined_size);
+  result = g_bytes_new_take (combined, combined_size);
+  combined = NULL;
 
 out:
   for (guint i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)

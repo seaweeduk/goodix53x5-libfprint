@@ -31,9 +31,9 @@ static const char accepted_preprocess_sha256[] =
 static const char post_render_retry_sha256[] =
   "8b9629cb2aa7bf3d44a13c9ab087b961e02adf29644c237032597bf24401d943";
 static const char feature_extraction_sha256[] =
-  "ba26b6b929ecb077f911be480fecab2594f7e73a587bd83b99c2051bddb01824";
+  "ab009fd4dd0360b0998550a874364379b145b006c9b1b1c8a2cef57083372190";
 static const char feature_template_sha256[] =
-  "af6b32f59d237c1e79fbec6e976612da29dc12d9d0290054c2e28f293bced9d2";
+  "2613b09571d11ce4ed7567535a220ddb5eb17d5059c7dff8bfc97e6e5af28cdd";
 static const char feature_antifake_sha256[] =
   "2ec6a813e8a6b355693645aac1e60da4cc717bcdf57c3dbb5d12d7021b0e7572";
 
@@ -425,10 +425,9 @@ test_generated_extraction (void)
   test_negative_orientation_scaling ();
   extracted = goodix_match_serialize_template (info);
   bytes = g_bytes_get_data (extracted, &size);
-  g_assert_cmpuint (size, >, 6);
+  g_assert_cmpuint (size, >=, 1433);
   extracted_hash = sha256 (bytes, size);
-  g_assert_cmpint (goodix_milan_template_unpack (
-                     bytes + 6, size - 6, unpacked), ==, 0);
+  g_assert_cmpint (goodix_milan_template_unpack (bytes, size, unpacked), ==, 0);
   g_assert_cmpuint (unpacked->feature_count, ==, 1);
   g_assert_cmpint (goodix_milan_template_parse_feature_element (
                      unpacked->feature_elements[0],
@@ -442,8 +441,7 @@ test_generated_extraction (void)
   bytes = g_bytes_get_data (combined, &size);
   combined_hash = sha256 (bytes, size);
   memset (unpacked, 0, sizeof(*unpacked));
-  g_assert_cmpint (goodix_milan_template_unpack (
-                     bytes + 6, size - 6, unpacked), ==, 0);
+  g_assert_cmpint (goodix_milan_template_unpack (bytes, size, unpacked), ==, 0);
   g_assert_cmpuint (unpacked->feature_count, ==, 1);
   g_assert_cmpuint (unpacked->relation_count, ==, 0);
 
@@ -455,7 +453,7 @@ test_generated_extraction (void)
   g_variant_get (print_data, "(uuuu&s@ay)", &schema, &print_profile,
                  &sensor_type, &antifake_mode, &boundary_policy,
                  &print_payload);
-  g_assert_true (schema == 3 && print_profile == 9 && sensor_type == 12 &&
+  g_assert_true (schema == 4 && print_profile == 9 && sensor_type == 12 &&
                  antifake_mode == 1 &&
                  strcmp (boundary_policy, "canonical-zero-v1") == 0);
   g_assert_true (goodix_milan_print_parse_data (
@@ -541,17 +539,14 @@ test_study_policy_actions (void)
 }
 
 static void
-unpack_test_template (GBytes                       *wrapped,
-                      GoodixMilanUnpackedTemplate *unpacked)
+unpack_test_template (GBytes                       *template_bytes,
+                       GoodixMilanUnpackedTemplate *unpacked)
 {
-  const gsize header_size = 6;
   const guint8 *data;
   gsize size;
 
-  data = g_bytes_get_data (wrapped, &size);
-  g_assert_cmpuint (size, >, header_size);
-  g_assert_cmpint (goodix_milan_template_unpack (
-                     data + header_size, size - header_size, unpacked), ==, 0);
+  data = g_bytes_get_data (template_bytes, &size);
+  g_assert_cmpint (goodix_milan_template_unpack (data, size, unpacked), ==, 0);
 }
 
 static int32_t
@@ -571,7 +566,6 @@ make_distinct_append_fixture (const GoodixMatchInfo *probe)
   } probe_owned_fields[] = {
     { 2, 0xb7 }, { 3, 0xb8 }, { 4, 0xb9 }, { 8, 0xbd }, { 10, 0xc0 },
   };
-  const gsize header_size = 6;
   GoodixMatchInfo *fixture = goodix_match_info_new_empty ();
   g_autofree GoodixMilanUnpackedTemplate *unpacked = g_new0 (
     GoodixMilanUnpackedTemplate, 1);
@@ -579,8 +573,8 @@ make_distinct_append_fixture (const GoodixMatchInfo *probe)
   g_autofree guint8 *packed = NULL;
   GoodixMilanFeatureView serialized_view;
   GoodixMilanAntifakeBlob *serialized_antifake;
-  GBytes *wrapped;
-  gsize wrapped_size;
+  GBytes *template_bytes;
+  gsize template_size;
   size_t packed_size = 0;
 
   g_assert_true (goodix_match_info_copy (fixture, probe));
@@ -642,20 +636,19 @@ make_distinct_append_fixture (const GoodixMatchInfo *probe)
   serialized_antifake = (GoodixMilanAntifakeBlob *) serialized_view.antifake;
   memcpy (serialized_antifake, &fixture->antifake, sizeof(*serialized_antifake));
   unpacked->feature_elements[0] = feature_element;
-  wrapped_size = g_bytes_get_size (fixture->template);
-  packed = g_malloc (wrapped_size - header_size);
+  template_size = g_bytes_get_size (fixture->template);
+  packed = g_malloc (template_size);
   g_assert_cmpint (goodix_milan_template_pack (
                      unpacked->feature_elements,
                      unpacked->feature_element_sizes,
                      unpacked->feature_count, unpacked->relations,
                      unpacked->relation_count, &unpacked->metadata,
                      unpacked->tail_state, sizeof(unpacked->tail_state), packed,
-                     wrapped_size - header_size, &packed_size), ==, 0);
-  g_assert_cmpuint (packed_size, ==, wrapped_size - header_size);
-  wrapped = goodix_match_wrap_template (packed, packed_size);
-  g_assert_nonnull (wrapped);
+                      template_size, &packed_size), ==, 0);
+  g_assert_cmpuint (packed_size, ==, template_size);
+  template_bytes = g_bytes_new_take (g_steal_pointer (&packed), packed_size);
   g_clear_pointer (&fixture->template, g_bytes_unref);
-  fixture->template = wrapped;
+  fixture->template = template_bytes;
   return fixture;
 }
 

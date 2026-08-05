@@ -37,7 +37,8 @@ static GOptionEntry options[] = {
   { "live", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &live_paths, "ordered u16le live frame", "PATH" },
   { "live-purpose", 0, 0, G_OPTION_ARG_STRING_ARRAY, &live_purpose_values,
     "purpose for the corresponding live frame", "NAME" },
-  { "gallery", 0, 0, G_OPTION_ARG_STRING_ARRAY, &gallery_values, "INDEX=G53M_PATH", "ENTRY" },
+  { "gallery", 0, 0, G_OPTION_ARG_STRING_ARRAY, &gallery_values,
+    "INDEX=TEMPLATE_PATH", "ENTRY" },
   { "tcode", 0, 0, G_OPTION_ARG_INT, &tcode, "tcode", "U16" },
   { "dac-high", 0, 0, G_OPTION_ARG_INT, &dac_high, "DAC high", "U16" },
   { "dac-low", 0, 0, G_OPTION_ARG_INT, &dac_low, "DAC low", "U16" },
@@ -159,6 +160,24 @@ parse_gallery (GPtrArray  *owned_bytes,
       bytes = load_bytes (separator + 1, error);
       if (!bytes)
         return FALSE;
+      /* Corpus v1 galleries may predate the raw native-payload boundary. Keep
+       * that compatibility in the parity tool, never in the production driver. */
+      {
+        static const guint8 legacy_prefix[] = "G53M\x03\x00";
+        gsize size;
+        const guint8 *data = g_bytes_get_data (bytes, &size);
+
+        if (size > sizeof(legacy_prefix) - 1 &&
+            memcmp (data, legacy_prefix, sizeof(legacy_prefix) - 1) == 0)
+          {
+            GBytes *native = g_bytes_new_from_bytes (
+              bytes, sizeof(legacy_prefix) - 1,
+              size - (sizeof(legacy_prefix) - 1));
+
+            g_bytes_unref (bytes);
+            bytes = native;
+          }
+      }
       input = goodix_milan_runtime_gallery_input_new ((guint) index, bytes);
       g_ptr_array_add (owned_bytes, g_steal_pointer (&bytes));
       g_ptr_array_add (owned_inputs, input);
