@@ -50,7 +50,6 @@
 #define FEATURE_MATRIX_ALLOCATION (0x20 + FEATURE_MATRIX_BYTES)
 #define FEATURE_MATRIX_SHADOW_ALLOCATION (FEATURE_MATRIX_ALLOCATION + 1)
 #define FEATURE_RECORD_LIMIT 150
-#define G53M_WRAPPER_SIZE 6
 
 typedef struct
 {
@@ -493,8 +492,6 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
   uint16_t *prelude = NULL;
   uint8_t *template_input = NULL;
   size_t template_input_size = 0;
-  const uint8_t *packed_input = NULL;
-  size_t packed_input_size = 0;
   void *template_object = NULL;
   void *candidate_data;
   void *candidate;
@@ -541,16 +538,13 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
   if (!base || !live || !template_input || template_input_size > INT32_MAX ||
       template_input_size > MAX_TEMPLATE_SIZE)
     goto out;
-  if (template_input_size > G53M_WRAPPER_SIZE &&
-      memcmp (template_input, "G53M\x03\x00", G53M_WRAPPER_SIZE) == 0)
+  /* Corpus v1 templates used a driver-owned prefix. Accept it only at this
+   * historical parity boundary; the DLL and production driver use raw bytes. */
+  if (template_input_size > 6 &&
+      memcmp (template_input, "G53M\x03\x00", 6) == 0)
     {
-      packed_input = template_input + G53M_WRAPPER_SIZE;
-      packed_input_size = template_input_size - G53M_WRAPPER_SIZE;
-    }
-  else
-    {
-      packed_input = template_input;
-      packed_input_size = template_input_size;
+      memmove (template_input, template_input + 6, template_input_size - 6);
+      template_input_size -= 6;
     }
   if (!open_api (&api, dll_path) || !start_generation (&api, base))
     goto out;
@@ -577,7 +571,7 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
       free (prelude);
       prelude = NULL;
     }
-  if (api.template_unpack (packed_input, (int32_t) packed_input_size, NULL,
+  if (api.template_unpack (template_input, (int32_t) template_input_size, NULL,
                            &template_object) != 0 ||
       !template_object ||
       preprocess_frame (&api, live, processed_data, &processed,

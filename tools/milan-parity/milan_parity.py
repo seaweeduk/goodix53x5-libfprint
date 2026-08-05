@@ -33,6 +33,10 @@ POLICY = {
     "profile": 9,
     "subtype": 12,
 }
+
+# Corpus v1 keeps its historical policy identifier; driver manifests describe
+# the independently versioned libfprint persistence envelope.
+DRIVER_PRINT_SCHEMA = 4
 QUICK_BUDGET = 1 << 30
 FULL_BUDGET = 5 << 30
 SUCCESS_RETAINED_BUDGET = 100 << 20
@@ -47,7 +51,7 @@ RUNTIME_FILE_RE = re.compile(
 TEMPLATE_FILE_RE = re.compile(
     r"^template-(?P<role>probe|final|input|after-match)-(?P<action>[a-z]+)-"
     r"(?P<epoch>\d+)-(?P<generation>\d+)-(?P<stage>\d+)"
-    r"(?:-(?P<position>\d+))?-(?P<timestamp>-?\d+)-(?P<crc>[0-9a-f]{8})\.g53m$")
+    r"(?:-(?P<position>\d+))?-(?P<timestamp>-?\d+)-(?P<crc>[0-9a-f]{8})\.(?:bin|g53m)$")
 REFERENCE_TXON_RE = re.compile(
     r"^raw12-ref-txon-(?P<timestamp>-?\d+)-(?P<crc>[0-9a-f]{8})\.pgm$")
 AUTH_RAW_RE = re.compile(
@@ -80,6 +84,18 @@ def sha256_bytes(value: bytes) -> str:
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def native_template_sha256(path: Path) -> str:
+    """Hash the raw native payload while accepting legacy corpus artifacts."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        prefix = stream.read(6)
+        if prefix != b"G53M\x03\x00":
+            digest.update(prefix)
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
@@ -871,7 +887,8 @@ def run_build_manifest(args: argparse.Namespace) -> None:
                 "library_path": str(library), "library_sha256": sha256_file(library),
                 "library_bytes": library.stat().st_size,
                 "debug_enabled": args.debug, "boundary_policy": "canonical-zero-v1",
-                "print_schema": 3, "profile": 9, "subtype": 12, "anti_fake_mode": 1}
+                 "print_schema": DRIVER_PRINT_SCHEMA, "profile": 9, "subtype": 12,
+                 "anti_fake_mode": 1}
     output = Path(args.output).expanduser().resolve()
     if output.exists():
         raise HarnessError(f"build manifest already exists and will not be overwritten: {output}")
@@ -1357,6 +1374,8 @@ def run_validate_dump(args: argparse.Namespace) -> None:
             checks = []
             template_map = templates_by_identity.get(identity, {})
             template_errors = []
+            probe = None
+            final = None
             if runtime.get("probe_sha256"):
                 probe = artifact_with_digest(template_map.get(("probe", None), []),
                                              runtime["probe_sha256"])
@@ -1443,15 +1462,23 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                     "winner_index": runtime["winner_index_u32"],
                     "winner_position": min(runtime["winner_position_u64"], UINT32_MAX),
                     "study_action": runtime["study_action_u32"],
-                    "candidate": runtime["candidate_sha256"],
-                    "gallery": [{"index": row["gallery_index_u32"],
-                                 "after_match": row["after_match_sha256"],
-                                 "score": row["score_i32"],
-                                 "accepted": row["accepted"],
-                                 "evaluated": row["evaluated"],
-                                 "valid": row["valid"]}
-                                for row in runtime["gallery"]],
+                    "candidate": (native_template_sha256(final) if final else
+                                  runtime["candidate_sha256"]),
+                    "gallery": [],
                 }
+                for position, row in enumerate(runtime["gallery"]):
+                    after_match = artifact_with_digest(
+                        template_map.get(("after-match", position), []),
+                        row["after_match_sha256"])
+                    expected["gallery"].append({
+                        "index": row["gallery_index_u32"],
+                        "after_match": (native_template_sha256(after_match)
+                                        if after_match else row["after_match_sha256"]),
+                        "score": row["score_i32"],
+                        "accepted": row["accepted"],
+                        "evaluated": row["evaluated"],
+                        "valid": row["valid"],
+                    })
                 native = {
                     "quality": actual["phases"][0]["outputs"]["quality_i32"],
                     "coverage": actual["phases"][0]["outputs"]["coverage_i32"],
@@ -1545,15 +1572,14 @@ def pgm12_to_u16le(source: Path) -> bytes:
     return bytes(output)
 
 
-def admit_artifact(root: Path, source_value: str, wrap_g53m: bool = False,
+def admit_artifact(root: Path, source_value: str,
                    image_format: str = "binary") -> dict[str, Any]:
     source = Path(source_value).expanduser().resolve()
     if not source.is_file() or source.is_symlink():
         raise HarnessError(f"admission artifact is absent, non-regular, or a symlink: {source}")
-    prefix = b"G53M\x03\x00" if wrap_g53m else b""
     converted = pgm12_to_u16le(source) if image_format == "pgm12" else None
-    digest = hashlib.sha256(prefix)
-    size = len(prefix)
+    digest = hashlib.sha256()
+    size = 0
     if converted is not None:
         digest.update(converted)
         size += len(converted)
@@ -1574,7 +1600,6 @@ def admit_artifact(root: Path, source_value: str, wrap_g53m: bool = False,
         try:
             with partial.open("xb") as output:
                 os.chmod(partial, 0o600)
-                output.write(prefix)
                 if converted is not None:
                     output.write(converted)
                 else:
@@ -1637,7 +1662,7 @@ def run_admit(args: argparse.Namespace) -> None:
         if not 0 <= gallery_index <= 0xFFFFFFFF:
             raise HarnessError("gallery index must be a uint32")
         name = f"gallery-{position:03d}"
-        artifacts[name] = admit_artifact(root, path, wrap_g53m=args.gallery_format == "raw-packed")
+        artifacts[name] = admit_artifact(root, path)
         gallery.append({"index": gallery_index, "artifact": name})
     if args.operation == "enroll" and gallery:
         raise HarnessError("enrollment admission must not supply a gallery")
@@ -1728,7 +1753,6 @@ def build_parser() -> argparse.ArgumentParser:
     admit.add_argument("--identify-prelude", action="append", default=[],
                        help="Earlier identify frame sharing this preprocessing generation")
     admit.add_argument("--gallery", action="append", default=[])
-    admit.add_argument("--gallery-format", choices=("g53m", "raw-packed"), default="g53m")
     admit.add_argument("--image-format", choices=("raw-u16le", "pgm12"), default="raw-u16le")
     admit.add_argument("--coverage", action="append", required=True)
     admit.add_argument("--quick", action="store_true")

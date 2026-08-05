@@ -418,24 +418,19 @@ def output_identity(path: Path):
     return size, sha256_file(path)
 
 
-def wrapped_output_identity(path: Path):
-    try:
-        size = path.stat().st_size
-    except OSError as error:
-        raise RunnerError("Wine oracle omitted a required output") from error
-    digest = hashlib.sha256(b"G53M\x03\x00")
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return size + 6, digest.hexdigest()
-
-
-def persisted_input_identity(path: Path):
+def packed_input_identity(path: Path):
     with path.open("rb") as stream:
         prefix = stream.read(6)
     if prefix == b"G53M\x03\x00":
-        return output_identity(path)
-    return wrapped_output_identity(path)
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as stream:
+            stream.read(6)
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+                size += len(block)
+        return size, digest.hexdigest()
+    return output_identity(path)
 
 
 def run_dll_authority(tool: Path, root: Path, case, native, inputs, dll: Path):
@@ -487,16 +482,16 @@ def run_dll_authority(tool: Path, root: Path, case, native, inputs, dll: Path):
         if any(oracle.get(key) != value for key, value in expected_contract.items()):
             raise RunnerError("Wine oracle did not prove the fixed normal-boundary contract")
         processed_size, processed_hash = output_identity(output / "processed.u8")
-        loaded_size, loaded_hash = persisted_input_identity(output / "loaded-before-match.bin")
-        matched_size, matched_hash = wrapped_output_identity(output / "after-match.bin")
-        studied_size, studied_hash = wrapped_output_identity(output / "after-study.bin")
+        loaded_size, loaded_hash = output_identity(output / "loaded-before-match.bin")
+        matched_size, matched_hash = output_identity(output / "after-match.bin")
+        studied_size, studied_hash = output_identity(output / "after-study.bin")
         if oracle.get("persistence_advanced"):
-            persistent_size, persistent_hash = wrapped_output_identity(
+            persistent_size, persistent_hash = output_identity(
                 output / "next-persistent.bin")
         else:
-            persistent_size, persistent_hash = persisted_input_identity(
+            persistent_size, persistent_hash = output_identity(
                 output / "next-persistent.bin")
-        _, expected_loaded_hash = persisted_input_identity(template)
+        _, expected_loaded_hash = packed_input_identity(template)
         if processed_size != 108 * 88 or loaded_hash != expected_loaded_hash:
             raise RunnerError("Wine oracle preprocessing or loaded-template identity differs")
         identify = require_object(oracle.get("identify"), "Wine identify result")
