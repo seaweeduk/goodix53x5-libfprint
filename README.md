@@ -85,9 +85,8 @@ The supported installation builds pinned libfprint `v1.94.10` and fprintd
 `v1.94.5` sources, then installs them as an isolated paired stack under
 `/opt/goodix53x5-milan`:
 
-Existing prints from the retired matcher and Milan template versions older than
-version 3 are incompatible. Delete them before switching implementations, then
-re-enroll after installation:
+If upgrading from the retired sigfm matcher, delete existing prints before
+switching implementations, then re-enroll after installation:
 
 ```sh
 fprintd-delete "$USER"

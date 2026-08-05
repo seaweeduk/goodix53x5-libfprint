@@ -104,8 +104,8 @@ gboolean         goodix_match_info_copy (GoodixMatchInfo       *destination,
                                          const GoodixMatchInfo *source);
 gboolean         goodix_match_info_is_complete (const GoodixMatchInfo *info);
 
-/* Serialize extracted features into a driver-owned template (magic + version
- * header + serialized features). Returns NULL on serialization failure. */
+/* Serialize extracted features into a raw native packed template. Returns NULL
+ * on serialization failure. */
 GBytes *goodix_match_serialize_template (GoodixMatchInfo *info);
 
 GBytes *goodix_match_combine_templates (GPtrArray *templates);
