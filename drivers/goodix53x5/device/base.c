@@ -588,7 +588,6 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
       {
         g_autofree guint16 *frame =
           goodix_base_decode_reply (dev, "TX-off base", &error);
-        guint64 mad;
 
         if (!frame)
           {
@@ -597,16 +596,6 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
           }
         goodix_milan_base_attempt_take_frame (&data->attempt, FALSE, &frame,
                                               GOODIX_SENSOR_PIXELS);
-        if (!goodix_milan_base_pair_mad (data->attempt.tx_on,
-                                         data->attempt.tx_on_values,
-                                         data->attempt.tx_off,
-                                         data->attempt.tx_off_values,
-                                         &mad, &error))
-          {
-            goodix_milan_base_attempt_reset (&data->attempt);
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
 
         if (goodix_debug_dump_txon_ref_enabled ())
           goodix_debug_dump_raw12 ("raw12-ref-txon", data->attempt.tx_on,
@@ -620,11 +609,10 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
             if (error)
               fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
             else
-              fpi_ssm_mark_failed (ssm,
-                                   fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
-                                                             "Milan base pair rejected: MAD=%" G_GUINT64_FORMAT " (limit %u)",
-                                                             mad,
-                                                             GOODIX_MILAN_BASE_MAD_LIMIT));
+              {
+                goodix_milan_base_attempt_reset (&data->attempt);
+                fpi_ssm_jump_to_state (ssm, GOODIX_BASE_RECOVERY_FDT_TX_ON);
+              }
             return;
           }
         fpi_ssm_next_state (ssm);

@@ -38,6 +38,10 @@ G_DEFINE_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5,
 static void
 goodix_open (FpDevice *dev)
 {
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  self->open_recovery_attempted = FALSE;
+  self->open_usb_reset_required = FALSE;
   goodix_start_open_ssm (dev);
 }
 
