@@ -105,9 +105,6 @@ struct _FpiDeviceGoodix53x5
   guint8  *fdt_event_data;     /* FDT event data (24 bytes) */
   guint16  fdt_touch_flag;
 
-  /* Temporary FDT data from calibration */
-  guint8 *fdt_data_tx_on;
-  guint8  open_fdt_retries;
   guint8  open_base_retries;
   gboolean open_base_failed;
   gboolean open_ref_powered;

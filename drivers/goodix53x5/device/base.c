@@ -646,6 +646,16 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
               ssm, dev, data, fdt_tx_on_after, touch_flag, "tx-on-after");
             return;
           }
+
+        /* Native update_allbase derives every FDT base from this first
+         * TX-on sample after the complete sequence is admitted. */
+        goodix_device_generate_fdt_base (data->fdt_tx_on_before,
+                                         GOODIX_FDT_BASE_LEN,
+                                         self->calib.fdt_base_down);
+        memcpy (self->calib.fdt_base_up, self->calib.fdt_base_down,
+                GOODIX_FDT_BASE_LEN);
+        memcpy (self->calib.fdt_base_manual, self->calib.fdt_base_down,
+                GOODIX_FDT_BASE_LEN);
         data->attempt.stage = GOODIX_MILAN_BASE_STAGE_PUBLISH;
         if (!goodix_milan_generation_allocate_id (&self->last_milan_generation_id,
                                                    &generation_id, &error) ||

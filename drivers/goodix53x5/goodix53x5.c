@@ -60,7 +60,6 @@ goodix_close (FpDevice *dev)
   g_clear_object (&self->cancel);
   goodix_clear_pending_result_report (self);
   g_clear_pointer (&self->fdt_event_data, g_free);
-  g_clear_pointer (&self->fdt_data_tx_on, g_free);
   g_clear_pointer (&self->otp_data, g_free);
   g_clear_pointer (&self->fw_version, g_free);
   g_clear_pointer (&self->rx.buf, g_free);
@@ -162,7 +161,8 @@ fpi_device_goodix53x5_class_init (FpiDeviceGoodix53x5Class *klass)
   dev_class->scan_type = FP_SCAN_TYPE_PRESS;
   dev_class->id_table = goodix53x5_id_table;
   dev_class->nr_enroll_stages = GOODIX_ENROLL_SAMPLES;
-  dev_class->temp_hot_seconds = -1; /* Disable thermal throttling — small sensor */
+  /* Native Milan has no equivalent time-based thermal cutoff. */
+  dev_class->temp_hot_seconds = -1;
   dev_class->features = FP_DEVICE_FEATURE_VERIFY | FP_DEVICE_FEATURE_IDENTIFY;
 
   dev_class->open = goodix_open;

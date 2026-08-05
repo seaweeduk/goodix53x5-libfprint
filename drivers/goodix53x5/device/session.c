@@ -32,7 +32,6 @@
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 
-#define GOODIX_OPEN_FDT_MAX_RETRIES 16
 #define GOODIX_OPEN_BASE_MAX_RETRIES 16
 #define GOODIX_PSK_STATE_FILE "/var/lib/fprint/goodix53x5.psk"
 
@@ -54,11 +53,7 @@ typedef enum {
   GOODIX_OPEN_GTLS_SEND_VERIFY,
   GOODIX_OPEN_GTLS_RECV_DONE,
   GOODIX_OPEN_UPLOAD_CONFIG,
-  GOODIX_OPEN_FDT_TX_ON,
-  GOODIX_OPEN_VALIDATE_FDT,
-  GOODIX_OPEN_FDT_TX_ON_2,
-  GOODIX_OPEN_VALIDATE_FDT_2,
-  GOODIX_OPEN_GENERATE_FDT_BASE,
+  GOODIX_OPEN_VALIDATE_CONFIG,
   GOODIX_OPEN_CAPTURE_REF,
   GOODIX_OPEN_CAPTURE_REF_DONE,
   GOODIX_OPEN_RETRY_REF_AFTER_CLEANUP,
@@ -107,16 +102,8 @@ goodix_open_state_name (GoodixOpenState state)
       return "gtls_recv_done";
     case GOODIX_OPEN_UPLOAD_CONFIG:
       return "upload_config";
-    case GOODIX_OPEN_FDT_TX_ON:
-      return "fdt_tx_on";
-    case GOODIX_OPEN_VALIDATE_FDT:
-      return "validate_fdt";
-    case GOODIX_OPEN_FDT_TX_ON_2:
-      return "fdt_tx_on_2";
-    case GOODIX_OPEN_VALIDATE_FDT_2:
-      return "validate_fdt_2";
-    case GOODIX_OPEN_GENERATE_FDT_BASE:
-      return "generate_fdt_base";
+    case GOODIX_OPEN_VALIDATE_CONFIG:
+      return "validate_config";
     case GOODIX_OPEN_CAPTURE_REF:
       return "capture_ref";
     case GOODIX_OPEN_CAPTURE_REF_DONE:
@@ -603,7 +590,6 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         self->gtls.hmac_client_counter = self->gtls.hmac_client_counter_init;
         self->gtls.hmac_server_counter = self->gtls.hmac_server_counter_init;
         self->gtls.state = 5;
-        self->open_fdt_retries = 0;
         self->open_base_retries = 0;
         self->open_base_failed = FALSE;
         self->open_ref_powered = FALSE;
@@ -621,101 +607,14 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       }
       break;
 
-    case GOODIX_OPEN_FDT_TX_ON:
+    case GOODIX_OPEN_VALIDATE_CONFIG:
       {
-        /* Validate the config upload reply before the first FDT TX-on */
         if (!goodix_cmd_parse_config_reply (dev))
           {
             fpi_ssm_mark_failed (ssm,
                                  fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                            "Config upload failed"));
             return;
-          }
-
-        /* FDT manual operation with TX enabled */
-        goodix_cmd_fdt_manual (ssm, dev, TRUE, self->calib.fdt_base_manual);
-      }
-      break;
-
-    case GOODIX_OPEN_VALIDATE_FDT:
-      {
-        /* Parse FDT response and save */
-        g_autoptr(GError) error = NULL;
-        const guint8 *pl;
-        gsize pl_len;
-
-        if (!goodix_cmd_parse_fdt_manual_reply (dev, &pl, &pl_len, &error))
-          {
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
-
-        /* FDT data is the payload after 4 bytes of irq+touch_flag */
-        g_free (self->fdt_data_tx_on);
-        self->fdt_data_tx_on = g_memdup2 (pl + 4, GOODIX_FDT_BASE_LEN);
-
-        fpi_ssm_next_state (ssm);
-      }
-      break;
-
-    case GOODIX_OPEN_FDT_TX_ON_2:
-      /* Second FDT TX on */
-      goodix_cmd_fdt_manual (ssm, dev, TRUE, self->calib.fdt_base_manual);
-      break;
-
-    case GOODIX_OPEN_VALIDATE_FDT_2:
-      {
-        /* Parse and validate second FDT */
-        g_autoptr(GError) error = NULL;
-        const guint8 *pl;
-        gsize pl_len;
-
-        if (!goodix_cmd_parse_fdt_manual_reply (dev, &pl, &pl_len, &error))
-          {
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
-
-        /* Validate against the open-time FDT base we just recorded. */
-        if (!goodix_device_is_fdt_base_valid (pl + 4,
-                                              self->fdt_data_tx_on,
-                                              GOODIX_FDT_BASE_LEN,
-                                              self->calib.delta_fdt))
-          {
-            if (self->open_fdt_retries++ < GOODIX_OPEN_FDT_MAX_RETRIES)
-              {
-                fp_warn ("Open FDT validation unstable, retrying (%u/%u)",
-                         self->open_fdt_retries,
-                         GOODIX_OPEN_FDT_MAX_RETRIES);
-                g_free (self->fdt_data_tx_on);
-                self->fdt_data_tx_on = g_memdup2 (pl + 4,
-                                                  GOODIX_FDT_BASE_LEN);
-                fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_FDT_TX_ON_2);
-                return;
-              }
-
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
-                                                           "Open FDT baseline did not stabilize"));
-            return;
-          }
-
-        fpi_ssm_next_state (ssm);
-      }
-      break;
-
-    case GOODIX_OPEN_GENERATE_FDT_BASE:
-      {
-        /* Generate FDT base from TX-on data */
-        if (self->fdt_data_tx_on)
-          {
-            guint8 fdt_base[GOODIX_FDT_BASE_LEN];
-            goodix_device_generate_fdt_base (self->fdt_data_tx_on,
-                                             GOODIX_FDT_BASE_LEN, fdt_base);
-            memcpy (self->calib.fdt_base_down, fdt_base, GOODIX_FDT_BASE_LEN);
-            memcpy (self->calib.fdt_base_up, fdt_base, GOODIX_FDT_BASE_LEN);
-            memcpy (self->calib.fdt_base_manual, fdt_base,
-                    GOODIX_FDT_BASE_LEN);
           }
 
         fpi_ssm_next_state (ssm);
@@ -818,9 +717,6 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
   self->task_ssm = NULL;
-
-  /* Clean up temp data */
-  g_clear_pointer (&self->fdt_data_tx_on, g_free);
 
   if (error)
     {
