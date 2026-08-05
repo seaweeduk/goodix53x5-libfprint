@@ -1,0 +1,4 @@
+# Keep supported Milan sensors attached across USB power loss during hibernation.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="27c6", ATTR{idProduct}=="5335", TEST=="power/persist", ATTR{power/persist}="1"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="27c6", ATTR{idProduct}=="5385", TEST=="power/persist", ATTR{power/persist}="1"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="27c6", ATTR{idProduct}=="5395", TEST=="power/persist", ATTR{power/persist}="1"
