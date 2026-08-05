@@ -54,6 +54,8 @@ goodix_close (FpDevice *dev)
   self->blocking_ssm = NULL;
   self->suspend_pending = FALSE;
   self->action_epoch++;
+  g_clear_pointer (&self->open_finger_up_timeout, g_source_destroy);
+  self->open_finger_up_timed_out = FALSE;
   if (self->cancel)
     g_cancellable_cancel (self->cancel);
   g_clear_object (&self->milan_task);

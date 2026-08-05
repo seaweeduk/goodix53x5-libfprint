@@ -33,6 +33,7 @@
 #include <openssl/rand.h>
 
 #define GOODIX_OPEN_BASE_MAX_RETRIES 16
+#define GOODIX_OPEN_FINGER_UP_TIMEOUT_MS 5000
 #define GOODIX_PSK_STATE_FILE "/var/lib/fprint/goodix53x5.psk"
 
 /* Open SSM — full device initialization */
@@ -122,6 +123,31 @@ goodix_open_state_name (GoodixOpenState state)
     }
 }
 #endif
+
+static void
+goodix_open_clear_finger_up_timeout (FpiDeviceGoodix53x5 *self)
+{
+  g_clear_pointer (&self->open_finger_up_timeout, g_source_destroy);
+  self->open_finger_up_timed_out = FALSE;
+}
+
+static void
+goodix_open_finger_up_timeout_cb (FpDevice *dev,
+                                  gpointer  user_data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  (void) user_data;
+  self->open_finger_up_timeout = NULL;
+  if (fpi_device_action_is_cancelled (dev))
+    return;
+
+  fp_warn ("Timed out after %u ms waiting for finger removal during device setup",
+           GOODIX_OPEN_FINGER_UP_TIMEOUT_MS);
+  self->open_finger_up_timed_out = TRUE;
+  if (self->cancel)
+    g_cancellable_cancel (self->cancel);
+}
 
 /* PSK white box for writing the default all-zero PSK. */
 static const guint8 goodix_psk_white_box[GOODIX_PSK_WHITE_BOX_LEN] = {
@@ -645,6 +671,12 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         {
           fpi_device_report_finger_status_changes (
             dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
+          goodix_open_clear_finger_up_timeout (self);
+          self->open_finger_up_timeout = fpi_device_add_timeout (
+            dev, GOODIX_OPEN_FINGER_UP_TIMEOUT_MS,
+            goodix_open_finger_up_timeout_cb, NULL, NULL);
+          g_source_set_name (self->open_finger_up_timeout,
+                             "goodix-open-finger-up-timeout");
           goodix_scan_start_finger_up_subsm (ssm, dev);
         }
       else
@@ -652,11 +684,13 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_OPEN_RETRY_REF_AFTER_CLEANUP:
+      goodix_open_clear_finger_up_timeout (self);
       self->open_ref_powered = FALSE;
       fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_CAPTURE_REF);
       break;
 
     case GOODIX_OPEN_SLEEP:
+      goodix_open_clear_finger_up_timeout (self);
       if (self->open_ref_powered)
         goodix_cmd_set_sleep_mode (ssm, dev);
       else
@@ -721,6 +755,7 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
   self->task_ssm = NULL;
+  goodix_open_clear_finger_up_timeout (self);
 
   if (error)
     {
@@ -733,7 +768,9 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
       fpi_device_report_finger_status (dev, FP_FINGER_STATUS_NONE);
 
       if (!self->open_recovery_attempted &&
-          !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+          !fpi_device_action_is_cancelled (dev) &&
+          !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
+          error->domain != FP_DEVICE_RETRY)
         {
           self->open_recovery_attempted = TRUE;
           if (self->usb_interface_claimed)

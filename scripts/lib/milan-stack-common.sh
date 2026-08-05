@@ -295,12 +295,17 @@ milan_apply_usb_persist() {
   [[ "$value" == 0 || "$value" == 1 ]] || milan_die "invalid USB persist value: $value"
   [[ -d "$root" ]] || return 0
   for device in "$root"/*; do
-    [[ -f "$device/idVendor" && -f "$device/idProduct" && -e "$device/power/persist" ]] || continue
+    [[ -f "$device/idVendor" && -f "$device/idProduct" ]] || continue
     read -r vendor < "$device/idVendor"
     read -r product < "$device/idProduct"
     [[ "${vendor,,}" == 27c6 ]] || continue
     case "${product,,}" in
-      5335|5385|5395) printf '%s\n' "$value" > "$device/power/persist" ;;
+      5335|5385|5395)
+        if [[ ! -e "$device/power/persist" ]]; then
+          milan_die "USB persistence is unavailable for $vendor:$product at $device"
+        fi
+        printf '%s\n' "$value" > "$device/power/persist"
+        ;;
     esac
   done
 }
@@ -311,12 +316,14 @@ milan_verify_usb_persist() {
 
   [[ -d "$root" ]] || return 0
   for device in "$root"/*; do
-    [[ -f "$device/idVendor" && -f "$device/idProduct" && -r "$device/power/persist" ]] || continue
+    [[ -f "$device/idVendor" && -f "$device/idProduct" ]] || continue
     read -r vendor < "$device/idVendor"
     read -r product < "$device/idProduct"
     [[ "${vendor,,}" == 27c6 ]] || continue
     case "${product,,}" in
       5335|5385|5395)
+        [[ -r "$device/power/persist" ]] ||
+          milan_die "USB persistence is unavailable for $vendor:$product at $device"
         read -r value < "$device/power/persist"
         [[ "$value" == 1 ]] || milan_die "USB persistence is disabled for $vendor:$product at $device"
         ;;
