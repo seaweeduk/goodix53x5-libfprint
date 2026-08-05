@@ -768,6 +768,7 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
       fpi_device_report_finger_status (dev, FP_FINGER_STATUS_NONE);
 
       if (!self->open_recovery_attempted &&
+          !fpi_device_action_is_cancelled (dev) &&
           !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
           error->domain != FP_DEVICE_RETRY)
         {
