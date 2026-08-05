@@ -20,7 +20,6 @@
 #define FP_COMPONENT "goodix53x5"
 
 #include "drivers_api.h"
-#include "milan/enrollment/template-private.h"
 #include "milan/match/match.h"
 #include "milan/match/info-private.h"
 #include "milan/match/lifecycle-private.h"
@@ -35,19 +34,14 @@ goodix_match_queue_matches_template (const GoodixStudyQueue *queue,
                                      gsize                   feature_len)
 {
   GoodixMilanUnpackedTemplate *unpacked;
-  GoodixSigfmTemplateStatus status;
-  const guint8 *template_payload;
-  gsize template_payload_len;
   gboolean matches = FALSE;
 
   if (!queue || !goodix_study_queue_validate (queue))
     return FALSE;
-  template_payload = goodix_match_unwrap_template (
-    feature, feature_len, &template_payload_len, &status);
-  if (!template_payload)
+  if (!feature || feature_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE)
     return FALSE;
   unpacked = g_malloc (sizeof(*unpacked));
-  if (goodix_milan_template_unpack (template_payload, template_payload_len, unpacked) == 0)
+  if (goodix_milan_template_unpack (feature, feature_len, unpacked) == 0)
     matches = queue->enabled_state == unpacked->metadata.queue_state &&
               queue->transaction_counter ==
                 unpacked->metadata.queue_transaction_counter;
@@ -71,7 +65,6 @@ goodix_match_serialized_feature_result_internal (
     GoodixStudyQueue      *queue,
     const GoodixMatchInfo *probe_info))
 {
-  GoodixSigfmTemplateStatus status;
   guint8 *updated_milan = NULL;
   guint8 *normalized_milan = NULL;
   const guint8 *matched_milan;
@@ -85,20 +78,11 @@ goodix_match_serialized_feature_result_internal (
     return GOODIX_SIGFM_TEMPLATE_INVALID;
   if (queue && !goodix_study_queue_validate (queue))
     return GOODIX_SIGFM_TEMPLATE_INVALID;
-  gsize enrolled_milan_len;
-  if (feature_len == 6 && memcmp (feature, "G53M\x03\x00", 6) == 0)
-    {
-      memset (match_result, 0, sizeof (*match_result));
-#ifdef GOODIX53X5_DEBUG
-      if (diagnostics != NULL)
-        memset (diagnostics, 0, sizeof (*diagnostics));
-#endif
-      return GOODIX_SIGFM_TEMPLATE_OK;
-    }
-  const guint8 *enrolled_milan = goodix_match_unwrap_template (
-    feature, feature_len, &enrolled_milan_len, &status);
-  if (!enrolled_milan)
-    return status;
+  gsize enrolled_milan_len = feature_len;
+  const guint8 *enrolled_milan = feature;
+
+  if (feature_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE)
+    return GOODIX_SIGFM_TEMPLATE_INVALID;
   if (queue && !goodix_match_queue_matches_template (
         queue, feature, feature_len))
     return GOODIX_SIGFM_TEMPLATE_INVALID;
@@ -170,13 +154,17 @@ goodix_match_serialized_feature_result_internal (
           matched_milan = updated_milan;
           normalized_milan_len = updated_milan_len;
         }
-      *updated_feature = goodix_match_wrap_template (
-        matched_milan, normalized_milan_len);
-      g_free (updated_milan);
-      if (!*updated_feature)
+      if (updated_milan)
         {
-          g_free (normalized_milan);
-          return GOODIX_SIGFM_TEMPLATE_INVALID;
+          *updated_feature = g_bytes_new_take (updated_milan,
+                                               normalized_milan_len);
+          updated_milan = NULL;
+        }
+      else
+        {
+          *updated_feature = g_bytes_new_take (normalized_milan,
+                                               normalized_milan_len);
+          normalized_milan = NULL;
         }
     }
   if (queue && match_result->study_control.queue_candidate_eligible)

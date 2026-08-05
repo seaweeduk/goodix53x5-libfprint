@@ -99,11 +99,12 @@ goodix_milan_runtime_inspect_probe (GBytes                       *template_bytes
 
   memset (info, 0, sizeof(*info));
   template_data = template_bytes ? g_bytes_get_data (template_bytes, &template_size) : NULL;
-  if (!template_data || template_size <= 6 || memcmp (template_data, "G53M\x03\x00", 6) != 0)
+  if (!template_data || template_size > GOODIX_MILAN_TEMPLATE_MAX_SIZE)
     return FALSE;
   unpacked = g_new (GoodixMilanUnpackedTemplate, 1);
   if (goodix_milan_template_unpack (
-        template_data + 6, template_size - 6, unpacked) != 0 || unpacked->feature_count != 1 ||
+        template_data, template_size, unpacked) != 0 ||
+      unpacked->feature_count != 1 ||
       unpacked->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE ||
       unpacked->metadata.maximum_features != 1 ||
       unpacked->metadata.maximum_records != 150 ||

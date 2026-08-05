@@ -449,11 +449,11 @@ make_print (FpDevice *device,
 static FpPrint *
 make_malformed_current_print (FpDevice *device)
 {
-  static const guint8 malformed[] = "G53M\x03\x00" "bad";
+  static const guint8 malformed[] = "bad";
   GVariant *payload = g_variant_new_fixed_array (
     G_VARIANT_TYPE_BYTE, malformed, sizeof(malformed) - 1, 1);
   g_autoptr(GVariant) data = g_variant_ref_sink (g_variant_new (
-    "(uuuus@ay)", 3U, 9U, 12U, 1U, "canonical-zero-v1", payload));
+    "(uuuus@ay)", 4U, 9U, 12U, 1U, "canonical-zero-v1", payload));
   FpPrint *print = fp_print_new (device);
 
   fpi_print_set_type (print, FPI_PRINT_RAW);

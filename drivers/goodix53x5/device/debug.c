@@ -552,13 +552,13 @@ goodix_debug_log_runtime_result (FpDevice                       *dev,
         "template-probe-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT "-%u",
         goodix_debug_action_name (fpi_device_get_current_action (dev)),
         output->action_epoch, output->generation_id, stage);
-      goodix_debug_write_gbytes (template_prefix, output->probe_template, "g53m");
+      goodix_debug_write_gbytes (template_prefix, output->probe_template, "bin");
       g_clear_pointer (&template_prefix, g_free);
       template_prefix = g_strdup_printf (
         "template-final-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT "-%u",
         goodix_debug_action_name (fpi_device_get_current_action (dev)),
         output->action_epoch, output->generation_id, stage);
-      goodix_debug_write_gbytes (template_prefix, output->final_candidate, "g53m");
+      goodix_debug_write_gbytes (template_prefix, output->final_candidate, "bin");
       for (guint i = 0; i < output->gallery_results->len; i++)
         {
           GoodixMilanRuntimeGalleryResult *result =
@@ -572,7 +572,7 @@ goodix_debug_log_runtime_result (FpDevice                       *dev,
             output->action_epoch, output->generation_id, stage,
             result->gallery_position);
           goodix_debug_write_gbytes (
-            template_prefix, result->input_template, "g53m");
+            template_prefix, result->input_template, "bin");
           g_clear_pointer (&template_prefix, g_free);
           template_prefix = g_strdup_printf (
             "template-after-match-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT
@@ -581,7 +581,7 @@ goodix_debug_log_runtime_result (FpDevice                       *dev,
             output->action_epoch, output->generation_id, stage,
             result->gallery_position);
           goodix_debug_write_gbytes (
-            template_prefix, result->after_match_template, "g53m");
+            template_prefix, result->after_match_template, "bin");
         }
     }
 }

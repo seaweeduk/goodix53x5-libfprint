@@ -1,5 +1,5 @@
 /*
- * Goodix 53x5 driver for libfprint — SIGFM template format and matching
+ * Goodix 53x5 driver for libfprint — native Milan template matching
  * Copyright (C) 2024 goodix-fp-linux-dev contributors
  *
  * This library is free software; you can redistribute it and/or
@@ -49,7 +49,6 @@ typedef struct
 
 typedef enum {
   GOODIX_SIGFM_TEMPLATE_OK,
-  GOODIX_SIGFM_TEMPLATE_INCOMPATIBLE,
   GOODIX_SIGFM_TEMPLATE_INVALID,
 } GoodixSigfmTemplateStatus;
 

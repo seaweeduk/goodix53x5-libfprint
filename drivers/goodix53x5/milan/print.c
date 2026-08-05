@@ -13,7 +13,6 @@
 
 #include <string.h>
 
-#define GOODIX_MILAN_WRAPPER_SIZE 6U
 #define GOODIX_MILAN_PACK_MAX_RECORDS  150U
 
 G_DEFINE_QUARK (goodix-milan-print-error, goodix_milan_print_error)
@@ -34,11 +33,8 @@ goodix_milan_print_validate_template (GBytes                       *template_byt
 {
   g_autofree guint8 *repacked = NULL;
   g_autofree GoodixMilanUnpackedTemplate *unpacked = NULL;
-  const guint8 *wrapped;
   const guint8 *packed;
-  gsize wrapped_size;
   gsize packed_size;
-  guint16 version;
   size_t repacked_size = 0;
   guint32 partition0 = 0;
   guint32 partition1 = 0;
@@ -51,26 +47,10 @@ goodix_milan_print_validate_template (GBytes                       *template_byt
     return goodix_milan_print_fail (
       error, GOODIX_MILAN_PRINT_ERROR_INVALID, "Milan template is missing");
 
-  wrapped = g_bytes_get_data (template_bytes, &wrapped_size);
-  if (wrapped_size > GOODIX_MILAN_PRINT_MAX_SIZE)
+  packed = g_bytes_get_data (template_bytes, &packed_size);
+  if (packed_size > GOODIX_MILAN_PRINT_MAX_SIZE)
     return goodix_milan_print_fail (
       error, GOODIX_MILAN_PRINT_ERROR_TOO_LARGE, "Milan template is too large");
-  if (wrapped_size <= GOODIX_MILAN_WRAPPER_SIZE ||
-      memcmp (wrapped, "G53M", 4) != 0)
-    return goodix_milan_print_fail (
-      error, GOODIX_MILAN_PRINT_ERROR_INCOMPATIBLE,
-      "Milan template magic is incompatible");
-  memcpy (&version, wrapped + 4, sizeof(version));
-  version = GUINT16_FROM_LE (version);
-  if (version != GOODIX_MILAN_TEMPLATE_VERSION)
-    return goodix_milan_print_fail (
-      error, GOODIX_MILAN_PRINT_ERROR_INCOMPATIBLE,
-      version == 1 || version == 2
-        ? "Milan template version 1/2 predates canonical-zero-v1; re-enroll"
-        : "Milan template version is incompatible");
-
-  packed = wrapped + GOODIX_MILAN_WRAPPER_SIZE;
-  packed_size = wrapped_size - GOODIX_MILAN_WRAPPER_SIZE;
   unpacked = g_new (GoodixMilanUnpackedTemplate, 1);
   if (goodix_milan_template_unpack (packed, packed_size, unpacked) != 0)
     return goodix_milan_print_fail (
@@ -133,7 +113,7 @@ goodix_milan_print_validate_template (GBytes                       *template_byt
 
   if (info)
     {
-      info->byte_size = wrapped_size;
+      info->byte_size = packed_size;
       info->feature_count = (guint32) unpacked->feature_count;
       info->partition0_count = partition0;
       info->partition1_count = partition1;
@@ -217,8 +197,8 @@ goodix_milan_print_parse_data (GVariant *data,
   if (schema != GOODIX_MILAN_PRINT_SCHEMA)
     return goodix_milan_print_fail (
       error, GOODIX_MILAN_PRINT_ERROR_INCOMPATIBLE,
-      schema == 1 || schema == 2
-        ? "Milan print schema 1/2 predates canonical-zero-v1; re-enroll"
+      schema < GOODIX_MILAN_PRINT_SCHEMA
+        ? "Milan print schema predates the native packed payload; re-enroll"
         : "Milan print schema is incompatible");
   if (profile != GOODIX_MILAN_PRINT_PROFILE ||
       sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE ||
