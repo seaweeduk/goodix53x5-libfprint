@@ -34,14 +34,6 @@ If it reports `COMPATIBLE CANDIDATE`, either:
 - Submit a PR adding the ID to `drivers/goodix53x5/goodix53x5.c` and the Goodix
   entries in `meson-integration.patch`, with probe and hardware-test results.
 
-> [!NOTE]
-> On the same challenging dataset, Milan's adaptive learning raised the
-> genuine-accept rate from roughly **82.5-85% before learning** to **98.5% and
-> 99% in learned runs**, with **zero false accepts** in those runs. This indicates
-> that template study and updates contribute significantly over time. These are
-> project experiments, not certification results or guarantees for other
-> hardware and datasets.
-
 ## How Milan Works
 
 The sensor sends encrypted 108 x 88, 12-bit capacitive images over USB. Milan
@@ -68,6 +60,14 @@ template. Rejected scans never teach the system. After a confirmed match, Milan
 can retain useful new variation and save the improved template for future
 unlocks. The template has a fixed capacity, so new evidence is appended while
 space remains and can replace existing evidence once it is full.
+
+> [!NOTE]
+> On the same challenging dataset, Milan's adaptive learning raised the
+> genuine-accept rate from roughly **82.5-85% before learning** to **98.5% and
+> 99% in learned runs**, with **zero false accepts** in those runs. This indicates
+> that template study and updates contribute significantly over time. These are
+> project experiments, not certification results or guarantees for other
+> hardware and datasets.
 
 Under the hood, the driver initializes the sensor and its GTLS session,
 calibrates finger detection, runs Milan preprocessing and anti-fake checks,
@@ -115,6 +115,12 @@ Use your desktop environment's fingerprint settings or fprintd directly:
 fprintd-enroll
 fprintd-verify
 ```
+
+> [!TIP]
+> Fingerprint recognition should improve with regular use. After the 12
+> enrollment scans, the driver continues learning from successful unlocks,
+> adapting to different angles, positions, pressure, and finger conditions.
+> Failed scans are never learned.
 
 ## Windows Dual Boot
 
