@@ -142,7 +142,8 @@ enrollment, privacy, troubleshooting, and release rollback procedure.
 `validate-dump` replays repeated uses of one preprocessing generation
 chronologically when all earlier raw frames are present. Earlier frames are
 preprocessing-only preludes; matching and study remain scoped to the target
-operation and its captured input gallery.
+operation and its captured input gallery. Runtime debug v1 remains readable;
+v2 requires a capture-session UUID and never joins preludes across sessions.
 
 ## Storage
 

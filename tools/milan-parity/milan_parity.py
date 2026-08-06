@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 from typing import Any, Iterator, Sequence
 
 
@@ -45,6 +46,7 @@ UINT64_MAX = (1 << 64) - 1
 RUNTIME_STATUS_CANCELLED = 4
 RUNTIME_PURPOSE_IDENTIFY = 0
 RUNTIME_PURPOSE_ENROLL = 1
+RUNTIME_SCHEMAS = {"goodix53x5-runtime-debug/v1", "goodix53x5-runtime-debug/v2"}
 RUNTIME_FILE_RE = re.compile(
     r"^runtime-(?P<action>[a-z]+)-(?P<epoch>\d+)-(?P<generation>\d+)-"
     r"(?P<stage>\d+)-(?P<timestamp>-?\d+)-(?P<crc>[0-9a-f]{8})\.json$")
@@ -54,6 +56,8 @@ TEMPLATE_FILE_RE = re.compile(
     r"(?:-(?P<position>\d+))?-(?P<timestamp>-?\d+)-(?P<crc>[0-9a-f]{8})\.(?:bin|g53m)$")
 REFERENCE_TXON_RE = re.compile(
     r"^raw12-ref-txon-(?P<timestamp>-?\d+)-(?P<crc>[0-9a-f]{8})\.pgm$")
+REFERENCE_TXOFF_RE = re.compile(
+    r"^raw12-ref-(?P<timestamp>-?\d+)-(?P<crc>[0-9a-f]{8})\.pgm$")
 AUTH_RAW_RE = re.compile(
     r"^raw12-(?P<action>identify|verify)-[^-]+-(?P<timestamp>-?\d+)-"
     r"(?P<crc>[0-9a-f]{8})\.pgm$")
@@ -87,6 +91,16 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def valid_capture_session_id(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError):
+        return False
+    return str(parsed) == value and parsed.version == 4
 
 
 def native_template_sha256(path: Path) -> str:
@@ -786,9 +800,9 @@ def validate_capture_files(operation: list[str], names: list[str], status: int) 
         for name in runtime
         if (match := RUNTIME_FILE_RE.fullmatch(name)) and match["action"] == "enroll"
     }
-    raw_references = [name for name in names if name.startswith("raw12-ref-")]
+    raw_references = [name for name in names if REFERENCE_TXON_RE.fullmatch(name)]
     if not runtime or not raw_references:
-        raise HarnessError("debug capture omitted runtime records or raw reference frames")
+        raise HarnessError("debug capture omitted runtime records or TX-on setup frames")
     if "enroll" in command and status == 0:
         for stage in range(1, 13):
             if not any(name.startswith(f"raw12-enroll-stage-{stage}-") for name in names):
@@ -870,7 +884,7 @@ def run_build_manifest(args: argparse.Namespace) -> None:
         raise HarnessError("build manifest requires a Git repository and built libfprint library")
     strings = subprocess.run(("strings", str(library)), stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, check=True).stdout
-    has_debug_trace = b"goodix53x5-runtime-debug/v1" in strings
+    has_debug_trace = b"goodix53x5-runtime-debug/v2" in strings
     if has_debug_trace != args.debug:
         raise HarnessError("library diagnostic content differs from the requested build mode")
     commit = subprocess.run(("git", "rev-parse", "HEAD"), cwd=repo,
@@ -1022,13 +1036,15 @@ def runtime_generation_prelude(
     if (not isinstance(runtime.get("setup_txon_sha256"), str) or
             not re.fullmatch(r"[0-9a-f]{64}", runtime["setup_txon_sha256"])):
         return [], "operation has invalid generation setup identity"
-    generation_key = (runtime.get("generation_id_u64"),
+    generation_key = (runtime.get("capture_session_id"),
+                      runtime.get("generation_id_u64"),
                       runtime.get("setup_txon_sha256"))
     expected_use = use_index - 1
     reversed_prelude: list[tuple[Path, int]] = []
     for prior_position in range(position - 1, -1, -1):
         prior_runtime = runtimes[prior_position][2]
-        prior_key = (prior_runtime.get("generation_id_u64"),
+        prior_key = (prior_runtime.get("capture_session_id"),
+                     prior_runtime.get("generation_id_u64"),
                      prior_runtime.get("setup_txon_sha256"))
         if prior_key != generation_key:
             return [], "earlier generation replay chronology crosses a generation/setup boundary"
@@ -1210,8 +1226,11 @@ def print_dump_summary(report: dict[str, Any], output: Path) -> None:
     native_failures = sum(check["status"] == "fail" for check in native)
     native_skips = sum(check["status"] == "skipped" for check in native)
     native_status = "fail" if native_failures else ("pass" if native_passes else "not-run")
-    print(f"native_parity={native_status} compared={native_passes} "
+    print(f"native_parity={native_status} compared={native_passes + native_failures} "
           f"failed={native_failures} unavailable={native_skips}")
+    readiness = report["campaign_readiness"]
+    print(f"campaign_readiness={readiness['status']} "
+          f"native_operations_compared={readiness['native_operations_compared']}")
 
     compared = [operation for operation in operations
                 if any(check["name"] == "native-parity" and check["status"] == "pass"
@@ -1285,10 +1304,13 @@ def run_validate_dump(args: argparse.Namespace) -> None:
             value = load_runtime_json(path)
             identity = (match["action"], int(match["epoch"]), int(match["generation"]),
                         int(match["stage"]))
-            if (value.get("schema") != "goodix53x5-runtime-debug/v1" or
+            if (value.get("schema") not in RUNTIME_SCHEMAS or
                     (value.get("action"), value.get("action_epoch_u64"),
                      value.get("generation_id_u64"), value.get("stage_u32")) != identity):
                 raise HarnessError(f"runtime identity differs: {path.name}")
+            if (value["schema"] == "goodix53x5-runtime-debug/v2" and
+                    not valid_capture_session_id(value.get("capture_session_id"))):
+                raise HarnessError(f"runtime capture session ID is invalid: {path.name}")
             if (value.get("profile_u16") != POLICY["profile"] or
                     value.get("sensor_subtype_u16") != POLICY["subtype"] or
                     not isinstance(value.get("purpose_u32"), int) or
@@ -1523,6 +1545,7 @@ def run_validate_dump(args: argparse.Namespace) -> None:
             checks.append(persistence_check)
             operations.append({
                 "action": action, "action_epoch_u64": runtime["action_epoch_u64"],
+                "capture_session_id": runtime.get("capture_session_id"),
                 "generation_id_u64": runtime["generation_id_u64"],
                 "stage_u32": runtime["stage_u32"], "checks": checks,
                 "observed": {
@@ -1536,17 +1559,30 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                     } for row in runtime.get("gallery", [])],
                 },
             })
+        native_checks = [check for operation in operations for check in operation["checks"]
+                         if check["name"] == "native-parity"]
+        native_compared = sum(check["status"] in {"pass", "fail"}
+                              for check in native_checks)
+        authority_supplied = dll is not None
+        readiness_failed = authority_supplied and native_compared == 0
+        readiness = {
+            "native_authority_supplied": authority_supplied,
+            "native_operations_compared": native_compared,
+            "status": ("fail" if readiness_failed else
+                       "pass" if authority_supplied else "diagnostic-only"),
+        }
         failures = sum(check["status"] == "fail" for operation in operations
-                       for check in operation["checks"])
+                       for check in operation["checks"]) + int(readiness_failed)
         passes = sum(check["status"] == "pass" for operation in operations
                      for check in operation["checks"])
         skipped = sum(check["status"] == "skipped" for operation in operations
                       for check in operation["checks"])
         report = {"schema": "milan-parity-dump-report/v1", "policy": POLICY,
                   "inventory_sha256": inventory_sha256,
-                  "operations": operations, "summary": {"fail": failures,
-                                                          "pass": passes,
-                                                          "skipped": skipped}}
+                  "campaign_readiness": readiness, "operations": operations,
+                  "summary": {"fail": failures,
+                              "pass": passes,
+                              "skipped": skipped}}
         output = Path(args.report).expanduser().resolve() if args.report else (
             state / "reports" / f"dump-{inventory_sha256[:16]}.json")
         write_atomic(output, canonical(report))
@@ -1632,6 +1668,9 @@ def run_admit(args: argparse.Namespace) -> None:
         raise HarnessError("order and replay metadata are out of range")
     if not re.fullmatch(r"[0-9a-f]{64}", args.dll_sha256):
         raise HarnessError("DLL SHA-256 must be 64 lowercase hexadecimal characters")
+    if REFERENCE_TXOFF_RE.fullmatch(Path(args.setup).name):
+        raise HarnessError(
+            "setup admission rejects TX-off raw12-ref artifacts; use raw12-ref-txon")
     if any(item.get("id") == args.case_id for item in manifest["cases"]):
         raise HarnessError(f"case already exists and will not be overwritten: {args.case_id}")
     existing_orders = []

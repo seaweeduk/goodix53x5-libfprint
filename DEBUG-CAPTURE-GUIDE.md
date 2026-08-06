@@ -13,8 +13,9 @@ zero native Goodix implementation.
 
 For each fprintd operation, the debug dump retains:
 
-- raw TX-off setup/reference frames;
-- the optional TX-on setup frame;
+- every TX-on setup candidate (`raw12-ref-txon-*`), which is the only
+  replayable setup authority;
+- TX-off reference frames (`raw12-ref-*`) for capture validation only;
 - raw and processed enrollment or verify/identify frames;
 - one owner-only runtime JSON record per attempted stage;
 - ordered gallery indices, scores, decisions, selected feature, and queue
@@ -112,7 +113,6 @@ sudo tee /etc/systemd/system/fprintd.service.d/99-goodix53x5-parity-capture.conf
 Environment=G_MESSAGES_DEBUG=libfprint-goodix53x5
 Environment=GOODIX53X5_DUMP_DIR=$dump
 Environment=GOODIX53X5_DUMP_PROBES=all
-Environment=GOODIX53X5_DUMP_TXON_REF=1
 Environment=GOODIX53X5_DUMP_TEMPLATES=1
 Environment=GOODIX53X5_LOG_TIMING=1
 Environment=GOODIX53X5_LOG_DIAGNOSTICS=1
@@ -129,6 +129,8 @@ systemctl show fprintd.service --property=Environment --value
 Installation atomically switches `/opt/goodix53x5-milan`, preserves
 `StateDirectory=fprint`, and restarts fprintd. `GOODIX53X5_DUMP_PROBES=all` and
 `GOODIX53X5_DUMP_TEMPLATES=1` make successful operations self-contained.
+TX-on setup candidates are always dumped when `GOODIX53X5_DUMP_DIR` is set;
+`raw12-ref-*` TX-off frames cannot be used as replay setup.
 `ProtectHome=false` and `ReadWritePaths` permit the system service to write to
 the persistent path below the user's home directory.
 
@@ -139,11 +141,15 @@ The managed stack manifest must say that this is a debug build:
 ```sh
 grep '^GOODIX53X5_DEBUG=1$' /opt/goodix53x5-milan/manifest/build.env
 strings /opt/goodix53x5-milan/lib/libfprint-2.so.2.0.0 |
-  grep 'goodix53x5-runtime-debug/v1'
+  grep 'goodix53x5-runtime-debug/v2'
 ```
 
 Both commands must print a match. If either fails, stop. Do not collect with a
 release or stale library.
+
+Runtime debug v2 adds a per-service-device capture session UUID. Current parity
+tooling still reads legacy v1 records, but it requires the UUID on v2 records
+and will not join generation preludes across different sessions.
 
 Record the installed library identity in the new campaign root:
 
