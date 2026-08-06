@@ -253,9 +253,11 @@ gate-positive no-direct can instead perform capacity shutdown or late enqueue
 before the diagnostic-only transient finalizer. Action 5 is exact for handoff,
 lifecycle, order, tail, and packed payload.
 
-The native offline API already returns a validated candidate for positive
-actions, but production auth and durable libfprint/fprintd replacement are still
-missing. These gaps do not alter the proven official export behavior.
+The native offline API returns a validated candidate for positive actions, and
+the production libfprint verify/identify path now runs that runtime and applies
+positive template updates. fprintd remains an external consumer of the standard
+libfprint driver interface. This integration does not alter the proven official
+export behavior.
 
 ## Action-5 Handoff Recovered
 

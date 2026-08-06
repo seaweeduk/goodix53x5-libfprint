@@ -25,21 +25,46 @@ The next completed sample carries `+0x236` to `CaptureFramedone` and then to
 `0x18000e661` after callback dispatch, making preprocessing reinitialization a
 one-sample notification rather than a per-probe operation.
 
+If refresh fails, `+0x232` remains clear and `+0x236` is not set. The caller's
+event wrapper still rearms detection; later base-valid checks can retry. The old
+image-base-valid byte and retained image storage are not discarded merely
+because this refresh attempt failed.
+
 ## Interpretation
 
 Despite its logged name, no OS thermal-notification registration is proven.
 The known callers are FDT down/up/reverse handlers reacting to sensor-base
 comparisons.
 
+For profile 9 / sensor type 12, the two authentication-relevant routes are:
+
+- `MilanHV_Down_procedure` calls this function when the FDT interrupt sample and
+  an immediate manual TX-off reading remain within the configured per-area
+  threshold. Native treats that as drift/noise rather than a real finger,
+  refreshes all FDT/image bases, and does not capture a live image for that
+  event.
+- `UP_Occure` calls this function after lift when more than half of the 12 FDT
+  areas differ from the active software drift anchor by more than the
+  configured down threshold. That anchor is maintained by reverse events and is
+  distinct from the FDT-down base programmed into the sensor. A successful
+  refresh therefore marks the next probe for preprocessing reinitialization.
+
 ## Linux Parity Status
 
-The Linux driver captures a fresh FDT/image reference set on every device open
-and updates its FDT-down base after finger lift. It does not implement this
-native event-driven full-base refresh within a long-lived authentication claim.
-This can leave the original image reference in use while a lock screen waits
-for an extended period, although no multi-hour lock failure has been observed
-on the profile-9/type-12 sensor.
+The Linux driver captures a fresh FDT/image reference set on every device open.
+During a long wait it detects the same false FDT-down shape, but only rearms the
+wait; it does not run the native full-base refresh. After a failed probe it
+replaces its FDT-down base from the lift event, but again does not refresh the
+TX-on image reference. Native can refresh at either boundary and sends a
+one-shot marker that reinitializes preprocessing on the next completed sample.
 
-Native-style event counting and synchronous `update_allbase` refresh are
-deferred unless runtime captures show baseline drift, elevated MAD, or degraded
-first-touch matching during a long-lived claim.
+Consequently, parity is conditional. If neither native drift comparison fires,
+both first probes use their open-time TX-on reference and both second probes
+continue using it. If native detects idle drift before the first real touch, or
+detects drift on lift after a failed first touch, Windows refreshes while Linux
+keeps the old image reference. No multi-hour lock failure or trigger frequency
+has yet been measured on the profile-9/type-12 sensor.
+
+The static divergence is proven; its practical effect remains unvalidated.
+Validation should use source/DLL-level fixtures and existing diagnostic frame
+dumps rather than assuming that elapsed time alone triggers the native branch.
