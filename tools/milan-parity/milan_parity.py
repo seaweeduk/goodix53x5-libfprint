@@ -766,8 +766,12 @@ def run_capture(args: argparse.Namespace) -> None:
                         if "diagnostic[" in str(entry.get("MESSAGE", ""))]
     diagnostic_matches = [match for line in diagnostic_lines if (match := re.search(
         r"diagnostic\[([^]]+)\] epoch=(\d+) generation=(\d+)", line))]
+    expected_action = next((name for name in ("enroll", "identify", "verify")
+                            if name in Path(args.operation[0]).name.lower()), None)
+    operation_matches = [match for match in diagnostic_matches
+                         if expected_action is None or match.group(1) == expected_action]
     diagnostic_operations = {
-        (match.group(1), int(match.group(2))) for match in diagnostic_matches
+        (match.group(1), int(match.group(2))) for match in operation_matches
     }
     if len(diagnostic_operations) != 1:
         raise HarnessError(
@@ -775,12 +779,7 @@ def run_capture(args: argparse.Namespace) -> None:
             f"{len(diagnostic_operations)}")
     action, action_epoch = diagnostic_operations.pop()
     generation_ids = list(dict.fromkeys(
-        int(match.group(3)) for match in diagnostic_matches))
-    expected_action = next((name for name in ("enroll", "identify", "verify")
-                            if name in Path(args.operation[0]).name.lower()), None)
-    if expected_action and action != expected_action:
-        raise HarnessError(
-            f"captured diagnostic action differs: expected {expected_action}, observed {action}")
+        int(match.group(3)) for match in operation_matches))
     runtime_operations = set()
     runtime_generations = set()
     for name in new_dump_files:
@@ -795,6 +794,8 @@ def run_capture(args: argparse.Namespace) -> None:
                  runtime.get("generation_id_u64"), runtime.get("stage_u32")) != identity or
                 not valid_capture_session_id(runtime.get("capture_session_id"))):
             raise HarnessError(f"captured runtime identity is invalid: {name}")
+        if runtime["action"] != action:
+            continue
         runtime_operations.add((runtime["capture_session_id"], runtime["action"],
                                 runtime["action_epoch_u64"]))
         runtime_generations.add(runtime["generation_id_u64"])
