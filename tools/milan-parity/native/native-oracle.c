@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include <stddef.h>
+#include <process.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -710,18 +711,172 @@ out:
   return ok;
 }
 
+static char *
+read_manifest_line (FILE *input)
+{
+  size_t capacity = 4096;
+  size_t length = 0;
+  char *line = malloc (capacity);
+  int byte;
+
+  if (!line)
+    return NULL;
+  while ((byte = fgetc (input)) != EOF && byte != '\n')
+    {
+      if (length + 1 >= capacity)
+        {
+          char *grown;
+
+          if (capacity >= 16 * 1024 * 1024)
+            {
+              free (line);
+              return NULL;
+            }
+          capacity *= 2;
+          grown = realloc (line, capacity);
+          if (!grown)
+            {
+              free (line);
+              return NULL;
+            }
+          line = grown;
+        }
+      line[length++] = (char) byte;
+    }
+  if (byte == EOF && length == 0)
+    {
+      free (line);
+      return NULL;
+    }
+  if (length && line[length - 1] == '\r')
+    length--;
+  line[length] = '\0';
+  return line;
+}
+
+static wchar_t *
+utf8_to_wide (const char *value)
+{
+  int length;
+  wchar_t *wide;
+
+  if (!value || !*value)
+    return NULL;
+  length = MultiByteToWideChar (CP_UTF8, MB_ERR_INVALID_CHARS, value, -1,
+                                NULL, 0);
+  if (length <= 0)
+    return NULL;
+  wide = malloc ((size_t) length * sizeof (*wide));
+  if (!wide ||
+      MultiByteToWideChar (CP_UTF8, MB_ERR_INVALID_CHARS, value, -1,
+                           wide, length) != length)
+    {
+      free (wide);
+      return NULL;
+    }
+  return wide;
+}
+
+static int
+run_batch (const wchar_t *dll_path, const wchar_t *manifest_path)
+{
+  FILE *manifest = _wfopen (manifest_path, L"rb");
+  wchar_t executable[32768];
+  size_t line_number = 0;
+  int ok = 0;
+
+  if (!manifest)
+    return 0;
+  if (!GetModuleFileNameW (NULL, executable,
+                           sizeof (executable) / sizeof (executable[0])))
+    {
+      fclose (manifest);
+      return 0;
+    }
+  for (;;)
+    {
+      char *line = read_manifest_line (manifest);
+      char *fields[264];
+      wchar_t *wide[264] = { 0 };
+      const wchar_t *child_argv[272];
+      int field_count = 0;
+
+      if (!line)
+        {
+          ok = feof (manifest) != 0;
+          break;
+        }
+      line_number++;
+      fields[field_count++] = line;
+      for (char *cursor = line; *cursor; cursor++)
+        if (*cursor == '\t')
+          {
+            *cursor = '\0';
+            if (field_count >= (int) (sizeof (fields) / sizeof (fields[0])))
+              goto line_out;
+            fields[field_count++] = cursor + 1;
+          }
+      if (field_count < 5 ||
+          (strcmp (fields[4], "0") != 0 && strcmp (fields[4], "1") != 0))
+        goto line_out;
+      for (int i = 0; i < field_count; i++)
+        {
+          if (i == 4)
+            continue;
+          wide[i] = utf8_to_wide (fields[i]);
+          if (!wide[i])
+            goto line_out;
+        }
+      child_argv[0] = executable;
+      child_argv[1] = L"study";
+      child_argv[2] = dll_path;
+      child_argv[3] = wide[0];
+      child_argv[4] = wide[1];
+      child_argv[5] = wide[2];
+      child_argv[6] = wide[3];
+      child_argv[7] = fields[4][0] == '1' ? L"1" : L"0";
+      for (int i = 5; i < field_count; i++)
+        child_argv[i + 3] = wide[i];
+      child_argv[field_count + 3] = NULL;
+      if (_wspawnv (_P_WAIT, executable, child_argv) != 0)
+        goto line_out;
+      for (int i = 0; i < field_count; i++)
+        free (wide[i]);
+      free (line);
+      continue;
+
+line_out:
+      fwprintf (stderr, L"batch replay failed at line %llu\n",
+                (unsigned long long) line_number);
+      for (int i = 0; i < field_count; i++)
+        free (wide[i]);
+      free (line);
+      break;
+    }
+  fclose (manifest);
+  return ok;
+}
+
 int
 wmain (int argc, wchar_t **argv)
 {
   int study_enabled;
 
   setvbuf (stdout, NULL, _IONBF, 0);
+  if (argc == 4 && wcscmp (argv[1], L"batch") == 0)
+    {
+      if (!run_batch (argv[2], argv[3]))
+        return 1;
+      return 0;
+    }
   if (argc < 8 ||
       (wcscmp (argv[1], L"identify") != 0 &&
        wcscmp (argv[1], L"study") != 0))
     {
       fwprintf (stderr,
-                L"usage: %ls identify|study DLL OUTPUT BASE LIVE TEMPLATE ENQUEUE [PURPOSE:PRELUDE...]\n",
+                L"usage: %ls identify|study DLL OUTPUT BASE LIVE TEMPLATE ENQUEUE [PURPOSE:PRELUDE...]\n"
+                L"       %ls batch DLL MANIFEST\n",
+                argv[0],
                 argv[0]);
       return 2;
     }

@@ -451,6 +451,40 @@ def execute_runner(runner: Path, corpus: dict[str, Any], case_id: str,
     return record
 
 
+def execute_native_batch(runner: Path, jobs: list[dict[str, Any]], dll: Path,
+                         state: Path) -> list[dict[str, Any]]:
+    descriptor = {
+        "schema": "milan-parity-native-batch/v1",
+        "jobs": [{"corpus": str(job["case"]["root"]),
+                  "case": job["case"]["case_id"]} for job in jobs],
+    }
+    batch_path = state / "work" / "native-batch.json"
+    write_atomic(batch_path, canonical(descriptor))
+    process = subprocess.run((str(runner), "--batch", str(batch_path),
+                              "--dll", str(dll)),
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             check=False)
+    if process.returncode:
+        diagnostic = process.stderr.decode("utf-8", "replace").strip()
+        raise HarnessError(
+            f"native batch runner failed with status {process.returncode}: {diagnostic}")
+    try:
+        result = json.loads(process.stdout)
+    except json.JSONDecodeError as error:
+        raise HarnessError(f"native batch runner returned invalid JSON: {error}") from error
+    if process.stdout != canonical(result):
+        raise HarnessError("native batch runner returned non-canonical JSON")
+    if not isinstance(result, dict):
+        raise HarnessError("native batch runner result is not an object")
+    records = result.get("records")
+    if (result.get("schema") != "milan-parity-native-batch/v1" or
+            not isinstance(records, list) or len(records) != len(jobs)):
+        raise HarnessError("native batch runner result schema or record count differs")
+    for job, record in zip(jobs, records):
+        validate_record(record, job["case"]["case_id"], "native batch record")
+    return records
+
+
 def default_state_root() -> Path:
     base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
     return base / "milan-parity"
@@ -1025,12 +1059,24 @@ def pgm_payload(path: Path, raw: bool) -> bytes:
     return data[len(header):]
 
 
+def make_crc32_mpeg2_table() -> tuple[int, ...]:
+    table = []
+    for byte in range(256):
+        value = byte << 24
+        for _ in range(8):
+            value = ((value << 1) ^
+                     (0x04C11DB7 if value & 0x80000000 else 0)) & UINT32_MAX
+        table.append(value)
+    return tuple(table)
+
+
+CRC32_MPEG2_TABLE = make_crc32_mpeg2_table()
+
+
 def crc32_mpeg2(data: bytes) -> int:
     value = 0xFFFFFFFF
     for byte in data:
-        value ^= byte << 24
-        for _ in range(8):
-            value = ((value << 1) ^ (0x04C11DB7 if value & 0x80000000 else 0)) & UINT32_MAX
+        value = ((value << 8) & UINT32_MAX) ^ CRC32_MPEG2_TABLE[(value >> 24) ^ byte]
     return value
 
 
@@ -1270,7 +1316,7 @@ def print_dump_summary(report: dict[str, Any], output: Path) -> None:
     compared = [operation for operation in operations
                 if any(check["name"] == "native-parity" and check["status"] == "pass"
                        for check in operation["checks"])]
-    if compared:
+    if compared and report["native_comparison"] == "capture":
         actions: dict[int, int] = {}
         queue_transitions: dict[str, int] = {}
         scores = []
@@ -1315,8 +1361,61 @@ def print_dump_summary(report: dict[str, Any], output: Path) -> None:
     print(f"report={output}")
 
 
+def runtime_record_projection(record: dict[str, Any]) -> dict[str, Any]:
+    phases = {phase["name"]: phase["outputs"] for phase in record["phases"]}
+    required_phases = {"stage-01-preprocess", "stage-01-extract-antifake"}
+    missing_phases = sorted(required_phases - phases.keys())
+    if missing_phases:
+        raise HarnessError(
+            "runner record is missing required phases: " + ", ".join(missing_phases))
+    preprocess = phases["stage-01-preprocess"]
+    extraction = phases["stage-01-extract-antifake"]
+    result = record["result"]
+    try:
+        return {
+            "quality": preprocess["quality_i32"],
+            "coverage": preprocess["coverage_i32"],
+            "processed": preprocess["processed_image_sha256"],
+            "records": extraction["active_record_count_u32"],
+            "score": result["score_i32"],
+            "accepted": result["accepted"],
+            "winner_index": result["winner_index_u32"],
+            "winner_position": result["winner_position_u32"],
+            "study_action": result["study_action_u32"],
+            "candidate": result["final_candidate_sha256"],
+            "gallery": [{
+                "index": row["gallery_index_u32"],
+                "after_match": row["after_match_sha256"],
+                "score": row["score_i32"],
+                "accepted": row["accepted"],
+                "evaluated": row["evaluated"],
+                "valid": row["valid"],
+            } for row in result["gallery"]],
+        }
+    except (KeyError, TypeError) as error:
+        raise HarnessError(f"runner record is missing required output: {error}") from error
+
+
 def run_validate_dump(args: argparse.Namespace) -> None:
     dump = ensure_private_directory(Path(args.dump_dir))
+    selected_epochs = set(args.native_epoch)
+    selected_generations = set(args.native_generation)
+    selected_session = args.native_session
+    if selected_session is not None and not valid_capture_session_id(selected_session):
+        raise HarnessError("--native-session must be a lowercase version-4 UUID")
+    if selected_session is not None and not (selected_epochs or selected_generations):
+        raise HarnessError("--native-session requires --native-epoch or --native-generation")
+    if args.compare_current and not (selected_epochs or selected_generations):
+        raise HarnessError("--compare-current requires --native-epoch or --native-generation")
+    dll = Path(args.dll).expanduser().resolve() if args.dll else None
+    prefix = Path(args.wine_prefix).expanduser().resolve() if args.wine_prefix else None
+    if (dll is None) != (prefix is None):
+        raise HarnessError("DLL and Wine prefix must be supplied together")
+    if args.compare_current and (not dll or not prefix):
+        raise HarnessError("--compare-current requires an approved DLL and Wine prefix")
+    if dll and (not args.approved_dll_sha256 or sha256_file(dll) != args.approved_dll_sha256):
+        raise HarnessError("selected DLL is absent or not explicitly approved")
+    targeted_native = bool(selected_epochs or selected_generations)
     runtimes = []
     templates_by_identity: dict[
         tuple[str, int, int, int], dict[tuple[str, int | None], list[tuple[str, Path]]]
@@ -1369,9 +1468,15 @@ def run_validate_dump(args: argparse.Namespace) -> None:
             continue
         match = TEMPLATE_FILE_RE.fullmatch(path.name)
         if match:
-            verify_dump_crc(path, match["crc"])
             identity = (match["action"], int(match["epoch"]), int(match["generation"]),
                         int(match["stage"]))
+            template_selected = (
+                (not selected_epochs or int(match["epoch"]) in selected_epochs) and
+                (not selected_generations or
+                 int(match["generation"]) in selected_generations)
+            )
+            if not targeted_native or template_selected:
+                verify_dump_crc(path, match["crc"])
             position = int(match["position"]) if match["position"] is not None else None
             templates_by_identity.setdefault(identity, {}).setdefault(
                 (match["role"], position), []).append((sha256_file(path), path))
@@ -1419,11 +1524,31 @@ def run_validate_dump(args: argparse.Namespace) -> None:
     timestamps = [timestamp for timestamp, _, _ in runtimes]
     if len(timestamps) != len(set(timestamps)):
         raise HarnessError("runtime chronology is ambiguous because timestamps are duplicated")
+    numerically_selected_v2 = {
+        runtime["capture_session_id"] for _, _, runtime in runtimes
+        if runtime["schema"] == "goodix53x5-runtime-debug/v2" and
+        (not selected_epochs or runtime["action_epoch_u64"] in selected_epochs) and
+        (not selected_generations or
+         runtime["generation_id_u64"] in selected_generations)
+    }
+    if targeted_native and selected_session is None:
+        if len(numerically_selected_v2) > 1:
+            raise HarnessError(
+                "targeted runtime-debug v2 selection matches multiple capture sessions; "
+                "select one with --native-session")
+        if numerically_selected_v2:
+            selected_session = next(iter(numerically_selected_v2))
+    elif selected_session is not None and selected_session not in numerically_selected_v2:
+        raise HarnessError(
+            "requested epoch/generation selection does not match --native-session")
+    native_selection = {
+        "action_epochs": sorted(selected_epochs),
+        "capture_session_id": selected_session,
+        "generations": sorted(selected_generations),
+    }
     operations = []
-    dll = Path(args.dll).expanduser().resolve() if args.dll else None
-    prefix = Path(args.wine_prefix).expanduser().resolve() if args.wine_prefix else None
-    if dll and (not args.approved_dll_sha256 or sha256_file(dll) != args.approved_dll_sha256):
-        raise HarnessError("selected DLL is absent or not explicitly approved")
+    pending_native: list[dict[str, Any]] = []
+    native_name = "native-parity"
     with locked_state(args.state_root) as state:
         for runtime_position, (timestamp, runtime_path, runtime) in enumerate(runtimes):
             identity = (runtime["action"], runtime["action_epoch_u64"],
@@ -1454,7 +1579,7 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                                        "all referenced template artifact digests match")})
             checks.append(gallery_admission)
             checks.append(capture_completeness)
-            native_check = {"name": "native-parity", "status": "skipped", "detail": ""}
+            native_check = {"name": native_name, "status": "skipped", "detail": ""}
             action = runtime["action"]
             live = (artifact_with_digest(auth_raw.get(action, []),
                                          runtime.get("live_raw_sha256"))
@@ -1480,7 +1605,16 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                 "dac_high_u16": 125, "dac_low_u16": 198, "profile_u16": 9,
                 "purpose_u32": 0, "sensor_subtype_u16": 12, "tcode_u16": 121,
             }
-            if action == "enroll":
+            native_selected = (
+                (selected_session is None or
+                 runtime.get("capture_session_id") == selected_session) and
+                (not selected_epochs or runtime["action_epoch_u64"] in selected_epochs) and
+                (not selected_generations or
+                 runtime["generation_id_u64"] in selected_generations)
+            )
+            if not native_selected:
+                native_check["detail"] = "operation was not selected for native replay"
+            elif action == "enroll":
                 native_check["detail"] = "enrollment authority requires a complete twelve-stage chain"
             elif runtime.get("status_u32") == RUNTIME_STATUS_CANCELLED:
                 native_check["detail"] = "cancelled operations are excluded from native target replay"
@@ -1504,61 +1638,18 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                 native_check["detail"] = "DLL or Wine prefix was not supplied"
             else:
                 case = native_case_for_dump(state, dump, runtime_path, runtime, setup, live,
-                                            prelude,
-                                            template_map, args.approved_dll_sha256, prefix)
-                actual = execute_runner(Path(args.native_runner).resolve(),
-                                        validate_corpus(str(case["root"])), case["case_id"],
-                                        None, dll)
-                expected = {
-                    "quality": runtime["quality_i32"],
-                    "coverage": runtime["coverage_i32"],
-                    "processed": sha256_bytes(pgm_payload(processed, raw=False)),
-                    "records": runtime["probe_record_count_u32"],
-                    "score": runtime["score_i32"],
-                    "accepted": runtime["status_u32"] == 0,
-                    "winner_index": runtime["winner_index_u32"],
-                    "winner_position": min(runtime["winner_position_u64"], UINT32_MAX),
-                    "study_action": runtime["study_action_u32"],
-                    "candidate": (native_template_sha256(final) if final else
-                                  runtime["candidate_sha256"]),
-                    "gallery": [],
-                }
-                for position, row in enumerate(runtime["gallery"]):
-                    after_match = artifact_with_digest(
-                        template_map.get(("after-match", position), []),
-                        row["after_match_sha256"])
-                    expected["gallery"].append({
-                        "index": row["gallery_index_u32"],
-                        "after_match": (native_template_sha256(after_match)
-                                        if after_match else row["after_match_sha256"]),
-                        "score": row["score_i32"],
-                        "accepted": row["accepted"],
-                        "evaluated": row["evaluated"],
-                        "valid": row["valid"],
-                    })
-                native = {
-                    "quality": actual["phases"][0]["outputs"]["quality_i32"],
-                    "coverage": actual["phases"][0]["outputs"]["coverage_i32"],
-                    "processed": actual["phases"][0]["outputs"]["processed_image_sha256"],
-                    "records": actual["phases"][1]["outputs"]["active_record_count_u32"],
-                    "score": actual["result"]["score_i32"],
-                    "accepted": actual["result"]["accepted"],
-                    "winner_index": actual["result"]["winner_index_u32"],
-                    "winner_position": actual["result"]["winner_position_u32"],
-                    "study_action": actual["result"]["study_action_u32"],
-                    "candidate": actual["result"]["final_candidate_sha256"],
-                    "gallery": [{"index": row["gallery_index_u32"],
-                                 "after_match": row["after_match_sha256"],
-                                 "score": row["score_i32"],
-                                 "accepted": row["accepted"],
-                                 "evaluated": row["evaluated"],
-                                 "valid": row["valid"]}
-                                for row in actual["result"]["gallery"]],
-                }
-                differences = difference(expected, native, all_differences=True)
-                native_check = {"name": "native-parity",
-                                "status": "fail" if differences else "pass",
-                                "detail": differences or "all comparable native outputs match"}
+                                            prelude, template_map,
+                                            args.approved_dll_sha256, prefix)
+                native_check = {"name": native_name,
+                                "status": "pending", "detail": ""}
+                pending_native.append({
+                    "case": case,
+                    "check": native_check,
+                    "runtime": runtime,
+                    "processed": processed,
+                    "final": final,
+                    "template_map": template_map,
+                })
             checks.append(native_check)
             candidate = runtime.get("candidate_sha256")
             if candidate is None:
@@ -1594,11 +1685,65 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                     } for row in runtime.get("gallery", [])],
                 },
             })
+        if pending_native:
+            actual_records = execute_native_batch(
+                Path(args.native_runner).resolve(), pending_native, dll, state)
+            for pending, actual in zip(pending_native, actual_records):
+                runtime = pending["runtime"]
+                if args.compare_current:
+                    case = pending["case"]
+                    current = execute_runner(
+                        Path(args.current_runner).resolve(),
+                        validate_corpus(str(case["root"])), case["case_id"],
+                        Path(args.repo).expanduser().resolve(), None)
+                    try:
+                        expected = runtime_record_projection(current)
+                    except HarnessError as error:
+                        pending["check"].update({
+                            "status": "fail",
+                            "detail": f"current runner output is incomplete: {error}",
+                        })
+                        continue
+                else:
+                    expected = {
+                        "quality": runtime["quality_i32"],
+                        "coverage": runtime["coverage_i32"],
+                        "processed": sha256_bytes(pgm_payload(
+                            pending["processed"], raw=False)),
+                        "records": runtime["probe_record_count_u32"],
+                        "score": runtime["score_i32"],
+                        "accepted": runtime["status_u32"] == 0,
+                        "winner_index": runtime["winner_index_u32"],
+                        "winner_position": min(runtime["winner_position_u64"], UINT32_MAX),
+                        "study_action": runtime["study_action_u32"],
+                        "candidate": (native_template_sha256(pending["final"])
+                                      if pending["final"] else runtime["candidate_sha256"]),
+                        "gallery": [],
+                    }
+                    for position, row in enumerate(runtime["gallery"]):
+                        after_match = artifact_with_digest(
+                            pending["template_map"].get(("after-match", position), []),
+                            row["after_match_sha256"])
+                        expected["gallery"].append({
+                            "index": row["gallery_index_u32"],
+                            "after_match": (native_template_sha256(after_match)
+                                            if after_match else row["after_match_sha256"]),
+                            "score": row["score_i32"],
+                            "accepted": row["accepted"],
+                            "evaluated": row["evaluated"],
+                            "valid": row["valid"],
+                        })
+                native = runtime_record_projection(actual)
+                differences = difference(expected, native, all_differences=True)
+                pending["check"].update({
+                    "status": "fail" if differences else "pass",
+                    "detail": differences or "all comparable native outputs match",
+                })
         native_checks = [check for operation in operations for check in operation["checks"]
-                         if check["name"] == "native-parity"]
+                          if check["name"] == native_name]
         native_compared = sum(check["status"] in {"pass", "fail"}
                               for check in native_checks)
-        authority_supplied = dll is not None
+        authority_supplied = dll is not None and prefix is not None
         readiness_failed = authority_supplied and native_compared == 0
         readiness = {
             "native_authority_supplied": authority_supplied,
@@ -1613,13 +1758,23 @@ def run_validate_dump(args: argparse.Namespace) -> None:
         skipped = sum(check["status"] == "skipped" for operation in operations
                       for check in operation["checks"])
         report = {"schema": "milan-parity-dump-report/v1", "policy": POLICY,
+                  "native_lifetime": "generation",
+                  "native_comparison": "current" if args.compare_current else "capture",
+                  "native_selection": native_selection,
                   "inventory_sha256": inventory_sha256,
                   "campaign_readiness": readiness, "operations": operations,
                   "summary": {"fail": failures,
                               "pass": passes,
                               "skipped": skipped}}
+        selection = ""
+        if targeted_native:
+            selection = "-target-" + sha256_bytes(canonical({
+                **native_selection,
+                "comparison": "current" if args.compare_current else "capture",
+            }))[:12]
         output = Path(args.report).expanduser().resolve() if args.report else (
-            state / "reports" / f"dump-{inventory_sha256[:16]}.json")
+            state / "reports" /
+            f"dump-{inventory_sha256[:16]}{selection}.json")
         write_atomic(output, canonical(report))
         print(f"milan_parity_dump={'fail' if failures else 'pass'} operations={len(operations)} "
               f"checks={passes}/{failures}/{skipped}")
@@ -1875,6 +2030,23 @@ def build_parser() -> argparse.ArgumentParser:
                                         os.environ.get("WINEPREFIX")))
     validate_dump.add_argument("--native-runner",
                                default=str(Path(__file__).resolve().parent / "native-runner"))
+    validate_dump.add_argument(
+        "--native-session",
+        help="Replay only runtime-debug v2 operations from this capture-session UUID")
+    validate_dump.add_argument(
+        "--native-epoch", action="append", default=[], type=int,
+        help="Replay only operations with this action epoch (repeatable)")
+    validate_dump.add_argument(
+        "--native-generation", action="append", default=[], type=int,
+        help="Replay only operations in this generation (repeatable)")
+    validate_dump.add_argument(
+        "--compare-current", action="store_true",
+        help="Compare selected operations from rebuilt current source against native")
+    validate_dump.add_argument(
+        "--current-runner",
+        default=str(Path(__file__).resolve().parent / "current-runner"))
+    validate_dump.add_argument(
+        "--repo", default=str(Path(__file__).resolve().parents[2]))
     validate_dump.add_argument("--state-root")
     validate_dump.add_argument("--report")
 
