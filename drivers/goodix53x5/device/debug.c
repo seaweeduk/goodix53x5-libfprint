@@ -47,15 +47,6 @@ goodix_debug_dump_enabled (void)
   return goodix_debug_dump_dir () != NULL;
 }
 
-gboolean
-goodix_debug_dump_txon_ref_enabled (void)
-{
-  const gchar *value = g_getenv ("GOODIX53X5_DUMP_TXON_REF");
-
-  return goodix_debug_dump_enabled () && value != NULL && value[0] != '\0' &&
-         g_strcmp0 (value, "0") != 0;
-}
-
 static gboolean
 goodix_debug_ensure_dump_dir (const gchar *dump_dir)
 {
@@ -392,28 +383,52 @@ goodix_debug_timing_open_done (FpiDeviceGoodix53x5 *self,
 }
 
 void
-goodix_debug_log_runtime_result (FpDevice                       *dev,
-                                 guint                           stage,
-                                 const GoodixMilanRuntimeOutput *output)
+goodix_debug_capture_runtime_metadata (GoodixDebugRuntimeMetadata *metadata,
+                                       FpiDeviceAction             action,
+                                       const guint16              *setup_tx_on,
+                                       const guint16              *live_raw,
+                                       guint64 generation_use_index)
+{
+  g_autofree gchar *setup_txon_sha256 = NULL;
+  g_autofree gchar *live_raw_sha256 = NULL;
+
+  g_return_if_fail (metadata != NULL);
+  g_return_if_fail (setup_tx_on != NULL);
+  g_return_if_fail (live_raw != NULL);
+
+  setup_txon_sha256 = goodix_debug_raw12_sha256 (setup_tx_on);
+  live_raw_sha256 = goodix_debug_raw12_sha256 (live_raw);
+  metadata->action = action;
+  metadata->generation_use_index = generation_use_index;
+  g_strlcpy (metadata->setup_txon_sha256, setup_txon_sha256,
+             sizeof (metadata->setup_txon_sha256));
+  g_strlcpy (metadata->live_raw_sha256, live_raw_sha256,
+             sizeof (metadata->live_raw_sha256));
+}
+
+void
+goodix_debug_log_runtime_result (FpDevice                         *dev,
+                                 guint                             stage,
+                                 const GoodixDebugRuntimeMetadata *metadata,
+                                 const GoodixMilanRuntimeOutput   *output)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   const gchar *value = g_getenv ("GOODIX53X5_LOG_DIAGNOSTICS");
   g_autofree gchar *probe_sha256 = NULL;
   g_autofree gchar *candidate_sha256 = NULL;
-  g_autofree gchar *live_raw_sha256 = NULL;
   g_autofree gchar *processed_image_sha256 = NULL;
-  g_autofree gchar *setup_txon_sha256 = NULL;
   g_autofree gchar *prefix = NULL;
   g_autoptr(GString) record = NULL;
   g_autoptr(GByteArray) bytes = NULL;
-  guint64 generation_use_index = 0;
+  const gchar *action_name;
   gchar *record_data;
   gsize record_len;
   gboolean dump_templates;
 
   if (value == NULL || value[0] == '\0' || g_strcmp0 (value, "0") == 0 ||
-      output == NULL)
+      metadata == NULL || output == NULL)
     return;
+  action_name = goodix_debug_action_name (metadata->action);
   value = g_getenv ("GOODIX53X5_DUMP_TEMPLATES");
   dump_templates = value != NULL && value[0] != '\0' &&
                    g_strcmp0 (value, "0") != 0;
@@ -423,24 +438,16 @@ goodix_debug_log_runtime_result (FpDevice                       *dev,
   if (output->final_candidate)
     candidate_sha256 = g_compute_checksum_for_bytes (
       G_CHECKSUM_SHA256, output->final_candidate);
-  live_raw_sha256 = goodix_debug_raw12_sha256 (self->captured_raw_image);
   if (output->processed_image)
     processed_image_sha256 = g_compute_checksum_for_bytes (
       G_CHECKSUM_SHA256, output->processed_image);
-  if (self->milan_generation &&
-      self->milan_generation->generation_id == output->generation_id)
-    {
-      generation_use_index = self->milan_generation->use_count;
-      setup_txon_sha256 = goodix_debug_raw12_sha256 (
-        self->milan_generation->setup_tx_on);
-    }
   fp_info ("diagnostic[%s] epoch=%" G_GUINT64_FORMAT
            " generation=%" G_GUINT64_FORMAT
            " stage=%u purpose=%u status=%u quality=%d coverage=%d "
            "records=%u partitions=%u/%u score=%d winner=%u/%" G_GSIZE_FORMAT
            " study=%u gallery=%u/%u/%u cancel=%u/%" G_GSIZE_FORMAT
            "error=%u:%d learning_error=%u:%d",
-           goodix_debug_action_name (fpi_device_get_current_action (dev)),
+           action_name,
            output->action_epoch, output->generation_id, stage,
            (guint) output->purpose, (guint) output->status,
            output->quality, output->coverage,
@@ -459,12 +466,14 @@ goodix_debug_log_runtime_result (FpDevice                       *dev,
   g_string_append_printf (
     record,
     "{\"action\":\"%s\",\"action_epoch_u64\":%" G_GUINT64_FORMAT
-    ",\"candidate_sha256\":%s%s%s,\"coverage_i32\":%d,"
+    ",\"candidate_sha256\":%s%s%s,\"capture_session_id\":\"%s\","
+    "\"coverage_i32\":%d,"
     "\"dac_high_u16\":%u,\"dac_low_u16\":%u,"
     "\"evaluated_gallery_u32\":%u,\"gallery\":[",
-    goodix_debug_action_name (fpi_device_get_current_action (dev)),
+    action_name,
     output->action_epoch, candidate_sha256 ? "\"" : "null",
     candidate_sha256 ? candidate_sha256 : "", candidate_sha256 ? "\"" : "",
+    self->debug_capture_session_id,
     output->coverage, output->dac_high, output->dac_low,
     output->evaluated_gallery_count);
   for (guint i = 0; i < output->gallery_results->len; i++)
@@ -511,15 +520,14 @@ goodix_debug_log_runtime_result (FpDevice                       *dev,
     "\"probe_record_count_u32\":%u,\"probe_sha256\":%s%s%s,"
     "\"processed_image_sha256\":%s%s%s,"
     "\"profile_u16\":%u,\"purpose_u32\":%u,\"quality_i32\":%d,"
-    "\"schema\":\"goodix53x5-runtime-debug/v1\",\"score_i32\":%d,"
+    "\"schema\":\"goodix53x5-runtime-debug/v2\",\"score_i32\":%d,"
     "\"sensor_subtype_u16\":%u,\"setup_txon_sha256\":%s%s%s,"
     "\"stage_u32\":%u,\"status_u32\":%u,"
     "\"study_action_u32\":%u,\"tcode_u16\":%u,"
     "\"winner_index_u32\":%u,\"winner_position_u64\":%" G_GSIZE_FORMAT "}\n",
     output->generation_id,
-    generation_use_index,
-    live_raw_sha256 ? "\"" : "null",
-    live_raw_sha256 ? live_raw_sha256 : "", live_raw_sha256 ? "\"" : "",
+    metadata->generation_use_index,
+    "\"", metadata->live_raw_sha256, "\"",
     output->probe_partition0_count,
     output->probe_partition1_count, output->probe_record_count,
     probe_sha256 ? "\"" : "null",
@@ -529,15 +537,13 @@ goodix_debug_log_runtime_result (FpDevice                       *dev,
     processed_image_sha256 ? "\"" : "",
     output->profile, (guint) output->purpose, output->quality, output->score,
     output->sensor_subtype,
-    setup_txon_sha256 ? "\"" : "null",
-    setup_txon_sha256 ? setup_txon_sha256 : "",
-    setup_txon_sha256 ? "\"" : "",
+    "\"", metadata->setup_txon_sha256, "\"",
     stage, (guint) output->status,
     (guint) output->study_action, output->tcode, output->winner_index,
     output->winner_position);
   prefix = g_strdup_printf (
     "runtime-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT "-%u",
-    goodix_debug_action_name (fpi_device_get_current_action (dev)),
+    action_name,
     output->action_epoch, output->generation_id, stage);
   record_len = record->len;
   record_data = g_string_free (g_steal_pointer (&record), FALSE);
@@ -550,13 +556,13 @@ goodix_debug_log_runtime_result (FpDevice                       *dev,
 
       template_prefix = g_strdup_printf (
         "template-probe-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT "-%u",
-        goodix_debug_action_name (fpi_device_get_current_action (dev)),
+        action_name,
         output->action_epoch, output->generation_id, stage);
       goodix_debug_write_gbytes (template_prefix, output->probe_template, "bin");
       g_clear_pointer (&template_prefix, g_free);
       template_prefix = g_strdup_printf (
         "template-final-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT "-%u",
-        goodix_debug_action_name (fpi_device_get_current_action (dev)),
+        action_name,
         output->action_epoch, output->generation_id, stage);
       goodix_debug_write_gbytes (template_prefix, output->final_candidate, "bin");
       for (guint i = 0; i < output->gallery_results->len; i++)
@@ -568,7 +574,7 @@ goodix_debug_log_runtime_result (FpDevice                       *dev,
           template_prefix = g_strdup_printf (
             "template-input-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT
             "-%u-%" G_GSIZE_FORMAT,
-            goodix_debug_action_name (fpi_device_get_current_action (dev)),
+            action_name,
             output->action_epoch, output->generation_id, stage,
             result->gallery_position);
           goodix_debug_write_gbytes (
@@ -577,7 +583,7 @@ goodix_debug_log_runtime_result (FpDevice                       *dev,
           template_prefix = g_strdup_printf (
             "template-after-match-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT
             "-%u-%" G_GSIZE_FORMAT,
-            goodix_debug_action_name (fpi_device_get_current_action (dev)),
+            action_name,
             output->action_epoch, output->generation_id, stage,
             result->gallery_position);
           goodix_debug_write_gbytes (

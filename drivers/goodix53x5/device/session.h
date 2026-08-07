@@ -46,10 +46,9 @@ gboolean goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
 gboolean goodix_error_indicates_stale_device (const GError *error);
 
 /**
- * Handle system sleep/wake while the device is open. Mark the device for
- * reinitialization, and for verify/identify either cancel a pending blocking
- * read (suspend) or restart the suspended SSM from its re-arm state (resume).
- * Implement FpDeviceClass::suspend and ::resume.
+ * Handle system sleep/wake while the device is open. Suspend marks the device
+ * for reinitialization and asks libfprint to cancel and join the current
+ * action. Resume never restarts old state-machine state.
  */
 void goodix_session_suspend (FpDevice *dev);
 void goodix_session_resume (FpDevice *dev);

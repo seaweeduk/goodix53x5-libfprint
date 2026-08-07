@@ -21,26 +21,49 @@
 
 #include "driver-private.h"
 
-/* Lazily acquire an admitted native Milan generation. Must run before a live
- * capture; reuse performs no extra reference capture. */
-void goodix_scan_start_ref_capture_subsm (FpiSsm   *parent_ssm,
-                                          FpDevice *dev);
+typedef enum
+{
+  /* Authentication matched; stop without waiting for a later lift event. */
+  GOODIX_SCAN_DISPOSITION_AUTH_SUCCESS = 0,
+  /* Authentication did not match or needs retry; settle the lift first. */
+  GOODIX_SCAN_DISPOSITION_AUTH_RETRY_AFTER_UP,
+  /* Enrollment accepted/rejected one probe and needs another lift-delimited cycle. */
+  GOODIX_SCAN_DISPOSITION_ENROLL_CONTINUE_AFTER_UP,
+  /* Enrollment accepted its final probe; settle the lift, then stop. */
+  GOODIX_SCAN_DISPOSITION_ENROLL_FINAL_AFTER_UP,
+  /* Stop after bounded cleanup and fail with the supplied error. */
+  GOODIX_SCAN_DISPOSITION_FATAL,
+  /* Stop after bounded cleanup with cancellation. */
+  GOODIX_SCAN_DISPOSITION_CANCELLED,
+} GoodixScanDisposition;
 
-/* Power the sensor and block (cancellably) until a validated finger-down
- * FDT event arrives. Filters baseline drift/noise false positives. */
-void goodix_scan_start_finger_wait_subsm (FpiSsm   *parent_ssm,
-                                          FpDevice *dev);
+typedef void (*GoodixScanCaptureReadyCallback) (FpDevice *dev,
+                                                 gpointer  user_data);
+typedef void (*GoodixScanCycleSettledCallback) (
+  FpDevice             *dev,
+  GoodixScanDisposition disposition,
+  gpointer              user_data);
 
-/* Capture, decrypt, and retain one canonical raw12 live frame. */
-void goodix_scan_start_capture_subsm (FpiSsm   *parent_ssm,
-                                      FpDevice *dev);
+/* Start the action-scoped profile-9 event coordinator as @parent_ssm's child.
+ * It owns command/event I/O until completion. @capture_ready is invoked only
+ * after capture, up-arm, and submission of the event receive. The action's CPU
+ * callback must return one disposition with goodix_scan_set_disposition().
+ * Enrollment may return ENROLL_CONTINUE repeatedly; @cycle_settled runs after
+ * lift/reverse handling and down rearm, before the next capture cycle. */
+void goodix_scan_start_coordinator_subsm (
+  FpiSsm                       *parent_ssm,
+  FpDevice                     *dev,
+  GoodixScanCaptureReadyCallback capture_ready,
+  GoodixScanCycleSettledCallback cycle_settled,
+  gpointer                      user_data);
 
-/* Block (cancellably) until finger lift-off, regenerate the finger-down
- * base, then sleep the MCU and power the EC off. */
-void goodix_scan_start_finger_up_subsm (FpiSsm   *parent_ssm,
-                                        FpDevice *dev);
+/* Transfer @error to the active coordinator. @error is required only for
+ * GOODIX_SCAN_DISPOSITION_FATAL and ignored (and freed) otherwise. */
+void goodix_scan_set_disposition (FpDevice             *dev,
+                                  GoodixScanDisposition disposition,
+                                  GError               *error);
 
-/* Bounded sensor shutdown (sleep + EC power off) without waiting for
- * lift-off — used after successful verify/identify. */
-void goodix_scan_start_deactivate_subsm (FpiSsm   *parent_ssm,
-                                         FpDevice *dev);
+/* Request external cancellation/failure and cancel any outstanding CPU task.
+ * Internal successful stops are requested by returning a disposition instead. */
+void goodix_scan_stop_coordinator (FpDevice *dev,
+                                   GError   *error);

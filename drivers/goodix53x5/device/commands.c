@@ -30,6 +30,13 @@
 #define GOODIX_PROTO_CMD_FDT_DOWN     0x01
 #define GOODIX_PROTO_CMD_FDT_UP       0x02
 #define GOODIX_PROTO_CMD_FDT_MANUAL   0x03
+#define GOODIX_PROTO_CATEGORY_IMAGE   0x02
+#define GOODIX_PROTO_CMD_IMAGE        0x00
+
+#define GOODIX_FDT_IRQ_DOWN           0x0002
+#define GOODIX_FDT_IRQ_REVERSE        0x0080
+#define GOODIX_FDT_IRQ_REVERSE_ALT    0x0082
+#define GOODIX_FDT_IRQ_UP             0x0200
 
 /* HV value for image capture */
 #define GOODIX_HV_VALUE 6
@@ -243,6 +250,18 @@ goodix_cmd_set_sleep_mode (FpiSsm *ssm, FpDevice *dev)
 }
 
 void
+goodix_cmd_set_sleep_mode_drain_fdt (
+  FpiSsm                    *ssm,
+  FpDevice                  *dev,
+  GoodixProfile9FdtWaitMode  cancelled_mode)
+{
+  guint8 payload[2] = { 0x01, 0x00 };
+
+  goodix_run_cmd_drain_fdt_once (ssm, dev, 0x6, 0x0, payload, 2,
+                                 cancelled_mode);
+}
+
+void
 goodix_cmd_ec_control (FpiSsm *ssm, FpDevice *dev, gboolean on)
 {
   guint8 payload_on[3] = { 0x01, 0x01, 0x00 };
@@ -369,35 +388,85 @@ goodix_cmd_parse_fdt_manual_reply (FpDevice      *dev,
 }
 
 gboolean
+goodix_cmd_parse_image_reply (FpDevice      *dev,
+                              const guint8 **out_payload,
+                              gsize         *out_payload_len,
+                              GError       **error)
+{
+  return goodix_parse_reply_exact (dev, GOODIX_PROTO_CATEGORY_IMAGE,
+                                   GOODIX_PROTO_CMD_IMAGE,
+                                   out_payload, out_payload_len, error);
+}
+
+gboolean
 goodix_cmd_parse_fdt_event (FpDevice      *dev,
-                            gboolean       up,
-                            const guint8 **out_payload,
-                            gsize         *out_payload_len,
+                            GoodixProfile9FdtWaitMode armed_mode,
+                            GoodixFdtEventType       *out_type,
+                            GoodixProfile9FdtEvent   *out_event,
                             GError       **error)
 {
   guint8 category, command;
-  guint8 expected_command =
-    up ? GOODIX_PROTO_CMD_FDT_UP : GOODIX_PROTO_CMD_FDT_DOWN;
-  const gchar *event_name = up ? "finger-up" : "FDT down";
+  guint8 expected_command;
+  const guint8 *payload;
+  gsize payload_len;
+  guint16 irq;
 
-  if (!goodix_parse_reply (dev, &category, &command, out_payload,
-                           out_payload_len, NULL))
+  g_return_val_if_fail (out_type != NULL, FALSE);
+  g_return_val_if_fail (out_event != NULL, FALSE);
+
+  if (armed_mode == GOODIX_PROFILE9_FDT_WAIT_DOWN)
+    expected_command = GOODIX_PROTO_CMD_FDT_DOWN;
+  else if (armed_mode == GOODIX_PROFILE9_FDT_WAIT_UP)
+    expected_command = GOODIX_PROTO_CMD_FDT_UP;
+  else
+    {
+      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                           "FDT event arrived without an armed command");
+      return FALSE;
+    }
+
+  if (!goodix_parse_reply (dev, &category, &command, &payload,
+                           &payload_len, NULL))
     {
       g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
-                   "Failed to parse %s event", event_name);
+                   "Failed to parse FDT event");
       return FALSE;
     }
 
   /* [irq_status(2)][touch_flag(2)][fdt_data(GOODIX_FDT_BASE_LEN)] */
   if (category != GOODIX_PROTO_CATEGORY_FDT ||
       command != expected_command ||
-      *out_payload_len < 4 + GOODIX_FDT_BASE_LEN)
+      payload_len < 4 + GOODIX_FDT_BASE_LEN)
     {
       g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
-                   "Unexpected %s event: cat=0x%02x cmd=0x%02x len=%zu",
-                   event_name, category, command, *out_payload_len);
+                   "Unexpected FDT event: armed=0x%02x cat=0x%02x cmd=0x%02x len=%zu",
+                   expected_command, category, command, payload_len);
       return FALSE;
     }
+
+  irq = payload[0] | ((guint16) payload[1] << 8);
+  switch (irq)
+    {
+    case GOODIX_FDT_IRQ_DOWN:
+      *out_type = GOODIX_FDT_EVENT_DOWN;
+      break;
+    case GOODIX_FDT_IRQ_UP:
+      *out_type = GOODIX_FDT_EVENT_UP;
+      break;
+    case GOODIX_FDT_IRQ_REVERSE:
+    case GOODIX_FDT_IRQ_REVERSE_ALT:
+      *out_type = GOODIX_FDT_EVENT_REVERSE;
+      break;
+    default:
+      g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                   "Unexpected FDT IRQ 0x%04x", irq);
+      return FALSE;
+    }
+
+  out_event->irq = irq;
+  out_event->touch_flag = payload[2] | ((guint16) payload[3] << 8);
+  memcpy (out_event->raw, payload + 4, GOODIX_FDT_BASE_LEN);
+  out_event->pending = TRUE;
 
   return TRUE;
 }

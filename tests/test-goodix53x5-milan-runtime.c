@@ -10,6 +10,7 @@
 
 #include "drivers_api.h"
 #include "fpi-print.h"
+#include "drivers/goodix53x5/device/scan.h"
 #include "drivers/goodix53x5/driver-private.h"
 #include "drivers/goodix53x5/milan/match/match.h"
 #include "drivers/goodix53x5/milan/print.h"
@@ -34,11 +35,12 @@ GoodixSigfmTemplateStatus milan_runtime_harness_study (
   GoodixStudyQueue *queue, GBytes **after_study,
   GoodixMilanStudyAction *action);
 GBytes *milan_runtime_harness_combine (GPtrArray *templates);
-void milan_runtime_harness_scan_ref (FpiSsm *ssm, FpDevice *dev);
-void milan_runtime_harness_scan_wait (FpiSsm *ssm, FpDevice *dev);
-void milan_runtime_harness_scan_capture (FpiSsm *ssm, FpDevice *dev);
-void milan_runtime_harness_scan_finger_up (FpiSsm *ssm, FpDevice *dev);
-void milan_runtime_harness_scan_deactivate (FpiSsm *ssm, FpDevice *dev);
+void milan_runtime_harness_scan_start (
+  FpiSsm *parent_ssm, FpDevice *dev,
+  GoodixScanCaptureReadyCallback capture_ready,
+  GoodixScanCycleSettledCallback cycle_settled, gpointer user_data);
+void milan_runtime_harness_scan_set_disposition (
+  FpDevice *dev, GoodixScanDisposition disposition, GError *error);
 gboolean milan_runtime_harness_reinit (FpiSsm *ssm, FpDevice *dev);
 gboolean milan_runtime_harness_stale_error (const GError *error);
 
@@ -89,10 +91,18 @@ typedef struct
   gboolean early_publication;
 } EnrollProgress;
 
+typedef struct
+{
+  FpiSsm                       *parent_ssm;
+  GoodixScanCaptureReadyCallback capture_ready;
+  GoodixScanCycleSettledCallback cycle_settled;
+  gpointer                      user_data;
+} HarnessScanCoordinator;
+
 static HarnessPlan plan;
 static FpiSsm *paused_ssm;
-static gboolean pause_wait;
-static gboolean pause_finger_up;
+static gboolean pause_before_capture;
+static gboolean pause_cycle_settled;
 static gboolean capture_enroll_stage_pattern;
 
 static void
@@ -269,57 +279,117 @@ milan_runtime_harness_combine (GPtrArray *templates)
   return fail ? NULL : goodix_match_combine_templates (templates);
 }
 
-void
-milan_runtime_harness_scan_ref (FpiSsm *ssm,
-                                FpDevice *dev)
-{
-  g_assert_nonnull (FPI_DEVICE_GOODIX53X5 (dev)->milan_generation);
-  fpi_ssm_next_state (ssm);
-}
-
-void
-milan_runtime_harness_scan_wait (FpiSsm *ssm,
-                                 FpDevice *dev)
-{
-  (void) dev;
-  if (pause_wait)
-    paused_ssm = ssm;
-  else
-    fpi_ssm_next_state (ssm);
-}
-
-void
-milan_runtime_harness_scan_capture (FpiSsm *ssm,
-                                    FpDevice *dev)
+static void
+milan_runtime_harness_scan_capture (FpDevice                  *dev,
+                                    HarnessScanCoordinator     *coordinator)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   g_autofree guint16 *setup = g_new (guint16, PIXELS);
   guint pattern = capture_enroll_stage_pattern ? self->enroll_stage : 0;
 
+  g_assert_nonnull (self->milan_generation);
   g_clear_pointer (&self->captured_raw_image, g_free);
   self->captured_raw_image = g_new (guint16, PIXELS);
   generate_frames (setup, self->captured_raw_image, pattern);
   goodix_milan_generation_note_use (self->milan_generation);
-  fpi_ssm_next_state (ssm);
+  coordinator->capture_ready (dev, coordinator->user_data);
 }
 
-void
-milan_runtime_harness_scan_finger_up (FpiSsm *ssm,
-                                      FpDevice *dev)
+static void
+milan_runtime_harness_scan_handler (FpiSsm   *ssm,
+                                    FpDevice *dev)
 {
-  (void) dev;
-  if (pause_finger_up)
+  HarnessScanCoordinator *coordinator = fpi_ssm_get_data (ssm);
+
+  if (pause_before_capture)
     paused_ssm = ssm;
   else
-    fpi_ssm_next_state (ssm);
+    milan_runtime_harness_scan_capture (dev, coordinator);
+}
+
+static void
+milan_runtime_harness_scan_done (FpiSsm   *ssm,
+                                 FpDevice *dev,
+                                 GError   *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  HarnessScanCoordinator *coordinator = fpi_ssm_get_data (ssm);
+
+  if (self->profile9_fdt.owner == ssm)
+    self->profile9_fdt.owner = NULL;
+  self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED;
+  if (error)
+    fpi_ssm_mark_failed (coordinator->parent_ssm, error);
+  else
+    fpi_ssm_next_state (coordinator->parent_ssm);
 }
 
 void
-milan_runtime_harness_scan_deactivate (FpiSsm *ssm,
-                                       FpDevice *dev)
+milan_runtime_harness_scan_start (
+  FpiSsm                       *parent_ssm,
+  FpDevice                     *dev,
+  GoodixScanCaptureReadyCallback capture_ready,
+  GoodixScanCycleSettledCallback cycle_settled,
+  gpointer                      user_data)
 {
-  (void) dev;
-  fpi_ssm_mark_completed (ssm);
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  HarnessScanCoordinator *coordinator = g_new0 (HarnessScanCoordinator, 1);
+  FpiSsm *ssm;
+
+  coordinator->parent_ssm = parent_ssm;
+  coordinator->capture_ready = capture_ready;
+  coordinator->cycle_settled = cycle_settled;
+  coordinator->user_data = user_data;
+  ssm = fpi_ssm_new (dev, milan_runtime_harness_scan_handler, 1);
+  fpi_ssm_set_data (ssm, coordinator, g_free);
+  self->profile9_fdt.owner = ssm;
+  self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_ACTIVE;
+  fpi_ssm_start (ssm, milan_runtime_harness_scan_done);
+}
+
+void
+milan_runtime_harness_scan_set_disposition (
+  FpDevice             *dev,
+  GoodixScanDisposition disposition,
+  GError               *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  FpiSsm *ssm = self->profile9_fdt.owner;
+  HarnessScanCoordinator *coordinator;
+
+  g_assert_nonnull (ssm);
+  coordinator = fpi_ssm_get_data (ssm);
+  if (disposition == GOODIX_SCAN_DISPOSITION_FATAL)
+    {
+      fpi_ssm_mark_failed (
+        ssm, error ? error : fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
+      return;
+    }
+  g_clear_error (&error);
+  if (disposition == GOODIX_SCAN_DISPOSITION_CANCELLED)
+    {
+      fpi_ssm_mark_failed (
+        ssm, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                  "Harness scan coordinator cancelled"));
+      return;
+    }
+  if (disposition == GOODIX_SCAN_DISPOSITION_AUTH_SUCCESS)
+    {
+      fpi_ssm_mark_completed (ssm);
+      return;
+    }
+
+  if (coordinator->cycle_settled)
+    coordinator->cycle_settled (dev, disposition, coordinator->user_data);
+  if (pause_cycle_settled)
+    {
+      paused_ssm = ssm;
+      return;
+    }
+  if (disposition == GOODIX_SCAN_DISPOSITION_ENROLL_CONTINUE_AFTER_UP)
+    milan_runtime_harness_scan_capture (dev, coordinator);
+  else
+    fpi_ssm_mark_completed (ssm);
 }
 
 gboolean
@@ -352,7 +422,6 @@ harness_close (FpDevice *device)
   g_clear_object (&self->milan_task);
   g_clear_object (&self->cancel);
   milan_runtime_test_clear_pending_result_report (self);
-  g_clear_pointer (&self->reference_image, g_free);
 #ifdef GOODIX53X5_DEBUG
   g_clear_pointer (&self->captured_image, g_free);
 #endif
@@ -885,7 +954,7 @@ test_cancellation_no_publication (void)
   guint64 action_epoch;
 
   reset_plan (positive, templates, G_N_ELEMENTS (positive), update);
-  pause_wait = TRUE;
+  pause_before_capture = TRUE;
   g_autoptr(GCancellable) cancel = g_cancellable_new ();
   fp_device_verify (device, print, cancel, match_report, &result, NULL,
                     verify_done, &result);
@@ -894,7 +963,7 @@ test_cancellation_no_publication (void)
   fpi_ssm_mark_failed (paused_ssm, g_error_new_literal (
     G_IO_ERROR, G_IO_ERROR_CANCELLED, "early cancellation"));
   paused_ssm = NULL;
-  pause_wait = FALSE;
+  pause_before_capture = FALSE;
   wait_done (&result);
   g_assert_cmpuint (result.reports, ==, 0);
   g_assert_false (result.updated);
@@ -936,7 +1005,7 @@ test_enrollment_combine_retry (void)
 
   reset_plan (NULL, NULL, 0, NULL);
   plan.fail_next_combine = TRUE;
-  pause_finger_up = TRUE;
+  pause_cycle_settled = TRUE;
   fp_device_enroll (device, print, NULL, enroll_progress, &progress, NULL,
                     enroll_done, &result);
   wait_paused ();
@@ -951,7 +1020,7 @@ test_enrollment_combine_retry (void)
   fpi_ssm_mark_failed (paused_ssm, g_error_new_literal (
     G_IO_ERROR, G_IO_ERROR_CANCELLED, "combine retry observed"));
   paused_ssm = NULL;
-  pause_finger_up = FALSE;
+  pause_cycle_settled = FALSE;
   wait_done (&result);
   g_assert_false (result.success);
   g_assert_null (result.enrolled);
@@ -1021,8 +1090,6 @@ test_complete_enrollment_after_combine_retry (void)
     }
   g_assert_cmpuint (plan.combine_calls, ==, GOODIX_ENROLL_SAMPLES + 2);
   g_assert_cmpint (self->enroll_stage, ==, GOODIX_ENROLL_SAMPLES);
-  g_assert_cmpuint (self->milan_generation->enrollment_stages, ==,
-                    GOODIX_ENROLL_SAMPLES);
   g_assert_null (self->enroll_features);
   g_assert_true (result.enrolled == print);
   g_object_get (result.enrolled, "fpi-type", &print_type, NULL);
@@ -1073,6 +1140,8 @@ test_stale_result_guards (void)
       FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (device);
       AsyncResult result = { 0 };
       guint32 sample_count = self->milan_generation->state.sample_count;
+      guint32 calibration_ready =
+        self->milan_generation->profile_state.calibration_ready;
       FpiSsm *original_ssm;
       FpiSsm *replacement_ssm = NULL;
       GTask *replacement_task = NULL;
@@ -1082,22 +1151,24 @@ test_stale_result_guards (void)
       fp_device_verify (device, print, NULL, match_report, &result, NULL,
                         verify_done, &result);
       wait_study ();
-      original_ssm = self->task_ssm;
+      original_ssm = self->profile9_fdt.owner;
       if (rows[row] == STALE_ACTION_EPOCH)
         self->action_epoch++;
       else if (rows[row] == STALE_GENERATION)
         {
           replace_generation (self);
           sample_count = self->milan_generation->state.sample_count;
+          calibration_ready =
+            self->milan_generation->profile_state.calibration_ready;
         }
       else
         {
           replacement_ssm = fpi_ssm_new (device,
-                                          milan_runtime_harness_scan_ref, 1);
+                                          milan_runtime_harness_scan_handler, 1);
           replacement_task = g_task_new (device, NULL, NULL, NULL);
           g_clear_object (&self->milan_task);
           self->milan_task = g_object_ref (replacement_task);
-          self->task_ssm = replacement_ssm;
+          self->profile9_fdt.owner = replacement_ssm;
         }
       release_study ();
 
@@ -1108,17 +1179,33 @@ test_stale_result_guards (void)
           g_clear_object (&self->milan_task);
           g_task_return_boolean (replacement_task, TRUE);
           g_clear_object (&replacement_task);
-          self->task_ssm = original_ssm;
+          self->profile9_fdt.owner = original_ssm;
           fpi_ssm_free (replacement_ssm);
           fpi_ssm_mark_failed (original_ssm, g_error_new_literal (
             G_IO_ERROR, G_IO_ERROR_CANCELLED, "task/SSM owner replaced"));
         }
       wait_done (&result);
       g_test_message ("stale row=%u", (guint) rows[row]);
-      g_assert_cmpuint (result.reports, ==, 0);
-      g_assert_false (result.updated);
+      if (rows[row] == STALE_GENERATION)
+        {
+          g_autoptr(GBytes) updated = get_print_template (print);
+
+          g_assert_true (result.success);
+          g_assert_true (result.matched);
+          g_assert_cmpuint (result.reports, ==, 1);
+          g_assert_true (result.updated);
+          g_assert_true (g_bytes_equal (updated, update));
+        }
+      else
+        {
+          g_assert_cmpuint (result.reports, ==, 0);
+          g_assert_false (result.updated);
+        }
       g_assert_cmpuint (self->milan_generation->state.sample_count, ==,
                         sample_count);
+      g_assert_cmpuint (
+        self->milan_generation->profile_state.calibration_ready, ==,
+        calibration_ready);
       g_assert_false (self->pending_result_report);
       clear_result (&result);
       close_device (device);

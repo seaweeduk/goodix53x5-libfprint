@@ -21,6 +21,13 @@
 
 #include "driver-private.h"
 
+typedef enum
+{
+  GOODIX_FDT_EVENT_DOWN = 0,
+  GOODIX_FDT_EVENT_UP,
+  GOODIX_FDT_EVENT_REVERSE,
+} GoodixFdtEventType;
+
 /* ========================================================================
  * Named device commands
  *
@@ -86,6 +93,10 @@ void goodix_cmd_request_image (FpiSsm *ssm, FpDevice *dev,
 
 /* Put the MCU into sleep mode. ACK only. */
 void goodix_cmd_set_sleep_mode (FpiSsm *ssm, FpDevice *dev);
+void goodix_cmd_set_sleep_mode_drain_fdt (
+  FpiSsm                    *ssm,
+  FpDevice                  *dev,
+  GoodixProfile9FdtWaitMode  cancelled_mode);
 
 /* Switch sensor EC power on or off. Expects data (success flag). */
 void goodix_cmd_ec_control (FpiSsm *ssm, FpDevice *dev, gboolean on);
@@ -138,11 +149,17 @@ gboolean goodix_cmd_parse_fdt_manual_reply (FpDevice      *dev,
                                              gsize         *out_payload_len,
                                              GError       **error);
 
+/* Parse the encrypted frame returned by goodix_cmd_request_image(). */
+gboolean goodix_cmd_parse_image_reply (FpDevice      *dev,
+                                       const guint8 **out_payload,
+                                       gsize         *out_payload_len,
+                                       GError       **error);
+
 /* Parse an FDT down/up event delivered after goodix_cmd_fdt_down_setup() /
  * goodix_cmd_fdt_up_setup(). The payload layout is
  * [irq_status(2)][touch_flag(2)][fdt_data(GOODIX_FDT_BASE_LEN)]. */
 gboolean goodix_cmd_parse_fdt_event (FpDevice      *dev,
-                                     gboolean       up,
-                                     const guint8 **out_payload,
-                                     gsize         *out_payload_len,
+                                     GoodixProfile9FdtWaitMode armed_mode,
+                                     GoodixFdtEventType       *out_type,
+                                     GoodixProfile9FdtEvent   *out_event,
                                      GError       **error);
