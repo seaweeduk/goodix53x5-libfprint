@@ -181,21 +181,19 @@ goodix_milan_generation_reset_preprocess (GoodixMilanGeneration *generation)
 {
   g_return_if_fail (generation != NULL);
   goodix_milan_preprocess_reset (&generation->state);
+  memset (&generation->profile_state, 0, sizeof (generation->profile_state));
 }
 
 gboolean
 goodix_milan_base_attempt_publish (GoodixMilanBaseAttempt  *attempt,
                                    guint64                  generation_id,
                                    GoodixMilanGeneration **generation,
-                                   guint16                **legacy_tx_off,
                                    GError                 **error)
 {
   GoodixMilanGeneration *published;
 
   g_return_val_if_fail (attempt != NULL, FALSE);
   g_return_val_if_fail (generation != NULL, FALSE);
-  g_return_val_if_fail (legacy_tx_off != NULL, FALSE);
-
   if (!attempt->admitted || !attempt->tx_on || !attempt->tx_off ||
       attempt->tx_on_values != GOODIX_MILAN_SENSOR_PIXELS ||
       attempt->tx_off_values != GOODIX_MILAN_SENSOR_PIXELS ||
@@ -214,7 +212,7 @@ goodix_milan_base_attempt_publish (GoodixMilanBaseAttempt  *attempt,
   published->admitted = TRUE;
   goodix_milan_generation_reset_preprocess (published);
 
-  *legacy_tx_off = g_steal_pointer (&attempt->tx_off);
+  g_clear_pointer (&attempt->tx_off, g_free);
   attempt->tx_on_values = 0;
   attempt->tx_off_values = 0;
   attempt->admitted = FALSE;
@@ -231,6 +229,7 @@ goodix_milan_generation_free (GoodixMilanGeneration *generation)
 
   g_clear_pointer (&generation->setup_tx_on, g_free);
   memset (&generation->state, 0, sizeof (generation->state));
+  memset (&generation->profile_state, 0, sizeof (generation->profile_state));
   g_free (generation);
 }
 
@@ -307,7 +306,9 @@ goodix_milan_replace_raw_frame (guint16 **owner,
 
 typedef enum
 {
-  GOODIX_BASE_EC_POWER_ON = 0,
+  GOODIX_BASE_UPLOAD_CONFIG = 0,
+  GOODIX_BASE_UPLOAD_CONFIG_DONE,
+  GOODIX_BASE_EC_POWER_ON,
   GOODIX_BASE_EC_POWER_ON_DONE,
   GOODIX_BASE_FDT_TX_ON_BEFORE,
   GOODIX_BASE_FDT_TX_ON_BEFORE_DONE,
@@ -330,10 +331,16 @@ typedef enum
 typedef struct
 {
   GoodixMilanBaseAttempt attempt;
+  FpiSsm                *parent_ssm;
   guint8                 fdt_tx_on_before[GOODIX_FDT_BASE_LEN];
   guint8                 fdt_tx_off[GOODIX_FDT_BASE_LEN];
   guint8                 recovery_fdt_tx_on[GOODIX_FDT_BASE_LEN];
+  guint8                 candidate_base_down[GOODIX_FDT_BASE_LEN];
+  guint8                 candidate_base_up[GOODIX_FDT_BASE_LEN];
+  guint8                 candidate_base_manual[GOODIX_FDT_BASE_LEN];
   guint16                recovery_touch_flag;
+  guint                  config_attempts;
+  gboolean               forced_refresh;
   gboolean               leave_powered;
 } GoodixBaseSsmData;
 
@@ -348,9 +355,14 @@ goodix_base_ssm_data_free (GoodixBaseSsmData *data)
 
 static gboolean
 goodix_base_check_cancelled (FpiSsm              *ssm,
-                             FpiDeviceGoodix53x5 *self,
-                             GoodixBaseSsmData   *data)
+                              FpiDeviceGoodix53x5 *self,
+                              GoodixBaseSsmData   *data)
 {
+  /* A dispatched FDT handler is synchronous in the native event worker.
+   * Finish its forced refresh before the coordinator honors action stop. */
+  if (data->forced_refresh)
+    return FALSE;
+
   if (!self->cancel || !g_cancellable_is_cancelled (self->cancel))
     return FALSE;
 
@@ -367,14 +379,12 @@ goodix_base_decode_reply (FpDevice     *dev,
                           GError      **error)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  guint8 category, command;
   const guint8 *payload;
   gsize payload_len, decrypted_len;
   g_autofree guint8 *decrypted = NULL;
   guint16 *frame;
 
-  if (!goodix_parse_reply (dev, &category, &command,
-                           &payload, &payload_len, error))
+  if (!goodix_cmd_parse_image_reply (dev, &payload, &payload_len, error))
     return NULL;
 
   decrypted = goodix_crypto_gtls_decrypt_sensor_data (&self->gtls,
@@ -430,30 +440,37 @@ goodix_base_complete_recovery (FpiSsm              *ssm,
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
   goodix_milan_base_attempt_reset (&data->attempt);
-  goodix_milan_generation_invalidate (&self->milan_generation);
-  g_clear_pointer (&self->reference_image, g_free);
+  self->profile9_fdt.base_valid = FALSE;
 
-  self->fdt_touch_flag = touch_flag;
-  g_clear_pointer (&self->fdt_event_data, g_free);
-  self->fdt_event_data = g_memdup2 (fdt_tx_on, GOODIX_FDT_BASE_LEN);
-  goodix_device_generate_fdt_up_base (self->fdt_event_data,
-                                      self->fdt_touch_flag,
+  if (data->forced_refresh)
+    {
+      self->profile9_fdt.refresh_outcome =
+        GOODIX_PROFILE9_FDT_REFRESH_OUTCOME_VALIDATION_FAILED;
+      data->leave_powered = TRUE;
+      fp_info ("Profile-9 FDT refresh validation failed at %s", checkpoint);
+      goodix_base_timing_done (self, dev, "validation_failed");
+      fpi_ssm_mark_completed (ssm);
+      return;
+    }
+
+  goodix_milan_generation_invalidate (&self->milan_generation);
+  self->profile9_fdt.event.irq = 0;
+  self->profile9_fdt.event.touch_flag = touch_flag;
+  memcpy (self->profile9_fdt.event.raw, fdt_tx_on, GOODIX_FDT_BASE_LEN);
+  self->profile9_fdt.event.pending = TRUE;
+  self->profile9_fdt.initial_recovery_pending = TRUE;
+  goodix_device_generate_fdt_up_base (self->profile9_fdt.event.raw,
+                                      self->profile9_fdt.event.touch_flag,
                                       &self->calib,
-                                      self->calib.fdt_base_up);
-  self->milan_base_recovery = (touch_flag & 0x0fff) != 0
-                                ? GOODIX_MILAN_BASE_RECOVERY_REMOVE_FINGER
-                                : GOODIX_MILAN_BASE_RECOVERY_RETRY;
-  data->leave_powered = TRUE;
+                                      self->profile9_fdt.base_up);
+  data->leave_powered = FALSE;
 
   fp_info ("Milan base acquisition needs %s at %s (touch_flag=0x%03x)",
-           self->milan_base_recovery ==
-             GOODIX_MILAN_BASE_RECOVERY_REMOVE_FINGER
-             ? "finger removal" : "retry",
+           (touch_flag & 0x0fff) != 0 ? "finger removal" : "a later event",
            checkpoint, touch_flag & 0x0fff);
   goodix_base_timing_done (
     self, dev,
-    self->milan_base_recovery == GOODIX_MILAN_BASE_RECOVERY_REMOVE_FINGER
-      ? "remove_finger" : "retry");
+    (touch_flag & 0x0fff) != 0 ? "remove_finger" : "pending_event");
   fpi_ssm_mark_completed (ssm);
 }
 
@@ -491,6 +508,42 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
+    case GOODIX_BASE_UPLOAD_CONFIG:
+      if (!data->forced_refresh)
+        {
+          fpi_ssm_jump_to_state (ssm, GOODIX_BASE_EC_POWER_ON);
+          return;
+        }
+      else
+        {
+          gsize config_len;
+          const guint8 *default_config =
+            goodix_device_get_default_config (&config_len);
+          g_autofree guint8 *config =
+            g_memdup2 (default_config, config_len);
+
+          goodix_device_patch_config (config, config_len, &self->calib);
+          data->config_attempts++;
+          goodix_cmd_upload_config (ssm, dev, config, config_len);
+        }
+      break;
+
+    case GOODIX_BASE_UPLOAD_CONFIG_DONE:
+      if (!goodix_cmd_parse_config_reply (dev))
+        {
+          if (data->config_attempts < 2)
+            {
+              fpi_ssm_jump_to_state (ssm, GOODIX_BASE_UPLOAD_CONFIG);
+              return;
+            }
+          fpi_ssm_mark_failed (
+            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                           "Profile-9 refresh config upload failed"));
+          return;
+        }
+      fpi_ssm_next_state (ssm);
+      break;
+
     case GOODIX_BASE_EC_POWER_ON:
       GOODIX53X5_DEBUG_ONLY (
       self->debug_timing.ref_capture_started_us = g_get_monotonic_time ();
@@ -520,7 +573,8 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_BASE_FDT_TX_ON_BEFORE:
       data->attempt.stage = GOODIX_MILAN_BASE_STAGE_FDT_TX_ON_BEFORE;
-      goodix_cmd_fdt_manual (ssm, dev, TRUE, self->calib.fdt_base_manual);
+      goodix_cmd_fdt_manual (ssm, dev, TRUE,
+                             self->profile9_fdt.base_manual);
       break;
 
     case GOODIX_BASE_FDT_TX_ON_BEFORE_DONE:
@@ -556,7 +610,8 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_BASE_FDT_TX_OFF:
       data->attempt.stage = GOODIX_MILAN_BASE_STAGE_FDT_TX_OFF;
-      goodix_cmd_fdt_manual (ssm, dev, FALSE, self->calib.fdt_base_manual);
+      goodix_cmd_fdt_manual (ssm, dev, FALSE,
+                             self->profile9_fdt.base_manual);
       break;
 
     case GOODIX_BASE_FDT_TX_OFF_DONE:
@@ -570,7 +625,6 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
                                              GOODIX_FDT_BASE_LEN,
                                              self->calib.delta_fdt))
         {
-          goodix_milan_generation_invalidate (&self->milan_generation);
           goodix_milan_base_attempt_reset (&data->attempt);
           fpi_ssm_jump_to_state (ssm, GOODIX_BASE_RECOVERY_FDT_TX_ON);
           return;
@@ -597,15 +651,13 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
         goodix_milan_base_attempt_take_frame (&data->attempt, FALSE, &frame,
                                               GOODIX_SENSOR_PIXELS);
 
-        if (goodix_debug_dump_txon_ref_enabled ())
-          goodix_debug_dump_raw12 ("raw12-ref-txon", data->attempt.tx_on,
-                                   GOODIX_SENSOR_PIXELS);
+        goodix_debug_dump_raw12 ("raw12-ref-txon", data->attempt.tx_on,
+                                 GOODIX_SENSOR_PIXELS);
         goodix_debug_dump_raw12 ("raw12-ref", data->attempt.tx_off,
                                  GOODIX_SENSOR_PIXELS);
 
         if (!goodix_milan_base_attempt_admit (&data->attempt, &error))
           {
-            goodix_milan_generation_invalidate (&self->milan_generation);
             if (error)
               fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
             else
@@ -621,7 +673,8 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_BASE_FDT_TX_ON_AFTER:
       data->attempt.stage = GOODIX_MILAN_BASE_STAGE_FDT_TX_ON_AFTER;
-      goodix_cmd_fdt_manual (ssm, dev, TRUE, self->calib.fdt_base_manual);
+      goodix_cmd_fdt_manual (ssm, dev, TRUE,
+                             self->profile9_fdt.base_manual);
       break;
 
     case GOODIX_BASE_FDT_TX_ON_AFTER_DONE:
@@ -629,7 +682,6 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
         guint8 fdt_tx_on_after[GOODIX_FDT_BASE_LEN];
         guint64 generation_id;
         GoodixMilanGeneration *generation = NULL;
-        guint16 *legacy_tx_off = NULL;
         guint16 touch_flag;
 
         if (!goodix_base_parse_fdt (dev, fdt_tx_on_after, &touch_flag, &error))
@@ -651,16 +703,16 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
          * TX-on sample after the complete sequence is admitted. */
         goodix_device_generate_fdt_base (data->fdt_tx_on_before,
                                          GOODIX_FDT_BASE_LEN,
-                                         self->calib.fdt_base_down);
-        memcpy (self->calib.fdt_base_up, self->calib.fdt_base_down,
+                                         data->candidate_base_down);
+        memcpy (data->candidate_base_up, data->candidate_base_down,
                 GOODIX_FDT_BASE_LEN);
-        memcpy (self->calib.fdt_base_manual, self->calib.fdt_base_down,
+        memcpy (data->candidate_base_manual, data->candidate_base_down,
                 GOODIX_FDT_BASE_LEN);
         data->attempt.stage = GOODIX_MILAN_BASE_STAGE_PUBLISH;
         if (!goodix_milan_generation_allocate_id (&self->last_milan_generation_id,
                                                    &generation_id, &error) ||
             !goodix_milan_base_attempt_publish (&data->attempt, generation_id,
-                                                &generation, &legacy_tx_off,
+                                                &generation,
                                                 &error))
           {
             fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
@@ -669,8 +721,21 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
 
         goodix_milan_generation_invalidate (&self->milan_generation);
         self->milan_generation = generation;
-        g_clear_pointer (&self->reference_image, g_free);
-        self->reference_image = legacy_tx_off;
+        memcpy (self->profile9_fdt.base_down, data->candidate_base_down,
+                GOODIX_FDT_BASE_LEN);
+        memcpy (self->profile9_fdt.base_up, data->candidate_base_up,
+                GOODIX_FDT_BASE_LEN);
+        memcpy (self->profile9_fdt.base_manual, data->candidate_base_manual,
+                GOODIX_FDT_BASE_LEN);
+        memset (self->profile9_fdt.drift_anchor, 0,
+                sizeof (self->profile9_fdt.drift_anchor));
+        self->profile9_fdt.drift_anchor_empty = TRUE;
+        self->profile9_fdt.base_valid = TRUE;
+        self->profile9_fdt.event.pending = FALSE;
+        self->profile9_fdt.initial_recovery_pending = FALSE;
+        if (data->forced_refresh)
+          self->profile9_fdt.refresh_outcome =
+            GOODIX_PROFILE9_FDT_REFRESH_OUTCOME_PUBLISHED;
         fp_info ("Admitted Milan generation id=%" G_GUINT64_FORMAT
                  " subtype=%u MAD=%" G_GUINT64_FORMAT,
                  generation_id, self->milan_sensor_subtype,
@@ -682,7 +747,8 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_BASE_RECOVERY_FDT_TX_ON:
-      goodix_cmd_fdt_manual (ssm, dev, TRUE, self->calib.fdt_base_manual);
+      goodix_cmd_fdt_manual (ssm, dev, TRUE,
+                             self->profile9_fdt.base_manual);
       break;
 
     case GOODIX_BASE_RECOVERY_FDT_TX_ON_DONE:
@@ -711,6 +777,8 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
     case GOODIX_BASE_CLEANUP_EC_POWER_OFF_DONE:
       if (!goodix_cmd_parse_ec_control_reply (dev))
         {
+          if (data->forced_refresh || self->profile9_fdt.owner)
+            self->needs_reinit = TRUE;
           fpi_ssm_mark_failed (
             ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                            "Reference EC power-off failed"));
@@ -725,16 +793,59 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
     }
 }
 
-void
-goodix_milan_base_start_ensure_subsm (FpiSsm   *parent_ssm,
-                                      FpDevice *dev)
+static void
+goodix_base_ssm_done (FpiSsm   *ssm,
+                      FpDevice *dev,
+                      GError   *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixBaseSsmData *data = fpi_ssm_get_data (ssm);
+
+  if (data->forced_refresh && error)
+    {
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        self->profile9_fdt.refresh_outcome =
+          GOODIX_PROFILE9_FDT_REFRESH_OUTCOME_CANCELLED;
+      else
+        {
+          self->profile9_fdt.refresh_outcome =
+            GOODIX_PROFILE9_FDT_REFRESH_OUTCOME_FATAL;
+          self->needs_reinit = TRUE;
+        }
+    }
+
+  if (error)
+    fpi_ssm_mark_failed (data->parent_ssm, error);
+  else
+    fpi_ssm_next_state (data->parent_ssm);
+}
+
+static void
+goodix_milan_base_start_subsm (FpiSsm                        *parent_ssm,
+                               FpDevice                      *dev,
+                               gboolean                       forced_refresh,
+                               GoodixProfile9FdtRefreshReason reason)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   GoodixBaseSsmData *data;
   FpiSsm *sub;
 
+  if (forced_refresh)
+    {
+      self->profile9_fdt.refresh_reason = reason;
+      self->profile9_fdt.refresh_outcome =
+        GOODIX_PROFILE9_FDT_REFRESH_OUTCOME_IN_PROGRESS;
+      self->profile9_fdt.base_valid = FALSE;
+    }
+
   if (self->milan_sensor_subtype != GOODIX_MILAN_VALIDATED_SUBTYPE)
     {
+      if (forced_refresh)
+        {
+          self->profile9_fdt.refresh_outcome =
+            GOODIX_PROFILE9_FDT_REFRESH_OUTCOME_FATAL;
+          self->needs_reinit = TRUE;
+        }
       fpi_ssm_mark_failed (parent_ssm,
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
                                                       "Native Milan subtype invariant failed for chip 0x%08x subtype %u",
@@ -743,19 +854,44 @@ goodix_milan_base_start_ensure_subsm (FpiSsm   *parent_ssm,
       return;
     }
 
-  if (self->milan_generation != NULL)
+  if (!forced_refresh && self->milan_generation != NULL)
     {
       fpi_ssm_next_state (parent_ssm);
       return;
     }
 
-  self->milan_base_recovery = GOODIX_MILAN_BASE_RECOVERY_NONE;
+  if (!forced_refresh)
+    {
+      self->profile9_fdt.base_valid = FALSE;
+      self->profile9_fdt.initial_recovery_pending = FALSE;
+    }
   data = g_new0 (GoodixBaseSsmData, 1);
+  data->parent_ssm = parent_ssm;
+  data->forced_refresh = forced_refresh;
+  data->leave_powered = forced_refresh;
   goodix_milan_base_attempt_init (&data->attempt);
   sub = fpi_ssm_new_full (dev, goodix_base_ssm_handler,
                           GOODIX_BASE_NUM_STATES,
                           GOODIX_BASE_CLEANUP_SLEEP,
                           "goodix-milan-base");
   fpi_ssm_set_data (sub, data, (GDestroyNotify) goodix_base_ssm_data_free);
-  fpi_ssm_start_subsm (parent_ssm, sub);
+  fpi_ssm_start (sub, goodix_base_ssm_done);
+}
+
+void
+goodix_milan_base_start_ensure_subsm (FpiSsm   *parent_ssm,
+                                      FpDevice *dev)
+{
+  goodix_milan_base_start_subsm (parent_ssm, dev, FALSE,
+                                 GOODIX_PROFILE9_FDT_REFRESH_NONE);
+}
+
+void
+goodix_milan_base_start_forced_refresh_subsm (
+  FpiSsm                        *parent_ssm,
+  FpDevice                      *dev,
+  GoodixProfile9FdtRefreshReason reason)
+{
+  g_return_if_fail (reason != GOODIX_PROFILE9_FDT_REFRESH_NONE);
+  goodix_milan_base_start_subsm (parent_ssm, dev, TRUE, reason);
 }

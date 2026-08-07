@@ -18,9 +18,17 @@ typedef struct _GoodixMilanRuntimeOutput GoodixMilanRuntimeOutput;
 #ifdef GOODIX53X5_DEBUG
 
 /* The diagnostic build recognizes:
- * GOODIX53X5_DUMP_DIR, GOODIX53X5_DUMP_PROBES, GOODIX53X5_DUMP_TXON_REF,
- * GOODIX53X5_LOG_TIMING, and GOODIX53X5_LOG_DIAGNOSTICS. */
+ * GOODIX53X5_DUMP_DIR, GOODIX53X5_DUMP_PROBES, GOODIX53X5_LOG_TIMING, and
+ * GOODIX53X5_LOG_DIAGNOSTICS. */
 #define GOODIX53X5_DEBUG_ONLY(...) __VA_ARGS__
+
+typedef struct
+{
+  FpiDeviceAction action;
+  guint64         generation_use_index;
+  gchar           setup_txon_sha256[65];
+  gchar           live_raw_sha256[65];
+} GoodixDebugRuntimeMetadata;
 
 typedef struct
 {
@@ -42,7 +50,6 @@ typedef struct
 } GoodixDebugTiming;
 
 gboolean goodix_debug_dump_enabled (void);
-gboolean goodix_debug_dump_txon_ref_enabled (void);
 void goodix_debug_dump_image (const gchar  *prefix,
                               const guint8 *img,
                               gsize         len);
@@ -77,9 +84,16 @@ void goodix_debug_timing_open_done (FpiDeviceGoodix53x5 *self,
                                     FpDevice            *dev,
                                     const gchar         *detail);
 
+void goodix_debug_capture_runtime_metadata (
+  GoodixDebugRuntimeMetadata *metadata,
+  FpiDeviceAction             action,
+  const guint16              *setup_tx_on,
+  const guint16              *live_raw,
+  guint64                     generation_use_index);
 void goodix_debug_log_runtime_result (
   FpDevice                       *dev,
   guint                           stage,
+  const GoodixDebugRuntimeMetadata *metadata,
   const GoodixMilanRuntimeOutput *output);
 
 #else
@@ -87,7 +101,6 @@ void goodix_debug_log_runtime_result (
 #define GOODIX53X5_DEBUG_ONLY(...)
 
 #define goodix_debug_dump_enabled() FALSE
-#define goodix_debug_dump_txon_ref_enabled() FALSE
 #define goodix_debug_timing_enabled() FALSE
 #define goodix_debug_dump_image(...) G_STMT_START { } G_STMT_END
 #define goodix_debug_dump_raw12(...) G_STMT_START { } G_STMT_END

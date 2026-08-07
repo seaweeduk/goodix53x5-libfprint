@@ -594,10 +594,11 @@ milan_profile9_density_class1 (const uint16_t *scores,
 
 static void
 milan_profile9_component_class1 (GoodixMilanPreprocessState *state,
-                                 const uint16_t             *gradient,
-                                 size_t                      rows,
-                                 size_t                      columns,
-                                 uint8_t                    *classes)
+                                  const uint16_t             *gradient,
+                                  size_t                      rows,
+                                  size_t                      columns,
+                                  uint8_t                    *classes,
+                                  int                         update_retained_state)
 {
   static const int dx[4] = { -1, 0, 1, 0 };
   static const int dy[4] = { 0, -1, 0, 1 };
@@ -700,17 +701,20 @@ milan_profile9_component_class1 (GoodixMilanPreprocessState *state,
          labels[i] == top[2]))
       classes[i] = 1;
 
-  for (size_t i = 0; i < count; i++)
+  if (update_retained_state)
     {
-      int candidate = (int16_t) gradient[i] > threshold;
+      for (size_t i = 0; i < count; i++)
+        {
+          int value = (int16_t) gradient[i];
 
-      if (candidate && state->profile9_component_age[i] < 50)
-        state->profile9_component_age[i]++;
-      else if (!candidate && state->profile9_component_age[i] != 0)
-        state->profile9_component_age[i]--;
+          if (value > threshold && state->profile9_component_age[i] < 5)
+            state->profile9_component_age[i]++;
+          else if (value <= average && state->profile9_component_age[i] != 0)
+            state->profile9_component_age[i]--;
+        }
+      if (state->profile9_history_update_count < 5)
+        state->profile9_history_update_count++;
     }
-  if (state->profile9_history_update_count < 5)
-    state->profile9_history_update_count++;
 
 out:
   free (queue);
@@ -945,6 +949,7 @@ goodix_milan_profile9_build_broken_mask (
   uint16_t *class2_scores = NULL;
   int low;
   int high;
+  size_t active_count = 0;
   int result = -1;
 
   if (!state || !difference || !normalized_live || !contrast_mask ||
@@ -952,6 +957,8 @@ goodix_milan_profile9_build_broken_mask (
       columns > SIZE_MAX / rows || rows * columns > GOODIX_MILAN_SENSOR_PIXELS)
     return -1;
   count = rows * columns;
+  for (size_t i = 0; i < count; i++)
+    active_count += contrast_mask[i] != 0;
   valid = malloc (count);
   blurred = malloc (count * sizeof(*blurred));
   gradient = calloc (count, sizeof(*gradient));
@@ -1098,7 +1105,8 @@ goodix_milan_profile9_build_broken_mask (
     }
 
   milan_profile9_component_class1 (
-    state, gradient, rows, columns, broken_mask);
+    state, gradient, rows, columns, broken_mask,
+    active_count * 100 >= count * 75);
 
   for (size_t i = 0; i < count; i++)
     if (valid[i] != 0 && (int16_t) blurred[i] < low)

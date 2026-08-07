@@ -35,6 +35,10 @@
 #define GOODIX_PROTO_CATEGORY_ACK     0x0B
 #define GOODIX_PROTO_CMD_ACK          0x00
 #define GOODIX_PROTO_ACK_FLAG_VALID   0x01
+#define GOODIX_PROTO_CATEGORY_FDT     0x03
+#define GOODIX_PROTO_CMD_FDT_DOWN     0x01
+#define GOODIX_PROTO_CMD_FDT_UP       0x02
+#define GOODIX_FDT_EVENT_PAYLOAD_LEN  (4 + GOODIX_FDT_BASE_LEN)
 #define GOODIX_PROTO_CMD_BYTE(category, command) \
   (((category) << 4) | ((command) << 1))
 
@@ -46,6 +50,41 @@ typedef enum {
   GOODIX_CMD_RECV_DATA,
   GOODIX_CMD_NUM_STATES,
 } GoodixCmdState;
+
+typedef struct
+{
+  guint64                       token;
+  guint                         timeout_ms;
+  GCancellable                 *cancellable;
+  GoodixRecvCancelledCallback   cancelled_cb;
+  gpointer                      cancelled_data;
+} GoodixRecvOperation;
+
+typedef struct
+{
+  GoodixCmd                   cmd;
+  FpiSsm                     *parent_ssm;
+  GoodixProfile9FdtWaitMode   cancelled_fdt_mode;
+} GoodixCmdOperation;
+
+static void
+goodix_mark_coordinator_io_failure (FpiDeviceGoodix53x5 *self,
+                                    const GError         *error)
+{
+  if (self->profile9_fdt.owner &&
+      !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+    self->needs_reinit = TRUE;
+}
+
+static void
+goodix_cmd_operation_free (GoodixCmdOperation *operation)
+{
+  if (!operation)
+    return;
+
+  g_free (operation->cmd.payload);
+  g_free (operation);
+}
 
 static gboolean
 goodix_validate_ack_for_cmd (FpDevice        *dev,
@@ -88,6 +127,42 @@ goodix_validate_ack_for_cmd (FpDevice        *dev,
   return TRUE;
 }
 
+static gboolean
+goodix_try_drain_cancelled_fdt (FpDevice           *dev,
+                                GoodixCmdOperation *operation,
+                                GError            **error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  guint8 category, command;
+  guint8 expected_command;
+  const guint8 *payload;
+  gsize payload_len;
+  guint16 irq;
+
+  if (!goodix_proto_rx_parse (&self->rx, &category, &command,
+                              &payload, &payload_len))
+    return FALSE;
+  if (category != GOODIX_PROTO_CATEGORY_FDT)
+    return FALSE;
+
+  expected_command =
+    operation->cancelled_fdt_mode == GOODIX_PROFILE9_FDT_WAIT_DOWN
+      ? GOODIX_PROTO_CMD_FDT_DOWN : GOODIX_PROTO_CMD_FDT_UP;
+  if (command != expected_command || payload_len != GOODIX_FDT_EVENT_PAYLOAD_LEN)
+    {
+      g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                   "Unexpected FDT packet during cleanup: armed=0x%02x cat=0x%02x cmd=0x%02x len=%zu",
+                   expected_command, category, command, payload_len);
+      return FALSE;
+    }
+
+  irq = payload[0] | ((guint16) payload[1] << 8);
+  operation->cancelled_fdt_mode = GOODIX_PROFILE9_FDT_WAIT_NONE;
+  fp_dbg ("Drained cancelled FDT event before sleep ACK: mode=0x%02x irq=0x%04x",
+          expected_command, irq);
+  return TRUE;
+}
+
 /* ========================================================================
  * USB I/O helpers
  * ======================================================================== */
@@ -100,6 +175,7 @@ goodix_tx_cb (FpiUsbTransfer *transfer,
 {
   if (error)
     {
+      goodix_mark_coordinator_io_failure (FPI_DEVICE_GOODIX53X5 (dev), error);
       fpi_ssm_mark_failed (transfer->ssm, error);
       return;
     }
@@ -192,24 +268,76 @@ static void goodix_rx_cb (FpiUsbTransfer *transfer,
                           gpointer        user_data,
                           GError         *error);
 
+static void
+goodix_recv_operation_free (GoodixRecvOperation *operation)
+{
+  g_clear_object (&operation->cancellable);
+  g_free (operation);
+}
+
+static gboolean
+goodix_recv_operation_finish (FpDevice           *dev,
+                               FpiSsm             *ssm,
+                               GoodixRecvOperation *operation)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (!self->rx_active || self->rx_owner != ssm ||
+      self->rx_token != operation->token)
+    return FALSE;
+
+  self->rx_active = FALSE;
+  self->rx_owner = NULL;
+  return TRUE;
+}
+
+static gboolean
+goodix_recv_start_full (FpiSsm                     *ssm,
+                        FpDevice                   *dev,
+                        guint                       timeout_ms,
+                        GCancellable               *cancellable,
+                        GoodixRecvCancelledCallback cancelled_cb,
+                        gpointer                    cancelled_data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixRecvOperation *operation;
+  FpiUsbTransfer *transfer;
+
+  if (self->rx_active ||
+      (self->cmd_owner != NULL && self->cmd_ssm != ssm))
+    return FALSE;
+
+  operation = g_new0 (GoodixRecvOperation, 1);
+  operation->token = ++self->rx_token;
+  if (operation->token == 0)
+    operation->token = ++self->rx_token;
+  operation->timeout_ms = timeout_ms;
+  operation->cancellable = cancellable ? g_object_ref (cancellable) : NULL;
+  operation->cancelled_cb = cancelled_cb;
+  operation->cancelled_data = cancelled_data;
+
+  goodix_proto_rx_reset (&self->rx);
+  self->rx_active = TRUE;
+  self->rx_owner = ssm;
+
+  transfer = fpi_usb_transfer_new (dev);
+  transfer->ssm = ssm;
+  fpi_usb_transfer_fill_bulk (transfer, GOODIX_EP_IN, GOODIX_USB_CHUNK_SIZE);
+  fpi_usb_transfer_submit (transfer, timeout_ms, cancellable,
+                           goodix_rx_cb, operation);
+  return TRUE;
+}
+
 void
 goodix_recv_start (FpiSsm       *ssm,
                    FpDevice     *dev,
                    guint         timeout_ms,
                    GCancellable *cancellable)
 {
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  FpiUsbTransfer *transfer;
-
-  goodix_proto_rx_reset (&self->rx);
-  self->rx_timeout = timeout_ms;
-  self->rx_cancellable = cancellable;
-
-  transfer = fpi_usb_transfer_new (dev);
-  transfer->ssm = ssm;
-  fpi_usb_transfer_fill_bulk (transfer, GOODIX_EP_IN, GOODIX_USB_CHUNK_SIZE);
-  fpi_usb_transfer_submit (transfer, timeout_ms, cancellable,
-                           goodix_rx_cb, NULL);
+  if (!goodix_recv_start_full (ssm, dev, timeout_ms, cancellable, NULL, NULL))
+    fpi_ssm_mark_failed (
+      ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
+                                     "A device receive is already active"));
 }
 
 static void
@@ -219,94 +347,36 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
               GError         *error)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixRecvOperation *operation = user_data;
   FpiUsbTransfer *next;
 
-  if (error)
+  if (!self->rx_active || self->rx_owner != transfer->ssm ||
+      self->rx_token != operation->token)
     {
-      if (!self->suspend_pending &&
-          g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
-          self->open_finger_up_timed_out &&
-          !fpi_device_action_is_cancelled (dev) &&
-          transfer->ssm == self->blocking_ssm)
-        {
-          g_clear_error (&error);
-          self->open_finger_up_timed_out = FALSE;
-          self->blocking_ssm = NULL;
-          if (fpi_device_get_current_action (dev) == FPI_DEVICE_ACTION_OPEN)
-            fpi_ssm_mark_failed (
-              transfer->ssm,
-              fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
-                                        "Finger removal timed out during device setup"));
-          else
-            fpi_ssm_mark_failed (
-              transfer->ssm,
-              fpi_device_retry_new_msg (FP_DEVICE_RETRY_REMOVE_FINGER,
-                                        "Remove your finger and try again"));
-          return;
-        }
-
-      if (!self->suspend_pending &&
-          g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
-          self->action_result_reported &&
-          !self->verify_wait_finger_up &&
-          transfer->ssm == self->blocking_ssm)
-        {
-          /* Once verify/identify has reported a result, libfprint may cancel
-           * the action immediately. Finish the sensor shutdown sequence rather
-           * than bailing out and leaving the MCU armed for the next open.
-           * The shutdown state was recorded by the scan flow when it armed
-           * this blocking read. */
-          g_clear_error (&error);
-          self->blocking_ssm = NULL;
-          fpi_ssm_jump_to_state (transfer->ssm, self->blocking_shutdown_state);
-          return;
-        }
-
-      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
-          self->suspend_pending)
-        {
-          /* Do not carry an armed FDT wait across system sleep. The USB device
-           * may disappear and re-enumerate during S4, leaving fprintd with a
-           * stale open device. Abort the active auth so the greeter starts a
-           * fresh operation after resume. */
-          g_clear_error (&error);
-          self->suspend_pending = FALSE;
-          self->blocking_ssm = NULL;
-          fpi_device_suspend_complete (dev,
-              fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
-          fpi_ssm_mark_failed (transfer->ssm,
-                               fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
-                                                         "Cannot run while suspended."));
-          return;
-        }
-
-      self->blocking_ssm = NULL;
-
-      if (self->suspend_pending)
-        {
-          /* Non-cancellation error during suspend — report it and fail SSM */
-          self->suspend_pending = FALSE;
-          fpi_device_suspend_complete (dev, g_error_copy (error));
-        }
-
-      fpi_ssm_mark_failed (transfer->ssm, error);
+      fp_err ("Discarding callback for an inactive device receive");
+      g_clear_error (&error);
+      goodix_recv_operation_free (operation);
       return;
     }
 
-  if (self->suspend_pending && transfer->ssm == self->blocking_ssm)
+  if (error)
     {
-      /* Data (e.g. an FDT touch event) raced with the suspend cancellation
-       * and the transfer completed before the cancel took effect. Treat it
-       * exactly like the cancelled case above; otherwise the pending suspend
-       * request would never be completed and system sleep would block until
-       * logind times out. */
-      self->suspend_pending = FALSE;
-      self->blocking_ssm = NULL;
-      fpi_device_suspend_complete (dev,
-          fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
-      fpi_ssm_mark_failed (transfer->ssm,
-                           fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
-                                                     "Cannot run while suspended."));
+      goodix_recv_operation_finish (dev, transfer->ssm, operation);
+
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
+          operation->cancelled_cb)
+        {
+          GoodixRecvCancelledCallback cancelled_cb = operation->cancelled_cb;
+          gpointer cancelled_data = operation->cancelled_data;
+
+          goodix_recv_operation_free (operation);
+          cancelled_cb (transfer->ssm, dev, error, cancelled_data);
+          return;
+        }
+
+      goodix_mark_coordinator_io_failure (self, error);
+      goodix_recv_operation_free (operation);
+      fpi_ssm_mark_failed (transfer->ssm, error);
       return;
     }
 
@@ -316,14 +386,17 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
       next = fpi_usb_transfer_new (dev);
       next->ssm = transfer->ssm;
       fpi_usb_transfer_fill_bulk (next, GOODIX_EP_IN, GOODIX_USB_CHUNK_SIZE);
-      fpi_usb_transfer_submit (next, self->rx_timeout, self->rx_cancellable,
-                               goodix_rx_cb, NULL);
+      fpi_usb_transfer_submit (next, operation->timeout_ms,
+                               operation->cancellable,
+                               goodix_rx_cb, operation);
       return;
     }
 
   if (!goodix_proto_rx_feed_chunk (&self->rx, transfer->buffer,
                                    transfer->actual_length))
     {
+      goodix_recv_operation_finish (dev, transfer->ssm, operation);
+      goodix_recv_operation_free (operation);
       fpi_ssm_mark_failed (transfer->ssm,
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                      "Protocol reassembly error"));
@@ -333,27 +406,34 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
   if (goodix_proto_rx_complete (&self->rx))
     {
       /* Message complete — advance SSM */
+      goodix_recv_operation_finish (dev, transfer->ssm, operation);
+      goodix_recv_operation_free (operation);
       fpi_ssm_next_state (transfer->ssm);
     }
   else
     {
       /* Need more chunks — use stored timeout/cancellable for continuations.
-       * For finger-wait (timeout=0/infinite), once we start getting data
+       * For event waits (timeout=0/infinite), once we start getting data
        * the remaining chunks should arrive quickly, so use DATA_TIMEOUT. */
       next = fpi_usb_transfer_new (dev);
       next->ssm = transfer->ssm;
       fpi_usb_transfer_fill_bulk (next, GOODIX_EP_IN, GOODIX_USB_CHUNK_SIZE);
-      fpi_usb_transfer_submit (next, GOODIX_DATA_TIMEOUT, self->rx_cancellable,
-                               goodix_rx_cb, NULL);
+      fpi_usb_transfer_submit (next, GOODIX_DATA_TIMEOUT,
+                               operation->cancellable,
+                               goodix_rx_cb, operation);
     }
 }
 
-void
-goodix_recv_start_cancellable (FpiSsm       *ssm,
-                               FpDevice     *dev,
-                               GCancellable *cancellable)
+gboolean
+goodix_recv_start_cancellable_full (
+  FpiSsm                     *ssm,
+  FpDevice                   *dev,
+  GCancellable               *cancellable,
+  GoodixRecvCancelledCallback cancelled_cb,
+  gpointer                    user_data)
 {
-  goodix_recv_start (ssm, dev, 0, cancellable);
+  return goodix_recv_start_full (ssm, dev, 0, cancellable,
+                                 cancelled_cb, user_data);
 }
 
 /* ========================================================================
@@ -364,8 +444,8 @@ static void
 goodix_cmd_ssm_handler (FpiSsm   *ssm,
                         FpDevice *dev)
 {
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  GoodixCmd *cmd = self->cmd;
+  GoodixCmdOperation *operation = fpi_ssm_get_data (ssm);
+  GoodixCmd *cmd = &operation->cmd;
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
@@ -381,6 +461,18 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
     case GOODIX_CMD_VALIDATE_ACK:
       {
         g_autoptr(GError) error = NULL;
+
+        if (operation->cancelled_fdt_mode != GOODIX_PROFILE9_FDT_WAIT_NONE &&
+            goodix_try_drain_cancelled_fdt (dev, operation, &error))
+          {
+            fpi_ssm_jump_to_state (ssm, GOODIX_CMD_RECV_ACK);
+            return;
+          }
+        if (error)
+          {
+            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+            return;
+          }
 
         if (!goodix_validate_ack_for_cmd (dev, cmd, &error))
           {
@@ -398,20 +490,57 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
     }
 }
 
-void
-goodix_run_cmd (FpiSsm       *parent_ssm,
-                FpDevice     *dev,
-                guint8        category,
-                guint8        command,
-                const guint8 *payload,
-                gsize         payload_len,
-                gboolean      expect_data)
+static void
+goodix_cmd_ssm_done (FpiSsm   *ssm,
+                     FpDevice *dev,
+                     GError   *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixCmdOperation *operation = fpi_ssm_get_data (ssm);
+
+  g_assert (self->cmd_ssm == ssm);
+  self->cmd_owner = NULL;
+  self->cmd_ssm = NULL;
+
+  if (error)
+    {
+      goodix_mark_coordinator_io_failure (self, error);
+      fpi_ssm_mark_failed (operation->parent_ssm, error);
+    }
+  else
+    fpi_ssm_next_state (operation->parent_ssm);
+}
+
+static void
+goodix_run_cmd_full (FpiSsm                    *parent_ssm,
+                     FpDevice                  *dev,
+                     guint8                     category,
+                     guint8                     command,
+                     const guint8              *payload,
+                     gsize                      payload_len,
+                     gboolean                   expect_data,
+                     GoodixProfile9FdtWaitMode  cancelled_mode)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiSsm *cmd_ssm;
+  GoodixCmdOperation *operation;
   GoodixCmd *cmd;
 
-  cmd = g_new0 (GoodixCmd, 1);
+  if (self->cmd_owner || self->rx_active)
+    {
+      fpi_ssm_mark_failed (
+        parent_ssm,
+        fpi_device_error_new_msg (
+          FP_DEVICE_ERROR_BUSY,
+          self->cmd_owner ? "A device command is already active"
+                          : "Cannot start a command while a receive is active"));
+      return;
+    }
+
+  operation = g_new0 (GoodixCmdOperation, 1);
+  operation->parent_ssm = parent_ssm;
+  operation->cancelled_fdt_mode = cancelled_mode;
+  cmd = &operation->cmd;
   cmd->category = category;
   cmd->command = command;
   cmd->use_checksum = TRUE;
@@ -427,16 +556,45 @@ goodix_run_cmd (FpiSsm       *parent_ssm,
       cmd->payload_len = 0;
     }
 
-  g_free (self->cmd ? self->cmd->payload : NULL);
-  g_free (self->cmd);
-  self->cmd = cmd;
+  self->cmd_owner = parent_ssm;
 
   cmd_ssm = fpi_ssm_new_full (dev, goodix_cmd_ssm_handler,
                                expect_data ? GOODIX_CMD_NUM_STATES : GOODIX_CMD_RECV_DATA,
-                               expect_data ? GOODIX_CMD_NUM_STATES : GOODIX_CMD_RECV_DATA,
-                               "goodix-cmd");
+                                expect_data ? GOODIX_CMD_NUM_STATES : GOODIX_CMD_RECV_DATA,
+                                "goodix-cmd");
+  fpi_ssm_set_data (cmd_ssm, operation,
+                    (GDestroyNotify) goodix_cmd_operation_free);
+  self->cmd_ssm = cmd_ssm;
+  fpi_ssm_start (cmd_ssm, goodix_cmd_ssm_done);
+}
 
-  fpi_ssm_start_subsm (parent_ssm, cmd_ssm);
+void
+goodix_run_cmd (FpiSsm       *parent_ssm,
+                FpDevice     *dev,
+                guint8        category,
+                guint8        command,
+                const guint8 *payload,
+                gsize         payload_len,
+                gboolean      expect_data)
+{
+  goodix_run_cmd_full (parent_ssm, dev, category, command, payload,
+                       payload_len, expect_data,
+                       GOODIX_PROFILE9_FDT_WAIT_NONE);
+}
+
+void
+goodix_run_cmd_drain_fdt_once (
+  FpiSsm                    *parent_ssm,
+  FpDevice                  *dev,
+  guint8                     category,
+  guint8                     command,
+  const guint8              *payload,
+  gsize                      payload_len,
+  GoodixProfile9FdtWaitMode  cancelled_mode)
+{
+  g_return_if_fail (cancelled_mode != GOODIX_PROFILE9_FDT_WAIT_NONE);
+  goodix_run_cmd_full (parent_ssm, dev, category, command, payload,
+                       payload_len, FALSE, cancelled_mode);
 }
 
 gboolean

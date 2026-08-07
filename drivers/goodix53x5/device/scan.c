@@ -30,17 +30,854 @@
 
 #include <string.h>
 
-/* Finger-wait SSM (awaiting finger down) */
-typedef enum {
-  GOODIX_FINGER_WAIT_EC_POWER_ON = 0,
-  GOODIX_FINGER_WAIT_EC_POWER_ON_DONE,
-  GOODIX_FINGER_WAIT_FDT_DOWN_SETUP,
-  GOODIX_FINGER_WAIT_RECV_EVENT,
-  GOODIX_FINGER_WAIT_GEN_UP_BASE,
-  GOODIX_FINGER_WAIT_FDT_CHECK,
-  GOODIX_FINGER_WAIT_VALIDATE,
-  GOODIX_FINGER_WAIT_NUM_STATES,
-} GoodixFingerWaitState;
+typedef enum
+{
+  GOODIX_SCAN_COORD_ENSURE_REFERENCE = 0,
+  GOODIX_SCAN_COORD_ENSURE_REFERENCE_DONE,
+  GOODIX_SCAN_COORD_POWER_ON,
+  GOODIX_SCAN_COORD_POWER_ON_DONE,
+  GOODIX_SCAN_COORD_ARM_DOWN,
+  GOODIX_SCAN_COORD_WAIT_EVENT,
+  GOODIX_SCAN_COORD_DISPATCH_EVENT,
+  GOODIX_SCAN_COORD_DOWN_MANUAL,
+  GOODIX_SCAN_COORD_DOWN_VALIDATE,
+  GOODIX_SCAN_COORD_CAPTURE,
+  GOODIX_SCAN_COORD_ARM_UP,
+  GOODIX_SCAN_COORD_ARM_UP_DONE,
+  GOODIX_SCAN_COORD_RECOVERY_ARM_UP,
+  GOODIX_SCAN_COORD_RECOVERY_ARM_UP_DONE,
+  GOODIX_SCAN_COORD_REFRESH,
+  GOODIX_SCAN_COORD_REFRESH_DONE,
+  GOODIX_SCAN_COORD_REARM_DOWN,
+  GOODIX_SCAN_COORD_REARM_DOWN_DONE,
+  GOODIX_SCAN_COORD_WAIT_CPU,
+  GOODIX_SCAN_COORD_CYCLE_SETTLED,
+  GOODIX_SCAN_COORD_CLEANUP_JOIN,
+  GOODIX_SCAN_COORD_CLEANUP_SLEEP,
+  GOODIX_SCAN_COORD_CLEANUP_EC_OFF,
+  GOODIX_SCAN_COORD_CLEANUP_EC_OFF_DONE,
+  GOODIX_SCAN_COORD_NUM_STATES,
+} GoodixScanCoordinatorState;
+
+typedef struct
+{
+  FpiSsm                       *parent_ssm;
+  FpiSsm                       *ssm;
+  GoodixScanCaptureReadyCallback capture_ready;
+  GoodixScanCycleSettledCallback cycle_settled;
+  gpointer                      user_data;
+  GCancellable                 *event_cancel;
+  GCancellable                 *action_cancel;
+  gulong                        action_cancel_id;
+  GoodixFdtEventType            event_type;
+  GoodixProfile9FdtRefreshReason refresh_reason;
+  GoodixProfile9FdtWaitMode     cleanup_drain_mode;
+  GoodixScanDisposition         disposition;
+  GError                       *stop_error;
+  guint16                       prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
+  gboolean                      receive_active;
+  gboolean                      dispatching;
+  gboolean                      stop_requested;
+  gboolean                      cpu_done;
+  gboolean                      cpu_outstanding;
+  gboolean                      cycle_active;
+  gboolean                      recovering_generation;
+  gboolean                      release_settled;
+  gboolean                      capture_notified;
+  gboolean                      settle_receive;
+  gboolean                      internal_receive_cancel;
+} GoodixScanCoordinatorData;
+
+static void goodix_scan_coordinator_handler (FpiSsm *ssm, FpDevice *dev);
+static void goodix_scan_start_capture_subsm (FpiSsm *parent_ssm,
+                                              FpDevice *dev);
+
+static void
+goodix_scan_coordinator_data_free (GoodixScanCoordinatorData *data)
+{
+  if (!data)
+    return;
+
+  if (data->action_cancel && data->action_cancel_id)
+    g_cancellable_disconnect (data->action_cancel, data->action_cancel_id);
+  g_clear_object (&data->event_cancel);
+  g_clear_object (&data->action_cancel);
+  g_clear_error (&data->stop_error);
+  g_free (data);
+}
+
+static void
+goodix_scan_normalize_event (const GoodixProfile9FdtEvent *event,
+                             guint16                       values[GOODIX_PROFILE9_FDT_AREA_COUNT])
+{
+  for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+    {
+      guint16 raw = event->raw[i * 2] |
+                    ((guint16) event->raw[i * 2 + 1] << 8);
+
+      values[i] = raw >> 1;
+    }
+}
+
+static gboolean
+goodix_scan_majority_changed (const guint16 first[GOODIX_PROFILE9_FDT_AREA_COUNT],
+                              const guint16 second[GOODIX_PROFILE9_FDT_AREA_COUNT],
+                              guint16       threshold)
+{
+  guint changed = 0;
+
+  for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+    changed += ABS ((gint) first[i] - (gint) second[i]) > threshold;
+
+  return changed > GOODIX_PROFILE9_FDT_AREA_COUNT / 2;
+}
+
+static gboolean
+goodix_scan_all_strictly_close (const guint16 first[GOODIX_PROFILE9_FDT_AREA_COUNT],
+                                const guint16 second[GOODIX_PROFILE9_FDT_AREA_COUNT],
+                                guint16       threshold)
+{
+  for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+    if (ABS ((gint) first[i] - (gint) second[i]) >= threshold)
+      return FALSE;
+
+  return TRUE;
+}
+
+static gboolean
+goodix_scan_apply_anchor (FpiDeviceGoodix53x5 *self,
+                          const guint16         current[GOODIX_PROFILE9_FDT_AREA_COUNT],
+                          gboolean              seed_if_empty)
+{
+  GoodixProfile9FdtState *fdt = &self->profile9_fdt;
+
+  if (fdt->drift_anchor_empty)
+    {
+      if (seed_if_empty)
+        {
+          memcpy (fdt->drift_anchor, current, sizeof (fdt->drift_anchor));
+          fdt->drift_anchor_empty = FALSE;
+        }
+      return FALSE;
+    }
+
+  if (goodix_scan_majority_changed (fdt->drift_anchor, current,
+                                    self->calib.delta_down))
+    return TRUE;
+
+  if (goodix_scan_all_strictly_close (fdt->drift_anchor, current,
+                                      self->calib.delta_down / 3))
+    {
+      memset (fdt->drift_anchor, 0, sizeof (fdt->drift_anchor));
+      fdt->drift_anchor_empty = TRUE;
+    }
+
+  return FALSE;
+}
+
+static gboolean
+goodix_scan_disposition_waits_for_up (GoodixScanDisposition disposition)
+{
+  return disposition == GOODIX_SCAN_DISPOSITION_AUTH_RETRY_AFTER_UP ||
+         disposition == GOODIX_SCAN_DISPOSITION_ENROLL_CONTINUE_AFTER_UP ||
+         disposition == GOODIX_SCAN_DISPOSITION_ENROLL_FINAL_AFTER_UP;
+}
+
+static void
+goodix_scan_finish_requested (GoodixScanCoordinatorData *data)
+{
+  if (data->stop_error)
+    fpi_ssm_mark_failed (data->ssm, g_steal_pointer (&data->stop_error));
+  else
+    fpi_ssm_mark_completed (data->ssm);
+}
+
+static void
+goodix_scan_maybe_finish_requested (GoodixScanCoordinatorData *data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (
+    fpi_ssm_get_device (data->ssm));
+
+  if (data->dispatching || data->receive_active || self->rx_active ||
+      self->cmd_owner)
+    return;
+  if (data->cpu_outstanding)
+    {
+      if (fpi_ssm_get_cur_state (data->ssm) <
+            GOODIX_SCAN_COORD_CLEANUP_JOIN &&
+          fpi_ssm_get_cur_state (data->ssm) != GOODIX_SCAN_COORD_WAIT_CPU)
+        fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_WAIT_CPU);
+      return;
+    }
+  goodix_scan_finish_requested (data);
+}
+
+static void
+goodix_scan_request_stop (GoodixScanCoordinatorData *data,
+                          GError                    *error)
+{
+  if (data->stop_requested)
+    {
+      if (error && !data->stop_error)
+        data->stop_error = error;
+      else
+        g_clear_error (&error);
+      goodix_scan_maybe_finish_requested (data);
+      return;
+    }
+
+  data->stop_requested = TRUE;
+  data->stop_error = error;
+
+  if (data->receive_active && !data->dispatching)
+    {
+      data->internal_receive_cancel = FALSE;
+      g_cancellable_cancel (data->event_cancel);
+      return;
+    }
+
+  goodix_scan_maybe_finish_requested (data);
+}
+
+static void
+goodix_scan_action_cancelled (GCancellable *cancellable,
+                              gpointer      user_data)
+{
+  GoodixScanCoordinatorData *data = user_data;
+
+  (void) cancellable;
+  goodix_scan_request_stop (
+    data, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                               "Profile-9 scan action cancelled"));
+}
+
+static void
+goodix_scan_receive_cancelled (FpiSsm   *ssm,
+                               FpDevice *dev,
+                               GError   *error,
+                               gpointer  user_data)
+{
+  GoodixScanCoordinatorData *data = user_data;
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  (void) ssm;
+  data->receive_active = FALSE;
+  g_clear_object (&data->event_cancel);
+  g_clear_error (&error);
+
+  if (data->stop_requested &&
+      self->profile9_fdt.wait_mode != GOODIX_PROFILE9_FDT_WAIT_NONE)
+    data->cleanup_drain_mode = self->profile9_fdt.wait_mode;
+
+  if (data->internal_receive_cancel)
+    {
+      data->internal_receive_cancel = FALSE;
+      data->settle_receive = FALSE;
+      if (data->stop_requested)
+        goodix_scan_maybe_finish_requested (data);
+      else
+        fpi_ssm_jump_to_state (data->ssm,
+                               GOODIX_SCAN_COORD_CYCLE_SETTLED);
+      return;
+    }
+
+  if (!data->stop_requested)
+    {
+      data->stop_requested = TRUE;
+      data->stop_error = fpi_device_error_new_msg (
+        FP_DEVICE_ERROR_GENERAL,
+        "Profile-9 event receive was cancelled unexpectedly");
+    }
+  goodix_scan_maybe_finish_requested (data);
+}
+
+static gboolean
+goodix_scan_begin_receive (GoodixScanCoordinatorData *data,
+                           FpDevice                  *dev)
+{
+  g_assert (!data->receive_active);
+  g_clear_object (&data->event_cancel);
+  data->event_cancel = g_cancellable_new ();
+  data->receive_active = TRUE;
+  if (!goodix_recv_start_cancellable_full (
+        data->ssm, dev, data->event_cancel,
+        goodix_scan_receive_cancelled, data))
+    {
+      data->receive_active = FALSE;
+      g_clear_object (&data->event_cancel);
+      return FALSE;
+    }
+  return TRUE;
+}
+
+static void
+goodix_scan_prepare_refresh (FpiSsm                        *ssm,
+                             FpiDeviceGoodix53x5           *self,
+                             GoodixScanCoordinatorData     *data,
+                             GoodixProfile9FdtRefreshReason reason)
+{
+  data->refresh_reason = reason;
+  self->profile9_fdt.base_valid = FALSE;
+  fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_REFRESH);
+}
+
+static void
+goodix_scan_coordinator_handler (FpiSsm   *ssm,
+                                 FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixProfile9FdtState *fdt = &self->profile9_fdt;
+  GoodixScanCoordinatorData *data = fpi_ssm_get_data (ssm);
+
+  if (fpi_ssm_get_cur_state (ssm) < GOODIX_SCAN_COORD_CLEANUP_JOIN &&
+      fpi_ssm_get_cur_state (ssm) != GOODIX_SCAN_COORD_WAIT_EVENT &&
+      data->stop_requested && !data->dispatching && !data->receive_active)
+    {
+      goodix_scan_maybe_finish_requested (data);
+      return;
+    }
+
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case GOODIX_SCAN_COORD_ENSURE_REFERENCE:
+      if (self->milan_generation || fdt->initial_recovery_pending)
+        fpi_ssm_next_state (ssm);
+      else
+        goodix_milan_base_start_ensure_subsm (ssm, dev);
+      break;
+
+    case GOODIX_SCAN_COORD_ENSURE_REFERENCE_DONE:
+      if (self->milan_generation)
+        {
+          fpi_ssm_next_state (ssm);
+          break;
+        }
+      if (!fdt->initial_recovery_pending || !fdt->event.pending)
+        {
+          fpi_ssm_mark_failed (
+            ssm, fpi_device_error_new_msg (
+              FP_DEVICE_ERROR_GENERAL,
+              "Milan reference acquisition produced no generation or recovery event"));
+          return;
+        }
+
+      data->recovering_generation = TRUE;
+      goodix_device_generate_fdt_base (fdt->event.raw, GOODIX_FDT_BASE_LEN,
+                                       fdt->base_down);
+      if ((fdt->event.touch_flag & 0x0fff) != 0)
+        {
+          goodix_device_generate_fdt_up_base (fdt->event.raw,
+                                              fdt->event.touch_flag,
+                                              &self->calib, fdt->base_up);
+          fpi_device_report_finger_status_changes (
+            dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
+        }
+      else
+        fpi_device_report_finger_status_changes (
+          dev, FP_FINGER_STATUS_NEEDED, FP_FINGER_STATUS_PRESENT);
+      fpi_ssm_next_state (ssm);
+      break;
+
+    case GOODIX_SCAN_COORD_POWER_ON:
+      fpi_device_report_finger_status_changes (dev, FP_FINGER_STATUS_NEEDED,
+                                                FP_FINGER_STATUS_PRESENT);
+      goodix_cmd_ec_control (ssm, dev, TRUE);
+      break;
+
+    case GOODIX_SCAN_COORD_POWER_ON_DONE:
+      if (!goodix_cmd_parse_ec_control_reply (dev))
+        {
+          self->needs_reinit = TRUE;
+          fpi_ssm_mark_failed (
+            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                           "Scan EC power-on failed"));
+          return;
+        }
+      if (data->recovering_generation &&
+          (fdt->event.touch_flag & 0x0fff) != 0)
+        fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_RECOVERY_ARM_UP);
+      else
+        fpi_ssm_next_state (ssm);
+      break;
+
+    case GOODIX_SCAN_COORD_ARM_DOWN:
+      fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
+      goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
+      break;
+
+    case GOODIX_SCAN_COORD_WAIT_EVENT:
+      if (!goodix_scan_begin_receive (data, dev))
+        {
+          fpi_ssm_mark_failed (
+            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
+                                           "Profile-9 event receive ownership conflict"));
+          return;
+        }
+      if (data->stop_requested)
+        {
+          data->internal_receive_cancel = FALSE;
+          g_cancellable_cancel (data->event_cancel);
+          return;
+        }
+      if (data->cycle_active && !data->capture_notified)
+        {
+          if (!self->milan_generation || !self->captured_raw_image)
+            {
+              data->recovering_generation = TRUE;
+              break;
+            }
+          data->capture_notified = TRUE;
+          data->cpu_outstanding = TRUE;
+          data->capture_ready (dev, data->user_data);
+        }
+      break;
+
+    case GOODIX_SCAN_COORD_DISPATCH_EVENT:
+      {
+        g_autoptr(GError) error = NULL;
+
+        data->receive_active = FALSE;
+        data->settle_receive = FALSE;
+        g_clear_object (&data->event_cancel);
+        if (!goodix_cmd_parse_fdt_event (dev, fdt->wait_mode,
+                                         &data->event_type, &fdt->event,
+                                         &error))
+          {
+            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+            return;
+          }
+        data->dispatching = TRUE;
+
+        if (data->event_type == GOODIX_FDT_EVENT_DOWN)
+          {
+            if (data->cycle_active)
+              {
+                if (!data->release_settled)
+                  {
+                    fpi_ssm_mark_failed (
+                      ssm, fpi_device_error_new_msg (
+                        FP_DEVICE_ERROR_PROTO,
+                        "Finger-down arrived before release was established"));
+                    return;
+                  }
+
+                /* A new press raced the prior CPU result. Keep the sensor
+                 * event-driven by arming up and discarding this too-early
+                 * enrollment press only after its matching release. */
+                goodix_device_generate_fdt_up_base (
+                  fdt->event.raw, fdt->event.touch_flag,
+                  &self->calib, fdt->base_up);
+                fpi_device_report_finger_status_changes (
+                  dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
+                fpi_ssm_jump_to_state (
+                  ssm, GOODIX_SCAN_COORD_RECOVERY_ARM_UP);
+                return;
+              }
+            goodix_device_generate_fdt_up_base (fdt->event.raw,
+                                                fdt->event.touch_flag,
+                                                &self->calib, fdt->base_up);
+            if (data->recovering_generation || !self->milan_generation)
+              {
+                data->recovering_generation = TRUE;
+                fpi_ssm_jump_to_state (
+                  ssm, GOODIX_SCAN_COORD_RECOVERY_ARM_UP);
+                return;
+              }
+            fpi_ssm_next_state (ssm);
+            return;
+          }
+
+        {
+          guint16 current[GOODIX_PROFILE9_FDT_AREA_COUNT];
+          gboolean refresh = FALSE;
+
+          goodix_scan_normalize_event (&fdt->event, current);
+          if (data->event_type == GOODIX_FDT_EVENT_REVERSE)
+            for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+              data->prior_down[i] = fdt->base_down[i * 2 + 1];
+
+          goodix_device_generate_fdt_base (fdt->event.raw,
+                                           GOODIX_FDT_BASE_LEN,
+                                           fdt->base_down);
+          data->release_settled = data->cycle_active;
+
+          if (data->event_type == GOODIX_FDT_EVENT_REVERSE)
+            {
+              if (!fdt->base_valid)
+                {
+                  data->refresh_reason = GOODIX_PROFILE9_FDT_REFRESH_INVALID_BASE;
+                  refresh = TRUE;
+                }
+              else if (goodix_scan_majority_changed (
+                         data->prior_down, current, self->calib.delta_down) ||
+                       goodix_scan_apply_anchor (self, current, TRUE))
+                refresh = TRUE;
+            }
+          else
+            {
+              if (goodix_scan_apply_anchor (self, current, FALSE))
+                refresh = TRUE;
+              else if (!fdt->base_valid)
+                {
+                  data->refresh_reason = GOODIX_PROFILE9_FDT_REFRESH_INVALID_BASE;
+                  refresh = TRUE;
+                }
+            }
+
+          if (data->recovering_generation)
+            {
+              data->refresh_reason = GOODIX_PROFILE9_FDT_REFRESH_INVALID_BASE;
+              refresh = TRUE;
+            }
+
+          if (refresh)
+            {
+              GoodixProfile9FdtRefreshReason reason = data->refresh_reason;
+
+              if (reason == GOODIX_PROFILE9_FDT_REFRESH_NONE)
+                reason = data->event_type == GOODIX_FDT_EVENT_REVERSE
+                           ? GOODIX_PROFILE9_FDT_REFRESH_REVERSE
+                           : GOODIX_PROFILE9_FDT_REFRESH_UP;
+              goodix_scan_prepare_refresh (
+                ssm, self, data, reason);
+              return;
+            }
+          data->refresh_reason = GOODIX_PROFILE9_FDT_REFRESH_NONE;
+          fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_REARM_DOWN);
+        }
+      }
+      break;
+
+    case GOODIX_SCAN_COORD_DOWN_MANUAL:
+      goodix_cmd_fdt_manual (ssm, dev, FALSE, fdt->base_manual);
+      break;
+
+    case GOODIX_SCAN_COORD_DOWN_VALIDATE:
+      {
+        g_autoptr(GError) error = NULL;
+        const guint8 *payload;
+        gsize payload_len;
+
+        if (!goodix_cmd_parse_fdt_manual_reply (dev, &payload, &payload_len,
+                                                &error))
+          {
+            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+            return;
+          }
+        if (goodix_device_is_fdt_base_valid (fdt->event.raw, payload + 4,
+                                             GOODIX_FDT_BASE_LEN,
+                                             self->calib.delta_fdt))
+          {
+            goodix_scan_prepare_refresh (
+              ssm, self, data, GOODIX_PROFILE9_FDT_REFRESH_FALSE_DOWN);
+            return;
+          }
+
+        fpi_device_report_finger_status_changes (dev, FP_FINGER_STATUS_PRESENT,
+                                                  FP_FINGER_STATUS_NEEDED);
+        fpi_ssm_next_state (ssm);
+      }
+      break;
+
+    case GOODIX_SCAN_COORD_CAPTURE:
+      goodix_scan_start_capture_subsm (ssm, dev);
+      break;
+
+    case GOODIX_SCAN_COORD_ARM_UP:
+      data->cycle_active = TRUE;
+      data->release_settled = FALSE;
+      data->cpu_done = FALSE;
+      data->capture_notified = FALSE;
+      fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_UP;
+      goodix_cmd_fdt_up_setup (ssm, dev, fdt->base_up);
+      break;
+
+    case GOODIX_SCAN_COORD_ARM_UP_DONE:
+      data->dispatching = FALSE;
+      fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+      break;
+
+    case GOODIX_SCAN_COORD_RECOVERY_ARM_UP:
+      data->dispatching = TRUE;
+      fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_UP;
+      goodix_cmd_fdt_up_setup (ssm, dev, fdt->base_up);
+      break;
+
+    case GOODIX_SCAN_COORD_RECOVERY_ARM_UP_DONE:
+      data->dispatching = FALSE;
+      fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+      break;
+
+    case GOODIX_SCAN_COORD_REFRESH:
+      goodix_milan_base_start_forced_refresh_subsm (ssm, dev,
+                                                    data->refresh_reason);
+      break;
+
+    case GOODIX_SCAN_COORD_REFRESH_DONE:
+      /* Validation failure is recoverable: base_valid remains false and the
+       * event-derived down base is still the next arm input. */
+      data->refresh_reason = GOODIX_PROFILE9_FDT_REFRESH_NONE;
+      if (self->milan_generation)
+        data->recovering_generation = FALSE;
+      fpi_ssm_next_state (ssm);
+      break;
+
+    case GOODIX_SCAN_COORD_REARM_DOWN:
+      fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
+      goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
+      break;
+
+    case GOODIX_SCAN_COORD_REARM_DOWN_DONE:
+      data->dispatching = FALSE;
+      fdt->event.pending = FALSE;
+
+      if (data->stop_requested)
+        {
+          /* Resolve the receive associated with this down arm before issuing
+           * shutdown commands, even when stop raced the dispatched handler. */
+          fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+          return;
+        }
+      if (data->release_settled)
+        {
+          fpi_device_report_finger_status_changes (
+            dev, FP_FINGER_STATUS_NONE,
+            FP_FINGER_STATUS_PRESENT | FP_FINGER_STATUS_NEEDED);
+          if (data->cpu_done)
+            fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_CYCLE_SETTLED);
+          else
+            {
+              data->settle_receive = TRUE;
+              fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+            }
+          return;
+        }
+      fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+      break;
+
+    case GOODIX_SCAN_COORD_WAIT_CPU:
+      break;
+
+    case GOODIX_SCAN_COORD_CYCLE_SETTLED:
+      if (data->disposition == GOODIX_SCAN_DISPOSITION_AUTH_RETRY_AFTER_UP ||
+          data->disposition == GOODIX_SCAN_DISPOSITION_ENROLL_FINAL_AFTER_UP)
+        data->cleanup_drain_mode = fdt->wait_mode;
+      if (data->cycle_settled)
+        data->cycle_settled (dev, data->disposition, data->user_data);
+      if (data->stop_requested)
+        return;
+
+      if (data->disposition == GOODIX_SCAN_DISPOSITION_ENROLL_CONTINUE_AFTER_UP)
+        {
+          data->cycle_active = FALSE;
+          data->release_settled = FALSE;
+          data->cpu_done = FALSE;
+          fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+        }
+      else
+        fpi_ssm_mark_completed (ssm);
+      break;
+
+    case GOODIX_SCAN_COORD_CLEANUP_JOIN:
+      fdt->lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPING;
+      if (data->cpu_outstanding)
+        {
+          if (data->action_cancel &&
+              !g_cancellable_is_cancelled (data->action_cancel))
+            g_cancellable_cancel (data->action_cancel);
+          break;
+        }
+      fpi_ssm_mark_completed (ssm);
+      break;
+
+    case GOODIX_SCAN_COORD_CLEANUP_SLEEP:
+      fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_NONE;
+      if (data->cleanup_drain_mode != GOODIX_PROFILE9_FDT_WAIT_NONE)
+        goodix_cmd_set_sleep_mode_drain_fdt (ssm, dev,
+                                             data->cleanup_drain_mode);
+      else
+        goodix_cmd_set_sleep_mode (ssm, dev);
+      break;
+
+    case GOODIX_SCAN_COORD_CLEANUP_EC_OFF:
+      goodix_cmd_ec_control (ssm, dev, FALSE);
+      break;
+
+    case GOODIX_SCAN_COORD_CLEANUP_EC_OFF_DONE:
+      if (!goodix_cmd_parse_ec_control_reply (dev))
+        {
+          self->needs_reinit = TRUE;
+          fpi_ssm_mark_failed (
+            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                           "Scan EC power-off failed"));
+          return;
+        }
+      if (data->stop_error)
+        fpi_ssm_mark_failed (ssm, g_steal_pointer (&data->stop_error));
+      else
+        fpi_ssm_mark_completed (ssm);
+      break;
+
+    case GOODIX_SCAN_COORD_NUM_STATES:
+      g_assert_not_reached ();
+    }
+}
+
+static void
+goodix_scan_coordinator_done (FpiSsm   *ssm,
+                              FpDevice *dev,
+                              GError   *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixScanCoordinatorData *data = fpi_ssm_get_data (ssm);
+
+  g_assert (self->profile9_fdt.owner == ssm);
+  self->profile9_fdt.owner = NULL;
+  self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED;
+  self->profile9_fdt.wait_mode = GOODIX_PROFILE9_FDT_WAIT_NONE;
+
+  if (error &&
+      !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+    self->needs_reinit = TRUE;
+
+  if (error)
+    fpi_ssm_mark_failed (data->parent_ssm, error);
+  else
+    fpi_ssm_next_state (data->parent_ssm);
+}
+
+void
+goodix_scan_start_coordinator_subsm (
+  FpiSsm                       *parent_ssm,
+  FpDevice                     *dev,
+  GoodixScanCaptureReadyCallback capture_ready,
+  GoodixScanCycleSettledCallback cycle_settled,
+  gpointer                      user_data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixScanCoordinatorData *data;
+  FpiSsm *ssm;
+
+  g_return_if_fail (capture_ready != NULL);
+  if (self->profile9_fdt.owner || self->profile9_fdt.lifecycle !=
+                                  GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED)
+    {
+      fpi_ssm_mark_failed (
+        parent_ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
+                                              "Profile-9 scan coordinator is already active"));
+      return;
+    }
+
+  data = g_new0 (GoodixScanCoordinatorData, 1);
+  data->parent_ssm = parent_ssm;
+  data->capture_ready = capture_ready;
+  data->cycle_settled = cycle_settled;
+  data->user_data = user_data;
+  data->action_cancel = self->cancel ? g_object_ref (self->cancel) : NULL;
+  ssm = fpi_ssm_new_full (dev, goodix_scan_coordinator_handler,
+                          GOODIX_SCAN_COORD_NUM_STATES,
+                          GOODIX_SCAN_COORD_CLEANUP_JOIN,
+                          "goodix-profile9-scan");
+  data->ssm = ssm;
+  fpi_ssm_set_data (ssm, data,
+                    (GDestroyNotify) goodix_scan_coordinator_data_free);
+  self->profile9_fdt.owner = ssm;
+  self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_ACTIVE;
+  fpi_ssm_start (ssm, goodix_scan_coordinator_done);
+  if (self->profile9_fdt.owner == ssm && data->action_cancel)
+    data->action_cancel_id = g_cancellable_connect (
+      data->action_cancel, G_CALLBACK (goodix_scan_action_cancelled), data,
+      NULL);
+}
+
+void
+goodix_scan_set_disposition (FpDevice             *dev,
+                             GoodixScanDisposition disposition,
+                             GError               *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixScanCoordinatorData *data;
+
+  if (!self->profile9_fdt.owner)
+    {
+      fp_warn ("Ignoring disposition for an inactive scan coordinator");
+      g_clear_error (&error);
+      return;
+    }
+
+  data = fpi_ssm_get_data (self->profile9_fdt.owner);
+  if (!data->cycle_active || data->cpu_done || !data->cpu_outstanding)
+    {
+      fp_warn ("Ignoring duplicate scan-cycle disposition");
+      g_clear_error (&error);
+      return;
+    }
+
+  data->cpu_done = TRUE;
+  data->cpu_outstanding = FALSE;
+  data->disposition = disposition;
+  if (fpi_ssm_get_cur_state (data->ssm) >= GOODIX_SCAN_COORD_CLEANUP_JOIN)
+    {
+      g_clear_error (&error);
+      fpi_ssm_mark_completed (data->ssm);
+      return;
+    }
+  if (data->stop_requested)
+    {
+      g_clear_error (&error);
+      goodix_scan_maybe_finish_requested (data);
+      return;
+    }
+  if (disposition == GOODIX_SCAN_DISPOSITION_FATAL)
+    goodix_scan_request_stop (
+      data, error ? error : fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
+  else if (disposition == GOODIX_SCAN_DISPOSITION_CANCELLED)
+    {
+      g_clear_error (&error);
+      goodix_scan_request_stop (
+        data, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                   "Profile-9 scan cycle cancelled"));
+    }
+  else
+    {
+      g_clear_error (&error);
+      if (!goodix_scan_disposition_waits_for_up (disposition))
+        goodix_scan_request_stop (data, NULL);
+      else if (data->release_settled && data->settle_receive &&
+               data->receive_active && !data->dispatching)
+        {
+          data->internal_receive_cancel = TRUE;
+          g_cancellable_cancel (data->event_cancel);
+        }
+      else if (data->release_settled && !data->dispatching &&
+               !data->receive_active && !self->cmd_owner)
+        fpi_ssm_jump_to_state (data->ssm,
+                               GOODIX_SCAN_COORD_CYCLE_SETTLED);
+    }
+}
+
+void
+goodix_scan_stop_coordinator (FpDevice *dev,
+                              GError   *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixScanCoordinatorData *data;
+
+  if (!self->profile9_fdt.owner)
+    {
+      g_clear_error (&error);
+      return;
+    }
+
+  data = fpi_ssm_get_data (self->profile9_fdt.owner);
+  goodix_scan_request_stop (
+    data, error ? error : g_error_new_literal (G_IO_ERROR,
+                                                G_IO_ERROR_CANCELLED,
+                                                "Profile-9 scan stopped"));
+  if (data->cpu_outstanding && data->action_cancel &&
+      !g_cancellable_is_cancelled (data->action_cancel))
+    g_cancellable_cancel (data->action_cancel);
+}
 
 /* Capture SSM */
 typedef enum {
@@ -50,215 +887,7 @@ typedef enum {
   GOODIX_CAPTURE_STORE,
   GOODIX_CAPTURE_NUM_STATES,
 } GoodixCaptureState;
-
-/* Finger-up SSM (awaiting finger off) */
-typedef enum {
-  GOODIX_FINGER_UP_FDT_UP_SETUP = 0,
-  GOODIX_FINGER_UP_RECV_EVENT,
-  GOODIX_FINGER_UP_UPDATE_DOWN_BASE,
-  GOODIX_FINGER_UP_SLEEP,
-  GOODIX_FINGER_UP_EC_POWER_OFF,
-  GOODIX_FINGER_UP_EC_POWER_OFF_DONE,
-  GOODIX_FINGER_UP_NUM_STATES,
-} GoodixFingerUpState;
-
-/* Deactivate SSM — bounded cleanup after successful verify/identify */
-typedef enum {
-  GOODIX_DEACTIVATE_SLEEP = 0,
-  GOODIX_DEACTIVATE_EC_POWER_OFF,
-  GOODIX_DEACTIVATE_EC_POWER_OFF_DONE,
-  GOODIX_DEACTIVATE_NUM_STATES,
-} GoodixDeactivateState;
-
-
-/* Forward declarations for the SSM handlers below */
-static void goodix_finger_wait_ssm_handler (FpiSsm *ssm, FpDevice *dev);
 static void goodix_capture_ssm_handler (FpiSsm *ssm, FpDevice *dev);
-static void goodix_finger_up_ssm_handler (FpiSsm *ssm, FpDevice *dev);
-static void goodix_deactivate_ssm_handler (FpiSsm *ssm, FpDevice *dev);
-
-/* ========================================================================
- * Finger-wait SSM (waiting for finger down)
- * ======================================================================== */
-
-static void
-goodix_finger_wait_ssm_handler (FpiSsm   *ssm,
-                                FpDevice *dev)
-{
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  GOODIX53X5_DEBUG_ONLY (gint64 now_us = g_get_monotonic_time ();)
-
-  switch (fpi_ssm_get_cur_state (ssm))
-    {
-    case GOODIX_FINGER_WAIT_EC_POWER_ON:
-      GOODIX53X5_DEBUG_ONLY (
-      if (self->debug_timing.finger_wait_started_us == 0)
-        {
-          self->debug_timing.finger_wait_started_us = now_us;
-          self->debug_timing.finger_wait_false_event_retries = 0;
-        }
-      GOODIX53X5_DEBUG_ONLY (
-        self->debug_timing.finger_wait_phase_started_us = now_us;)
-      )
-
-      /* Power on sensor (idempotent if already on) */
-      fpi_device_report_finger_status_changes (dev,
-                                               FP_FINGER_STATUS_NEEDED,
-                                               FP_FINGER_STATUS_PRESENT);
-      goodix_cmd_ec_control (ssm, dev, TRUE);
-      break;
-
-    case GOODIX_FINGER_WAIT_EC_POWER_ON_DONE:
-      if (!goodix_cmd_parse_ec_control_reply (dev))
-        {
-          fpi_ssm_mark_failed (ssm,
-                               fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                         "EC power-on failed"));
-          return;
-        }
-
-      goodix_debug_timing_log (dev, "finger_wait", "ec_power_on",
-                               now_us - self->debug_timing.finger_wait_phase_started_us,
-                               NULL);
-      GOODIX53X5_DEBUG_ONLY (
-        self->debug_timing.finger_wait_phase_started_us = now_us;)
-      fpi_ssm_next_state (ssm);
-      break;
-
-    case GOODIX_FINGER_WAIT_FDT_DOWN_SETUP:
-      GOODIX53X5_DEBUG_ONLY (
-        self->debug_timing.finger_wait_phase_started_us = now_us;)
-      /* Set up finger-down detection (re-arms the sensor) */
-      goodix_cmd_fdt_down_setup (ssm, dev, self->calib.fdt_base_down);
-      break;
-
-    case GOODIX_FINGER_WAIT_RECV_EVENT:
-      goodix_debug_timing_log (dev, "finger_wait", "fdt_down_setup",
-                               now_us - self->debug_timing.finger_wait_phase_started_us,
-                               NULL);
-      GOODIX53X5_DEBUG_ONLY (
-        self->debug_timing.finger_wait_phase_started_us = now_us;)
-      /* Wait for FDT DOWN event with cancellable. The shutdown jump target
-       * matches the historical RX-callback behavior of jumping to the
-       * finger-up SLEEP state index on post-result cancellation. */
-      self->blocking_ssm = ssm;
-      self->blocking_resume_state = GOODIX_FINGER_WAIT_FDT_DOWN_SETUP;
-      self->blocking_shutdown_state = GOODIX_FINGER_UP_SLEEP;
-      goodix_recv_start_cancellable (ssm, dev, self->cancel);
-      break;
-
-    case GOODIX_FINGER_WAIT_GEN_UP_BASE:
-      {
-        goodix_debug_timing_log (dev, "finger_wait", "wait_for_event",
-                                 now_us - self->debug_timing.finger_wait_phase_started_us,
-                                 NULL);
-        GOODIX53X5_DEBUG_ONLY (
-          self->debug_timing.finger_wait_phase_started_us = now_us;)
-
-        self->blocking_ssm = NULL;
-        /* Parse FDT event */
-        g_autoptr(GError) error = NULL;
-        const guint8 *pl;
-        gsize pl_len;
-
-        if (!goodix_cmd_parse_fdt_event (dev, FALSE, &pl, &pl_len, &error))
-          {
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
-
-        /* irq_status = pl[0:2], touch_flag = pl[2:4], fdt_data = pl[4:28] */
-        self->fdt_touch_flag = pl[2] | ((guint16) pl[3] << 8);
-        g_free (self->fdt_event_data);
-        self->fdt_event_data = g_memdup2 (pl + 4, GOODIX_FDT_BASE_LEN);
-
-        /* Generate FDT up base */
-        goodix_device_generate_fdt_up_base (self->fdt_event_data,
-                                            self->fdt_touch_flag,
-                                            &self->calib,
-                                            self->calib.fdt_base_up);
-        fpi_ssm_next_state (ssm);
-      }
-      break;
-
-    case GOODIX_FINGER_WAIT_FDT_CHECK:
-      /* FDT manual TX-off to verify the interrupt moved away from baseline. */
-      goodix_cmd_fdt_manual (ssm, dev, FALSE, self->calib.fdt_base_manual);
-      break;
-
-    case GOODIX_FINGER_WAIT_VALIDATE:
-      {
-        /* Parse manual FDT response and check for a false FDT-down event. */
-        g_autoptr(GError) error = NULL;
-        const guint8 *pl;
-        gsize pl_len;
-
-        if (!goodix_cmd_parse_fdt_manual_reply (dev, &pl, &pl_len, &error))
-          {
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
-
-        goodix_debug_timing_log (dev, "finger_wait", "fdt_manual_check",
-                                 now_us - self->debug_timing.finger_wait_phase_started_us,
-                                 NULL);
-
-        /* If the event and immediate manual reading still match, the interrupt
-         * was baseline drift/noise rather than a stable finger-down. */
-        if (goodix_device_is_fdt_base_valid (self->fdt_event_data,
-                                             pl + 4,
-                                             GOODIX_FDT_BASE_LEN,
-                                             self->calib.delta_fdt))
-          {
-            fp_dbg ("False FDT down event detected, retrying finger wait");
-
-            GOODIX53X5_DEBUG_ONLY (
-            if (goodix_debug_timing_enabled ())
-              {
-                g_autofree gchar *detail = NULL;
-
-                self->debug_timing.finger_wait_false_event_retries++;
-                detail = g_strdup_printf ("false_event_retries=%u",
-                                          self->debug_timing.finger_wait_false_event_retries);
-                goodix_debug_timing_log (dev, "finger_wait", "false_event_retry",
-                                         now_us - self->debug_timing.finger_wait_started_us,
-                                         detail);
-              }
-            )
-
-            /* Re-arm FDT down detection and wait again */
-            fpi_ssm_jump_to_state (ssm, GOODIX_FINGER_WAIT_FDT_DOWN_SETUP);
-            return;
-          }
-
-        /* Real finger detected! */
-        fp_dbg ("Finger detected");
-
-        GOODIX53X5_DEBUG_ONLY (
-        if (goodix_debug_timing_enabled ())
-          {
-            g_autofree gchar *detail = NULL;
-
-            if (self->debug_timing.finger_wait_false_event_retries > 0)
-              detail = g_strdup_printf ("false_event_retries=%u",
-                                        self->debug_timing.finger_wait_false_event_retries);
-            goodix_debug_timing_log (dev, "finger_wait", "total_ready",
-                                     now_us - self->debug_timing.finger_wait_started_us,
-                                     detail);
-            self->debug_timing.finger_wait_started_us = 0;
-          }
-        )
-
-        fpi_device_report_finger_status_changes (dev,
-                                                 FP_FINGER_STATUS_PRESENT,
-                                                 FP_FINGER_STATUS_NEEDED);
-        fpi_ssm_mark_completed (ssm);
-      }
-      break;
-    }
-}
-
-/* finger_wait is used as a sub-SSM — no standalone run/done needed */
 
 /* ========================================================================
  * Capture SSM
@@ -288,7 +917,6 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_CAPTURE_DECRYPT:
       {
-        guint8 cat, cmd;
         const guint8 *pl;
         gsize pl_len, dec_len;
         guint8 *decrypted;
@@ -299,7 +927,7 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
         GOODIX53X5_DEBUG_ONLY (
           self->debug_timing.capture_phase_started_us = now_us;)
 
-        if (!goodix_parse_reply (dev, &cat, &cmd, &pl, &pl_len, NULL))
+        if (!goodix_cmd_parse_image_reply (dev, &pl, &pl_len, NULL))
           {
             fpi_ssm_mark_failed (ssm,
                                  fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
@@ -345,7 +973,6 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
             }
 
           g_free (decrypted);
-          g_clear_pointer (&self->reference_image, g_free);
         }
 
         GOODIX53X5_DEBUG_ONLY (
@@ -390,214 +1017,14 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
 /* capture is used as a sub-SSM — no standalone run/done needed */
 
 /* ========================================================================
- * Finger-up SSM
- * ======================================================================== */
-
-static void
-goodix_finger_up_ssm_handler (FpiSsm   *ssm,
-                              FpDevice *dev)
-{
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  GOODIX53X5_DEBUG_ONLY (gint64 now_us = g_get_monotonic_time ();)
-
-  switch (fpi_ssm_get_cur_state (ssm))
-    {
-    case GOODIX_FINGER_UP_FDT_UP_SETUP:
-      GOODIX53X5_DEBUG_ONLY (
-      if (self->debug_timing.finger_up_started_us == 0)
-        self->debug_timing.finger_up_started_us = now_us;
-      self->debug_timing.finger_up_phase_started_us = now_us;
-      )
-
-      /* Set up finger-up detection before waiting */
-      goodix_cmd_fdt_up_setup (ssm, dev, self->calib.fdt_base_up);
-      break;
-
-    case GOODIX_FINGER_UP_RECV_EVENT:
-      goodix_debug_timing_log (dev, "finger_up", "fdt_up_setup",
-                               now_us - self->debug_timing.finger_up_phase_started_us,
-                               NULL);
-      GOODIX53X5_DEBUG_ONLY (
-        self->debug_timing.finger_up_phase_started_us = now_us;)
-      /* If libfprint cancels after the result was reported, the RX callback
-       * jumps straight to the sleep/power-off tail of this SSM. */
-      self->blocking_ssm = ssm;
-      self->blocking_resume_state = GOODIX_FINGER_UP_FDT_UP_SETUP;
-      self->blocking_shutdown_state = GOODIX_FINGER_UP_SLEEP;
-      goodix_recv_start_cancellable (ssm, dev, self->cancel);
-      break;
-
-    case GOODIX_FINGER_UP_UPDATE_DOWN_BASE:
-      {
-        goodix_debug_timing_log (dev, "finger_up", "wait_for_lift",
-                                 now_us - self->debug_timing.finger_up_phase_started_us,
-                                 NULL);
-        GOODIX53X5_DEBUG_ONLY (
-          self->debug_timing.finger_up_phase_started_us = now_us;)
-
-        self->blocking_ssm = NULL;
-        /* Parse FDT UP event and update fdt_base_down */
-        g_autoptr(GError) error = NULL;
-        const guint8 *pl;
-        gsize pl_len;
-
-        if (!goodix_cmd_parse_fdt_event (dev, TRUE, &pl, &pl_len, &error))
-          {
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
-
-        goodix_device_generate_fdt_base (pl + 4, GOODIX_FDT_BASE_LEN,
-                                         self->calib.fdt_base_down);
-        fpi_device_report_finger_status_changes (dev,
-                                                 FP_FINGER_STATUS_NONE,
-                                                 FP_FINGER_STATUS_PRESENT | FP_FINGER_STATUS_NEEDED);
-        fpi_ssm_next_state (ssm);
-      }
-      break;
-
-    case GOODIX_FINGER_UP_SLEEP:
-      GOODIX53X5_DEBUG_ONLY (
-        self->debug_timing.finger_up_phase_started_us = now_us;)
-      goodix_cmd_set_sleep_mode (ssm, dev);
-      break;
-
-    case GOODIX_FINGER_UP_EC_POWER_OFF:
-      goodix_debug_timing_log (dev, "finger_up", "sleep",
-                               now_us - self->debug_timing.finger_up_phase_started_us,
-                               NULL);
-      GOODIX53X5_DEBUG_ONLY (
-        self->debug_timing.finger_up_phase_started_us = now_us;)
-      goodix_cmd_ec_control (ssm, dev, FALSE);
-      break;
-
-    case GOODIX_FINGER_UP_EC_POWER_OFF_DONE:
-      if (!goodix_cmd_parse_ec_control_reply (dev))
-        {
-          fpi_ssm_mark_failed (ssm,
-                               fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                         "EC power-off failed"));
-          return;
-        }
-
-      goodix_debug_timing_log (dev, "finger_up", "ec_power_off",
-                               now_us - self->debug_timing.finger_up_phase_started_us,
-                               NULL);
-      GOODIX53X5_DEBUG_ONLY (
-      if (self->debug_timing.finger_up_started_us != 0)
-        goodix_debug_timing_log (dev, "finger_up", "total",
-                                 now_us - self->debug_timing.finger_up_started_us,
-                                 NULL);
-      self->debug_timing.finger_up_started_us = 0;
-      self->debug_timing.finger_up_phase_started_us = 0;
-      )
-
-      fpi_ssm_mark_completed (ssm);
-      break;
-    }
-}
-
-/* finger_up is used as a sub-SSM — no standalone run/done needed */
-
-/* ========================================================================
- * Deactivate SSM
- * ======================================================================== */
-
-static void
-goodix_deactivate_ssm_handler (FpiSsm   *ssm,
-                               FpDevice *dev)
-{
-  GOODIX53X5_DEBUG_ONLY (
-    FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);)
-  GOODIX53X5_DEBUG_ONLY (gint64 now_us = g_get_monotonic_time ();)
-
-  switch (fpi_ssm_get_cur_state (ssm))
-    {
-    case GOODIX_DEACTIVATE_SLEEP:
-      GOODIX53X5_DEBUG_ONLY (
-        self->debug_timing.deactivate_started_us = now_us;
-        self->debug_timing.deactivate_phase_started_us = now_us;)
-      goodix_cmd_set_sleep_mode (ssm, dev);
-      break;
-
-    case GOODIX_DEACTIVATE_EC_POWER_OFF:
-      goodix_debug_timing_log (dev, "deactivate", "sleep",
-                               now_us - self->debug_timing.deactivate_phase_started_us,
-                               NULL);
-      GOODIX53X5_DEBUG_ONLY (
-        self->debug_timing.deactivate_phase_started_us = now_us;)
-      goodix_cmd_ec_control (ssm, dev, FALSE);
-      break;
-
-    case GOODIX_DEACTIVATE_EC_POWER_OFF_DONE:
-      if (!goodix_cmd_parse_ec_control_reply (dev))
-        {
-          fpi_ssm_mark_failed (ssm,
-                               fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                         "EC power-off failed"));
-          return;
-        }
-
-      goodix_debug_timing_log (dev, "deactivate", "ec_power_off",
-                               now_us - self->debug_timing.deactivate_phase_started_us,
-                               NULL);
-      GOODIX53X5_DEBUG_ONLY (
-      if (self->debug_timing.deactivate_started_us != 0)
-        goodix_debug_timing_log (dev, "deactivate", "total",
-                                 now_us - self->debug_timing.deactivate_started_us,
-                                 NULL);
-      self->debug_timing.deactivate_started_us = 0;
-      )
-
-      fpi_ssm_mark_completed (ssm);
-      break;
-    }
-}
-
-/* ========================================================================
  * Sub-SSM start wrappers
  * ======================================================================== */
 
-void
-goodix_scan_start_ref_capture_subsm (FpiSsm *parent_ssm, FpDevice *dev)
-{
-  goodix_milan_base_start_ensure_subsm (parent_ssm, dev);
-}
-
-void
-goodix_scan_start_finger_wait_subsm (FpiSsm *parent_ssm, FpDevice *dev)
-{
-  FpiSsm *sub = fpi_ssm_new (dev, goodix_finger_wait_ssm_handler,
-                             GOODIX_FINGER_WAIT_NUM_STATES);
-
-  fpi_ssm_start_subsm (parent_ssm, sub);
-}
-
-void
+static void
 goodix_scan_start_capture_subsm (FpiSsm *parent_ssm, FpDevice *dev)
 {
   FpiSsm *sub = fpi_ssm_new (dev, goodix_capture_ssm_handler,
                              GOODIX_CAPTURE_NUM_STATES);
-
-  fpi_ssm_start_subsm (parent_ssm, sub);
-}
-
-void
-goodix_scan_start_finger_up_subsm (FpiSsm *parent_ssm, FpDevice *dev)
-{
-  FpiSsm *sub = fpi_ssm_new_full (dev, goodix_finger_up_ssm_handler,
-                                  GOODIX_FINGER_UP_NUM_STATES,
-                                  GOODIX_FINGER_UP_SLEEP,
-                                  "goodix-finger-up");
-
-  fpi_ssm_start_subsm (parent_ssm, sub);
-}
-
-void
-goodix_scan_start_deactivate_subsm (FpiSsm *parent_ssm, FpDevice *dev)
-{
-  FpiSsm *sub = fpi_ssm_new (dev, goodix_deactivate_ssm_handler,
-                             GOODIX_DEACTIVATE_NUM_STATES);
 
   fpi_ssm_start_subsm (parent_ssm, sub);
 }

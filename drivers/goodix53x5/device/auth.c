@@ -23,11 +23,7 @@ typedef enum
 {
   GOODIX_VERIFY_REINIT = 0,
   GOODIX_VERIFY_REINIT_DONE,
-  GOODIX_VERIFY_CAPTURE_REF,
-  GOODIX_VERIFY_CAPTURE_REF_DONE,
-  GOODIX_VERIFY_WAIT_FINGER,
-  GOODIX_VERIFY_CAPTURE,
-  GOODIX_VERIFY_MATCH,
+  GOODIX_VERIFY_SCAN,
   GOODIX_VERIFY_FINISH,
   GOODIX_VERIFY_NUM_STATES,
 } GoodixVerifyState;
@@ -36,11 +32,23 @@ typedef struct
 {
   GoodixMilanRuntimeInput *runtime_input;
   GPtrArray               *originals;
-  FpiSsm                  *ssm;
   FpiDeviceAction          action;
   guint64                  action_epoch;
   guint64                  generation_id;
+  GOODIX53X5_DEBUG_ONLY (GoodixDebugRuntimeMetadata debug_metadata;)
 } GoodixAuthTaskData;
+
+#ifdef GOODIX53X5_DEBUG
+static void
+goodix_auth_log_runtime_result (FpDevice                       *dev,
+                                GoodixAuthTaskData              *data,
+                                const GoodixMilanRuntimeOutput *output)
+{
+  goodix_debug_log_runtime_result (dev, 0, &data->debug_metadata, output);
+}
+#else
+#define goodix_auth_log_runtime_result(...) G_STMT_START { } G_STMT_END
+#endif
 
 static void
 goodix_auth_print_unref (gpointer object)
@@ -68,16 +76,7 @@ goodix_clear_pending_result_report (FpiDeviceGoodix53x5 *self)
   g_clear_object (&self->pending_identify_match);
   self->pending_updated = FALSE;
   g_clear_error (&self->pending_result_error);
-  g_clear_error (&self->pending_action_error);
   g_clear_error (&self->pending_learning_error);
-}
-
-static void
-goodix_queue_action_error (FpiDeviceGoodix53x5 *self,
-                           GError              *error)
-{
-  goodix_clear_pending_result_report (self);
-  self->pending_action_error = error;
 }
 
 static void
@@ -117,7 +116,6 @@ goodix_flush_pending_result_report (FpDevice *dev)
   if (!self->pending_result_report)
     return;
 
-  self->action_result_reported = TRUE;
   if (self->pending_learning_error)
     fp_warn ("Native Milan learning was discarded after a positive match: %s",
              self->pending_learning_error->message);
@@ -230,47 +228,75 @@ goodix_auth_task_done (GObject      *source_object,
   g_autoptr(GError) task_error = NULL;
   GoodixMilanRuntimeOutput *output = g_task_propagate_pointer (
     G_TASK (result), &task_error);
-  gboolean current;
+  gboolean task_owned;
+  gboolean same_action;
+  gboolean action_owned;
+  gboolean generation_current;
+  gboolean cancelled;
 
   (void) user_data;
-  current = self->milan_task == G_TASK (result) &&
-            self->task_ssm == data->ssm &&
-            self->action_epoch == data->action_epoch &&
-            fpi_device_get_current_action (dev) == data->action &&
-            !fpi_device_action_is_cancelled (dev) &&
-            self->cancel && !g_cancellable_is_cancelled (self->cancel) &&
-            self->milan_generation &&
-            self->milan_generation->generation_id == data->generation_id;
-  if (output &&
-      (output->action_epoch != data->action_epoch ||
-       output->generation_id != data->generation_id))
-    current = FALSE;
-  if (self->milan_task == G_TASK (result))
+  task_owned = self->milan_task == G_TASK (result);
+  same_action = task_owned &&
+                fpi_device_get_current_action (dev) == data->action;
+  cancelled = same_action &&
+              (fpi_device_action_is_cancelled (dev) ||
+               !self->cancel || g_cancellable_is_cancelled (self->cancel) ||
+               (output && output->status == GOODIX_MILAN_RUNTIME_CANCELLED) ||
+               (task_error && g_error_matches (task_error, G_IO_ERROR,
+                                                G_IO_ERROR_CANCELLED)));
+  action_owned = same_action &&
+                 (self->action_epoch == data->action_epoch || cancelled);
+  generation_current = action_owned && self->milan_generation &&
+                       self->milan_generation->generation_id ==
+                         data->generation_id;
+  if (task_owned)
     g_clear_object (&self->milan_task);
 
-  if (!current || !output || task_error ||
-      output->status == GOODIX_MILAN_RUNTIME_CANCELLED)
+  if (!action_owned)
     {
       if (output)
-        goodix_debug_log_runtime_result (dev, 0, output);
+        goodix_auth_log_runtime_result (dev, data, output);
       goodix_milan_runtime_output_free (output);
       g_clear_pointer (&self->captured_raw_image, g_free);
-      if (self->task_ssm == data->ssm)
-        fpi_ssm_mark_failed (
-          data->ssm, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
-                                          "Native Milan auth task was invalidated"));
+      if (task_owned && self->profile9_fdt.owner)
+        goodix_scan_set_disposition (dev, GOODIX_SCAN_DISPOSITION_CANCELLED,
+                                     NULL);
       return;
     }
 
-  if (output->preprocess_state_valid)
+  if (cancelled)
+    {
+      if (output)
+        goodix_auth_log_runtime_result (dev, data, output);
+      goodix_milan_runtime_output_free (output);
+      g_clear_pointer (&self->captured_raw_image, g_free);
+      goodix_scan_set_disposition (dev, GOODIX_SCAN_DISPOSITION_CANCELLED,
+                                   NULL);
+      return;
+    }
+
+  if (!output || task_error ||
+      output->action_epoch != data->action_epoch ||
+      output->generation_id != data->generation_id)
+    {
+      goodix_milan_runtime_output_free (output);
+      g_clear_pointer (&self->captured_raw_image, g_free);
+      goodix_scan_set_disposition (
+        dev, GOODIX_SCAN_DISPOSITION_FATAL,
+        task_error ? g_steal_pointer (&task_error)
+                   : fpi_device_error_new_msg (
+                       FP_DEVICE_ERROR_GENERAL,
+                       "Native Milan auth task returned invalid output"));
+      return;
+    }
+
+  if (generation_current && output->preprocess_state_valid)
     {
       self->milan_generation->state = output->preprocess_state;
-      self->milan_profile_state = output->profile_state;
+      self->milan_generation->profile_state = output->profile_state;
       if (data->action == FPI_DEVICE_ACTION_IDENTIFY)
         goodix_milan_generation_note_identify_prelude (self->milan_generation);
     }
-  else if (output->status == GOODIX_MILAN_RUNTIME_RETRY)
-    goodix_milan_generation_invalidate (&self->milan_generation);
 
   GOODIX53X5_DEBUG_ONLY (goodix_auth_set_processed_image (self, output);)
   switch (output->status)
@@ -285,10 +311,10 @@ goodix_auth_task_done (GObject      *source_object,
 
         if (!original)
           {
-            goodix_queue_action_error (
-              self, fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
-            self->verify_wait_finger_up = FALSE;
-            break;
+            goodix_scan_set_disposition (
+              dev, GOODIX_SCAN_DISPOSITION_FATAL,
+              fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
+            goto out;
           }
         updated = goodix_auth_build_update (original, output);
         if (data->action == FPI_DEVICE_ACTION_IDENTIFY)
@@ -307,7 +333,8 @@ goodix_auth_task_done (GObject      *source_object,
           }
         if (output->learning_error)
           self->pending_learning_error = g_error_copy (output->learning_error);
-        self->verify_wait_finger_up = FALSE;
+        goodix_scan_set_disposition (
+          dev, GOODIX_SCAN_DISPOSITION_AUTH_SUCCESS, NULL);
       }
       break;
 
@@ -326,7 +353,8 @@ goodix_auth_task_done (GObject      *source_object,
                                    self->captured_image);
           goodix_queue_verify_report (self, FPI_MATCH_FAIL, FALSE, NULL);
         }
-      self->verify_wait_finger_up = TRUE;
+      goodix_scan_set_disposition (
+        dev, GOODIX_SCAN_DISPOSITION_AUTH_RETRY_AFTER_UP, NULL);
       break;
 
     case GOODIX_MILAN_RUNTIME_RETRY:
@@ -341,13 +369,14 @@ goodix_auth_task_done (GObject      *source_object,
         goodix_queue_verify_report (
           self, FPI_MATCH_ERROR, FALSE,
           fpi_device_retry_new (FP_DEVICE_RETRY_REMOVE_FINGER));
-      self->verify_wait_finger_up = TRUE;
+      goodix_scan_set_disposition (
+        dev, GOODIX_SCAN_DISPOSITION_AUTH_RETRY_AFTER_UP, NULL);
       break;
 
     case GOODIX_MILAN_RUNTIME_INVALID_DATA:
-      goodix_queue_action_error (self,
-                                 fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
-      self->verify_wait_finger_up = FALSE;
+      goodix_scan_set_disposition (
+        dev, GOODIX_SCAN_DISPOSITION_FATAL,
+        fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
       break;
 
     case GOODIX_MILAN_RUNTIME_CANCELLED:
@@ -358,20 +387,17 @@ goodix_auth_task_done (GObject      *source_object,
           data->action == FPI_DEVICE_ACTION_IDENTIFY ? "identify" : "verify",
           output->score, output->winner_index, output->study_action,
           output->quality, output->coverage);
-  goodix_debug_log_runtime_result (dev, 0, output);
+  goodix_auth_log_runtime_result (dev, data, output);
+out:
   goodix_milan_runtime_output_free (output);
 #ifdef GOODIX53X5_DEBUG
   g_clear_pointer (&self->captured_image, g_free);
 #endif
   g_clear_pointer (&self->captured_raw_image, g_free);
-  if (self->verify_wait_finger_up)
-    goodix_flush_pending_result_report (dev);
-  fpi_ssm_next_state (data->ssm);
 }
 
-static gboolean
-goodix_auth_start_task (FpiSsm   *ssm,
-                        FpDevice *dev)
+static void
+goodix_auth_start_task (FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiDeviceAction action = fpi_device_get_current_action (dev);
@@ -381,10 +407,23 @@ goodix_auth_start_task (FpiSsm   *ssm,
   GPtrArray *gallery = NULL;
   guint invalid_count = 0;
 
-  task_data->ssm = ssm;
   task_data->action = action;
   task_data->action_epoch = self->action_epoch;
+  if (!self->milan_generation || !self->captured_raw_image || self->milan_task)
+    {
+      goodix_auth_task_data_free (task_data);
+      goodix_scan_set_disposition (
+        dev, GOODIX_SCAN_DISPOSITION_FATAL,
+        fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                  "Native Milan auth input is missing or busy"));
+      return;
+    }
   task_data->generation_id = self->milan_generation->generation_id;
+  GOODIX53X5_DEBUG_ONLY (
+    goodix_debug_capture_runtime_metadata (
+      &task_data->debug_metadata, action,
+      self->milan_generation->setup_tx_on, self->captured_raw_image,
+      self->milan_generation->use_count);)
 
   if (action == FPI_DEVICE_ACTION_VERIFY)
     {
@@ -398,11 +437,10 @@ goodix_auth_start_task (FpiSsm   *ssm,
       if (!goodix_auth_get_template (print, &template_bytes, &error))
         {
           goodix_auth_task_data_free (task_data);
-          goodix_queue_action_error (self,
-                                     fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
-          self->verify_wait_finger_up = FALSE;
-          fpi_ssm_next_state (ssm);
-          return FALSE;
+          goodix_scan_set_disposition (
+            dev, GOODIX_SCAN_DISPOSITION_FATAL,
+            fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
+          return;
         }
       g_ptr_array_add (task_data->originals, g_object_ref (print));
       g_ptr_array_add (runtime_gallery,
@@ -434,18 +472,17 @@ goodix_auth_start_task (FpiSsm   *ssm,
       if (gallery->len > 0 && runtime_gallery->len == 0 && invalid_count > 0)
         {
           goodix_auth_task_data_free (task_data);
-          goodix_queue_action_error (self,
-                                     fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
-          self->verify_wait_finger_up = FALSE;
-          fpi_ssm_next_state (ssm);
-          return FALSE;
+          goodix_scan_set_disposition (
+            dev, GOODIX_SCAN_DISPOSITION_FATAL,
+            fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
+          return;
         }
     }
 
   task_data->runtime_input = goodix_milan_runtime_input_new (
     task_data->action_epoch, task_data->generation_id,
     GOODIX_MILAN_PURPOSE_IDENTIFY, &self->milan_generation->state,
-    &self->milan_profile_state,
+    &self->milan_generation->profile_state,
     self->milan_generation->setup_tx_on, self->captured_raw_image,
     self->calib.tcode, self->calib.dac_h, self->calib.dac_l,
     self->milan_sensor_subtype,
@@ -454,9 +491,10 @@ goodix_auth_start_task (FpiSsm   *ssm,
   if (!task_data->runtime_input)
     {
       goodix_auth_task_data_free (task_data);
-      fpi_ssm_mark_failed (ssm,
-                           fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
-      return FALSE;
+      goodix_scan_set_disposition (
+        dev, GOODIX_SCAN_DISPOSITION_FATAL,
+        fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
+      return;
     }
   goodix_milan_runtime_input_set_cancel_check (
     task_data->runtime_input, goodix_auth_runtime_cancelled,
@@ -467,7 +505,14 @@ goodix_auth_start_task (FpiSsm   *ssm,
                         (GDestroyNotify) goodix_auth_task_data_free);
   self->milan_task = g_object_ref (task);
   g_task_run_in_thread (task, goodix_auth_worker);
-  return TRUE;
+}
+
+static void
+goodix_auth_capture_ready (FpDevice *dev,
+                           gpointer  user_data)
+{
+  (void) user_data;
+  goodix_auth_start_task (dev);
 }
 
 static void
@@ -487,56 +532,12 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
       self->needs_reinit = FALSE;
       fpi_ssm_next_state (ssm);
       break;
-    case GOODIX_VERIFY_CAPTURE_REF:
-      goodix_scan_start_ref_capture_subsm (ssm, dev);
-      break;
-    case GOODIX_VERIFY_CAPTURE_REF_DONE:
-      if (self->milan_base_recovery == GOODIX_MILAN_BASE_RECOVERY_NONE)
-        {
-          fpi_ssm_next_state (ssm);
-          break;
-        }
-
-      if (self->milan_base_recovery ==
-          GOODIX_MILAN_BASE_RECOVERY_REMOVE_FINGER)
-        fpi_device_report_finger_status_changes (
-          dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
-      else
-        fpi_device_report_finger_status_changes (
-          dev, FP_FINGER_STATUS_NEEDED, FP_FINGER_STATUS_PRESENT);
-      if (fpi_device_get_current_action (dev) == FPI_DEVICE_ACTION_IDENTIFY)
-        goodix_queue_identify_report (
-          self, NULL, FALSE,
-          fpi_device_retry_new (
-            self->milan_base_recovery ==
-              GOODIX_MILAN_BASE_RECOVERY_REMOVE_FINGER
-              ? FP_DEVICE_RETRY_REMOVE_FINGER : FP_DEVICE_RETRY_GENERAL));
-      else
-        goodix_queue_verify_report (
-          self, FPI_MATCH_ERROR, FALSE,
-          fpi_device_retry_new (
-            self->milan_base_recovery ==
-              GOODIX_MILAN_BASE_RECOVERY_REMOVE_FINGER
-              ? FP_DEVICE_RETRY_REMOVE_FINGER : FP_DEVICE_RETRY_GENERAL));
-      goodix_flush_pending_result_report (dev);
-      fpi_ssm_jump_to_state (ssm, GOODIX_VERIFY_FINISH);
-      break;
-    case GOODIX_VERIFY_WAIT_FINGER:
-      goodix_scan_start_finger_wait_subsm (ssm, dev);
-      break;
-    case GOODIX_VERIFY_CAPTURE:
-      goodix_scan_start_capture_subsm (ssm, dev);
-      break;
-    case GOODIX_VERIFY_MATCH:
-      (void) goodix_auth_start_task (ssm, dev);
+    case GOODIX_VERIFY_SCAN:
+      goodix_scan_start_coordinator_subsm (
+        ssm, dev, goodix_auth_capture_ready, NULL, NULL);
       break;
     case GOODIX_VERIFY_FINISH:
-      if (self->verify_wait_finger_up ||
-          self->milan_base_recovery ==
-            GOODIX_MILAN_BASE_RECOVERY_REMOVE_FINGER)
-        goodix_scan_start_finger_up_subsm (ssm, dev);
-      else
-        goodix_scan_start_deactivate_subsm (ssm, dev);
+      fpi_ssm_mark_completed (ssm);
       break;
     case GOODIX_VERIFY_NUM_STATES:
       g_assert_not_reached ();
@@ -550,47 +551,33 @@ goodix_verify_ssm_done (FpiSsm   *ssm,
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiDeviceAction action = fpi_device_get_current_action (dev);
-  gboolean base_recovery =
-    self->milan_base_recovery != GOODIX_MILAN_BASE_RECOVERY_NONE;
-  gboolean suppressed_stale_error = FALSE;
   gboolean updated = FALSE;
 
-  self->task_ssm = NULL;
-  self->blocking_ssm = NULL;
-  g_clear_pointer (&self->reference_image, g_free);
+  (void) ssm;
+
 #ifdef GOODIX53X5_DEBUG
   g_clear_pointer (&self->captured_image, g_free);
 #endif
   g_clear_pointer (&self->captured_raw_image, g_free);
 
-  if (error && fpi_ssm_get_cur_state (ssm) >= GOODIX_VERIFY_FINISH &&
-      !base_recovery &&
-      !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
-    {
-      fp_warn ("Post-match cleanup error (non-fatal): %s", error->message);
-      suppressed_stale_error = goodix_error_indicates_stale_device (error);
-      g_clear_error (&error);
-    }
   if (!error)
     {
-      if (self->pending_action_error)
-        error = g_steal_pointer (&self->pending_action_error);
+      if (!self->pending_result_report)
+        error = fpi_device_error_new_msg (
+          FP_DEVICE_ERROR_GENERAL,
+          "Native Milan auth completed without a result");
       else
-        goodix_flush_pending_result_report (dev);
+        {
+          updated = self->pending_updated;
+          goodix_flush_pending_result_report (dev);
+        }
     }
-  else
+  if (error)
     goodix_clear_pending_result_report (self);
 
-  if (!error)
-    updated = self->pending_updated;
   self->pending_updated = FALSE;
 
-  self->action_result_reported = FALSE;
-  self->verify_wait_finger_up = FALSE;
-  self->milan_base_recovery = GOODIX_MILAN_BASE_RECOVERY_NONE;
-  if (!error)
-    self->needs_reinit = suppressed_stale_error;
-  else if (goodix_error_indicates_stale_device (error))
+  if (error && goodix_error_indicates_stale_device (error))
     self->needs_reinit = TRUE;
   goodix_debug_timing_action_done (self, dev,
                                    error ? error->message : NULL);
@@ -612,10 +599,6 @@ goodix_auth_start (FpDevice *dev)
   self->action_epoch++;
   if (self->action_epoch == 0)
     self->action_epoch++;
-  self->action_result_reported = FALSE;
-  self->verify_wait_finger_up = FALSE;
-  self->milan_base_recovery = GOODIX_MILAN_BASE_RECOVERY_NONE;
-  g_clear_pointer (&self->reference_image, g_free);
 #ifdef GOODIX53X5_DEBUG
   g_clear_pointer (&self->captured_image, g_free);
 #endif
@@ -624,6 +607,5 @@ goodix_auth_start (FpDevice *dev)
 
   ssm = fpi_ssm_new (dev, goodix_verify_ssm_handler,
                      GOODIX_VERIFY_NUM_STATES);
-  self->task_ssm = ssm;
   fpi_ssm_start (ssm, goodix_verify_ssm_done);
 }

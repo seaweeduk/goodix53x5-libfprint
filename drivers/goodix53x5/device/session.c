@@ -32,8 +32,6 @@
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 
-#define GOODIX_OPEN_BASE_MAX_RETRIES 16
-#define GOODIX_OPEN_FINGER_UP_TIMEOUT_MS 5000
 #define GOODIX_PSK_STATE_FILE "/var/lib/fprint/goodix53x5.psk"
 
 /* Open SSM — full device initialization */
@@ -57,7 +55,6 @@ typedef enum {
   GOODIX_OPEN_VALIDATE_CONFIG,
   GOODIX_OPEN_CAPTURE_REF,
   GOODIX_OPEN_CAPTURE_REF_DONE,
-  GOODIX_OPEN_RETRY_REF_AFTER_CLEANUP,
   GOODIX_OPEN_SLEEP,
   GOODIX_OPEN_EC_POWER_OFF,
   GOODIX_OPEN_EC_POWER_OFF_DONE,
@@ -109,8 +106,6 @@ goodix_open_state_name (GoodixOpenState state)
       return "capture_ref";
     case GOODIX_OPEN_CAPTURE_REF_DONE:
       return "capture_ref_done";
-    case GOODIX_OPEN_RETRY_REF_AFTER_CLEANUP:
-      return "retry_ref_after_cleanup";
     case GOODIX_OPEN_SLEEP:
       return "sleep";
     case GOODIX_OPEN_EC_POWER_OFF:
@@ -123,31 +118,6 @@ goodix_open_state_name (GoodixOpenState state)
     }
 }
 #endif
-
-static void
-goodix_open_clear_finger_up_timeout (FpiDeviceGoodix53x5 *self)
-{
-  g_clear_pointer (&self->open_finger_up_timeout, g_source_destroy);
-  self->open_finger_up_timed_out = FALSE;
-}
-
-static void
-goodix_open_finger_up_timeout_cb (FpDevice *dev,
-                                  gpointer  user_data)
-{
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-
-  (void) user_data;
-  self->open_finger_up_timeout = NULL;
-  if (fpi_device_action_is_cancelled (dev))
-    return;
-
-  fp_warn ("Timed out after %u ms waiting for finger removal during device setup",
-           GOODIX_OPEN_FINGER_UP_TIMEOUT_MS);
-  self->open_finger_up_timed_out = TRUE;
-  if (self->cancel)
-    g_cancellable_cancel (self->cancel);
-}
 
 /* PSK white box for writing the default all-zero PSK. */
 static const guint8 goodix_psk_white_box[GOODIX_PSK_WHITE_BOX_LEN] = {
@@ -616,8 +586,6 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         self->gtls.hmac_client_counter = self->gtls.hmac_client_counter_init;
         self->gtls.hmac_server_counter = self->gtls.hmac_server_counter_init;
         self->gtls.state = 5;
-        self->open_base_retries = 0;
-        self->open_base_failed = FALSE;
         self->open_ref_powered = FALSE;
 
         fp_info ("GTLS handshake completed");
@@ -652,45 +620,13 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_OPEN_CAPTURE_REF_DONE:
-      self->open_ref_powered = TRUE;
-      if (self->milan_base_recovery == GOODIX_MILAN_BASE_RECOVERY_NONE)
-        {
-          fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_SLEEP);
-          return;
-        }
-
-      if (++self->open_base_retries > GOODIX_OPEN_BASE_MAX_RETRIES)
-        {
-          self->open_base_failed = TRUE;
-          fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_SLEEP);
-          return;
-        }
-
-      if (self->milan_base_recovery ==
-          GOODIX_MILAN_BASE_RECOVERY_REMOVE_FINGER)
-        {
-          fpi_device_report_finger_status_changes (
-            dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
-          goodix_open_clear_finger_up_timeout (self);
-          self->open_finger_up_timeout = fpi_device_add_timeout (
-            dev, GOODIX_OPEN_FINGER_UP_TIMEOUT_MS,
-            goodix_open_finger_up_timeout_cb, NULL, NULL);
-          g_source_set_name (self->open_finger_up_timeout,
-                             "goodix-open-finger-up-timeout");
-          goodix_scan_start_finger_up_subsm (ssm, dev);
-        }
-      else
-        goodix_scan_start_deactivate_subsm (ssm, dev);
-      break;
-
-    case GOODIX_OPEN_RETRY_REF_AFTER_CLEANUP:
-      goodix_open_clear_finger_up_timeout (self);
-      self->open_ref_powered = FALSE;
-      fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_CAPTURE_REF);
+      /* A recoverable contaminated pair performs its own bounded shutdown and
+       * leaves a typed pending event for the first action. */
+      self->open_ref_powered = self->milan_generation != NULL;
+      fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_SLEEP);
       break;
 
     case GOODIX_OPEN_SLEEP:
-      goodix_open_clear_finger_up_timeout (self);
       if (self->open_ref_powered)
         goodix_cmd_set_sleep_mode (ssm, dev);
       else
@@ -710,13 +646,6 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
           return;
         }
       self->open_ref_powered = FALSE;
-      if (self->open_base_failed)
-        {
-          fpi_ssm_mark_failed (
-            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
-                                           "Open reference acquisition did not stabilize"));
-          return;
-        }
       fpi_ssm_next_state (ssm);
       break;
 
@@ -755,7 +684,6 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
   self->task_ssm = NULL;
-  goodix_open_clear_finger_up_timeout (self);
 
   if (error)
     {
@@ -898,64 +826,22 @@ void
 goodix_session_suspend (FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  FpiDeviceAction action = fpi_device_get_current_action (dev);
 
   /* Any system sleep while the device is open may invalidate the USB claim
    * and GTLS session: S4 resets or re-enumerates the device and rebinds the
    * cdc_acm kernel driver to our interface. Force a full reinitialization at
    * the start of the next action regardless of what we were doing when sleep
-   * hit. A successfully completed action clears this again. */
+   * hit. Only a successful reinitialization clears this again. */
   self->needs_reinit = TRUE;
-  self->action_epoch++;
-  goodix_milan_generation_invalidate (&self->milan_generation);
-
-  if (action != FPI_DEVICE_ACTION_VERIFY &&
-      action != FPI_DEVICE_ACTION_IDENTIFY)
-    {
-      fpi_device_suspend_complete (dev,
-          fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
-      return;
-    }
-
-  if (self->blocking_ssm)
-    {
-      /* Cancel the pending read; suspend_complete called from rx callback */
-      self->suspend_pending = TRUE;
-      g_cancellable_cancel (self->cancel);
-    }
-  else
-    {
-      /* Mid-capture state cannot survive the generation reset. */
-      fpi_device_suspend_complete (
-        dev, fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
-    }
+  goodix_scan_stop_coordinator (
+    dev, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                              "Profile-9 scan stopped for suspend"));
+  fpi_device_suspend_complete (
+    dev, fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
 }
 
 void
 goodix_session_resume (FpDevice *dev)
 {
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  FpiDeviceAction action = fpi_device_get_current_action (dev);
-
-  if (action != FPI_DEVICE_ACTION_VERIFY &&
-      action != FPI_DEVICE_ACTION_IDENTIFY)
-    {
-      fpi_device_resume_complete (dev,
-          fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
-      return;
-    }
-
-  g_clear_object (&self->cancel);
-  self->cancel = g_cancellable_new ();
-
-  /* Restart the SSM from the re-arm state (resubmits USB reads). Only
-   * reachable if suspend completed successfully mid-capture and the SSM
-   * armed a blocking wait before the system actually slept. */
-  if (self->blocking_ssm)
-    {
-      fpi_ssm_jump_to_state (self->blocking_ssm, self->blocking_resume_state);
-      self->blocking_ssm = NULL;
-    }
-
   fpi_device_resume_complete (dev, NULL);
 }

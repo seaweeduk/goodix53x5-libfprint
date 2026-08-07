@@ -51,40 +51,25 @@ goodix_close (FpDevice *dev)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   GError *error = NULL;
 
-  self->blocking_ssm = NULL;
-  self->suspend_pending = FALSE;
   self->action_epoch++;
-  g_clear_pointer (&self->open_finger_up_timeout, g_source_destroy);
-  self->open_finger_up_timed_out = FALSE;
   if (self->cancel)
     g_cancellable_cancel (self->cancel);
   g_clear_object (&self->milan_task);
   g_clear_object (&self->cancel);
   goodix_clear_pending_result_report (self);
-  g_clear_pointer (&self->fdt_event_data, g_free);
   g_clear_pointer (&self->otp_data, g_free);
   g_clear_pointer (&self->fw_version, g_free);
   g_clear_pointer (&self->rx.buf, g_free);
-  g_clear_pointer (&self->reference_image, g_free);
 #ifdef GOODIX53X5_DEBUG
   g_clear_pointer (&self->captured_image, g_free);
 #endif
   g_clear_pointer (&self->captured_raw_image, g_free);
   goodix_milan_generation_invalidate (&self->milan_generation);
   g_clear_pointer (&self->enroll_features, g_ptr_array_unref);
+  g_clear_error (&self->pending_enroll_error);
   OPENSSL_cleanse (self->psk, sizeof (self->psk));
   OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
   self->psk_imported = FALSE;
-
-  if (self->cmd)
-    {
-      g_free (self->cmd->payload);
-      g_clear_pointer (&self->cmd, g_free);
-    }
-
-  self->action_result_reported = FALSE;
-  self->verify_wait_finger_up = FALSE;
-  self->milan_base_recovery = GOODIX_MILAN_BASE_RECOVERY_NONE;
 
   g_usb_device_release_interface (fpi_device_get_usb_device (dev),
                                   GOODIX_USB_INTERFACE, 0, &error);
@@ -142,7 +127,14 @@ goodix_cancel (FpDevice *dev)
 static void
 fpi_device_goodix53x5_init (FpiDeviceGoodix53x5 *self)
 {
+#ifdef GOODIX53X5_DEBUG
+  g_autofree gchar *capture_session_id = g_uuid_string_random ();
+
+  g_strlcpy (self->debug_capture_session_id, capture_session_id,
+             sizeof (self->debug_capture_session_id));
+#endif
   memset (self->psk, 0, sizeof (self->psk));
+  self->profile9_fdt.drift_anchor_empty = TRUE;
 }
 
 static const FpIdEntry goodix53x5_id_table[] = {

@@ -26,6 +26,11 @@
 #define GOODIX_ACK_TIMEOUT    2000
 #define GOODIX_DATA_TIMEOUT   5000
 
+typedef void (*GoodixRecvCancelledCallback) (FpiSsm   *ssm,
+                                              FpDevice *dev,
+                                              GError   *error,
+                                              gpointer  user_data);
+
 /**
  * Start receiving a message. Submits a bulk IN read; the RX callback handles
  * chunk reassembly and resubmits until the message is complete, then advances
@@ -36,13 +41,16 @@ void goodix_recv_start (FpiSsm       *ssm,
                         guint         timeout_ms,
                         GCancellable *cancellable);
 
-/**
- * Receive with cancellable support (for finger wait).
- * Uses infinite timeout (0) so the read blocks until the sensor sends data.
- */
-void goodix_recv_start_cancellable (FpiSsm       *ssm,
-                                    FpDevice     *dev,
-                                    GCancellable *cancellable);
+/* Start an infinite event receive and transfer ownership of a cancellation
+ * error to
+ * @cancelled_cb. The callback must resolve @ssm exactly once. Returns FALSE
+ * without changing @ssm if another receive or a command owns the transport. */
+gboolean goodix_recv_start_cancellable_full (
+  FpiSsm                     *ssm,
+  FpDevice                   *dev,
+  GCancellable               *cancellable,
+  GoodixRecvCancelledCallback cancelled_cb,
+  gpointer                    user_data);
 
 /**
  * Launch a command sub-SSM that sends a command and receives + validates the
@@ -57,6 +65,17 @@ void goodix_run_cmd (FpiSsm       *parent_ssm,
                      const guint8 *payload,
                      gsize         payload_len,
                      gboolean      expect_data);
+
+/* Run coordinator cleanup while allowing one event from the receive cancelled
+ * during stop to precede the command ACK. */
+void goodix_run_cmd_drain_fdt_once (
+  FpiSsm                    *parent_ssm,
+  FpDevice                  *dev,
+  guint8                     category,
+  guint8                     command,
+  const guint8              *payload,
+  gsize                      payload_len,
+  GoodixProfile9FdtWaitMode  cancelled_mode);
 
 /* Parsed reply payloads point into the current RX buffer and are valid only
  * until the next receive reset. */
