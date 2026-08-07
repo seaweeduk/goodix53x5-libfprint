@@ -168,15 +168,20 @@ when both are present they are combined:
 ./tools/milan-parity/milan-parity validate-dump \
   --dump-dir /private/snapshot \
   --compare-current \
+  --native-session 01234567-89ab-4cde-8123-456789abcdef \
   --native-generation 27 \
   --native-epoch 58 \
   --native-epoch 59
 ```
 
 `--compare-current` requires at least one selector so it cannot accidentally
-start a complete source replay. Native checks execute the DLL rather than using
-stored results, so repeated native runs remain meaningful. Targeted reports use
-separate names and do not overwrite the complete audit report.
+start a complete source replay. Epoch and generation counters are scoped to a
+runtime-debug v2 capture session. `--native-session` is required only when the
+numeric selection matches multiple sessions; use a runtime record's
+`capture_session_id`. Native checks execute the DLL rather than using stored
+results, so repeated native runs remain meaningful. Targeted reports use
+separate names and do not overwrite the complete audit report. `native_coverage`
+is printed for captured-driver audits, not current-versus-native comparisons.
 
 ## Storage
 

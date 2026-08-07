@@ -1315,7 +1315,7 @@ def print_dump_summary(report: dict[str, Any], output: Path) -> None:
     compared = [operation for operation in operations
                 if any(check["name"] == "native-parity" and check["status"] == "pass"
                        for check in operation["checks"])]
-    if compared:
+    if compared and report["native_comparison"] == "capture":
         actions: dict[int, int] = {}
         queue_transitions: dict[str, int] = {}
         scores = []
@@ -1399,6 +1399,11 @@ def run_validate_dump(args: argparse.Namespace) -> None:
     dump = ensure_private_directory(Path(args.dump_dir))
     selected_epochs = set(args.native_epoch)
     selected_generations = set(args.native_generation)
+    selected_session = args.native_session
+    if selected_session is not None and not valid_capture_session_id(selected_session):
+        raise HarnessError("--native-session must be a lowercase version-4 UUID")
+    if selected_session is not None and not (selected_epochs or selected_generations):
+        raise HarnessError("--native-session requires --native-epoch or --native-generation")
     if args.compare_current and not (selected_epochs or selected_generations):
         raise HarnessError("--compare-current requires --native-epoch or --native-generation")
     dll = Path(args.dll).expanduser().resolve() if args.dll else None
@@ -1518,6 +1523,28 @@ def run_validate_dump(args: argparse.Namespace) -> None:
     timestamps = [timestamp for timestamp, _, _ in runtimes]
     if len(timestamps) != len(set(timestamps)):
         raise HarnessError("runtime chronology is ambiguous because timestamps are duplicated")
+    numerically_selected_v2 = {
+        runtime["capture_session_id"] for _, _, runtime in runtimes
+        if runtime["schema"] == "goodix53x5-runtime-debug/v2" and
+        (not selected_epochs or runtime["action_epoch_u64"] in selected_epochs) and
+        (not selected_generations or
+         runtime["generation_id_u64"] in selected_generations)
+    }
+    if targeted_native and selected_session is None:
+        if len(numerically_selected_v2) > 1:
+            raise HarnessError(
+                "targeted runtime-debug v2 selection matches multiple capture sessions; "
+                "select one with --native-session")
+        if numerically_selected_v2:
+            selected_session = next(iter(numerically_selected_v2))
+    elif selected_session is not None and selected_session not in numerically_selected_v2:
+        raise HarnessError(
+            "requested epoch/generation selection does not match --native-session")
+    native_selection = {
+        "action_epochs": sorted(selected_epochs),
+        "capture_session_id": selected_session,
+        "generations": sorted(selected_generations),
+    }
     operations = []
     pending_native: list[dict[str, Any]] = []
     native_name = "native-parity"
@@ -1578,6 +1605,8 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                 "purpose_u32": 0, "sensor_subtype_u16": 12, "tcode_u16": 121,
             }
             native_selected = (
+                (selected_session is None or
+                 runtime.get("capture_session_id") == selected_session) and
                 (not selected_epochs or runtime["action_epoch_u64"] in selected_epochs) and
                 (not selected_generations or
                  runtime["generation_id_u64"] in selected_generations)
@@ -1730,21 +1759,17 @@ def run_validate_dump(args: argparse.Namespace) -> None:
         report = {"schema": "milan-parity-dump-report/v1", "policy": POLICY,
                   "native_lifetime": "generation",
                   "native_comparison": "current" if args.compare_current else "capture",
-                  "native_selection": {
-                      "action_epochs": sorted(selected_epochs),
-                      "generations": sorted(selected_generations),
-                  },
+                  "native_selection": native_selection,
                   "inventory_sha256": inventory_sha256,
                   "campaign_readiness": readiness, "operations": operations,
                   "summary": {"fail": failures,
                               "pass": passes,
                               "skipped": skipped}}
         selection = ""
-        if selected_epochs or selected_generations:
+        if targeted_native:
             selection = "-target-" + sha256_bytes(canonical({
-                "action_epochs": sorted(selected_epochs),
+                **native_selection,
                 "comparison": "current" if args.compare_current else "capture",
-                "generations": sorted(selected_generations),
             }))[:12]
         output = Path(args.report).expanduser().resolve() if args.report else (
             state / "reports" /
@@ -2004,6 +2029,9 @@ def build_parser() -> argparse.ArgumentParser:
                                         os.environ.get("WINEPREFIX")))
     validate_dump.add_argument("--native-runner",
                                default=str(Path(__file__).resolve().parent / "native-runner"))
+    validate_dump.add_argument(
+        "--native-session",
+        help="Replay only runtime-debug v2 operations from this capture-session UUID")
     validate_dump.add_argument(
         "--native-epoch", action="append", default=[], type=int,
         help="Replay only operations with this action epoch (repeatable)")
