@@ -379,10 +379,8 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_POWER_ON:
-      if (!data->recovering_generation ||
-          (fdt->event.touch_flag & 0x0fff) == 0)
-        fpi_device_report_finger_status_changes (dev, FP_FINGER_STATUS_NEEDED,
-                                                  FP_FINGER_STATUS_PRESENT);
+      fpi_device_report_finger_status_changes (dev, FP_FINGER_STATUS_NEEDED,
+                                                FP_FINGER_STATUS_PRESENT);
       goodix_cmd_ec_control (ssm, dev, TRUE);
       break;
 
@@ -619,12 +617,8 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       /* Validation failure is recoverable: base_valid remains false and the
        * event-derived down base is still the next arm input. */
       data->refresh_reason = GOODIX_PROFILE9_FDT_REFRESH_NONE;
-      if (data->recovering_generation && self->milan_generation)
-        {
-          data->recovering_generation = FALSE;
-          fpi_device_report_finger_status_changes (
-            dev, FP_FINGER_STATUS_NEEDED, FP_FINGER_STATUS_PRESENT);
-        }
+      if (self->milan_generation)
+        data->recovering_generation = FALSE;
       fpi_ssm_next_state (ssm);
       break;
 
