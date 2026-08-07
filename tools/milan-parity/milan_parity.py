@@ -730,23 +730,57 @@ def run_capture(args: argparse.Namespace) -> None:
     write_atomic(campaign / "journal.jsonl", journal_data)
     diagnostic_lines = [str(entry.get("MESSAGE", "")) for entry in selected_entries
                         if "diagnostic[" in str(entry.get("MESSAGE", ""))]
-    identities = sorted(set(re.findall(r"epoch=(\d+) generation=(\d+)", "\n".join(
-        diagnostic_lines))))
-    if len(identities) != 1:
+    diagnostic_matches = [match for line in diagnostic_lines if (match := re.search(
+        r"diagnostic\[([^]]+)\] epoch=(\d+) generation=(\d+)", line))]
+    diagnostic_operations = {
+        (match.group(1), int(match.group(2))) for match in diagnostic_matches
+    }
+    if len(diagnostic_operations) != 1:
         raise HarnessError(
-            f"capture expected one diagnostic epoch/generation, observed {len(identities)}")
-    actions = sorted(set(re.findall(r"diagnostic\[([^]]+)\]", "\n".join(diagnostic_lines))))
+            "capture expected one diagnostic action/epoch, observed "
+            f"{len(diagnostic_operations)}")
+    action, action_epoch = diagnostic_operations.pop()
+    generation_ids = list(dict.fromkeys(
+        int(match.group(3)) for match in diagnostic_matches))
     expected_action = next((name for name in ("enroll", "identify", "verify")
                             if name in Path(args.operation[0]).name.lower()), None)
-    if expected_action and actions != [expected_action]:
+    if expected_action and action != expected_action:
         raise HarnessError(
-            f"captured diagnostic action differs: expected {expected_action}, observed {actions}")
-    manifest = {"schema": "milan-parity-capture/v1", "policy": POLICY,
+            f"captured diagnostic action differs: expected {expected_action}, observed {action}")
+    runtime_operations = set()
+    runtime_generations = set()
+    for name in new_dump_files:
+        match = RUNTIME_FILE_RE.fullmatch(name)
+        if not match:
+            continue
+        runtime = load_runtime_json(campaign / "artifacts" / "debug-dump" / name)
+        identity = (match["action"], int(match["epoch"]), int(match["generation"]),
+                    int(match["stage"]))
+        if (runtime.get("schema") != "goodix53x5-runtime-debug/v2" or
+                (runtime.get("action"), runtime.get("action_epoch_u64"),
+                 runtime.get("generation_id_u64"), runtime.get("stage_u32")) != identity or
+                not valid_capture_session_id(runtime.get("capture_session_id"))):
+            raise HarnessError(f"captured runtime identity is invalid: {name}")
+        runtime_operations.add((runtime["capture_session_id"], runtime["action"],
+                                runtime["action_epoch_u64"]))
+        runtime_generations.add(runtime["generation_id_u64"])
+    if len(runtime_operations) != 1:
+        raise HarnessError(
+            "capture expected one runtime session/action/epoch, observed "
+            f"{len(runtime_operations)}")
+    capture_session_id, runtime_action, runtime_epoch = runtime_operations.pop()
+    if (runtime_action, runtime_epoch) != (action, action_epoch):
+        raise HarnessError("captured runtime operation differs from journal diagnostics")
+    if runtime_generations != set(generation_ids):
+        raise HarnessError("captured runtime generations differ from journal diagnostics")
+    manifest = {"schema": "milan-parity-capture/v2", "policy": POLICY,
                 "command": args.operation, "started": command_started,
                 "exit_status": process.returncode, "journal_start_cursor": cursor,
                 "journal_end_cursor": end_cursor,
-                "diagnostic_identity": {"action_epoch_u64": int(identities[0][0]),
-                                        "generation_id_u64": int(identities[0][1])},
+                "operation_identity": {"action": action,
+                                       "action_epoch_u64": action_epoch,
+                                       "capture_session_id": capture_session_id},
+                "generation_ids_u64": generation_ids,
                 "diagnostic_line_count": len(diagnostic_lines),
                 "new_dump_files": new_dump_files,
                 "driver_build": build_identity}
