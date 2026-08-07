@@ -379,8 +379,10 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_POWER_ON:
-      fpi_device_report_finger_status_changes (dev, FP_FINGER_STATUS_NEEDED,
-                                                FP_FINGER_STATUS_PRESENT);
+      if (!data->recovering_generation ||
+          (fdt->event.touch_flag & 0x0fff) == 0)
+        fpi_device_report_finger_status_changes (dev, FP_FINGER_STATUS_NEEDED,
+                                                  FP_FINGER_STATUS_PRESENT);
       goodix_cmd_ec_control (ssm, dev, TRUE);
       break;
 
@@ -659,6 +661,9 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_CYCLE_SETTLED:
+      if (data->disposition == GOODIX_SCAN_DISPOSITION_AUTH_RETRY_AFTER_UP ||
+          data->disposition == GOODIX_SCAN_DISPOSITION_ENROLL_FINAL_AFTER_UP)
+        data->cleanup_drain_mode = fdt->wait_mode;
       if (data->cycle_settled)
         data->cycle_settled (dev, data->disposition, data->user_data);
       if (data->stop_requested)

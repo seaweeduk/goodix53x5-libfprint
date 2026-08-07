@@ -151,6 +151,10 @@ Runtime debug v2 adds a per-service-device capture session UUID. Current parity
 tooling still reads legacy v1 records, but it requires the UUID on v2 records
 and will not join generation preludes across different sessions.
 
+One-operation capture manifests use schema `milan-parity-capture/v2`. They
+identify the operation by capture session, action, and action epoch, and record
+generation IDs in first-use order when an operation spans a reference refresh.
+
 Record the installed library identity in the new campaign root:
 
 ```sh
@@ -291,9 +295,10 @@ Then restart fprintd and use a new empty dump/campaign directory.
 
 ### The collector reports multiple operation identities
 
-Another fingerprint operation occurred during capture. Keep the failed bundle
-for diagnosis, create a new campaign destination, and rerun while avoiding
-screen unlock or another fprintd client.
+Another fingerprint operation or service-device capture session occurred during
+capture. Keep the failed bundle for diagnosis, create a new campaign
+destination, and rerun while avoiding screen unlock, another fprintd client, or
+an fprintd restart.
 
 ## Return To The Release Stack
 

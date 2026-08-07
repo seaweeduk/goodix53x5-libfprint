@@ -139,6 +139,11 @@ See [`DEBUG-CAPTURE-GUIDE.md`](../../DEBUG-CAPTURE-GUIDE.md) for the complete
 managed-stack installation, fprintd configuration, smoke capture, fresh
 enrollment, privacy, troubleshooting, and release rollback procedure.
 
+One-operation collection writes a `milan-parity-capture/v2` manifest keyed by
+capture session, action, and action epoch. Its `generation_ids_u64` field keeps
+generation IDs in first-use order, so one enrollment can cross a reference
+refresh without being mistaken for multiple operations.
+
 `validate-dump` replays repeated uses of one preprocessing generation
 chronologically when all earlier raw frames are present. Earlier frames are
 preprocessing-only preludes; matching and study remain scoped to the target
