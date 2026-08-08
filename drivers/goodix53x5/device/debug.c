@@ -824,8 +824,7 @@ goodix_debug_log_runtime_result (FpDevice                         *dev,
     G_GUINT64_FORMAT ",\"coverage_i32\":",
     self->debug_capture_session_id, chronology);
   if (output->preprocess_attempted)
-    g_string_append_printf (record, "%d",
-                            output->preprocess_completed ? output->coverage : 0);
+    g_string_append_printf (record, "%d", output->coverage);
   else
     g_string_append (record, "null");
   g_string_append_printf (
@@ -974,8 +973,7 @@ goodix_debug_log_runtime_result (FpDevice                         *dev,
     "\"quality_i32\":",
     output->probe_record_count, (guint) output->purpose);
   if (output->preprocess_attempted)
-    g_string_append_printf (record, "%d",
-                            output->preprocess_completed ? output->quality : 0);
+    g_string_append_printf (record, "%d", output->quality);
   else
     g_string_append (record, "null");
   g_string_append_printf (

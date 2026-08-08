@@ -312,11 +312,6 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
   output->preprocess_status = preprocess_status;
   output->preprocess_status_available = TRUE;
 #endif
-  if (preprocess_status != 0)
-    {
-      output->quality = 0;
-      output->coverage = 0;
-    }
   if (preprocess_status != 0 &&
       preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY &&
       preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION)
