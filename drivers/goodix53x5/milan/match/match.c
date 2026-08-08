@@ -1646,6 +1646,14 @@ milan_match_prepared_probe (
 #endif
   int32_t aggregate_score = 0;
 
+  if (active_relation_winner.valid)
+    {
+      *relation_count = active_relation_winner.count;
+      relation_values[0] = 0;
+      memcpy (relation_values + 1, active_relation_winner.routed,
+              sizeof(active_relation_winner.routed));
+    }
+
   if (rescue_applied)
     {
       *score = rescue_result.score;
@@ -1655,12 +1663,6 @@ milan_match_prepared_probe (
       if (rescue_result.retain_transform)
         memcpy (match_transform, rescue_result.selected_transform,
                 sizeof(rescue_result.selected_transform));
-      *relation_count = 0;
-      int relation_status = goodix_milan_match_reference_transform (
-        enrolled, *matched_feature_index, match_transform, relation_values);
-
-      if (relation_status < 0)
-        *relation_count = -1;
       result = 0;
       if (goodix_milan_match_selection_blocking_override (&match_selection))
         *score = -65536;
@@ -1700,25 +1702,6 @@ milan_match_prepared_probe (
           *matched_feature_index = (size_t) match_selection.selected_feature;
           memcpy (match_transform, match_selection.selected_transform,
                   sizeof(match_selection.selected_transform));
-          *relation_count = match_selection.selected_numerator;
-          int relation_status;
-
-          if (active_relation_winner.valid)
-            {
-              relation_values[0] = 0;
-              memcpy (relation_values + 1, active_relation_winner.routed,
-                      sizeof(active_relation_winner.routed));
-              relation_status = 0;
-            }
-          else
-            relation_status = goodix_milan_match_reference_transform (
-              enrolled, *matched_feature_index, match_transform,
-              relation_values);
-
-          if (relation_status < 0)
-            *relation_count = -1;
-          else if (relation_status > 0)
-            *relation_count = 0;
         }
       result = 0;
       if (goodix_milan_match_selection_blocking_override (&match_selection))
