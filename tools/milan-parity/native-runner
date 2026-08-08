@@ -412,16 +412,22 @@ def record_from_output(output: Path, case, inputs):
         if any(oracle.get(key) != value
                for key, value in expected_retry_contract.items()):
             raise RunnerError("Wine oracle retry contract differs")
-        if (preprocess.get("status") not in PREPROCESS_RETRY_STATUSES or
-                preprocess.get("quality") != 0 or preprocess.get("coverage") != 0 or
+        preprocess_status = preprocess.get("status")
+        preprocess_quality = preprocess.get("quality")
+        preprocess_coverage = preprocess.get("coverage")
+        if (preprocess_status not in PREPROCESS_RETRY_STATUSES or
+                (preprocess_status in {0x29AA, 0x29BB} and
+                 (preprocess_quality != 0 or preprocess_coverage != 0)) or
                 lifecycle["extraction"] != {"attempted": False, "completed": False} or
                 lifecycle["study"] != {"attempted": False, "completed": False} or
                 {path.name for path in output.iterdir()} != {"oracle-result.json"}):
             raise RunnerError("Wine preprocessing retry lifecycle is inconsistent")
         phases = [
             {"name": "stage-01-preprocess",
-             "outputs": {"coverage_i32": 0, "processed_image_sha256": None,
-                         "quality_i32": 0, "status_i32": preprocess["status"]}},
+             "outputs": {"coverage_i32": preprocess_coverage,
+                          "processed_image_sha256": None,
+                          "quality_i32": preprocess_quality,
+                          "status_i32": preprocess_status}},
             {"name": "stage-01-extract-antifake",
              "outputs": {"active_record_count_u32": None,
                          "partition0_count_u32": None,

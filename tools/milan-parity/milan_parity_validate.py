@@ -349,9 +349,9 @@ def validate_runtime(value: Any, path: Path, match: re.Match[str],
     preprocess_outputs_present = runtime["coverage_i32"] is not None
     if preprocess_outputs_present is not preprocess["attempted"]:
         raise HarnessError(f"preprocess outputs differ from attempt state: {path.name}")
-    if preprocess_status not in {None, 0} and (
+    if preprocess_status in {0x29AA, 0x29BB} and (
             runtime["coverage_i32"] != 0 or runtime["quality_i32"] != 0):
-        raise HarnessError(f"failed preprocess outputs must be zero: {path.name}")
+        raise HarnessError(f"early preprocess retry outputs must be zero: {path.name}")
     if extraction["attempted"] and not preprocess["completed"]:
         raise HarnessError(f"extraction preceded completed preprocessing: {path.name}")
     if study["attempted"] and not extraction["completed"]:

@@ -76,8 +76,10 @@ incomplete preprocessing chronology are also structurally unavailable. Failed,
 cancelled, and retry records are nevertheless structurally valid when lifecycle
 state and nullable outputs and artifacts agree. Runtime v3 records exact nullable
 `preprocess_status_i32`: null means preprocessing was not attempted, while every
-attempt preserves the exact int32 return. Nonzero status requires zero quality
-and coverage and no processed, probe, gallery, candidate, or study output.
+attempt preserves the exact int32 return. Nonzero status requires no processed,
+probe, gallery, candidate, or study output. Early `0x29aa` and `0x29bb` retries
+require zero quality and coverage; stateful `0x7531` retries preserve the DLL's
+returned metrics.
 Retry-only selection/replay is not implemented yet, so selecting such an
 operation remains unavailable and fails. Nonselected operations do not run
 structural replay admissibility and are skipped rather than poisoned by a valid

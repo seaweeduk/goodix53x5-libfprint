@@ -44,9 +44,10 @@ other declared artifact and record counts are checked exactly.
 `preprocess_status_i32` is exact nullable runtime evidence. It is null only when
 preprocessing was not attempted. Every attempted call records its exact int32
 return, including zero, `0x29aa`, `0x29bb`, `0x7531`, and unrecognized values.
-A zero status requires completed preprocessing and its processed artifact;
-nonzero status requires incomplete preprocessing, zero quality and coverage,
-and no extraction, gallery, candidate, or study outputs.
+A zero status requires completed preprocessing and its processed artifact.
+Nonzero status requires incomplete preprocessing and no extraction, gallery,
+candidate, or study outputs. Early `0x29aa` and `0x29bb` retries require zero
+quality and coverage; stateful `0x7531` retries preserve the returned metrics.
 
 ## Build Seal
 
