@@ -26,6 +26,13 @@ For the authoritative profile-9 runs, the input processed artifact is the full
 normalization to `104x88`; that normalized descriptor, not the raw image header,
 is what later reaches `FUN_180058700`.
 
+At `0x180001c5a..0x180001c8a`, the extractor receives quality and coverage from
+the processed descriptor, constant extraction selector 1, the first candidate's
+internal profile/configuration object, and the export's auxiliary pointer. That
+auxiliary pointer is the preprocessor workspace in the normal API lifecycle; it
+is not candidate state or the processed image buffer. The extractor decodes its
+first three bytes through `FUN_180073830` for the later classification config.
+
 ## Evidence And Confidence
 
 - Live extraction call and retained probe object: `0x180001c8a` calls
@@ -68,6 +75,39 @@ The intervention resumes the original instruction at `0x180001dbd` through a
 single-step breakpoint rearm. It does not alter the extraction call at
 `0x180001c8a`, the anti-fake call at `0x180001dd3`, or the matcher call at
 `0x180001e32`.
+
+There is no successful-extraction branch around this intervention point. The
+status test at `0x180001c96` sends nonzero extraction status directly to the
+`0x80000001` return at `0x180001cb2`; status zero falls through metadata setup
+and the logging calls to `0x180001dbd`. No conditional branch occurs between
+the successful status test and that instruction. Consequently, an
+`identifyImage` status-zero result with a retained serializable probe must have
+crossed the pre-anti-fake boundary exactly once. A zero boundary-hit count is
+not a valid low-coverage success path.
+
+A focused low-coverage diagnostic supplied an already sealed processed frame
+with quality 28 and coverage 14 directly to `identifyImage`. The DLL produced a
+serializable 20-record probe and two valid no-match gallery rows, and the
+`0x180001dbd` breakpoint fired once. This independently confirms the static
+control flow. The exported preprocessor rejected the corresponding raw-frame
+call earlier with `0x29aa`; that separate preprocessing rejection must not be
+misclassified as a skipped identify boundary.
+
+## Retained-Probe Serialization Window
+
+The pre-anti-fake boundary at `0x180001dbd` is too early to serialize the raw
+one-feature probe template consumed by the native runtime. At this point live
+feature `+0x160` is normally null. `FUN_1800392f0` begins by allocating the
+`0x1abc` anti-fake object at that field when absent, then clears and populates
+it. The completed object is observable at `0x180001dd8`, immediately after the
+call, and remains owned by global `0x18024ebe8` after `identifyImage` returns.
+
+The narrow non-handler serialization window is therefore immediately after
+`identifyImage` returns and before `templateStudy`. The latter consumes,
+destroys, and clears the retained feature. The `0x180001dbd` exception handler
+should remain limited to the allocator-compatible matrix shadow; invoking the
+template packer there would encode an absent anti-fake block and add complex
+DLL work while execution is interrupted.
 
 ## Sequence-2 Builder Boundary
 

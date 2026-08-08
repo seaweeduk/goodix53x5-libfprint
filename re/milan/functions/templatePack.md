@@ -24,6 +24,15 @@ allocate or free either public argument.
 This matches `milan-manifest.c`: `pack_template` obtains the size using the same
 public handle and passes that handle unchanged to `templatePack`.
 
+This indirection cannot wrap a bare live-feature pointer. If the handle's first
+field is the retained `0x168` feature from global `0x18024ebe8`,
+`FUN_18003f510` interprets feature bytes as the full `0x8e08` template: it reads
+the feature count at template `+0x1c`, feature pointers from `+0x28`, relation
+state near `+0x87d8`, and queue fields through `+0x8e04`. Such a wrapper is an
+out-of-bounds invalid object, not a supported one-feature-template shortcut.
+A standalone feature must first be encoded through `FUN_180040a70` and placed
+in complete one-feature framing, or be deep-copied into a real live template.
+
 For the study tail-order contract, `FUN_18003eaf0` passes live template
 `+0x87e8` to `FUN_18003f290`, which emits the complete 50-dword order vector as
 the fixed 200-byte tag-`a1` payload. Packing does not derive or reorder it; CRC
@@ -43,6 +52,8 @@ the output at 49 and include every star slot with nonnegative leading value.
 ## Confidence And Open Questions
 
 - Confidence: high for handle indirection, output ownership, and serialization.
+- Confidence: high that a bare-feature wrapper is invalid, from the export
+  assembly and the complete-template reads in `FUN_18003f510`/`FUN_18003eaf0`.
 - The export has no output-capacity argument; safety depends on the preceding
   `templateGetPackedSize` result remaining valid until the call.
 
