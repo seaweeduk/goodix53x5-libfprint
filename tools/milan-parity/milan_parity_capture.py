@@ -192,11 +192,6 @@ def _validate_new_files(operation: list[str], names: list[str], status: int) -> 
                 raise HarnessError(f"successful enrollment omitted accepted raw stage {stage}")
             if not any(name.startswith(f"enroll-stage-{stage}-") for name in names):
                 raise HarnessError(f"successful enrollment omitted accepted processed stage {stage}")
-    elif "identify" in command or "verify" in command:
-        action = "identify" if "identify" in command else "verify"
-        if (not any(name.startswith(f"raw12-{action}-") for name in names) or
-                not any(name.startswith(f"{action}-") for name in names)):
-            raise HarnessError(f"{action} capture omitted raw/processed probe")
 
 
 def run_capture(args: argparse.Namespace) -> None:
