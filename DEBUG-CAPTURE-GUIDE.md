@@ -1,113 +1,129 @@
 # Debug Data Capture Guide
 
-This guide installs the opt-in `goodix53x5` diagnostic build and passively
-captures private, replayable Milan operations. It is for local parity research
-only. The release build contains none of the dump writer, diagnostic formats,
-environment variables, hashes, or extra runtime fields described here.
+This guide installs the opt-in `goodix53x5` diagnostic build and captures
+private Milan operations into a persistent, restart-safe dump. The release
+build contains none of this dump writer, runtime schema, debug build/source
+identity markers, or diagnostic environment.
 
-The capture is not labeled `genuine` or `impostor`. It records opaque inputs and
-the driver result so the same transaction can be compared with the canonical-
-zero native Goodix implementation.
+Current collection and validation accept exactly runtime schema
+`goodix53x5-runtime-debug/v3` with print schema 4. Each campaign uses one current
+schema and one debug build identity; do not mix records from different captures
+or builds.
 
-## What Capture Retains
+## What The Dump Retains
 
-For each fprintd operation, the debug dump retains:
+The debug dump records:
 
-- every TX-on setup candidate (`raw12-ref-txon-*`), which is the only
-  replayable setup authority;
-- TX-off reference frames (`raw12-ref-*`) for capture validation only;
-- raw and processed enrollment or verify/identify frames;
-- one owner-only runtime JSON record per attempted stage;
-- ordered gallery indices, scores, decisions, selected feature, and queue
-  occupancy around matching;
-- hashes for input, after-match, probe, and final candidate templates;
-- the relevant user's FP3 state before and after the operation;
-- the bounded fprintd journal range for the operation;
-- the exact installed debug-library and source identity;
-- SHA-256 and size for every retained artifact.
+- every TX-on setup candidate used as replay setup authority;
+- raw and processed enrollment, verify, and identify frames;
+- canonical runtime records with session/action/epoch, unique chronology, and
+  the compile-time build ID;
+- raw native probe templates and exact active/partition counts;
+- strict `.bin` setup, live, processed, probe, input, after-match, and final
+  candidate artifacts with exact size/hash descriptors;
+- gallery scores, decisions, winner identity, natural queue observations, and
+  preprocess/extraction/study lifecycle state;
+- exact nullable `preprocess_status_i32`, with null for no attempt and the exact
+  int32 return for every attempted preprocessing call.
 
-The dump directory is persistent. Do not use `/tmp`, `/var/tmp`, or `/run`.
+Enrollment retries may emit repeated attempts for the same stage. The stage
+number identifies what was attempted; chronology uniquely orders every attempt.
+Declared gallery, evaluated/valid/invalid, probe partition, and artifact counts
+are checked exactly.
 
-CLI help is available without sudo:
+One-operation `capture` bundles additionally retain saved fingerprints before
+and after the command, the bounded fprintd journal range, the exact driver-build
+manifest, and SHA-256/size descriptors. A finalized passive dump retains the
+final saved fingerprints and a complete inventory.
 
-```sh
-./tools/milan-parity/milan-parity help
-./tools/milan-parity/milan-parity help finish-capture
-./tools/milan-parity/milan-parity capture --help
-```
+All biometric artifacts, hashes, journals, reports, DLL output, and saved
+fingerprints are private. Do not publish them or add them to Git or Git LFS.
+Use persistent owner-only paths, never `/tmp`, `/var/tmp`, or `/run`.
 
-## 1. Build The Paired Debug Stack
+## 1. Build Without Installing
 
-Run from the `goodix53x5-libfprint` repository as your normal user:
+From this repository, as your normal user:
 
 ```sh
 GOODIX53X5_DEBUG=1 ./scripts/build-milan-stack-local.sh
 ```
 
-The builder uses pinned libfprint and fprintd revisions, applies the private
-terminal update/save patches, builds the driver with `goodix53x5_debug=true`,
-and runs the retained libfprint and Milan tests once. It publishes a verified
-payload under `~/.local/state/goodix53x5-milan/builds/` without changing the
-running service. Do not install it until the old campaign has been finalized
-and the old enrollments have been deleted in step 2.
+The builder publishes a verified payload below
+`~/.local/state/goodix53x5-milan/builds/` without changing the running service.
+Do not install it until any existing current campaign has been finalized and
+existing enrollments have been deleted as described next.
 
-## 2. Finalize The Old Campaign And Delete Enrollments
+Every debug compilation receives a unique random 256-bit build ID. A separate
+deterministic production source identity stays the same when the production
+source and fixed source-identity inputs are unchanged.
 
-Finish or snapshot the old campaign before changing the service, enrollment
-state, or capture path. To finish it, set its existing dump path and freeze the
-service while the final inventory is written:
+## 2. Finalize An Existing Campaign
+
+Before replacing an installed build, changing enrollment state, or selecting a
+new dump path, finalize any active current campaign:
 
 ```sh
-old_dump="OLD_DUMP_DIRECTORY"
+existing_dump="/private/EXISTING_CAMPAIGN/debug-dump"
 
 sudo systemctl stop fprintd.service
-./tools/milan-parity/milan-parity finish-capture --dump-dir "$old_dump"
-sudo rm /etc/systemd/system/fprintd.service.d/99-goodix53x5-parity-capture.conf
+./tools/milan-parity/milan-parity finish-capture --dump-dir "$existing_dump"
+sudo rm -f /etc/systemd/system/fprintd.service.d/99-goodix53x5-parity-capture.conf
 sudo systemctl daemon-reload
 sudo systemctl start fprintd.service
 ```
 
-At this point the old campaign is closed and its files must not receive another
-operation. Delete the current user's existing enrollments now, while the old
-stack is still installed and capture is disabled:
+`finish-capture` copies the final saved prints, takes ownership, locks down the
+tree, and writes schema `milan-parity-finished-capture/v2`. The finalized dump
+is closed and must not receive another operation.
+
+After finalizing any active campaign, but before installing the new debug build,
+delete the current user's existing enrollments:
 
 ```sh
 fprintd-delete "$USER"
 ```
 
-This deletion must happen before installing the new debug stack. A successful
-deletion may remove `/var/lib/fprint/$USER` entirely. The capture tool records a
-missing pre-enrollment store as an empty baseline for enrollment only; it still
-requires storage to exist after enrollment and throughout verify/identify.
+This ordering is mandatory: finalize the active campaign, delete existing
+enrollments, then install the new debug build. A successful deletion may remove
+`/var/lib/fprint/$USER` entirely.
 
-## 3. Create A Purpose-Named Campaign
-
-Use a short purpose name rather than a timestamp. Increment the final revision
-only when intentionally starting another incompatible campaign:
+If there is no active campaign, still delete existing enrollments before the
+new installation. Use `save-enrollments` first only if a separate private
+snapshot is required:
 
 ```sh
-campaign_id="milan-inplace-learning-stock-save-v1"
+./tools/milan-parity/milan-parity save-enrollments \
+  --output /private/ENROLLMENT_ARCHIVE
+```
+
+## 3. Create Fresh Paths
+
+Use a new purpose-named directory. Do not hardcode or reuse a previous campaign
+name, dump, build manifest, or operation bundle:
+
+```sh
+campaign_id="PURPOSE-vN"
 campaign_parent="$HOME/dev/goodix-fp-dump/campaigns"
 campaign_root="$campaign_parent/$campaign_id"
 dump="$campaign_root/debug-dump"
+manifest="$campaign_root/driver-build.json"
 
 test ! -e "$campaign_root"
 install -d -m 0700 "$campaign_parent"
 mkdir -m 0700 "$campaign_root"
 mkdir -m 0700 "$dump"
-printf 'Campaign root: %s\nDump directory: %s\n' "$campaign_root" "$dump"
 ```
 
-Do not reuse these paths for another driver build. Files written directly by
-fprintd are root-owned mode `0600` until the campaign is finalized.
+Each campaign is tied to one random debug build ID and its deterministic
+production source identity.
 
-## 4. Configure Persistent Capture And Install
+## 4. Install A Persistent Restart-Safe Drop-In
 
-Write the capture environment into the persistent systemd drop-in. It remains
-active across service restarts and reboots until explicitly removed when
-returning to the release stack:
+Create the fresh drop-in with the new dump path before installing the debug
+stack:
 
 ```sh
+sudo install -d -m 0755 /etc/systemd/system/fprintd.service.d
 sudo tee /etc/systemd/system/fprintd.service.d/99-goodix53x5-parity-capture.conf >/dev/null <<EOF
 [Service]
 Environment=G_MESSAGES_DEBUG=libfprint-goodix53x5
@@ -126,90 +142,80 @@ sudo ./scripts/install-milan-stack-local.sh
 systemctl show fprintd.service --property=Environment --value
 ```
 
-Installation atomically switches `/opt/goodix53x5-milan`, preserves
-`StateDirectory=fprint`, and restarts fprintd. `GOODIX53X5_DUMP_PROBES=all` and
-`GOODIX53X5_DUMP_TEMPLATES=1` make successful operations self-contained.
-TX-on setup candidates are always dumped when `GOODIX53X5_DUMP_DIR` is set;
-`raw12-ref-*` TX-off frames cannot be used as replay setup.
-`ProtectHome=false` and `ReadWritePaths` permit the system service to write to
-the persistent path below the user's home directory.
+The drop-in persists across fprintd restarts and reboots. Do not remove it until
+the capture is deliberately retired. `GOODIX53X5_DUMP_PROBES=all` and
+`GOODIX53X5_DUMP_TEMPLATES=1` are required for full exact parity. TX-on setup
+candidates are emitted whenever the dump directory is configured; TX-off
+reference frames are not replay setup.
 
-## 5. Verify And Record The Installed Build
+## 5. Create The Exact Build Manifest
 
-The managed stack manifest must say that this is a debug build:
+First confirm the installed library is the current debug build:
 
 ```sh
 grep '^GOODIX53X5_DEBUG=1$' /opt/goodix53x5-milan/manifest/build.env
-strings /opt/goodix53x5-milan/lib/libfprint-2.so.2.0.0 |
-  grep 'goodix53x5-runtime-debug/v2'
+strings /opt/goodix53x5-milan/lib/libfprint-2.so.2.0.0 | \
+  grep 'goodix53x5-runtime-debug/v3'
 ```
 
-Both commands must print a match. If either fails, stop. Do not collect with a
-release or stale library.
-
-Runtime debug v2 adds a per-service-device capture session UUID. Current parity
-tooling still reads legacy v1 records, but it requires the UUID on v2 records
-and will not join generation preludes across different sessions.
-
-One-operation capture manifests use schema `milan-parity-capture/v2`. They
-identify the operation by capture session, action, and action epoch, and record
-generation IDs in first-use order when an operation spans a reference refresh.
-
-Record the installed library identity in the new campaign root:
+Both checks must match. Then create a fresh manifest from the installed library:
 
 ```sh
 ./tools/milan-parity/milan-parity build-manifest \
   --repo "$PWD" \
   --library /opt/goodix53x5-milan/lib/libfprint-2.so.2.0.0 \
-  --output "$campaign_root/driver-build.json" \
+  --output "$manifest" \
   --debug
-
-printf 'Build manifest: %s\n' "$campaign_root/driver-build.json"
 ```
 
-The collector rehashes this path and verifies that the running fprintd process
-mapped the same library. A caller-provided `--debug` flag alone is not trusted.
+The `milan-parity-driver-build/v2` manifest records the random compile-time
+build ID, deterministic production source identity, source commit, runtime
+schema, fixed profile-9 policy, and the installed library's absolute path,
+exact byte size, and SHA-256. Manifest creation rehashes the library and verifies
+both embedded identities against the repository.
 
-## 6. Use The Driver Normally
+Live `capture` rehashes the manifest path, verifies the embedded build and
+source identities, and confirms that fprintd mapped that exact library. Later
+`validate-dump` treats the captured path/hash/size as sealed evidence: the path
+does not need to exist or still match. Installing a fix, another debug build, or
+the release stack therefore does not invalidate an investigation snapshot.
+Runtime build IDs still reject a mixed-build dump or a runtime/manifest
+mismatch exactly. Do not reuse one manifest to capture another build.
 
-Start from the empty enrollment state created in step 2. Enroll whichever
-fingers you want, whenever you want, and use fingerprint authentication normally.
-There is no prescribed operation order or per-operation capture command. The
-persistent service drop-in writes enrollment, verify, identify, retry, failure,
-and learning artifacts into `$dump` across service restarts and reboots.
+## 6. Capture Normal Use
 
-Do not install a different libfprint build into the same campaign. Finish or
-snapshot this campaign before switching back to a release build or installing
-another debug build.
+Enroll fresh fingers and use fingerprint authentication normally. The
+persistent drop-in writes to `$dump` across service restarts and reboots. Do not
+run further live capture into this campaign after installing another library;
+existing snapshots remain valid for validation through their sealed manifest.
 
-## 7. Inspect A Completed Campaign
-
-For a passive dump collected during normal laptop use, finish collection with
-one command:
+For a deliberately bounded command, `capture` can package exactly one operation
+from the same live dump:
 
 ```sh
-./tools/milan-parity/milan-parity finish-capture --dump-dir "$dump"
+operations="$campaign_root/operations"
+mkdir -m 0700 "$operations"
+
+./tools/milan-parity/milan-parity capture \
+  --campaign "$operations/verify-001" \
+  --dump-dir "$dump" \
+  --build-manifest "$manifest" \
+  -- fprintd-verify "$USER"
 ```
 
-This asks for sudo, copies the current user's final saved fingerprints into the
-dump, returns ownership of all collected files to the user, locks permissions,
-and writes `capture-finished.json` with every file's size and SHA-256. Users do
-not need to copy saved fingerprint files after each unlock.
+The destination must not already exist. Files added during the command must
+identify exactly one new runtime session/action/epoch. The bundle then snapshots
+the complete bounded post-operation dump, not only those new files, so earlier
+session and generation dependencies remain available. It writes
+`milan-parity-capture/v3`.
 
-The finalized debug dump contains the complete passive artifact stream,
-`saved-enrollments-end/`, and `capture-finished.json`. Read and analyze the
-owner-owned finalized dump rather than live root-owned files.
+## 7. Validate A Restart-Safe Snapshot
 
-Do not publish the campaign, template hashes, images, FP3 files, journal range,
-or generated native output. Do not add them to Git or Git LFS.
-
-### Validate A Preliminary Snapshot
-
-Do not run `finish-capture` while a multi-day campaign is still active. Instead,
-briefly stop fprintd and make a private point-in-time copy:
+Do not validate the live directory while fprintd can change it. Stop the
+service briefly, copy the dump to a new owner-only path, then resume collection:
 
 ```sh
-snapshot="$campaign_root/snapshots/pre-release-validation-v1"
+snapshot="$campaign_root/snapshots/VALIDATION_SNAPSHOT"
 test ! -e "$snapshot"
 mkdir -p -m 0700 "$(dirname "$snapshot")"
 sudo systemctl stop fprintd.service
@@ -219,51 +225,82 @@ sudo chown -R "$USER:$(id -gn)" "$snapshot"
 chmod -R u+rwX,go-rwx "$snapshot"
 ```
 
-The original directory remains the active collection target. Validate the
-snapshot, not the live directory, so a new fingerprint operation cannot change
-the inventory during replay.
+Read `operation_id` from the current v3 runtime records and select each operation
+explicitly as `SESSION/ACTION/EPOCH`. Nonselected operations are reported as
+skipped. A selected operation that is unavailable for any reason fails.
 
-Configure the private native authority once per shell, then validation is one
-command:
+Configure the approved DLL and existing Wine prefix:
 
 ```sh
-export MILAN_PARITY_DLL=/private/path/GoodixEngineAdapter.dll
-export MILAN_PARITY_DLL_SHA256=6673db3874fea66a58e2da29e371d797b890c767ba0491134d4a372c5b27e3b4
-export MILAN_PARITY_WINEPREFIX=/private/path/to/existing-wine-prefix
-
-./tools/milan-parity/milan-parity validate-dump --dump-dir "$snapshot"
+export MILAN_PARITY_DLL=/private/GoodixEngineAdapter.dll
+export MILAN_PARITY_DLL_SHA256=APPROVED_LOWERCASE_SHA256
+export MILAN_PARITY_WINEPREFIX=/private/existing-wine-prefix
 ```
 
-`validate-dump` prints the complete operator verdict directly. It includes the
-number of operations compared to the DLL, study-action and score coverage,
-queue transitions, learned-candidate continuity, and every skipped-check reason
-grouped with a count. The JSON report remains available for detailed evidence;
-`jq` is not required to understand the result.
+Validate captured behavior against native:
 
-Example:
-
-```text
-milan_parity_dump=pass operations=15 checks=35/0/10
-native_parity=pass compared=6 failed=0 unavailable=9
-native_coverage actions=5:6 scores=25,40,42,48,52,88 queues=0->1:6
-learning_continuity=partial reobserved=5 pending=1 failed=0
-skipped_checks:
-  8 native-parity: enrollment authority requires a complete twelve-stage chain
-  1 candidate-reobserved: no later gallery contains the exact learned candidate
-  1 native-parity: required setup, live frame, or gallery template is missing
-report=/home/user/.local/state/milan-parity/reports/dump-<inventory>.json
+```sh
+./tools/milan-parity/milan-parity validate-dump \
+  --dump-dir "$snapshot" \
+  --build-manifest "$manifest" \
+  --operation 01234567-89ab-4cde-8123-456789abcdef/identify/58 \
+  --operation 01234567-89ab-4cde-8123-456789abcdef/verify/59
 ```
 
-An unavailable enrollment DLL check is expected: controlled-zero enrollment
-cannot be run directly under Wine. Matching, study, learning, append/replacement,
-and queue behavior are still checked against the direct DLL authority whenever
-the dump contains their required artifacts.
+Validate rebuilt current source against native on the same selected operations:
+
+```sh
+GOODIX53X5_DEBUG=0 ./scripts/build-local.sh
+
+./tools/milan-parity/milan-parity validate-dump \
+  --dump-dir "$snapshot" \
+  --build-manifest "$manifest" \
+  --operation 01234567-89ab-4cde-8123-456789abcdef/identify/58 \
+  --compare-current \
+  --repo "$PWD"
+```
+
+Run the first command explicitly in a clean checkout. It creates
+`.build/libfprint/builddir`, which `--compare-current` requires. The Milan stack
+builder does not create this checkout-local support build.
+
+Native execution is always natural identify/study. Captured queue occupancy is
+compared as an observation; it is never supplied as queue input. Validation
+compares exact processed image, probe, every gallery after-match template,
+final candidate, natural queue transitions, and lifecycle outputs. The report
+identifies the capture build/manifest/inventory, approved DLL and native runner,
+selectors, optional current source, every operation, and every exact difference
+or unavailable reason.
+
+Lifecycle `completed` means that the phase succeeded. Failed, cancelled, and
+retry records remain structurally valid when unavailable outputs and artifacts
+are null according to their actual lifecycle. Such records do not poison
+nonselected operations. Native and current runners report actual lifecycle
+observations for comparison; they do not assume completion from the requested
+operation. A nonzero preprocessing return carries zero quality and coverage and
+no downstream artifacts or lifecycle attempts. Retry-only selection/replay is
+not implemented yet.
+
+## 8. Finish The Current Capture
+
+When collection is complete, stop fprintd so no operation can race finalization:
+
+```sh
+sudo systemctl stop fprintd.service
+./tools/milan-parity/milan-parity finish-capture --dump-dir "$dump"
+sudo rm -f /etc/systemd/system/fprintd.service.d/99-goodix53x5-parity-capture.conf
+sudo systemctl daemon-reload
+sudo systemctl start fprintd.service
+```
+
+Retain the finalized owner-only dump, `driver-build.json`, and validation
+reports together. The manifest's captured library identity remains sealed
+evidence; future validation does not require retaining or reinstalling that
+absolute library path.
 
 ## Troubleshooting
 
-### The dump directory stays empty
-
-Confirm the debug stack, service environment, sandbox override, and service log:
+### The dump stays empty
 
 ```sh
 ./scripts/status-milan-stack-local.sh --installed
@@ -273,36 +310,35 @@ systemctl cat fprintd.service
 journalctl -u fprintd.service -n 100 --no-pager
 ```
 
-The most common cause is that the release stack is still installed. Building a
-debug payload does not install it; `sudo ./scripts/install-milan-stack-local.sh`
-is a separate step.
+Building does not install. Confirm the current debug stack and fresh persistent
+drop-in are both active.
 
-### The collector says the loaded library differs
+### The build identity differs
 
-Restart fprintd after installing, then regenerate `driver-build.json` from the
-installed `/opt` library. Do not reuse a manifest from the build tree or a prior
-installation.
+Do not regenerate a manifest to conceal a mixed campaign. Confirm the dump is
+fresh, manifest creation and live capture inspected the intended library, and
+fprintd mapped it during capture. A runtime record with another random build ID
+belongs in another campaign. A later change or removal at the captured absolute
+library path is permitted because validation uses the sealed manifest evidence.
 
-### The collector says raw/processed probes are missing
+### The runtime schema is rejected
 
-Confirm that the service environment contains:
+The checker accepts exactly `goodix53x5-runtime-debug/v3` with print schema 4.
+Install the current debug build and create a fresh campaign, manifest, drop-in,
+and dump.
 
-```text
-GOODIX53X5_DUMP_PROBES=all
-```
+### A selected operation is unavailable
 
-Then restart fprintd and use a new empty dump/campaign directory.
-
-### The collector reports multiple operation identities
-
-Another fingerprint operation or service-device capture session occurred during
-capture. Keep the failed bundle for diagnosis, create a new campaign
-destination, and rerun while avoiding screen unlock, another fprintd client, or
-an fprintd restart.
+A contract-valid failed, cancelled, or retry record may have nullable artifacts
+and does not affect nonselected operations. If its operation is selected and
+cannot supply the required replay projection, enrollment, cancellation, empty
+or invalid galleries, missing artifacts, or incomplete generation chronology
+fail by design. Keep the report and original dump for investigation; do not
+remove the selector to turn an active failure into an apparent pass.
 
 ## Return To The Release Stack
 
-Build and install a verified release stack:
+Retire the current capture first, then build and install the release stack:
 
 ```sh
 GOODIX53X5_DEBUG=0 ./scripts/build-milan-stack-local.sh
@@ -310,13 +346,7 @@ sudo ./scripts/install-milan-stack-local.sh
 ./scripts/status-milan-stack-local.sh --installed
 ```
 
-Then remove the collection-only service override:
-
-```sh
-sudo rm /etc/systemd/system/fprintd.service.d/99-goodix53x5-parity-capture.conf
-sudo systemctl daemon-reload
-sudo systemctl restart fprintd.service
-```
-
-Do not delete the dump directory or completed campaigns until their manifests
-have been validated and the required cases admitted into the private corpus.
+Ensure the capture drop-in has been removed, reload systemd, and restart
+fprintd. Retain finalized private dumps and their exact build manifests for the
+duration of the investigation. The release installation may occupy the captured
+library path while those dumps are validated.
