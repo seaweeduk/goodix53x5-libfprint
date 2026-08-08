@@ -339,8 +339,9 @@ first_veto_type12 (const int32_t metrics[77],
                      (filtered > 17 || combined > 402 || geometry > 30) &&
                      (filtered > 13 || combined > 415 || geometry > 12))) &&
     (primary > 8 || filtered > 16 || combined > 402 || geometry > 18) &&
-    (primary > 10 || filtered > 16 || detail > 210 || geometry > 16 ||
-                     overlap > 229 || combined > 410 || coverage < 110) &&
+    (primary > 10 || filtered > 16 ||
+                     ((detail > 210 || geometry > 16) &&
+                      (overlap > 229 || combined > 410 || coverage < 110))) &&
     (primary > 12 || ((filtered > 17 || combined > 405 || geometry > 22) &&
                       (filtered > 22 || combined > 370 || geometry > 30 || overlap > 215))) &&
     (primary > 7 || filtered > 14 || detail > 208 || low_detail > 202 || geometry > 18) &&
