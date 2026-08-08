@@ -229,11 +229,11 @@ the requested operation or from another output field.
 
 Generation replay consumes every earlier same-generation use index in exact
 order. It supplies the live raw frame and captured identify/enroll purpose for
-every use whose lifecycle says preprocessing was attempted, including recognized
-retry and cancellation paths even when no processed image exists. Uses where
-preprocessing was not attempted consume their chronology position but supply no
-frame. An attempted use without its live raw artifact makes the selected
-operation unavailable.
+every use whose preprocessing state the Linux caller committed: successful,
+`0x29aa`, and stateful `0x7531` results without runtime-observed cancellation.
+Driver-only late cancellation still retains preprocessing state. Other uses
+consume their chronology position but supply no frame. A committed use without
+its live raw artifact makes the selected operation unavailable.
 
 With `--compare-current`, the expected projection comes from the current source
 runner instead of the captured runtime, while the same selected inputs and

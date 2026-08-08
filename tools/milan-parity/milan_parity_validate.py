@@ -592,6 +592,11 @@ def _chronology(runtimes: list[dict[str, Any]]) -> None:
             uses[key] = expected_use
 
 
+def _preprocess_state_committed(runtime: dict[str, Any]) -> bool:
+    return (not runtime["cancellation"]["runtime_observed"] and
+            runtime["preprocess_status_i32"] in {0, 0x29AA, 0x7531})
+
+
 def _prelude(runtimes: list[dict[str, Any]], current: dict[str, Any]) -> list[tuple[Path, int]]:
     runtime = current["runtime"]
     remaining = runtime["generation_use_index_u64"] - 1
@@ -612,11 +617,11 @@ def _prelude(runtimes: list[dict[str, Any]], current: dict[str, Any]) -> list[tu
             continue
         if value["generation_use_index_u64"] != remaining:
             raise HarnessError("selected operation has incomplete generation replay chronology")
-        if value["lifecycle"]["preprocess"]["attempted"]:
+        if _preprocess_state_committed(value):
             live_raw = value["_resolved_artifacts"]["live_raw"]
             if live_raw is None:
                 raise HarnessError(
-                    "earlier attempted preprocessing frame lacks its live raw artifact")
+                    "earlier committed preprocessing frame lacks its live raw artifact")
             result.append((live_raw[0], value["purpose_u32"]))
         remaining -= 1
         if remaining == 0:
@@ -843,7 +848,9 @@ def run_validate_dump(args: argparse.Namespace) -> None:
             reasons = []
             if runtime["action"] == "enroll":
                 reasons.append("enrollment is not replayable by the natural native authority")
-            if runtime["status_u32"] == 4 or runtime["cancellation"]["runtime_observed"]:
+            if (runtime["status_u32"] == 4 or
+                    runtime["cancellation"]["runtime_observed"] or
+                    runtime["cancellation"]["driver_observed"]):
                 reasons.append("cancelled operation is not replayable")
             if not runtime["gallery"]:
                 reasons.append("operation has no gallery")

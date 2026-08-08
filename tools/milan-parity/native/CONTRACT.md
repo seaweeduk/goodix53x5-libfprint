@@ -58,10 +58,11 @@ captured identify/enroll purpose is explicit. They do not perform extraction,
 matching, study, or persistence. Missing earlier generation uses make the
 selected operation unavailable and therefore fail validation. Every earlier
 generation use consumes its exact generation-use index. A use supplies its live
-raw frame when preprocessing was attempted, including recognized retry and
-cancellation paths with no processed image; a use where preprocessing was not
-attempted supplies no frame. An attempted use without live raw evidence makes
-the selected operation unavailable.
+raw frame when the Linux caller committed preprocessing state: successful,
+`0x29aa`, and stateful `0x7531` results without runtime-observed cancellation.
+Driver-only late cancellation still retains preprocessing state. Other uses
+supply no frame. A committed use without live raw evidence makes the selected
+operation unavailable.
 
 Gallery inputs contain only the captured native template and gallery index.
 Queue state is not supplied as an independent runner input. The DLL observes
