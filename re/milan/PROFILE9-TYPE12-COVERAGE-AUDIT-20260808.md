@@ -149,6 +149,10 @@ boundary remains established by focused 1,310-fail and 1,311-pass controls.
 6. Keep identify 151 in the operation ledger as a raw retry with nullable
    artifacts. Exclude its stale frozen Linux processed/probe fields from all
    extraction, anti-fake, matcher, queue, and study coverage counts.
+7. Keep early validation retries distinct from the later stateful retry. The
+   controlled `0x7531` witness returns quality/coverage `0/18`; runtime evidence
+   and parity projections must preserve those metrics rather than applying the
+   `0x29aa`/`0x29bb` zero-metric rule.
 
 ## Audit Verdict
 
