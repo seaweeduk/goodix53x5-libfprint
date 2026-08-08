@@ -829,6 +829,7 @@ goodix_milan_study_replace (
   int32_t target_bd;
   int32_t target_be;
   int32_t target_c0;
+  int32_t probe_c0;
   int32_t matched_be;
   GoodixMilanFeatureView target_feature;
   GoodixMilanFeatureView probe_feature;
@@ -858,6 +859,8 @@ goodix_milan_study_replace (
         current->feature_elements[replacement_index],
         current->feature_element_sizes[replacement_index], 0xc0,
         &target_c0) != 0 || goodix_milan_template_read_feature_scalar (
+        probe->feature_elements[0], probe->feature_element_sizes[0], 0xc0,
+        &probe_c0) != 0 || goodix_milan_template_read_feature_scalar (
         current->feature_elements[matched_feature_index],
         current->feature_element_sizes[matched_feature_index], 0xbe,
         &matched_be) != 0 || goodix_milan_template_parse_feature_element (
@@ -947,7 +950,7 @@ goodix_milan_study_replace (
     { 0xbe, policy_result.action ==
                 GOODIX_MILAN_STUDY_ACTION_REPLACE_NO_RELATION
               ? target_be : matched_be },
-    { 0xc0, target_c0 },
+    { 0xc0, probe_c0 != 0 && (probe_c0 & 1) != 0 ? probe_c0 : target_c0 },
   };
   for (size_t i = 0; i < sizeof(scalar_patches) / sizeof(scalar_patches[0]);
        i++)
