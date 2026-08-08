@@ -116,6 +116,8 @@ milan_antifake_build_class (
       columns > SIZE_MAX / rows)
     return -1;
   count = rows * columns;
+  if (count > SIZE_MAX / sizeof(*residual))
+    return -1;
   residual = malloc (count * sizeof(*residual));
   mask = malloc (count);
   classes = malloc (count);

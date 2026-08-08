@@ -356,18 +356,14 @@ goodix_match_live_gallery_result (GoodixMatchInfo                 *probe,
         live_partition_counts[i] =
           (size_t) context->live_features[i]->partition_count;
       }
-  if (goodix_milan_match_live_probe_result (
-        probe->feature_bitmaps.high_bitmap,
-        probe->feature_bitmaps.enhanced_bitmap,
-        probe->feature_bitmaps.low_bitmap,
-        probe->inline_mask, probe->rescue_mask, probe->records,
-        (size_t) probe->record_count, (size_t) probe->partition_count,
-        probe->extraction_metadata.quality,
-        probe->extraction_metadata.coverage,
-        probe->extraction_metadata.optional_c7, current_milan,
-        current_milan_size, live_records,
+  if (goodix_milan_match_info_result (
+        probe, current_milan, current_milan_size, live_records,
         live_record_counts, live_partition_counts, triggering_index,
-        match_result) != 0)
+        match_result
+#ifdef GOODIX53X5_DEBUG
+        , NULL
+#endif
+        ) != 0)
     return GOODIX_SIGFM_TEMPLATE_INVALID;
 
   if (match_result->score > 0 &&

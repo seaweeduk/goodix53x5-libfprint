@@ -58,6 +58,18 @@ goodix53x5_sources = files(
 
 goodix53x5_cflags = [ '-I' + meson.current_source_dir() ]
 if get_option('goodix53x5_debug')
+    goodix53x5_debug_build_id = get_option('goodix53x5_debug_build_id')
+    goodix53x5_debug_source_id = get_option('goodix53x5_debug_source_id')
+    if goodix53x5_debug_build_id == ''
+        error('goodix53x5_debug requires goodix53x5_debug_build_id')
+    endif
+    if goodix53x5_debug_source_id == ''
+        error('goodix53x5_debug requires goodix53x5_debug_source_id')
+    endif
     goodix53x5_sources += files('device/debug.c')
-    goodix53x5_cflags += [ '-DGOODIX53X5_DEBUG' ]
+    goodix53x5_cflags += [
+        '-DGOODIX53X5_DEBUG',
+        '-DGOODIX53X5_DEBUG_BUILD_ID="' + goodix53x5_debug_build_id + '"',
+        '-DGOODIX53X5_DEBUG_SOURCE_ID="' + goodix53x5_debug_source_id + '"',
+    ]
 endif

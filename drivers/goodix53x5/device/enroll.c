@@ -42,10 +42,12 @@ typedef struct
 static void
 goodix_enroll_log_runtime_result (FpDevice                         *dev,
                                   GoodixEnrollTaskData              *data,
-                                  const GoodixMilanRuntimeOutput   *output)
+                                  const GoodixMilanRuntimeOutput   *output,
+                                  gboolean driver_cancellation_observed)
 {
   goodix_debug_log_runtime_result (dev, data->stage + 1,
-                                   &data->debug_metadata, output);
+                                    &data->debug_metadata, output,
+                                    driver_cancellation_observed);
 }
 #else
 #define goodix_enroll_log_runtime_result(...) G_STMT_START { } G_STMT_END
@@ -57,6 +59,8 @@ goodix_enroll_task_data_free (GoodixEnrollTaskData *data)
   if (!data)
     return;
   goodix_milan_runtime_input_free (data->runtime_input);
+  GOODIX53X5_DEBUG_ONLY (
+    goodix_debug_clear_runtime_metadata (&data->debug_metadata);)
   g_free (data);
 }
 
@@ -142,7 +146,7 @@ goodix_enroll_task_done (GObject      *source_object,
   if (!action_owned)
     {
       if (output)
-        goodix_enroll_log_runtime_result (dev, data, output);
+        goodix_enroll_log_runtime_result (dev, data, output, FALSE);
       goodix_milan_runtime_output_free (output);
       g_clear_pointer (&self->captured_raw_image, g_free);
       if (task_owned && self->profile9_fdt.owner)
@@ -151,10 +155,19 @@ goodix_enroll_task_done (GObject      *source_object,
       return;
     }
 
+  if (generation_current && output &&
+      output->action_epoch == data->action_epoch &&
+      output->generation_id == data->generation_id &&
+      output->preprocess_state_valid)
+    {
+      self->milan_generation->state = output->preprocess_state;
+      self->milan_generation->profile_state = output->profile_state;
+    }
+
   if (cancelled)
     {
       if (output)
-        goodix_enroll_log_runtime_result (dev, data, output);
+        goodix_enroll_log_runtime_result (dev, data, output, TRUE);
       goodix_milan_runtime_output_free (output);
       g_clear_pointer (&self->captured_raw_image, g_free);
       goodix_scan_set_disposition (dev, GOODIX_SCAN_DISPOSITION_CANCELLED,
@@ -177,11 +190,6 @@ goodix_enroll_task_done (GObject      *source_object,
       return;
     }
 
-  if (generation_current && output->preprocess_state_valid)
-    {
-      self->milan_generation->state = output->preprocess_state;
-      self->milan_generation->profile_state = output->profile_state;
-    }
   GOODIX53X5_DEBUG_ONLY (goodix_enroll_set_processed_image (self, output);)
   enrollment_admitted = goodix_milan_runtime_enrollment_admitted (output);
 
@@ -263,7 +271,7 @@ goodix_enroll_task_done (GObject      *source_object,
       GError *error = fpi_device_error_new_msg (
         FP_DEVICE_ERROR_GENERAL, "Native Milan enrollment extraction failed");
 
-      goodix_enroll_log_runtime_result (dev, data, output);
+      goodix_enroll_log_runtime_result (dev, data, output, FALSE);
       goodix_milan_runtime_output_free (output);
 #ifdef GOODIX53X5_DEBUG
       g_clear_pointer (&self->captured_image, g_free);
@@ -273,7 +281,7 @@ goodix_enroll_task_done (GObject      *source_object,
       return;
     }
 
-  goodix_enroll_log_runtime_result (dev, data, output);
+  goodix_enroll_log_runtime_result (dev, data, output, FALSE);
   goodix_milan_runtime_output_free (output);
 #ifdef GOODIX53X5_DEBUG
   g_clear_pointer (&self->captured_image, g_free);

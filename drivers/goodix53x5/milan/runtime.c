@@ -266,7 +266,7 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
   GoodixMilanRuntimeOutput *output;
   GoodixMilanPrintTemplateInfo probe_info;
   gsize winner_position = G_MAXSIZE;
-  gint preprocess_status;
+  gint32 preprocess_status;
 
   g_return_val_if_fail (input != NULL, NULL);
   output = g_new0 (GoodixMilanRuntimeOutput, 1);
@@ -301,12 +301,25 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
   output->preprocess_state = input->preprocess_state;
   output->profile_state = input->profile_state;
   processed = g_malloc (GOODIX_MILAN_SENSOR_PIXELS);
+#ifdef GOODIX53X5_DEBUG
+  output->preprocess_attempted = TRUE;
+#endif
   preprocess_status = goodix_milan_preprocess (
     &output->preprocess_state, &output->profile_state,
     input->setup_tx_on, input->live_raw,
     input->purpose, processed, &output->quality, &output->coverage);
+#ifdef GOODIX53X5_DEBUG
+  output->preprocess_status = preprocess_status;
+  output->preprocess_status_available = TRUE;
+#endif
+  if (preprocess_status != 0)
+    {
+      output->quality = 0;
+      output->coverage = 0;
+    }
   if (preprocess_status != 0 &&
-      preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY)
+      preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY &&
+      preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION)
     {
       output->status = GOODIX_MILAN_RUNTIME_RETRY;
       g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
@@ -315,10 +328,13 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
       return output;
     }
 #ifdef GOODIX53X5_DEBUG
-  output->processed_image = g_bytes_new (processed, GOODIX_MILAN_SENSOR_PIXELS);
+  output->preprocess_completed = preprocess_status == 0;
+  if (output->preprocess_completed)
+    output->processed_image = g_bytes_new (processed, GOODIX_MILAN_SENSOR_PIXELS);
 #endif
   output->preprocess_state_valid = TRUE;
-  if (preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY)
+  if (preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY ||
+      preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION)
     {
       output->status = GOODIX_MILAN_RUNTIME_RETRY;
       g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
@@ -331,6 +347,9 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
         G_MAXSIZE))
     return output;
 
+#ifdef GOODIX53X5_DEBUG
+  output->extraction_attempted = TRUE;
+#endif
   probe = goodix_match_extract_native (
     processed, &output->preprocess_state, input->live_raw, input->tcode,
     input->dac_high, input->dac_low, input->sensor_subtype);
@@ -345,6 +364,9 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
       goodix_match_free_info (probe);
       return output;
     }
+#ifdef GOODIX53X5_DEBUG
+  output->extraction_completed = TRUE;
+#endif
   output->probe_template = g_bytes_ref (probe_template);
   output->probe_record_count = probe_info.partition0_count +
                                probe_info.partition1_count;
@@ -369,6 +391,7 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
       const guint8 *feature;
       gsize feature_len;
       GoodixSigfmTemplateStatus status;
+      gboolean template_valid;
 
       result->gallery_position = position;
       result->gallery_index = gallery->gallery_index;
@@ -386,9 +409,13 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
           return output;
         }
 
-      if (!goodix_milan_print_validate_template (
-            gallery->template_bytes, &result->template_info,
-            &result->validation_error))
+      template_valid = goodix_milan_print_validate_template (
+        gallery->template_bytes, &result->template_info,
+        &result->validation_error);
+#ifdef GOODIX53X5_DEBUG
+      result->validation_observed = TRUE;
+#endif
+      if (!template_valid)
         {
           output->invalid_gallery_count++;
           goodix_study_queue_free (queue);
@@ -412,6 +439,7 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
           continue;
         }
 #ifdef GOODIX53X5_DEBUG
+      result->queue_before_match_observed = TRUE;
       result->queue_state_before_match = queue->enabled_state;
       result->queue_counter_before_match = queue->transaction_counter;
       result->queue_occupied_before_match = goodix_study_queue_occupied (queue);
@@ -422,12 +450,8 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
         queue);
       result->evaluated = TRUE;
 #ifdef GOODIX53X5_DEBUG
+      result->queue_after_match_observed = TRUE;
       result->queue_occupied_after_match = goodix_study_queue_occupied (queue);
-      result->after_match_template = after_match ? g_bytes_ref (after_match) : NULL;
-#endif
-#if defined(GOODIX53X5_DEBUG) || defined(GOODIX53X5_PARITY)
-      goodix_milan_runtime_hash_bytes (
-        after_match, result->after_match_sha256);
 #endif
       output->evaluated_gallery_count++;
       if (status != GOODIX_SIGFM_TEMPLATE_OK || !after_match)
@@ -442,6 +466,13 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
           goodix_study_queue_free (queue);
           continue;
         }
+#ifdef GOODIX53X5_DEBUG
+      result->after_match_template = g_bytes_ref (after_match);
+#endif
+#if defined(GOODIX53X5_DEBUG) || defined(GOODIX53X5_PARITY)
+      goodix_milan_runtime_hash_bytes (
+        after_match, result->after_match_sha256);
+#endif
       result->score = result->match_result.score;
       result->accepted = result->score > 0;
       output->score = result->score;
@@ -495,11 +526,26 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
   const guint8 *after_match_data;
   gsize after_match_size;
   GoodixSigfmTemplateStatus study_status;
+#ifdef GOODIX53X5_DEBUG
+  GoodixMilanRuntimeGalleryResult *winner_result;
+#endif
 
   after_match_data = g_bytes_get_data (winner_after_match, &after_match_size);
+#ifdef GOODIX53X5_DEBUG
+  output->study_attempted = TRUE;
+#endif
   study_status = goodix_milan_runtime_study (
     input, probe, after_match_data, after_match_size, &output->match_result,
     winner_queue, &after_study, &output->study_action);
+#ifdef GOODIX53X5_DEBUG
+  winner_result = g_ptr_array_index (output->gallery_results, winner_position);
+
+  winner_result->queue_after_study_observed = TRUE;
+  winner_result->queue_state_after_study = winner_queue->enabled_state;
+  winner_result->queue_counter_after_study = winner_queue->transaction_counter;
+  winner_result->queue_occupied_after_study =
+    goodix_study_queue_occupied (winner_queue);
+#endif
   if (study_status != GOODIX_SIGFM_TEMPLATE_OK)
     {
       g_set_error_literal (&output->learning_error, GOODIX_MILAN_PRINT_ERROR,
@@ -509,6 +555,9 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
       goodix_match_free_info (probe);
       return output;
     }
+#ifdef GOODIX53X5_DEBUG
+  output->study_completed = TRUE;
+#endif
   if (goodix_milan_runtime_cancelled (
         input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_AFTER_STUDY,
         winner_position))
