@@ -125,6 +125,30 @@ boundary remains established by focused 1,310-fail and 1,311-pass controls.
   controls close semantic implementation contracts for policy, fallback, queue,
   and study, but they do not establish natural prevalence.
 
+## Action-4 Semantic Coverage
+
+Action 4 is common in natural profile-9 campaigns but requires a full 40-feature
+gallery and depends on matcher-owned selected, lifecycle, retained, and relation
+evidence. It is bounded continual learning: replace a comparatively redundant
+stored view with a useful accepted probe while preserving graph continuity and
+recomputing complete-gallery residual coverage.
+
+Selector `becea91e-eff1-497c-af41-67f4d1b6ce2e/identify/26` is the rare natural
+counterexample showing that public acceptance and action-code coverage do not
+prove those inputs exact. A feature with useful aggregate bitmap/detail evidence
+but weak direct geometry was vetoed by the DLL's grouped first-veto term and
+remained aggregate-only. A flattened translation made it direct-positive,
+triggered the full-gallery active-feature skip, and changed selected owner 12 to
+25. Both paths still accepted and selected action 4, but match-time lifecycle
+and the learned candidate differed.
+
+The higher-level contract, reasons for natural sparsity, operator-level coverage
+guidance, and concrete action-4 audit backlog are maintained in
+`IDENTIFY-26-ACTION4-SEMANTIC-AUDIT-20260808.md`. Exact Ghidra-backed predicate
+and call-path evidence remains in `functions/FUN_18005c3b0.md`,
+`functions/FUN_180053220.md`, `functions/FUN_180057e60.md`, and
+`functions/FUN_180055a40.md`.
+
 ## Recommended Non-Code Controls And Captures
 
 1. Add a sealed direct DLL control matrix for setup and admissible live frames
@@ -153,6 +177,11 @@ boundary remains established by focused 1,310-fail and 1,311-pass controls.
    controlled `0x7531` witness returns quality/coverage `0/18`; runtime evidence
    and parity projections must preserve those metrics rather than applying the
    `0x29aa`/`0x29bb` zero-metric rule.
+8. For action-4 campaigns, fill templates naturally to 40 features and vary
+   contact pose, rotation, lateral placement, pressure, and partial coverage.
+   Classify resulting captures by aggregate-only/direct-positive routing,
+   full-gallery continue/skip behavior, selected/relation owners, and study
+   target after capture; do not ask operators to target metric thresholds.
 
 ## Audit Verdict
 

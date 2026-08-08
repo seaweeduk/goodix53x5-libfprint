@@ -341,3 +341,22 @@ candidate and cannot satisfy the positive update contract. The caller retains
 and frees the original `GoodixMatchInfo` once; late enqueue owns a prior deep
 copy. Every action-0 output remains null, while actions `1..5` retain the
 existing positive `GBytes` path.
+
+## Action-4 Continual-Learning Semantics
+
+At the profile-9 limit of 40 learned features, action 4 is the primary
+retained-evidence replacement path. It exchanges a comparatively redundant
+active nonreference view for a useful accepted probe, installs the matcher-owned
+reference relation, recomputes gallery residual coverage, and finalizes one
+bounded persistent template. The recognition-selected owner and replacement
+target remain separate roles.
+
+Identify epoch 26 demonstrates why byte-exact action-4 validation must begin
+before this export. A mixed aggregate-strong/geometrically-weak feature was
+incorrectly promoted to direct-positive by a flattened first-veto predicate.
+Authentication and action 4 remained positive, but selected owner, lifecycle
+mutation, relation evidence, and final candidate diverged. The exact native
+predicate and routing remain in `FUN_18005c3b0.md`, `FUN_180053220.md`,
+`FUN_180057e60.md`, and `FUN_180055a40.md`. The behavior-level interpretation,
+operator capture guidance, and action-4 audit backlog are maintained in
+`../IDENTIFY-26-ACTION4-SEMANTIC-AUDIT-20260808.md`.
