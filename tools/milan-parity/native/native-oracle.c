@@ -46,6 +46,7 @@
 #define PREPROCESS_RETRY_RAW_ADMISSION 0x29aa
 #define PREPROCESS_RETRY_VALIDATION_B 0x29bb
 #define PREPROCESS_RETRY_STATEFUL     0x7531
+#define PREPROCESS_RETRY_CLASSIFICATION 0xc351
 #define FEATURE_MATRIX_ALLOCATION (0x20 + FEATURE_MATRIX_BYTES)
 #define FEATURE_MATRIX_SHADOW_ALLOCATION (FEATURE_MATRIX_ALLOCATION + 1)
 #define FEATURE_RECORD_LIMIT 150
@@ -814,7 +815,8 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
       if (prelude_status != 0 &&
           prelude_status != PREPROCESS_RETRY_RAW_ADMISSION &&
           prelude_status != PREPROCESS_RETRY_VALIDATION_B &&
-          prelude_status != PREPROCESS_RETRY_STATEFUL)
+          prelude_status != PREPROCESS_RETRY_STATEFUL &&
+          prelude_status != PREPROCESS_RETRY_CLASSIFICATION)
         goto out;
       free (prelude);
       prelude = NULL;
@@ -830,7 +832,12 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
     {
       if (preprocess_status != PREPROCESS_RETRY_RAW_ADMISSION &&
           preprocess_status != PREPROCESS_RETRY_VALIDATION_B &&
-          preprocess_status != PREPROCESS_RETRY_STATEFUL)
+          preprocess_status != PREPROCESS_RETRY_STATEFUL &&
+          preprocess_status != PREPROCESS_RETRY_CLASSIFICATION)
+        goto out;
+      if (preprocess_status == PREPROCESS_RETRY_CLASSIFICATION &&
+          !write_file (output_directory, L"processed.u8", processed_data,
+                       sizeof (processed_data)))
         goto out;
       exit_status = api.preprocessor_exit ();
       api.preprocessor_started = 0;

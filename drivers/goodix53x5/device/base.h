@@ -107,6 +107,7 @@ typedef struct
   gsize                tx_on_values;
   gsize                tx_off_values;
   guint64              mad;
+  gint32               admission_status;
   gboolean             admitted;
 } GoodixMilanBaseAttempt;
 
