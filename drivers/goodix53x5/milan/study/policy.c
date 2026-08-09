@@ -16,17 +16,15 @@
 static inline int
 goodix_milan_study_policy_feature_better (
   const GoodixMilanStudyPolicyFeature *candidate,
-  size_t                               candidate_index,
-  const GoodixMilanStudyPolicyFeature *selected,
-  size_t                               selected_index)
+  int32_t                               best_residual,
+  int32_t                               best_coverage,
+  int32_t                               best_overlap_count)
 {
-  return !selected || candidate->residual < selected->residual ||
-         (candidate->residual == selected->residual &&
-          (candidate->coverage < selected->coverage ||
-           (candidate->coverage == selected->coverage &&
-            (candidate->overlap_count > selected->overlap_count ||
-             (candidate->overlap_count == selected->overlap_count &&
-              candidate_index < selected_index)))));
+  return candidate->residual < best_residual ||
+         (candidate->residual == best_residual &&
+          (candidate->coverage < best_coverage ||
+           (candidate->coverage == best_coverage &&
+            candidate->overlap_count > best_overlap_count)));
 }
 
 int
@@ -36,6 +34,9 @@ goodix_milan_study_policy_select (const GoodixMilanStudyPolicyInput *input,
   const GoodixMilanStudyPolicyFeature *matched;
   const GoodixMilanStudyPolicyFeature *selected = NULL;
   size_t selected_index = SIZE_MAX;
+  int32_t best_residual = 0xfffff;
+  int32_t best_coverage = 0xfffff;
+  int32_t best_overlap_count = 0;
 
   if (!input || !result || input->feature_count == 0 ||
       input->feature_count > GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY ||
@@ -80,10 +81,14 @@ goodix_milan_study_policy_select (const GoodixMilanStudyPolicyInput *input,
           if (candidate->active == 0 || i == input->reference_feature_index)
             continue;
           if (goodix_milan_study_policy_feature_better (
-                candidate, i, selected, selected_index))
+                candidate, best_residual, best_coverage,
+                best_overlap_count))
             {
               selected = candidate;
               selected_index = i;
+              best_residual = candidate->residual;
+              best_coverage = candidate->coverage;
+              best_overlap_count = candidate->overlap_count;
             }
         }
       if (selected && input->retained_flag != 0)
