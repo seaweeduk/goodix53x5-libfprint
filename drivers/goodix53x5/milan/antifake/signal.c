@@ -9,6 +9,7 @@
  */
 
 #include "milan/milan.h"
+#include "milan/transform-private.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -345,10 +346,11 @@ goodix_milan_antifake_block_variation (
   int32_t mean_square = 0;
   if (valid_count != 0)
     {
+      uint32_t rounded_square_sum = square_sum + valid_count / 2;
+
       mean = (sum + valid_count / 2) / valid_count;
-      mean_square = (int32_t) (((int64_t) (int32_t) square_sum +
-                                valid_count / 2) /
-                               valid_count);
+      mean_square = goodix_milan_transform_s32 (rounded_square_sum) /
+                    (int32_t) valid_count;
     }
   uint32_t variance = (uint32_t) mean_square - mean * mean;
   if ((int32_t) variance < 0)
