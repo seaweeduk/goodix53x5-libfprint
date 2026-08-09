@@ -360,3 +360,16 @@ predicate and routing remain in `FUN_18005c3b0.md`, `FUN_180053220.md`,
 `FUN_180057e60.md`, and `FUN_180055a40.md`. The behavior-level interpretation,
 operator capture guidance, and action-4 audit backlog are maintained in
 `../IDENTIFY-26-ACTION4-SEMANTIC-AUDIT-20260808.md`.
+
+## Maximum Append Packing Capacity
+
+An append can materialize retained relations before adding the new feature. A
+valid 39-to-40 transition can therefore grow the relation matrix by more than
+the probe-size estimate that previously bounded the clean-room intermediate
+pack buffer. The DLL mutates a preallocated live template and has no equivalent
+serialized-size estimate at this boundary.
+
+Production commit `8e4a160` sizes the private clean-room study output to the
+existing 1 MiB profile limit, preserving checked packing while accommodating
+the maximum valid retained-relation growth. Independent 450- and 643-operation
+campaigns pass 1,093/1,093 selected operations after this correction.
