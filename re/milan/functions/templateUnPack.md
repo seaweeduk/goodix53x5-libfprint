@@ -32,6 +32,15 @@ Valid production templates carry exactly 200 bytes, so chronological study
 reloads the prior persistent gallery order rather than reconstructing it from
 feature storage.
 
+The decoder does not validate the defined order prefix. A focused 40-feature
+control with a duplicate prefix entry decoded and completed identify/study at
+score 25/action 4. Replacing the first entry with 40 also decoded, then caused
+an unhandled read page fault at address `0x150` during matcher traversal. The
+safe persisted-input contract is therefore stricter than DLL decode: the first
+`feature_count` dwords must be an in-range permutation before the live template
+can reach matching or study. See
+`../PERSISTED-ORDER-ADMISSION-AUDIT-20260809.md`.
+
 The delegated decoder initializes the live relation matrix to unset identity,
 restores feature scalar `b6` row bases, and writes each packed tag-`96` record to
 absolute slot `e3`. Tail tags `f2` and `f5` restore the live reference and
