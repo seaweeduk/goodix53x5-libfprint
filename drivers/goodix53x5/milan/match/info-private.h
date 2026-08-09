@@ -18,6 +18,7 @@ typedef struct
   int quality;
   int coverage;
   int32_t optional_c7;
+  GoodixMilanExtractionAuxiliaryState auxiliary;
 } GoodixMilanExtractionMetadata;
 
 typedef struct
@@ -43,7 +44,8 @@ struct _GoodixMatchInfo
 G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMilanExtractionMetadata, quality) == 0);
 G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMilanExtractionMetadata, coverage) == 4);
 G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMilanExtractionMetadata, optional_c7) == 8);
-G_STATIC_ASSERT (sizeof(GoodixMilanExtractionMetadata) == 12);
+G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMilanExtractionMetadata, auxiliary) == 12);
+G_STATIC_ASSERT (sizeof(GoodixMilanExtractionMetadata) == 16);
 G_STATIC_ASSERT (G_ALIGNOF (GoodixMilanExtractionMetadata) == 4);
 G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMilanFeatureBitmaps, high_bitmap) == 0);
 G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMilanFeatureBitmaps, enhanced_bitmap) == 286);
@@ -65,5 +67,20 @@ G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMatchInfo, extraction_metadata) == 8112)
 G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMatchInfo, extraction_metadata.quality) == 8112);
 G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMatchInfo, extraction_metadata.coverage) == 8116);
 G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMatchInfo, extraction_metadata.optional_c7) == 8120);
+G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMatchInfo, extraction_metadata.auxiliary) == 8124);
 G_STATIC_ASSERT (sizeof(GoodixMatchInfo) == 8128);
 G_STATIC_ASSERT (G_ALIGNOF (GoodixMatchInfo) == 8);
+
+int goodix_milan_match_info_result (
+  const GoodixMatchInfo          *probe,
+  const uint8_t                 *enrolled_template,
+  size_t                         enrolled_template_size,
+  const GoodixMilanFeatureRecord *const live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
+  const size_t                   live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
+  const size_t                   live_partition_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
+  size_t                         triggering_index,
+  GoodixMilanMatchResult        *match_result
+#ifdef GOODIX53X5_DEBUG
+  , GoodixMilanMatchDiagnostics *diagnostics
+#endif
+  );

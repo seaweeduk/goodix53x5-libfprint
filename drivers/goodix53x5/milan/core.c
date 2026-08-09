@@ -23,6 +23,9 @@
 #define MILAN_FIXED_ONE UINT32_C(0x2000)
 #define MILAN_PROFILE9_SETUP_OFFSET UINT16_C(7095)
 #define MILAN_PROFILE9_UPDATE_BASE UINT16_C(9000)
+#define MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MIN_EXCLUSIVE UINT16_C(100)
+#define MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MAX_EXCLUSIVE UINT16_C(0x0ed8)
+#define MILAN_PROFILE9_RAW_ADMISSION_REQUIRED_PERCENT 15
 
 static const uint16_t milan_update_kernel[5] = {
   7869, 15328, 19142, 15328, 7869,
@@ -55,6 +58,9 @@ static void profile9_update_source (const uint16_t *normalized_live,
 static int profile9_normalize_live (uint16_t *frame,
                                     size_t    rows,
                                     size_t    columns);
+static int milan_profile9_live_frame_admitted (const uint16_t *frame,
+                                                size_t          rows,
+                                                size_t          columns);
 static void milan_profile9_encode_metadata (uint8_t       *image,
                                             const uint8_t *mask,
                                             size_t         rows,
@@ -145,6 +151,8 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
        purpose != GOODIX_MILAN_PURPOSE_ENROLL) ||
       !output || !quality || !coverage)
     return -1;
+  *quality = 0;
+  *coverage = 0;
   setup_map = malloc (count * sizeof(*setup_map));
   normalized_live = malloc (count * sizeof(*normalized_live));
   difference = malloc (count * sizeof(*difference));
@@ -162,14 +170,24 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
       !contrast_mask || !selection_mask)
     goto out;
 
+  memcpy (setup_map, setup_frame, count * sizeof(*setup_map));
+  memcpy (normalized_live, live_frame, count * sizeof(*normalized_live));
   for (size_t i = 0; i < count; i++)
     {
-      if (setup_frame[i] > MILAN_ADC_MAX || live_frame[i] > MILAN_ADC_MAX)
-        goto out;
+      if (setup_map[i] > MILAN_ADC_MAX)
+        setup_map[i] = MILAN_ADC_MAX;
+      if (normalized_live[i] > MILAN_ADC_MAX)
+        normalized_live[i] = MILAN_ADC_MAX;
     }
-  memcpy (normalized_live, live_frame, count * sizeof(*normalized_live));
+  if (!milan_profile9_live_frame_admitted (
+        normalized_live, GOODIX_MILAN_SENSOR_ROWS,
+        GOODIX_MILAN_SENSOR_COLUMNS))
+    {
+      result = GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION;
+      goto out;
+    }
   if (goodix_milan_preprocess_make_setup_map (
-        setup_frame, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
+        setup_map, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
         setup_map, &rounded_mean) != 0 ||
       profile9_normalize_live (
         normalized_live, GOODIX_MILAN_SENSOR_ROWS,
@@ -225,7 +243,7 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   admitted_percent = (uint16_t) (admitted_pixels * 100 / count);
 
   if (goodix_milan_profile9_build_broken_mask (
-        state, difference, normalized_live, contrast_mask,
+        state, difference, setup_map, normalized_live, contrast_mask,
         GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, broken_mask,
         NULL, &metadata_mode, &apply_metadata_mask) != 0)
     goto out;
@@ -283,6 +301,29 @@ static int
 is_invalid_border_sample (uint16_t sample)
 {
   return sample == 0 || sample == MILAN_ADC_MAX;
+}
+
+static int
+milan_profile9_live_frame_admitted (const uint16_t *frame,
+                                     size_t          rows,
+                                     size_t          columns)
+{
+  size_t samples = 0;
+  size_t admitted = 0;
+
+  if (!frame || rows <= 4 || columns <= 4)
+    return 0;
+  for (size_t row = 2; row < rows - 2; row++)
+    for (size_t column = 2; column < columns - 2; column++)
+      {
+        uint16_t sample = frame[row * columns + column];
+
+        samples++;
+        admitted += sample > MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MIN_EXCLUSIVE &&
+                    sample < MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MAX_EXCLUSIVE;
+      }
+  return samples * MILAN_PROFILE9_RAW_ADMISSION_REQUIRED_PERCENT <
+         admitted * 100;
 }
 
 int

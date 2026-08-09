@@ -159,6 +159,7 @@ struct _FpiDeviceGoodix53x5
 #ifdef GOODIX53X5_DEBUG
   GoodixDebugTiming debug_timing;
   gchar             debug_capture_session_id[37];
+  guint64           debug_chronology;
 #endif
 
   /* Enrollment tracking */

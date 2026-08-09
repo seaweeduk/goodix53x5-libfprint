@@ -2,7 +2,7 @@ diff --git a/meson_options.txt b/meson_options.txt
 index 8f59b28..a9af6ec 100644
 --- a/meson_options.txt
 +++ b/meson_options.txt
-@@ -34,3 +34,7 @@ option('installed-tests',
+@@ -34,3 +34,15 @@ option('installed-tests',
         description: 'Whether to install the installed tests',
         type: 'boolean',
         value: true)
@@ -10,6 +10,14 @@ index 8f59b28..a9af6ec 100644
 +       description: 'Build opt-in Goodix 53x5 image and timing diagnostics',
 +       type: 'boolean',
 +       value: false)
++option('goodix53x5_debug_build_id',
++       description: 'Unique build identity emitted by Goodix 53x5 diagnostics',
++       type: 'string',
++       value: '')
++option('goodix53x5_debug_source_id',
++       description: 'Deterministic source identity embedded in Goodix 53x5 debug builds',
++       type: 'string',
++       value: '')
 diff --git a/libfprint/meson.build b/libfprint/meson.build
 index ae0f6e2..bb4bc29 100644
 --- a/libfprint/meson.build

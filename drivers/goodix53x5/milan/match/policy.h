@@ -21,6 +21,7 @@ typedef struct
 {
   int32_t accumulated_high_class;
   int32_t probe_low_class;
+  int32_t probe_primary_histogram_class;
 } GoodixMilanMatcherLateContext;
 
 enum
@@ -58,7 +59,8 @@ void goodix_milan_matcher_policy_apply_late_veto (
 
 void goodix_milan_matcher_late_context_init (
   GoodixMilanMatcherLateContext *context,
-  int32_t                        packed_probe_c7);
+  int32_t                        packed_probe_c7,
+  int32_t                        probe_primary_histogram_class);
 
 void goodix_milan_matcher_late_context_derive (
   GoodixMilanMatcherLateContext *context,

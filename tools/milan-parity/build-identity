@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+
+from pathlib import Path
+import sys
+
+from milan_parity_common import HarnessError, source_identity
+
+
+try:
+    if len(sys.argv) != 2:
+        raise HarnessError(f"usage: {Path(sys.argv[0]).name} REPOSITORY")
+    print(source_identity(Path(sys.argv[1])))
+except HarnessError as error:
+    print(f"build-identity: {error}", file=sys.stderr)
+    raise SystemExit(2) from error

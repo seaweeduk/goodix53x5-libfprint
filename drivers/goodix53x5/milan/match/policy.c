@@ -1042,10 +1042,16 @@ decode_packed_c7 (int32_t  packed_c7,
 void
 goodix_milan_matcher_late_context_init (
   GoodixMilanMatcherLateContext *context,
-  int32_t                        packed_probe_c7)
+  int32_t                        packed_probe_c7,
+  int32_t                        probe_primary_histogram_class)
 {
   decode_packed_c7 (packed_probe_c7, &context->probe_low_class,
                     &context->accumulated_high_class);
+  /* Object-aware production paths provide the independent histogram class;
+   * raw legacy APIs fall back to the decoded packed-c7 low class. */
+  context->probe_primary_histogram_class =
+    probe_primary_histogram_class < 0
+      ? context->probe_low_class : probe_primary_histogram_class;
 }
 
 void
@@ -1060,7 +1066,7 @@ goodix_milan_matcher_late_context_derive (
   decode_packed_c7 (packed_feature_c7, &feature_low_class,
                     &feature_high_class);
   state[0] = context->accumulated_high_class;
-  state[1] = context->probe_low_class;
+  state[1] = context->probe_primary_histogram_class;
   state[2] = context->accumulated_high_class + feature_high_class;
   if (state[2] > 5)
     state[2] = 5;

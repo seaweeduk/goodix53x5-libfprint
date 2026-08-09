@@ -10,7 +10,7 @@ source "$script_dir/lib/milan-stack-common.sh"
 
 milan_validate_prefix
 milan_reject_ephemeral_root "GOODIX_MILAN_STACK_ROOT" "$MILAN_STACK_ROOT"
-for command in git flock timeout meson ninja sha256sum ldd install strings; do
+for command in git flock timeout meson ninja sha256sum ldd install strings od tr; do
   milan_require_command "$command"
 done
 milan_verify_repo_inputs "$repo_dir"
@@ -20,6 +20,16 @@ case "${GOODIX53X5_DEBUG:-0}" in
   1) debug_enabled=true; debug_manifest=1; build_kind=debug ;;
   *) milan_die "GOODIX53X5_DEBUG must be 0 or 1" ;;
 esac
+debug_build_id=
+debug_source_id=
+if [[ "$debug_manifest" == 1 ]]; then
+  debug_build_id="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')"
+  debug_source_id="$($repo_dir/tools/milan-parity/build-identity "$repo_dir")"
+  if [[ ! $debug_build_id =~ ^[0-9a-f]{64}$ ||
+        ! $debug_source_id =~ ^[0-9a-f]{64}$ ]]; then
+    milan_die "failed to produce valid Goodix debug build provenance"
+  fi
+fi
 
 source_root="$MILAN_STACK_ROOT/sources"
 mkdir -p "$source_root"
@@ -73,6 +83,8 @@ milan_run_stage "apply repository libfprint and driver overlay" env \
   GOODIX_LIBFPRINT_OFFLINE=1 \
   GOODIX_MESON_BUILDDIR=builddir \
   GOODIX53X5_DEBUG="$debug_manifest" \
+  GOODIX53X5_INTERNAL_BUILD_ID="$debug_build_id" \
+  GOODIX53X5_INTERNAL_SOURCE_ID="$debug_source_id" \
   "$script_dir/build-local.sh"
 
 libfprint_source="$staging/libfprint-overlay/libfprint"
@@ -85,7 +97,9 @@ milan_run_stage "configure paired shadow libfprint" meson setup "$libfprint_buil
   "$libfprint_source" --reconfigure --prefix="$MILAN_PREFIX" --libdir=lib \
   -Ddrivers=goodix53x5 -Dudev_hwdb=disabled -Dudev_rules=disabled \
   -Dintrospection=false -Dinstalled-tests=false -Ddoc=false \
-  -Dgoodix53x5_debug="$debug_enabled"
+  -Dgoodix53x5_debug="$debug_enabled" \
+  -Dgoodix53x5_debug_build_id="$debug_build_id" \
+  -Dgoodix53x5_debug_source_id="$debug_source_id"
 milan_run_stage "build paired shadow libfprint" ninja -C "$libfprint_build"
 milan_run_stage "test libfprint update result" meson test -C "$libfprint_build" \
   --print-errorlogs fpi-device
@@ -124,6 +138,8 @@ cat > "$payload_prefix/manifest/build.env" <<EOF
 FORMAT=1
 PREFIX=$MILAN_PREFIX
 GOODIX53X5_DEBUG=$debug_manifest
+GOODIX53X5_DEBUG_BUILD_ID=$debug_build_id
+GOODIX53X5_DEBUG_SOURCE_ID=$debug_source_id
 LIBFPRINT_REVISION=$MILAN_LIBFPRINT_REVISION
 LIBFPRINT_SOURCE_TREE=$(git -C "$libfprint_pristine" rev-parse HEAD^{tree})
 FPRINTD_REVISION=$MILAN_FPRINTD_REVISION

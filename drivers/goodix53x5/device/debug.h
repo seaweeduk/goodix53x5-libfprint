@@ -18,16 +18,16 @@ typedef struct _GoodixMilanRuntimeOutput GoodixMilanRuntimeOutput;
 #ifdef GOODIX53X5_DEBUG
 
 /* The diagnostic build recognizes:
- * GOODIX53X5_DUMP_DIR, GOODIX53X5_DUMP_PROBES, GOODIX53X5_LOG_TIMING, and
- * GOODIX53X5_LOG_DIAGNOSTICS. */
+ * GOODIX53X5_DUMP_DIR, GOODIX53X5_DUMP_PROBES, GOODIX53X5_DUMP_TEMPLATES,
+ * GOODIX53X5_LOG_TIMING, and GOODIX53X5_LOG_DIAGNOSTICS. */
 #define GOODIX53X5_DEBUG_ONLY(...) __VA_ARGS__
 
 typedef struct
 {
   FpiDeviceAction action;
   guint64         generation_use_index;
-  gchar           setup_txon_sha256[65];
-  gchar           live_raw_sha256[65];
+  GBytes         *setup_tx_on;
+  GBytes         *live_raw;
 } GoodixDebugRuntimeMetadata;
 
 typedef struct
@@ -90,11 +90,14 @@ void goodix_debug_capture_runtime_metadata (
   const guint16              *setup_tx_on,
   const guint16              *live_raw,
   guint64                     generation_use_index);
+void goodix_debug_clear_runtime_metadata (
+  GoodixDebugRuntimeMetadata *metadata);
 void goodix_debug_log_runtime_result (
   FpDevice                       *dev,
   guint                           stage,
   const GoodixDebugRuntimeMetadata *metadata,
-  const GoodixMilanRuntimeOutput *output);
+  const GoodixMilanRuntimeOutput *output,
+  gboolean                        driver_cancellation_observed);
 
 #else
 
@@ -111,6 +114,7 @@ void goodix_debug_log_runtime_result (
 #define goodix_debug_timing_action_done(...) G_STMT_START { } G_STMT_END
 #define goodix_debug_timing_open_state(...) G_STMT_START { } G_STMT_END
 #define goodix_debug_timing_open_done(...) G_STMT_START { } G_STMT_END
+#define goodix_debug_clear_runtime_metadata(...) G_STMT_START { } G_STMT_END
 #define goodix_debug_log_runtime_result(...) G_STMT_START { } G_STMT_END
 
 #endif

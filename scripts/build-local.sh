@@ -9,8 +9,32 @@ libfprint_dir="$work_dir/libfprint"
 libfprint_ref="${GOODIX_LIBFPRINT_REF:-v1.94.10}"
 build_dir="${GOODIX_MESON_BUILDDIR:-builddir}"
 debug_enabled=false
+debug_build_id=
+debug_source_id=
 if [[ "${GOODIX53X5_DEBUG:-0}" == 1 ]]; then
+  if [[ ${GOODIX53X5_INTERNAL_BUILD_ID+x} == x ]] &&
+     [[ ! ${GOODIX53X5_INTERNAL_BUILD_ID} =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'internal Goodix debug build ID must be exactly 64 lowercase hex characters\n' >&2
+    exit 1
+  fi
+  if [[ ${GOODIX53X5_INTERNAL_SOURCE_ID+x} == x ]] &&
+     [[ ! ${GOODIX53X5_INTERNAL_SOURCE_ID} =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'internal Goodix debug source ID must be exactly 64 lowercase hex characters\n' >&2
+    exit 1
+  fi
   debug_enabled=true
+  debug_build_id="${GOODIX53X5_INTERNAL_BUILD_ID:-$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')}"
+  debug_source_id="$($repo_dir/tools/milan-parity/build-identity "$repo_dir")"
+  if [[ ! $debug_build_id =~ ^[0-9a-f]{64}$ ||
+        ! $debug_source_id =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'failed to produce valid Goodix debug build provenance\n' >&2
+    exit 1
+  fi
+  if [[ -n ${GOODIX53X5_INTERNAL_SOURCE_ID:-} &&
+        ${GOODIX53X5_INTERNAL_SOURCE_ID} != "$debug_source_id" ]]; then
+    printf 'internal Goodix debug source ID differs from the deterministic source identity\n' >&2
+    exit 1
+  fi
 fi
 meson_options=(
   --prefix=/usr
@@ -21,6 +45,8 @@ meson_options=(
   -Dinstalled-tests=false
   -Ddoc=false
   -Dgoodix53x5_debug="$debug_enabled"
+  -Dgoodix53x5_debug_build_id="$debug_build_id"
+  -Dgoodix53x5_debug_source_id="$debug_source_id"
 )
 
 mkdir -p "$work_dir"
@@ -84,8 +110,9 @@ if ! grep -q "'goodix53x5'" "$libfprint_dir/libfprint/meson.build"; then
 fi
 
 if [ -d "$libfprint_dir/$build_dir" ]; then
-  # Register overlay-defined options before assigning them in an older builddir.
-  meson setup "$libfprint_dir/$build_dir" "$libfprint_dir" --reconfigure
+  # Register new overlay options without evaluating stale cached debug settings.
+  meson setup "$libfprint_dir/$build_dir" "$libfprint_dir" --reconfigure \
+    -Dgoodix53x5_debug=false
   meson setup "$libfprint_dir/$build_dir" "$libfprint_dir" --reconfigure "${meson_options[@]}"
 else
   meson setup "$libfprint_dir/$build_dir" "$libfprint_dir" "${meson_options[@]}"

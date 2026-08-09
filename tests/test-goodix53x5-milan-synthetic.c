@@ -31,9 +31,9 @@ static const char accepted_preprocess_sha256[] =
 static const char post_render_retry_sha256[] =
   "8b9629cb2aa7bf3d44a13c9ab087b961e02adf29644c237032597bf24401d943";
 static const char feature_extraction_sha256[] =
-  "ab009fd4dd0360b0998550a874364379b145b006c9b1b1c8a2cef57083372190";
+  "134e2432ad88c1cc4bfd9156fbf16557ea455d9de13a4f847241ebcc892ac600";
 static const char feature_template_sha256[] =
-  "2613b09571d11ce4ed7567535a220ddb5eb17d5059c7dff8bfc97e6e5af28cdd";
+  "2935dff248dbd6b10b045669a01ec6bf4b69d9cccb241daa5ea8f759a5bb0773";
 static const char feature_antifake_sha256[] =
   "2ec6a813e8a6b355693645aac1e60da4cc717bcdf57c3dbb5d12d7021b0e7572";
 
@@ -990,7 +990,7 @@ test_generated_production_replay (void)
                          &after_match, match_queue), ==,
                        GOODIX_SIGFM_TEMPLATE_OK);
       g_assert_nonnull (after_match);
-      g_assert_cmpint (result.score, ==, -4);
+      g_assert_cmpint (result.score, ==, 0);
       g_assert_cmpuint (result.matched_feature_index, ==, SIZE_MAX);
       for (size_t i = 0; i < G_N_ELEMENTS (result.match_transform); i++)
         g_assert_cmpint (result.match_transform[i],

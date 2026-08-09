@@ -42,9 +42,11 @@ typedef struct
 static void
 goodix_auth_log_runtime_result (FpDevice                       *dev,
                                 GoodixAuthTaskData              *data,
-                                const GoodixMilanRuntimeOutput *output)
+                                const GoodixMilanRuntimeOutput *output,
+                                gboolean driver_cancellation_observed)
 {
-  goodix_debug_log_runtime_result (dev, 0, &data->debug_metadata, output);
+  goodix_debug_log_runtime_result (dev, 0, &data->debug_metadata, output,
+                                   driver_cancellation_observed);
 }
 #else
 #define goodix_auth_log_runtime_result(...) G_STMT_START { } G_STMT_END
@@ -63,6 +65,8 @@ goodix_auth_task_data_free (GoodixAuthTaskData *data)
   if (!data)
     return;
   goodix_milan_runtime_input_free (data->runtime_input);
+  GOODIX53X5_DEBUG_ONLY (
+    goodix_debug_clear_runtime_metadata (&data->debug_metadata);)
   g_clear_pointer (&data->originals, g_ptr_array_unref);
   g_free (data);
 }
@@ -255,7 +259,7 @@ goodix_auth_task_done (GObject      *source_object,
   if (!action_owned)
     {
       if (output)
-        goodix_auth_log_runtime_result (dev, data, output);
+        goodix_auth_log_runtime_result (dev, data, output, FALSE);
       goodix_milan_runtime_output_free (output);
       g_clear_pointer (&self->captured_raw_image, g_free);
       if (task_owned && self->profile9_fdt.owner)
@@ -264,10 +268,21 @@ goodix_auth_task_done (GObject      *source_object,
       return;
     }
 
+  if (generation_current && output &&
+      output->action_epoch == data->action_epoch &&
+      output->generation_id == data->generation_id &&
+      output->preprocess_state_valid)
+    {
+      self->milan_generation->state = output->preprocess_state;
+      self->milan_generation->profile_state = output->profile_state;
+      if (data->action == FPI_DEVICE_ACTION_IDENTIFY)
+        goodix_milan_generation_note_identify_prelude (self->milan_generation);
+    }
+
   if (cancelled)
     {
       if (output)
-        goodix_auth_log_runtime_result (dev, data, output);
+        goodix_auth_log_runtime_result (dev, data, output, TRUE);
       goodix_milan_runtime_output_free (output);
       g_clear_pointer (&self->captured_raw_image, g_free);
       goodix_scan_set_disposition (dev, GOODIX_SCAN_DISPOSITION_CANCELLED,
@@ -288,14 +303,6 @@ goodix_auth_task_done (GObject      *source_object,
                        FP_DEVICE_ERROR_GENERAL,
                        "Native Milan auth task returned invalid output"));
       return;
-    }
-
-  if (generation_current && output->preprocess_state_valid)
-    {
-      self->milan_generation->state = output->preprocess_state;
-      self->milan_generation->profile_state = output->profile_state;
-      if (data->action == FPI_DEVICE_ACTION_IDENTIFY)
-        goodix_milan_generation_note_identify_prelude (self->milan_generation);
     }
 
   GOODIX53X5_DEBUG_ONLY (goodix_auth_set_processed_image (self, output);)
@@ -387,7 +394,7 @@ goodix_auth_task_done (GObject      *source_object,
           data->action == FPI_DEVICE_ACTION_IDENTIFY ? "identify" : "verify",
           output->score, output->winner_index, output->study_action,
           output->quality, output->coverage);
-  goodix_auth_log_runtime_result (dev, data, output);
+  goodix_auth_log_runtime_result (dev, data, output, FALSE);
 out:
   goodix_milan_runtime_output_free (output);
 #ifdef GOODIX53X5_DEBUG

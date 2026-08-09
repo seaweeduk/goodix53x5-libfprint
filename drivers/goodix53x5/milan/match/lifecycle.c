@@ -109,23 +109,9 @@ goodix_match_serialized_feature_result_internal (
     }
   matched_milan = normalized_milan;
 
-#ifdef GOODIX53X5_DEBUG
-  if (goodix_milan_match_probe_result_debug (
-#else
-  if (goodix_milan_match_probe_result (
-#endif
-        probe_info->feature_bitmaps.high_bitmap,
-        probe_info->feature_bitmaps.enhanced_bitmap,
-        probe_info->feature_bitmaps.low_bitmap,
-        probe_info->inline_mask,
-        probe_info->rescue_mask,
-        probe_info->records, (size_t) probe_info->record_count,
-        (size_t) probe_info->partition_count,
-        probe_info->extraction_metadata.quality,
-        probe_info->extraction_metadata.coverage,
-        probe_info->extraction_metadata.optional_c7,
-        &probe_info->antifake,
-        matched_milan, normalized_milan_len, match_result
+  if (goodix_milan_match_info_result (
+        probe_info, matched_milan, normalized_milan_len, NULL, NULL, NULL,
+        SIZE_MAX, match_result
 #ifdef GOODIX53X5_DEBUG
         , diagnostics
 #endif
