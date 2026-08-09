@@ -52,8 +52,9 @@ re-seal or reconstruct a missing report.
 
 | Native boundary | Real coverage | Control/static coverage | Gap |
 | --- | --- | --- | --- |
-| `FUN_180069820` raw clamp/admission | All selected raw samples are at most `0x0fff`; identify 151 naturally reaches `0x29aa` at 1,251 passing interior samples; identify 19 passes at 1,386 | Exact 1,310/1,311 strict-admission controls and retry retention are documented; clamp-before-admission order is static | No corpus row distinguishes clamp from reject for an over-`0x0fff` setup/live sample |
+| `FUN_180069820` raw clamp/admission | All selected raw samples are at most `0x0fff`; identify 151 naturally reaches `0x29aa` at 1,251 passing interior samples; identify 19 passes at 1,386 | Exact 1,310/1,311 live and 7,425/7,426 setup controls are documented; current top implements clamp-before-live-admission | No corpus row reaches setup `0x29bb`; current top lacks the strict 85% setup gate |
 | `FUN_180069820` validated border path | Profile-9 live path and non-inversion polarity are real | Validated/nonvalidated border distinction has exact controls | Over-range interaction with border copy remains unexecuted |
+| `FUN_18006b290` mode-9 severe result | No physical row returns `0xc351` | An approved-DLL setup/live boundary control returns `0xc351`, quality/coverage `0/12`, and populated output for both purposes; adapter status handling is exact | Current top has no mode-9 status and incorrectly attempts extraction; physical prevalence is unknown |
 | `FUN_180048260` packed extraction class | Probe `c7` is only `0`, `0x100`, or `0x200`: 64/68/167 operations. The low class is always zero and high class is only 0/1/2 | `FUN_180070d90` controls all 12 raw decoder values | Nonzero low classes and produced high classes 3/4/5 are absent naturally |
 | `FUN_180048260` mode/output plane | Ordinary v3 probes select mode 0 and expose zero in the three defined summary bytes | Modes 1/2 share the summary-only path; modes 3/4/5 and their projection behavior are statically recovered | No documented focused producer/history control proves a nonzero mode transition or projected output bytes |
 | Extraction history selector 2 | Frozen artifacts do not expose a selector-2 transition, prior-high reuse, or the inverted prior-coverage admission predicate | The complete scalar/ring behavior is static | Uncovered as an input-exact stateful sequence |
@@ -80,26 +81,32 @@ boundary remains established by focused 1,310-fail and 1,311-pass controls.
 
 ## Prioritized Residual Gaps
 
-1. **Over-range clamp execution, high confidence and high implementation risk.**
-   The DLL clamps before admission and does not reject a frame merely because a
-   setup, border, or interior sample exceeds `0x0fff`. No frozen raw frame has an
-   over-range sample, so whole-frame parity can pass while a reject-instead-of-
-   clamp implementation remains wrong.
-2. **Extraction selector-2/history sequence, high state risk.** The selector
+1. **Setup admission, high confidence and synthetic-valid implementation risk.**
+   Profile-9 `preprocessor_init` clamps and then requires strictly more than 85%
+   of the 8,736-pixel setup interior in `(100, 0x0ed8)`. Exact approved-DLL
+   controls fail at 7,425 with `0x29bb` and pass at 7,426. Current top checks
+   TX-on/TX-off MAD but has no equivalent setup gate. The former over-range
+   reject-instead-of-clamp defect is corrected.
+2. **Mode-9 severe result, high confidence and synthetic-valid implementation
+   risk.** `FUN_18006b290` returns `0xc351` after complete rendering for its
+   severe class-3 predicate. The adapter suppresses extraction for both
+   purposes, while current top returns zero and extracts. The exact control is
+   valid but no physical row establishes prevalence.
+3. **Extraction selector-2/history sequence, high state risk.** The selector
    reuses the prior merged high class and reverses the history admission test to
    depend on prior retained coverage below 75. Those globals are not fully
    serialized, and the 299 operations expose no input-exact transition. Fresh-
    process output parity therefore does not prove service-lifetime behavior.
-3. **Nonzero extraction modes and class production, medium-high producer risk.**
+4. **Nonzero extraction modes and class production, medium-high producer risk.**
    Decoder and downstream policy controls prove how valid classes are consumed,
    but the corpus does not prove production of nonzero low classes, high classes
    3/4/5, nonzero modes 1/2, or mode-specific 3/4/5 `+0x158` projections.
-4. **Allocation-end impulse safety distinction, medium safety risk and low
+5. **Allocation-end impulse safety distinction, medium safety risk and low
    parity priority.** The DLL can read outside the residual allocation for a
    qualifying endpoint impulse. The native clamped fallback is an intentional
    safety policy. The gap should not be closed by reproducing undefined memory
    access; only the deterministic policy needs to remain explicit.
-5. **Natural positive fallback, queue occupancy, and actions 2/3/5, low semantic
+6. **Natural positive fallback, queue occupancy, and actions 2/3/5, low semantic
    risk but unresolved prevalence.** Focused controls establish behavior. The
    enlarged corpus cannot support claims about real frequency or hardware
    reachability for those paths.
@@ -151,33 +158,35 @@ and call-path evidence remains in `functions/FUN_18005c3b0.md`,
 
 ## Recommended Non-Code Controls And Captures
 
-1. Add a sealed direct DLL control matrix for setup and admissible live frames
-   with a single over-`0x0fff` sample at an interior position, outer border, and
-   second-from-edge position. Record clamp, admission result, border output,
-   quality/coverage, and retry lifecycle separately.
-2. Capture one fresh-process extraction-history sequence that crosses retained
+1. Retain the exact 7,425-fail/7,426-pass setup controls alongside the existing
+   1,310-fail/1,311-pass live controls. Add physical setup observations before
+   assigning hardware prevalence to `0x29bb`.
+2. Retain the purpose-0/purpose-1 mode-9 control as a failed lifecycle with raw
+   status `0xc351`, metrics `0/12`, populated preprocessing output, and no
+   extraction. Seek a physical witness before assigning hardware prevalence.
+3. Capture one fresh-process extraction-history sequence that crosses retained
    counts 0 through 3 and coverage 74/75, then invokes auxiliary selector 2 with
    prior high above current high. Record packed `c7`, retained count/planes,
    prior coverage, and current/next-call effects.
-3. Use focused direct controls, not corpus substitution, to exercise modes
+4. Use focused direct controls, not corpus substitution, to exercise modes
    3/4/5 and every producible low/high class. Compare the defined three summary
    bytes and full projected plane only on modes that define it; do not compare
    allocator residue for modes 0/1/2.
-4. Keep the allocation-end impulse behavior as a documented safety divergence.
+5. Keep the allocation-end impulse behavior as a documented safety divergence.
    If a natural frame reaches it, retain the input and native deterministic
    output, but do not execute or bless the DLL's out-of-object load as required
    parity.
-5. Continue to label positive fallback, preoccupied/multi-entry queue, and study
+6. Continue to label positive fallback, preoccupied/multi-entry queue, and study
    actions 2/3/5 as control-only until a non-forced profile-9/type-12 lifecycle
    reaches them. Do not manufacture natural-frequency claims from direct calls.
-6. Keep identify 151 in the operation ledger as a raw retry with nullable
+7. Keep identify 151 in the operation ledger as a raw retry with nullable
    artifacts. Exclude its stale frozen Linux processed/probe fields from all
    extraction, anti-fake, matcher, queue, and study coverage counts.
-7. Keep early validation retries distinct from the later stateful retry. The
+8. Keep early validation retries distinct from the later stateful retry. The
    controlled `0x7531` witness returns quality/coverage `0/18`; runtime evidence
    and parity projections must preserve those metrics rather than applying the
    `0x29aa`/`0x29bb` zero-metric rule.
-8. For action-4 campaigns, fill templates naturally to 40 features and vary
+9. For action-4 campaigns, fill templates naturally to 40 features and vary
    contact pose, rotation, lateral placement, pressure, and partial coverage.
    Classify resulting captures by aggregate-only/direct-positive routing,
    full-gallery continue/skip behavior, selected/relation owners, and study
@@ -193,6 +202,7 @@ for late matcher policy, fallback publication, queue handling, decoder values,
 and study actions 2/3/5.
 
 It is not complete producer or state-machine coverage. The most important
-unclosed evidence is clamp-before-admission on over-range input and the stateful
-selector-2 extraction history path. Those gaps explain how strict parity can be
-correct for every frozen operation while still missing relevant native behavior.
+unclosed evidence is setup admission and mode-9 rejection on the current source
+path, plus the stateful selector-2 extraction history path. Those gaps explain
+how strict parity can be correct for every frozen operation while still missing
+relevant native behavior.

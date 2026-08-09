@@ -86,14 +86,16 @@ Current source also implements the native first-initialization branch: when
 `min(sample_count, 21)`, fill `profile9_reference_age[]` with that count, and
 suppress the secondary fallback for that call.
 
-## Current Raw-Input Gap (2026-08-08)
+## Current Input Audit (2026-08-09)
 
-Current Linux admission arithmetic is exact, but input ordering is not. Linux
-tests the original live frame and subsequently rejects any setup or live sample
-above `0x0fff`. The DLL clamps the complete copied setup/live frame and never
-rejects it solely for an over-range u16 value. This gap is not exercised by the
-confirmed corpus and requires a production correction; exact instructions and
-affected cases are recorded in `FUN_180069820.md`.
+Current top has corrected the former raw-input ordering defect: it clamps copied
+setup/live frames before applying live admission and no longer rejects an input
+solely for an over-`0x0fff` sample. It still does not model profile-9 setup
+validation. The DLL requires strictly more than 85% of the 8,736-pixel setup
+interior in `(100, 0x0ed8)` before setting ready and returns `0x29bb` otherwise;
+current generation publication checks only frame size and TX-on/TX-off MAD.
+Exact instructions, boundary controls, and reachability are recorded in
+`FUN_1800695e0.md` and `FUN_180069820.md`.
 
 ## Evidence
 
