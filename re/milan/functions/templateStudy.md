@@ -246,12 +246,27 @@ full-capacity retained normalization, action-5 handoff, and dispatcher-entered
 action-0 transient finalization are implemented. Shared evidence gate zero is
 excluded because this export skips the dispatcher entirely.
 
+For this profile, the authoritative selector/replacement chain is
+`FUN_1800469f0 -> FUN_180045530/FUN_1800458c0 -> FUN_1800452e0`, with
+`FUN_180046780`, `FUN_180046ef0`, and `FUN_180071370` owning footprint policy.
+Selector/replacement attribution to the alternate-profile `0x180062...` and
+`0x180064...` families is not applicable to this type-12 study chain.
+
 The native ordinary wrapper models action 0/index `-1`, validates the probe,
 publishes no packed update, and leaves persistence unchanged. Immutable
 enrollment-2 sequence 157 is the shared-gate-zero no-dispatch family. Generic
 gate-positive no-direct can instead perform capacity shutdown or late enqueue
 before the diagnostic-only transient finalizer. Action 5 is exact for handoff,
 lifecycle, order, tail, and packed payload.
+
+Production commits `f6e97782`, `1a858825`, `89dd6c43`, and `a29d5d5f` close the
+selector sentinel, exact retained-action predicate, wrapped policy arithmetic,
+and replacement scalar lifecycle respectively. Direct witnesses are action/index
+`0/unset` for the sentinel tuple, `4/1` for wrapped ratio admission, and `2/1`
+for retained flag 2; replacement witnesses are `bd=INT32_MAX -> INT32_MIN` and
+old `bc=-1 -> target bc=39`. Closure validation records a clean release build,
+all three existing Milan suites (`3/3`), and exact campaign results `450/450`
+and `643/643`.
 
 The native offline API returns a validated candidate for positive actions, and
 the production libfprint verify/identify path now runs that runtime and applies
