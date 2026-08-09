@@ -9,6 +9,7 @@
  */
 
 #include "milan/milan.h"
+#include "milan/transform-private.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -281,11 +282,19 @@ goodix_milan_antifake_boundary_score (
       }
   uint32_t divisor = adjacent_count * maximum;
   uint32_t numerator = difference_sum * 1000;
+  int32_t signed_divisor = goodix_milan_transform_s32 (divisor);
 
-  *score = divisor == 0
-             ? (int32_t) numerator
-             : (int32_t) (((int64_t) (int32_t) numerator +
-                            (int32_t) divisor / 2) /
-                           (int32_t) divisor);
+  if (divisor == 0)
+    *score = goodix_milan_transform_s32 (numerator);
+  else
+    {
+      int32_t half_divisor = goodix_milan_transform_sar32 (divisor, 1);
+      int32_t rounded_numerator = goodix_milan_transform_s32 (
+        numerator + (uint32_t) half_divisor);
+
+      if (rounded_numerator == INT32_MIN && signed_divisor == -1)
+        return -1;
+      *score = rounded_numerator / signed_divisor;
+    }
   return 0;
 }

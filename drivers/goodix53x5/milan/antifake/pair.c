@@ -9,6 +9,7 @@
  */
 
 #include "milan/milan.h"
+#include "milan/transform-private.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -67,6 +68,22 @@ compare_int32 (const void *first,
   return (a > b) - (a < b);
 }
 
+static uint32_t
+antifake_coordinate_distance (int32_t prior_x,
+                              int32_t prior_y,
+                              int32_t transformed_x,
+                              int32_t transformed_y)
+{
+  uint32_t dx = (uint32_t) prior_x * UINT32_C (0x100) -
+                (uint32_t) transformed_x;
+  uint32_t dy = (uint32_t) prior_y * UINT32_C (0x100) -
+                (uint32_t) transformed_y;
+  uint32_t distance = (uint32_t) goodix_milan_transform_sar32 (dx * dx, 8);
+
+  distance += (uint32_t) goodix_milan_transform_sar32 (dy * dy, 8);
+  return distance;
+}
+
 int
 goodix_milan_antifake_pair_metrics (
   const GoodixMilanAntifakeBlob *prior,
@@ -90,7 +107,6 @@ goodix_milan_antifake_pair_metrics (
   int32_t distances[GOODIX_MILAN_ANTIFAKE_RECORD_CAPACITY];
   uint32_t prior_count;
   uint32_t current_count;
-  int64_t determinant;
   size_t distance_count = 0;
   int32_t current_valid_count = 0;
   int32_t prior_valid_count = 0;
@@ -107,32 +123,9 @@ goodix_milan_antifake_pair_metrics (
     return -1;
   memset (current_to_prior_index, 0xff, sizeof(current_to_prior_index));
   memset (prior_to_current_index, 0xff, sizeof(prior_to_current_index));
-
-  determinant = (int64_t) current_to_prior[0] * current_to_prior[4] -
-                (int64_t) current_to_prior[1] * current_to_prior[3];
-  if (determinant == 0)
-    memcpy (inverse, current_to_prior, sizeof(inverse));
-  else
-    {
-      inverse[0] = (int32_t) (((int64_t) current_to_prior[4] << 16) /
-                              determinant);
-      inverse[1] = (int32_t) ((int64_t) current_to_prior[1] * -65536 /
-                              determinant);
-      inverse[2] = (int32_t) ((((int64_t) current_to_prior[5] *
-                                current_to_prior[1] -
-                                (int64_t) current_to_prior[4] *
-                                current_to_prior[2]) * 256) /
-                              determinant);
-      inverse[3] = (int32_t) ((int64_t) current_to_prior[3] * -65536 /
-                              determinant);
-      inverse[4] = (int32_t) (((int64_t) current_to_prior[0] << 16) /
-                              determinant);
-      inverse[5] = (int32_t) ((((int64_t) current_to_prior[3] *
-                                current_to_prior[2] -
-                                (int64_t) current_to_prior[5] *
-                                current_to_prior[0]) * 256) /
-                              determinant);
-    }
+  if (goodix_milan_transform_invert_s32_checked (
+        current_to_prior, inverse) != 0)
+    return -1;
 
   for (int32_t y = 0; y < rows; y++)
     for (int32_t x = 0; x < columns; x++)
@@ -144,10 +137,16 @@ goodix_milan_antifake_pair_metrics (
         if ((goodix_milan_antifake_const_mask (prior)[pixel / 8] &
              (1U << (pixel & 7))) == 0)
           continue;
-        source_x = (int32_t) (((int64_t) inverse[0] * x +
-                              (int64_t) inverse[1] * y + inverse[2] + 0x80) >> 8);
-        source_y = (int32_t) (((int64_t) inverse[3] * x +
-                              (int64_t) inverse[4] * y + inverse[5] + 0x80) >> 8);
+        source_x = goodix_milan_transform_sar32 (
+          (uint32_t) goodix_milan_transform_affine_s32 (
+            inverse[0], (uint32_t) x, inverse[1], (uint32_t) y,
+            (uint32_t) inverse[2]) + UINT32_C (0x80),
+          8);
+        source_y = goodix_milan_transform_sar32 (
+          (uint32_t) goodix_milan_transform_affine_s32 (
+            inverse[3], (uint32_t) x, inverse[4], (uint32_t) y,
+            (uint32_t) inverse[5]) + UINT32_C (0x80),
+          8);
         if (source_x >= 0 && source_x < columns && source_y >= 0 &&
             source_y < rows)
           {
@@ -172,14 +171,16 @@ goodix_milan_antifake_pair_metrics (
       uint32_t best_distance = UINT32_MAX;
       int16_t best_index = -1;
 
-      transformed_x[current_index] =
-        (int32_t) ((int64_t) current_to_prior[0] * x +
-                   (int64_t) current_to_prior[1] * y + current_to_prior[2]);
-      transformed_y[current_index] =
-        (int32_t) ((int64_t) current_to_prior[3] * x +
-                   (int64_t) current_to_prior[4] * y + current_to_prior[5]);
-      rounded_x = (transformed_x[current_index] + 0x80) >> 8;
-      rounded_y = (transformed_y[current_index] + 0x80) >> 8;
+      transformed_x[current_index] = goodix_milan_transform_affine_s32 (
+        current_to_prior[0], (uint32_t) x, current_to_prior[1],
+        (uint32_t) y, (uint32_t) current_to_prior[2]);
+      transformed_y[current_index] = goodix_milan_transform_affine_s32 (
+        current_to_prior[3], (uint32_t) x, current_to_prior[4],
+        (uint32_t) y, (uint32_t) current_to_prior[5]);
+      rounded_x = goodix_milan_transform_sar32 (
+        (uint32_t) transformed_x[current_index] + UINT32_C (0x80), 8);
+      rounded_y = goodix_milan_transform_sar32 (
+        (uint32_t) transformed_y[current_index] + UINT32_C (0x80), 8);
       if (rounded_x < 0 || rounded_x >= columns || rounded_y < 0 ||
           rounded_y >= rows || !overlap[rounded_y * columns + rounded_x])
         continue;
@@ -191,10 +192,9 @@ goodix_milan_antifake_pair_metrics (
             prior, prior_index);
           int32_t prior_x = goodix_milan_antifake_record_x (prior_record);
           int32_t prior_y = goodix_milan_antifake_record_y (prior_record);
-          int32_t dx = prior_x * 256 - transformed_x[current_index];
-          int32_t dy = prior_y * 256 - transformed_y[current_index];
-          uint32_t candidate = (uint32_t) (((int64_t) dx * dx >> 8) +
-                                           ((int64_t) dy * dy >> 8));
+          uint32_t candidate = antifake_coordinate_distance (
+            prior_x, prior_y, transformed_x[current_index],
+            transformed_y[current_index]);
 
           if (candidate < best_distance)
             {
@@ -222,16 +222,13 @@ goodix_milan_antifake_pair_metrics (
       for (uint32_t current_index = 0; current_index < current_count;
            current_index++)
         {
-          int32_t dx;
-          int32_t dy;
           uint32_t candidate;
 
           if (!current_valid[current_index])
             continue;
-          dx = prior_x * 256 - transformed_x[current_index];
-          dy = prior_y * 256 - transformed_y[current_index];
-          candidate = (uint32_t) (((int64_t) dx * dx >> 8) +
-                                  ((int64_t) dy * dy >> 8));
+          candidate = antifake_coordinate_distance (
+            prior_x, prior_y, transformed_x[current_index],
+            transformed_y[current_index]);
           if (candidate < best_distance)
             {
               best_distance = candidate;

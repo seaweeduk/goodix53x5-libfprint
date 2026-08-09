@@ -16,6 +16,7 @@
 #include "milan/match/info-private.h"
 #include "milan/milan.h"
 #include "milan/relations.h"
+#include "milan/transform-private.h"
 
 #include <string.h>
 
@@ -47,7 +48,14 @@ goodix_match_update_antifake_score (GoodixMilanAntifakeBlob *antifake,
 {
   gint32 current = goodix_milan_antifake_pair_score (antifake);
 
-  current = current == -1 ? score : (current + score) / 2;
+  if (current == -1)
+    current = score;
+  else
+    {
+      uint32_t sum = (uint32_t) current + (uint32_t) score;
+
+      current = goodix_milan_transform_s32 (sum) / 2;
+    }
   goodix_milan_antifake_set_pair_score (antifake, current);
 }
 
