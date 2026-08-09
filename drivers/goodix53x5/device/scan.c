@@ -84,8 +84,6 @@ typedef struct
   gboolean                      recovering_generation;
   gboolean                      release_settled;
   gboolean                      capture_notified;
-  gboolean                      settle_receive;
-  gboolean                      internal_receive_cancel;
 } GoodixScanCoordinatorData;
 
 static void goodix_scan_coordinator_handler (FpiSsm *ssm, FpDevice *dev);
@@ -216,6 +214,15 @@ static void
 goodix_scan_request_stop (GoodixScanCoordinatorData *data,
                           GError                    *error)
 {
+  FpDevice *dev = fpi_ssm_get_device (data->ssm);
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixScanCoordinatorState state = fpi_ssm_get_cur_state (data->ssm);
+
+  if ((state == GOODIX_SCAN_COORD_WAIT_CPU ||
+       state == GOODIX_SCAN_COORD_CYCLE_SETTLED) &&
+      self->profile9_fdt.wait_mode != GOODIX_PROFILE9_FDT_WAIT_NONE)
+    data->cleanup_drain_mode = self->profile9_fdt.wait_mode;
+
   if (data->stop_requested)
     {
       if (error && !data->stop_error)
@@ -231,7 +238,6 @@ goodix_scan_request_stop (GoodixScanCoordinatorData *data,
 
   if (data->receive_active && !data->dispatching)
     {
-      data->internal_receive_cancel = FALSE;
       g_cancellable_cancel (data->event_cancel);
       return;
     }
@@ -268,18 +274,6 @@ goodix_scan_receive_cancelled (FpiSsm   *ssm,
   if (data->stop_requested &&
       self->profile9_fdt.wait_mode != GOODIX_PROFILE9_FDT_WAIT_NONE)
     data->cleanup_drain_mode = self->profile9_fdt.wait_mode;
-
-  if (data->internal_receive_cancel)
-    {
-      data->internal_receive_cancel = FALSE;
-      data->settle_receive = FALSE;
-      if (data->stop_requested)
-        goodix_scan_maybe_finish_requested (data);
-      else
-        fpi_ssm_jump_to_state (data->ssm,
-                               GOODIX_SCAN_COORD_CYCLE_SETTLED);
-      return;
-    }
 
   if (!data->stop_requested)
     {
@@ -415,7 +409,6 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
         }
       if (data->stop_requested)
         {
-          data->internal_receive_cancel = FALSE;
           g_cancellable_cancel (data->event_cancel);
           return;
         }
@@ -437,7 +430,6 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
         g_autoptr(GError) error = NULL;
 
         data->receive_active = FALSE;
-        data->settle_receive = FALSE;
         g_clear_object (&data->event_cancel);
         if (!goodix_cmd_parse_fdt_event (dev, fdt->wait_mode,
                                          &data->event_type, &fdt->event,
@@ -647,8 +639,9 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
             fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_CYCLE_SETTLED);
           else
             {
-              data->settle_receive = TRUE;
-              fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+              /* The down arm is one-shot: wait for CPU before posting the
+               * next receive instead of posting one only to cancel it. */
+              fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_CPU);
             }
           return;
         }
@@ -843,12 +836,6 @@ goodix_scan_set_disposition (FpDevice             *dev,
       g_clear_error (&error);
       if (!goodix_scan_disposition_waits_for_up (disposition))
         goodix_scan_request_stop (data, NULL);
-      else if (data->release_settled && data->settle_receive &&
-               data->receive_active && !data->dispatching)
-        {
-          data->internal_receive_cancel = TRUE;
-          g_cancellable_cancel (data->event_cancel);
-        }
       else if (data->release_settled && !data->dispatching &&
                !data->receive_active && !self->cmd_owner)
         fpi_ssm_jump_to_state (data->ssm,
