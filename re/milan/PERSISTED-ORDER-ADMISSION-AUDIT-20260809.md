@@ -104,3 +104,17 @@ templates maintain the invariant. The minimal production correction is to
 reject non-permutation order prefixes in
 `goodix_milan_print_validate_template()`; no matcher, codec, relation, study,
 score, or compatibility behavior needs to change.
+
+## Resolution
+
+Production commit `792f5b3` implements that admission check before any matcher
+or study traversal. It reads exactly the first `feature_count` order dwords and
+rejects an index when it is out of range or already present; the reserved suffix
+remains untouched.
+
+The release build succeeds, and the existing Milan synthetic, state, and runtime
+suites pass. The canonical 40-feature control remains admitted with score 25
+and study action 4, while duplicate and out-of-range controls reject during
+persisted-print validation. Full campaign replay is not required for this
+synthetic-only admission guard because every natural captured template already
+satisfies the permutation invariant and the guard does not alter valid state.
