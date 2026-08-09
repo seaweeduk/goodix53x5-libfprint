@@ -35,6 +35,7 @@ typedef struct
   int32_t residual;
   int32_t overlap_count;
   int32_t uncovered_probe_residual;
+  int32_t geometric_overlap_area;
   int32_t geometric_overlap_percent;
 } GoodixMilanStudyPolicyFeature;
 

@@ -125,16 +125,17 @@ goodix_milan_study_policy_select (const GoodixMilanStudyPolicyInput *input,
     }
   else
     {
-      int32_t best_percent = INT32_MIN;
+      int32_t best_area = INT32_MIN;
 
       for (size_t i = 0; i < input->feature_count; i++)
         if (input->features[i].active != 0 && input->features[i].state != 5 &&
-            input->features[i].geometric_overlap_percent > best_percent)
+            input->features[i].geometric_overlap_area > best_area)
           {
             selected = &input->features[i];
             selected_index = i;
-            best_percent = selected->geometric_overlap_percent;
+            best_area = selected->geometric_overlap_area;
           }
+      int32_t best_percent = selected ? selected->geometric_overlap_percent : 0;
       if (!selected ||
           (best_percent < 80 &&
            (best_percent < 60 || input->template_counter <= 1000)))
