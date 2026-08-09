@@ -23,6 +23,8 @@
 #define MILAN_FIXED_ONE UINT32_C(0x2000)
 #define MILAN_PROFILE9_SETUP_OFFSET UINT16_C(7095)
 #define MILAN_PROFILE9_UPDATE_BASE UINT16_C(9000)
+#define MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MIN_EXCLUSIVE UINT16_C(100)
+#define MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MAX_EXCLUSIVE UINT16_C(0x0ed8)
 
 static const uint16_t milan_update_kernel[5] = {
   7869, 15328, 19142, 15328, 7869,
@@ -125,6 +127,7 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   int selected_refined;
   int metadata_mode;
   int apply_metadata_mask;
+  int classification_status;
   int post_status;
   int result = -1;
 
@@ -145,6 +148,8 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
        purpose != GOODIX_MILAN_PURPOSE_ENROLL) ||
       !output || !quality || !coverage)
     return -1;
+  *quality = 0;
+  *coverage = 0;
   setup_map = malloc (count * sizeof(*setup_map));
   normalized_live = malloc (count * sizeof(*normalized_live));
   difference = malloc (count * sizeof(*difference));
@@ -162,14 +167,22 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
       !contrast_mask || !selection_mask)
     goto out;
 
+  memcpy (setup_map, setup_frame, count * sizeof(*setup_map));
+  memcpy (normalized_live, live_frame, count * sizeof(*normalized_live));
   for (size_t i = 0; i < count; i++)
     {
-      if (setup_frame[i] > MILAN_ADC_MAX || live_frame[i] > MILAN_ADC_MAX)
-        goto out;
+      if (setup_map[i] > MILAN_ADC_MAX)
+        setup_map[i] = MILAN_ADC_MAX;
     }
-  memcpy (normalized_live, live_frame, count * sizeof(*normalized_live));
+  if (!goodix_milan_preprocess_clamp_and_admit_raw (
+        normalized_live, GOODIX_MILAN_SENSOR_ROWS,
+        GOODIX_MILAN_SENSOR_COLUMNS, 2, 15))
+    {
+      result = GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION;
+      goto out;
+    }
   if (goodix_milan_preprocess_make_setup_map (
-        setup_frame, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
+        setup_map, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
         setup_map, &rounded_mean) != 0 ||
       profile9_normalize_live (
         normalized_live, GOODIX_MILAN_SENSOR_ROWS,
@@ -224,10 +237,12 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
     }
   admitted_percent = (uint16_t) (admitted_pixels * 100 / count);
 
-  if (goodix_milan_profile9_build_broken_mask (
-        state, difference, normalized_live, contrast_mask,
-        GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, broken_mask,
-        NULL, &metadata_mode, &apply_metadata_mask) != 0)
+  classification_status = goodix_milan_profile9_build_broken_mask (
+    state, difference, setup_map, normalized_live, contrast_mask,
+    GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, broken_mask,
+    NULL, &metadata_mode, &apply_metadata_mask);
+  if (classification_status != 0 &&
+      classification_status != GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
     goto out;
 
   if (goodix_milan_preprocess_contrast (
@@ -261,7 +276,8 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   memcpy (state->primary_contrast, contrast, count);
   state->primary_contrast_valid = 1;
   state->selected_refined = selected_refined;
-  result = post_status;
+  result = classification_status == GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION
+             ? classification_status : post_status;
 
 out:
   free (selection_mask);
@@ -283,6 +299,37 @@ static int
 is_invalid_border_sample (uint16_t sample)
 {
   return sample == 0 || sample == MILAN_ADC_MAX;
+}
+
+int
+goodix_milan_preprocess_clamp_and_admit_raw (uint16_t *frame,
+                                              size_t    rows,
+                                              size_t    columns,
+                                              size_t    border,
+                                              unsigned  required_percent)
+{
+  size_t samples = 0;
+  size_t admitted = 0;
+
+  if (!frame || required_percent > 100 || border > rows / 2 ||
+      border > columns / 2 || rows - border <= border ||
+      columns - border <= border || columns > SIZE_MAX / rows)
+    return 0;
+
+  for (size_t i = 0; i < rows * columns; i++)
+    if (frame[i] > MILAN_ADC_MAX)
+      frame[i] = MILAN_ADC_MAX;
+  for (size_t row = border; row < rows - border; row++)
+    for (size_t column = border; column < columns - border; column++)
+      {
+        uint16_t sample = frame[row * columns + column];
+
+        samples++;
+        admitted += sample > MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MIN_EXCLUSIVE &&
+                    sample < MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MAX_EXCLUSIVE;
+      }
+  return admitted > (samples / 100) * required_percent +
+                    ((samples % 100) * required_percent) / 100;
 }
 
 int

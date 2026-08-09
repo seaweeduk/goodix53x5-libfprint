@@ -63,34 +63,34 @@ typedef enum
 } GoodixMilanStudyAction;
 
 GoodixMatchInfo *goodix_match_extract_native (
-  const guint8                     *image,
-  const GoodixMilanPreprocessState *preprocess_state,
-  const guint16                    *raw_frame,
-  guint16                           t_code,
-  guint16                           dac_high,
-  guint16                           dac_low,
-  guint16                           sensor_subtype);
+  const guint8               *image,
+  GoodixMilanPreprocessState *preprocess_state,
+  const guint16              *raw_frame,
+  guint16                     t_code,
+  guint16                     dac_high,
+  guint16                     dac_low,
+  guint16                     sensor_subtype);
 
 GoodixMilanExtractionStatus goodix_match_extract_native_result (
-  const guint8                     *image,
-  const GoodixMilanPreprocessState *preprocess_state,
-  const guint16                    *raw_frame,
-  guint16                           t_code,
-  guint16                           dac_high,
-  guint16                           dac_low,
-  guint16                           sensor_subtype,
-  GoodixMatchInfo                 **info);
+  const guint8               *image,
+  GoodixMilanPreprocessState *preprocess_state,
+  const guint16              *raw_frame,
+  guint16                     t_code,
+  guint16                     dac_high,
+  guint16                     dac_low,
+  guint16                     sensor_subtype,
+  GoodixMatchInfo           **info);
 
 #ifdef GOODIX53X5_DEBUG
 GoodixMilanExtractionStatus goodix_match_extract_native_result_debug (
-  const guint8                     *image,
-  const GoodixMilanPreprocessState *preprocess_state,
-  const guint16                    *raw_frame,
-  guint16                           t_code,
-  guint16                           dac_high,
-  guint16                           dac_low,
-  guint16                           sensor_subtype,
-  GoodixMatchInfo                 **info,
+  const guint8               *image,
+  GoodixMilanPreprocessState *preprocess_state,
+  const guint16              *raw_frame,
+  guint16                     t_code,
+  guint16                     dac_high,
+  guint16                     dac_low,
+  guint16                     sensor_subtype,
+  GoodixMatchInfo           **info,
   GoodixMilanExtractionDiagnostics *diagnostics);
 #endif
 

@@ -26,6 +26,14 @@
 #include <unistd.h>
 #include <glib/gstdio.h>
 
+#define GOODIX53X5_BUILD_ID_MARKER "goodix53x5-build-id-v1:"
+#define GOODIX53X5_SOURCE_ID_MARKER "goodix53x5-source-id-v1:"
+
+static const gchar goodix_debug_build_id_marker[] __attribute__((used)) =
+  GOODIX53X5_BUILD_ID_MARKER GOODIX53X5_DEBUG_BUILD_ID;
+static const gchar goodix_debug_source_id_marker[] __attribute__((used)) =
+  GOODIX53X5_SOURCE_ID_MARKER GOODIX53X5_DEBUG_SOURCE_ID;
+
 typedef enum
 {
   GOODIX_DUMP_PROBES_NONE,
@@ -61,7 +69,7 @@ goodix_debug_ensure_dump_dir (const gchar *dump_dir)
   return TRUE;
 }
 
-static void
+static gboolean
 goodix_debug_write_dump (const gchar      *prefix,
                           guint32           crc,
                           const GByteArray *buf,
@@ -71,6 +79,9 @@ goodix_debug_write_dump (const gchar      *prefix,
   g_autofree gchar *path = NULL;
   gint fd = -1;
   gint64 stamp = g_get_real_time ();
+  gsize written = 0;
+  gboolean created = FALSE;
+  gboolean published = TRUE;
 
   for (guint attempt = 0; attempt < 1000 && fd < 0; attempt++)
     {
@@ -78,57 +89,273 @@ goodix_debug_write_dump (const gchar      *prefix,
       path = g_strdup_printf ("%s/%s-%" G_GINT64_FORMAT "-%08x.%s",
                               dump_dir, prefix, stamp + attempt, crc, extension);
       fd = g_open (path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-      if (fd < 0 && errno != EEXIST)
+      if (fd >= 0)
+        created = TRUE;
+      else if (errno != EEXIST)
         break;
     }
-  if (fd < 0 || write (fd, buf->data, buf->len) != (ssize_t) buf->len ||
-      fsync (fd) != 0 || close (fd) != 0)
+  while (fd >= 0 && written < buf->len)
+    {
+      ssize_t count = write (fd, buf->data + written, buf->len - written);
+
+      if (count < 0 && errno == EINTR)
+        continue;
+      if (count <= 0)
+        {
+          if (count == 0)
+            errno = EIO;
+          break;
+        }
+      written += count;
+    }
+  if (fd < 0 || written != buf->len || fsync (fd) != 0)
+    published = FALSE;
+  if (fd >= 0 && close (fd) != 0)
+    published = FALSE;
+  fd = -1;
+  if (!published)
     {
       gint saved_errno = errno;
 
-      if (fd >= 0)
-        close (fd);
-      fp_warn ("Failed to publish %s: %s", path, g_strerror (saved_errno));
-      return;
+      if (created && path)
+        g_unlink (path);
+      fp_warn ("Failed to publish %s: %s", path ? path : prefix,
+               g_strerror (saved_errno));
+      return FALSE;
     }
 
   fp_dbg ("Dumped %s (%u bytes)", path, (unsigned) buf->len);
+  return TRUE;
+}
+
+typedef struct
+{
+  gchar   *basename;
+  guint64  bytes;
+  gchar   *encoding;
+  gchar    sha256[65];
+} GoodixDebugArtifact;
+
+typedef struct
+{
+  GoodixDebugArtifact *after_match;
+  GoodixDebugArtifact *input;
+} GoodixDebugGalleryArtifacts;
+
+static void
+goodix_debug_artifact_free (GoodixDebugArtifact *artifact)
+{
+  if (!artifact)
+    return;
+  g_free (artifact->basename);
+  g_free (artifact->encoding);
+  g_free (artifact);
 }
 
 static void
-goodix_debug_write_gbytes (const gchar *prefix,
-                           GBytes      *source,
-                           const gchar *extension)
+goodix_debug_gallery_artifacts_free (GoodixDebugGalleryArtifacts *artifacts)
 {
-  gconstpointer data;
-  gsize size;
-  g_autoptr(GByteArray) bytes = NULL;
-
-  if (!source)
+  if (!artifacts)
     return;
-  data = g_bytes_get_data (source, &size);
-  bytes = g_byte_array_sized_new (size);
-  g_byte_array_append (bytes, data, size);
-  goodix_debug_write_dump (
-    prefix, goodix_crypto_crc32_mpeg2 (data, size), bytes, extension);
+  goodix_debug_artifact_free (artifacts->after_match);
+  goodix_debug_artifact_free (artifacts->input);
+  g_free (artifacts);
 }
 
-static gchar *
-goodix_debug_raw12_sha256 (const guint16 *image)
+static gboolean
+goodix_debug_env_enabled (const gchar *name)
 {
-  g_autoptr(GChecksum) checksum = NULL;
+  const gchar *value = g_getenv (name);
+
+  return value != NULL && value[0] != '\0' && g_strcmp0 (value, "0") != 0;
+}
+
+static gboolean
+goodix_debug_valid_sha256 (const gchar *value)
+{
+  if (!value || strlen (value) != 64)
+    return FALSE;
+  for (guint i = 0; i < 64; i++)
+    if (!g_ascii_isdigit (value[i]) &&
+        !(value[i] >= 'a' && value[i] <= 'f'))
+      return FALSE;
+  return TRUE;
+}
+
+static GBytes *
+goodix_debug_raw12_le_bytes (const guint16 *image)
+{
+  guint8 *data;
 
   if (!image)
     return NULL;
-  checksum = g_checksum_new (G_CHECKSUM_SHA256);
+  data = g_malloc (GOODIX_SENSOR_PIXELS * 2);
   for (gsize i = 0; i < GOODIX_SENSOR_PIXELS; i++)
     {
       const guint16 value = image[i] & 0x0fff;
-      const guint8 bytes[2] = { value >> 8, value & 0xff };
 
-      g_checksum_update (checksum, bytes, sizeof (bytes));
+      data[i * 2] = value & 0xff;
+      data[i * 2 + 1] = value >> 8;
     }
-  return g_strdup (g_checksum_get_string (checksum));
+  return g_bytes_new_take (data, GOODIX_SENSOR_PIXELS * 2);
+}
+
+static GoodixDebugArtifact *
+goodix_debug_publish_artifact (const gchar *prefix,
+                               GBytes      *source,
+                               const gchar *encoding)
+{
+  const gchar *dump_dir = goodix_debug_dump_dir ();
+  g_autofree gchar *path = NULL;
+  g_autofree gchar *basename = NULL;
+  g_autofree gchar *sha256 = NULL;
+  gconstpointer data;
+  gsize size;
+  gint fd = -1;
+  gint64 stamp = g_get_real_time ();
+  gsize written = 0;
+  gboolean created = FALSE;
+  gboolean published = TRUE;
+
+  if (!source || !dump_dir)
+    return NULL;
+  data = g_bytes_get_data (source, &size);
+  sha256 = g_compute_checksum_for_data (G_CHECKSUM_SHA256, data, size);
+  for (guint attempt = 0; attempt < 1000 && fd < 0; attempt++)
+    {
+      g_free (basename);
+      g_free (path);
+      basename = g_strdup_printf (
+        "%s-%" G_GINT64_FORMAT "-%08x.bin", prefix, stamp + attempt,
+        goodix_crypto_crc32_mpeg2 (data, size));
+      path = g_build_filename (dump_dir, basename, NULL);
+      fd = g_open (path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+      if (fd >= 0)
+        created = TRUE;
+      else if (errno != EEXIST)
+        break;
+    }
+  while (fd >= 0 && written < size)
+    {
+      ssize_t count = write (fd, (const guint8 *) data + written,
+                             size - written);
+
+      if (count < 0 && errno == EINTR)
+        continue;
+      if (count <= 0)
+        {
+          if (count == 0)
+            errno = EIO;
+          break;
+        }
+      written += count;
+    }
+  if (fd < 0 || written != size || fsync (fd) != 0)
+    published = FALSE;
+  if (fd >= 0 && close (fd) != 0)
+    published = FALSE;
+  fd = -1;
+  if (!published)
+    {
+      gint saved_errno = errno;
+
+      if (created && path)
+        g_unlink (path);
+      fp_warn ("Failed to publish runtime artifact %s: %s",
+               path ? path : prefix, g_strerror (saved_errno));
+      return NULL;
+    }
+
+  GoodixDebugArtifact *artifact = g_new0 (GoodixDebugArtifact, 1);
+
+  artifact->basename = g_steal_pointer (&basename);
+  artifact->bytes = size;
+  artifact->encoding = g_strdup (encoding);
+  g_strlcpy (artifact->sha256, sha256, sizeof (artifact->sha256));
+  return artifact;
+}
+
+static void
+goodix_debug_json_string (GString     *json,
+                          const gchar *value)
+{
+  const gchar *cursor = value ? value : "";
+
+  g_string_append_c (json, '"');
+  while (*cursor)
+    {
+      gunichar character = g_utf8_get_char_validated (cursor, -1);
+
+      if (character == (gunichar) -1 || character == (gunichar) -2)
+        {
+          g_string_append (json, "\\ufffd");
+          cursor++;
+          continue;
+        }
+      switch (character)
+        {
+        case '"': g_string_append (json, "\\\""); break;
+        case '\\': g_string_append (json, "\\\\"); break;
+        case '\b': g_string_append (json, "\\b"); break;
+        case '\f': g_string_append (json, "\\f"); break;
+        case '\n': g_string_append (json, "\\n"); break;
+        case '\r': g_string_append (json, "\\r"); break;
+        case '\t': g_string_append (json, "\\t"); break;
+        default:
+          if (character < 0x20 || character > 0x7e)
+            {
+              if (character <= 0xffff)
+                g_string_append_printf (json, "\\u%04x", character);
+              else
+                {
+                  guint32 adjusted = character - 0x10000;
+
+                  g_string_append_printf (json, "\\u%04x\\u%04x",
+                                          0xd800 + (adjusted >> 10),
+                                          0xdc00 + (adjusted & 0x3ff));
+                }
+            }
+          else
+            g_string_append_c (json, character);
+          break;
+        }
+      cursor = g_utf8_next_char (cursor);
+    }
+  g_string_append_c (json, '"');
+}
+
+static void
+goodix_debug_json_artifact (GString                   *json,
+                            const GoodixDebugArtifact *artifact)
+{
+  if (!artifact)
+    {
+      g_string_append (json, "null");
+      return;
+    }
+  g_string_append (json, "{\"basename\":");
+  goodix_debug_json_string (json, artifact->basename);
+  g_string_append_printf (json, ",\"bytes_u64\":%" G_GUINT64_FORMAT
+                          ",\"encoding\":", artifact->bytes);
+  goodix_debug_json_string (json, artifact->encoding);
+  g_string_append (json, ",\"sha256\":");
+  goodix_debug_json_string (json, artifact->sha256);
+  g_string_append_c (json, '}');
+}
+
+static void
+goodix_debug_json_error (GString      *json,
+                         const GError *error)
+{
+  if (!error)
+    {
+      g_string_append (json, "null");
+      return;
+    }
+  g_string_append_printf (json, "{\"code_i32\":%d,\"domain_u32\":%u,"
+                          "\"message\":", error->code, error->domain);
+  goodix_debug_json_string (json, error->message);
+  g_string_append_c (json, '}');
 }
 
 void
@@ -384,63 +611,130 @@ goodix_debug_timing_open_done (FpiDeviceGoodix53x5 *self,
 
 void
 goodix_debug_capture_runtime_metadata (GoodixDebugRuntimeMetadata *metadata,
-                                       FpiDeviceAction             action,
-                                       const guint16              *setup_tx_on,
-                                       const guint16              *live_raw,
-                                       guint64 generation_use_index)
+                                        FpiDeviceAction             action,
+                                        const guint16              *setup_tx_on,
+                                        const guint16              *live_raw,
+                                        guint64 generation_use_index)
 {
-  g_autofree gchar *setup_txon_sha256 = NULL;
-  g_autofree gchar *live_raw_sha256 = NULL;
-
   g_return_if_fail (metadata != NULL);
   g_return_if_fail (setup_tx_on != NULL);
   g_return_if_fail (live_raw != NULL);
 
-  setup_txon_sha256 = goodix_debug_raw12_sha256 (setup_tx_on);
-  live_raw_sha256 = goodix_debug_raw12_sha256 (live_raw);
+  goodix_debug_clear_runtime_metadata (metadata);
   metadata->action = action;
   metadata->generation_use_index = generation_use_index;
-  g_strlcpy (metadata->setup_txon_sha256, setup_txon_sha256,
-             sizeof (metadata->setup_txon_sha256));
-  g_strlcpy (metadata->live_raw_sha256, live_raw_sha256,
-             sizeof (metadata->live_raw_sha256));
+  metadata->setup_tx_on = goodix_debug_raw12_le_bytes (setup_tx_on);
+  metadata->live_raw = goodix_debug_raw12_le_bytes (live_raw);
+}
+
+void
+goodix_debug_clear_runtime_metadata (GoodixDebugRuntimeMetadata *metadata)
+{
+  if (!metadata)
+    return;
+  g_clear_pointer (&metadata->setup_tx_on, g_bytes_unref);
+  g_clear_pointer (&metadata->live_raw, g_bytes_unref);
 }
 
 void
 goodix_debug_log_runtime_result (FpDevice                         *dev,
-                                 guint                             stage,
-                                 const GoodixDebugRuntimeMetadata *metadata,
-                                 const GoodixMilanRuntimeOutput   *output)
+                                  guint                             stage,
+                                  const GoodixDebugRuntimeMetadata *metadata,
+                                  const GoodixMilanRuntimeOutput   *output,
+                                  gboolean driver_cancellation_observed)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  const gchar *value = g_getenv ("GOODIX53X5_LOG_DIAGNOSTICS");
-  g_autofree gchar *probe_sha256 = NULL;
-  g_autofree gchar *candidate_sha256 = NULL;
-  g_autofree gchar *processed_image_sha256 = NULL;
+  const gchar *dump_dir = goodix_debug_dump_dir ();
+  g_autofree gchar *common_prefix = NULL;
+  g_autofree gchar *operation_id = NULL;
   g_autofree gchar *prefix = NULL;
+  g_autoptr(GPtrArray) gallery_artifacts = NULL;
   g_autoptr(GString) record = NULL;
   g_autoptr(GByteArray) bytes = NULL;
+  g_autoptr(GBytes) final_candidate = NULL;
+  GoodixDebugArtifact *final_candidate_artifact = NULL;
+  GoodixDebugArtifact *live_raw_artifact = NULL;
+  GoodixDebugArtifact *native_probe_artifact = NULL;
+  GoodixDebugArtifact *processed_image_artifact = NULL;
+  GoodixDebugArtifact *setup_tx_on_artifact = NULL;
   const gchar *action_name;
   gchar *record_data;
   gsize record_len;
-  gboolean dump_templates;
+  guint64 chronology;
+  gboolean runtime_cancelled;
 
-  if (value == NULL || value[0] == '\0' || g_strcmp0 (value, "0") == 0 ||
+  if (!goodix_debug_env_enabled ("GOODIX53X5_LOG_DIAGNOSTICS") ||
+      !goodix_debug_env_enabled ("GOODIX53X5_DUMP_TEMPLATES") || !dump_dir ||
       metadata == NULL || output == NULL)
     return;
+  if (!goodix_debug_valid_sha256 (
+        goodix_debug_build_id_marker + sizeof (GOODIX53X5_BUILD_ID_MARKER) - 1) ||
+      !goodix_debug_valid_sha256 (
+        goodix_debug_source_id_marker + sizeof (GOODIX53X5_SOURCE_ID_MARKER) - 1))
+    {
+      fp_warn ("Refusing runtime v3 emission with invalid build provenance");
+      return;
+    }
+  if (!metadata->setup_tx_on || !metadata->live_raw ||
+      !goodix_debug_ensure_dump_dir (dump_dir))
+    return;
+  if (self->debug_chronology == G_MAXUINT64)
+    {
+      fp_warn ("Runtime debug chronology exhausted");
+      return;
+    }
+  chronology = self->debug_chronology + 1;
   action_name = goodix_debug_action_name (metadata->action);
-  value = g_getenv ("GOODIX53X5_DUMP_TEMPLATES");
-  dump_templates = value != NULL && value[0] != '\0' &&
-                   g_strcmp0 (value, "0") != 0;
-  if (output->probe_template)
-    probe_sha256 = g_compute_checksum_for_bytes (
-      G_CHECKSUM_SHA256, output->probe_template);
+  common_prefix = g_strdup_printf (
+    "runtime-artifact-%s-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT
+    "-%u-%" G_GUINT64_FORMAT,
+    self->debug_capture_session_id, action_name, output->action_epoch,
+    output->generation_id, stage, chronology);
+  operation_id = g_strdup_printf ("%s/%s/%" G_GUINT64_FORMAT,
+                                  self->debug_capture_session_id, action_name,
+                                  output->action_epoch);
+
+#define PUBLISH_ARTIFACT(role, source, encoding) G_STMT_START { \
+  g_clear_pointer (&prefix, g_free); \
+  prefix = g_strdup_printf ("%s-%s", common_prefix, #role); \
+  role##_artifact = goodix_debug_publish_artifact (prefix, source, encoding); \
+} G_STMT_END
+  PUBLISH_ARTIFACT (setup_tx_on, metadata->setup_tx_on,
+                    "raw-u16le-12-108x88");
+  PUBLISH_ARTIFACT (live_raw, metadata->live_raw, "raw-u16le-12-108x88");
+  PUBLISH_ARTIFACT (processed_image, output->processed_image,
+                    "raw-u8-108x88");
+  PUBLISH_ARTIFACT (native_probe, output->probe_template,
+                    "goodix-milan-native-template");
   if (output->final_candidate)
-    candidate_sha256 = g_compute_checksum_for_bytes (
-      G_CHECKSUM_SHA256, output->final_candidate);
-  if (output->processed_image)
-    processed_image_sha256 = g_compute_checksum_for_bytes (
-      G_CHECKSUM_SHA256, output->processed_image);
+    final_candidate = g_bytes_ref (output->final_candidate);
+  PUBLISH_ARTIFACT (final_candidate, final_candidate,
+                    "goodix-milan-native-template");
+#undef PUBLISH_ARTIFACT
+
+  g_clear_pointer (&prefix, g_free);
+  gallery_artifacts = g_ptr_array_new_with_free_func (
+    (GDestroyNotify) goodix_debug_gallery_artifacts_free);
+  for (guint i = 0; i < output->gallery_results->len; i++)
+    {
+      GoodixMilanRuntimeGalleryResult *result =
+        g_ptr_array_index (output->gallery_results, i);
+      GoodixDebugGalleryArtifacts *artifacts = g_new0 (
+        GoodixDebugGalleryArtifacts, 1);
+
+      prefix = g_strdup_printf ("%s-gallery-%" G_GSIZE_FORMAT "-input",
+                                common_prefix, result->gallery_position);
+      artifacts->input = goodix_debug_publish_artifact (
+        prefix, result->input_template, "goodix-milan-native-template");
+      g_clear_pointer (&prefix, g_free);
+      prefix = g_strdup_printf ("%s-gallery-%" G_GSIZE_FORMAT "-after-match",
+                                common_prefix, result->gallery_position);
+      artifacts->after_match = goodix_debug_publish_artifact (
+        prefix, result->after_match_template, "goodix-milan-native-template");
+      g_ptr_array_add (gallery_artifacts, artifacts);
+      g_clear_pointer (&prefix, g_free);
+    }
+
   fp_info ("diagnostic[%s] epoch=%" G_GUINT64_FORMAT
            " generation=%" G_GUINT64_FORMAT
            " stage=%u purpose=%u status=%u quality=%d coverage=%d "
@@ -460,21 +754,89 @@ goodix_debug_log_runtime_result (FpDevice                         *dev,
            output->cancellation.cancelled_gallery_position,
            output->error ? output->error->domain : 0,
            output->error ? output->error->code : 0,
-           output->learning_error ? output->learning_error->domain : 0,
-           output->learning_error ? output->learning_error->code : 0);
+            output->learning_error ? output->learning_error->domain : 0,
+            output->learning_error ? output->learning_error->code : 0);
+
+  runtime_cancelled = output->status == GOODIX_MILAN_RUNTIME_CANCELLED ||
+                      output->cancellation.cancelled_at !=
+                        GOODIX_MILAN_RUNTIME_CHECKPOINT_NONE;
   record = g_string_new (NULL);
+  g_string_append (record, "{\"action\":");
+  goodix_debug_json_string (record, action_name);
+  g_string_append_printf (record,
+                          ",\"action_epoch_u64\":%" G_GUINT64_FORMAT
+                          ",\"anti_fake_mode\":1,\"artifacts\":{"
+                          "\"final_candidate\":", output->action_epoch);
+  goodix_debug_json_artifact (record, final_candidate_artifact);
+  g_string_append (record, ",\"gallery\":[");
+  for (guint i = 0; i < gallery_artifacts->len; i++)
+    {
+      GoodixDebugGalleryArtifacts *artifacts =
+        g_ptr_array_index (gallery_artifacts, i);
+      GoodixMilanRuntimeGalleryResult *result =
+        g_ptr_array_index (output->gallery_results, i);
+
+      if (i)
+        g_string_append_c (record, ',');
+      g_string_append (record, "{\"after_match\":");
+      goodix_debug_json_artifact (record, artifacts->after_match);
+      g_string_append_printf (record,
+                              ",\"gallery_position_u64\":%"
+                              G_GSIZE_FORMAT ",\"input\":",
+                              result->gallery_position);
+      goodix_debug_json_artifact (record, artifacts->input);
+      g_string_append_c (record, '}');
+    }
+  g_string_append (record, "],\"live_raw\":");
+  goodix_debug_json_artifact (record, live_raw_artifact);
+  g_string_append (record, ",\"native_probe\":");
+  goodix_debug_json_artifact (record, native_probe_artifact);
+  g_string_append (record, ",\"processed_image\":");
+  goodix_debug_json_artifact (record, processed_image_artifact);
+  g_string_append (record, ",\"setup_tx_on\":");
+  goodix_debug_json_artifact (record, setup_tx_on_artifact);
+  g_string_append (record, "},\"boundary_policy\":\"canonical-zero-v1\","
+                           "\"build_id\":\"");
+  g_string_append (record,
+                   goodix_debug_build_id_marker +
+                     sizeof (GOODIX53X5_BUILD_ID_MARKER) - 1);
+  g_string_append (record, "\",\"cancellation\":{\"driver_observed\":");
+  g_string_append (record, driver_cancellation_observed ? "true" : "false");
+  g_string_append (record, ",\"runtime_checkpoint_u32\":");
+  if (runtime_cancelled)
+    g_string_append_printf (record, "%u",
+                            (guint) output->cancellation.cancelled_at);
+  else
+    g_string_append (record, "null");
+  g_string_append (record, ",\"runtime_gallery_position_u64\":");
+  if (runtime_cancelled &&
+      output->cancellation.cancelled_gallery_position != G_MAXSIZE)
+    g_string_append_printf (
+      record, "%" G_GSIZE_FORMAT,
+      output->cancellation.cancelled_gallery_position);
+  else
+    g_string_append (record, "null");
+  g_string_append (record, ",\"runtime_observed\":");
+  g_string_append (record, runtime_cancelled ? "true" : "false");
   g_string_append_printf (
     record,
-    "{\"action\":\"%s\",\"action_epoch_u64\":%" G_GUINT64_FORMAT
-    ",\"candidate_sha256\":%s%s%s,\"capture_session_id\":\"%s\","
-    "\"coverage_i32\":%d,"
-    "\"dac_high_u16\":%u,\"dac_low_u16\":%u,"
-    "\"evaluated_gallery_u32\":%u,\"gallery\":[",
-    action_name,
-    output->action_epoch, candidate_sha256 ? "\"" : "null",
-    candidate_sha256 ? candidate_sha256 : "", candidate_sha256 ? "\"" : "",
-    self->debug_capture_session_id,
-    output->coverage, output->dac_high, output->dac_low,
+    "},\"capture_session_id\":\"%s\",\"chronology_u64\":%"
+    G_GUINT64_FORMAT ",\"coverage_i32\":",
+    self->debug_capture_session_id, chronology);
+  if (output->preprocess_attempted)
+    g_string_append_printf (record, "%d", output->coverage);
+  else
+    g_string_append (record, "null");
+  g_string_append_printf (
+    record,
+    ",\"dac_high_u16\":%u,\"dac_low_u16\":%u,\"errors\":{"
+    "\"learning\":", output->dac_high, output->dac_low);
+  goodix_debug_json_error (record, output->learning_error);
+  g_string_append (record, ",\"runtime\":");
+  goodix_debug_json_error (record, output->error);
+  g_string_append_printf (
+    record,
+    "},\"evaluated_gallery_u32\":%u,\"gallery\":[",
     output->evaluated_gallery_count);
   for (guint i = 0; i < output->gallery_results->len; i++)
     {
@@ -483,111 +845,184 @@ goodix_debug_log_runtime_result (FpDevice                         *dev,
 
       if (i != 0)
         g_string_append_c (record, ',');
+      g_string_append (record, "{\"accepted\":");
+      g_string_append (record, result->evaluated
+                                 ? (result->accepted ? "true" : "false")
+                                 : "null");
+      g_string_append (record, ",\"after_match_sha256\":");
+      if (result->after_match_sha256[0])
+        goodix_debug_json_string (record, result->after_match_sha256);
+      else
+        g_string_append (record, "null");
       g_string_append_printf (
         record,
-        "{\"accepted\":%s,\"after_match_sha256\":%s%s%s,"
-        "\"evaluated\":%s,\"gallery_index_u32\":%u,"
+        ",\"evaluated\":%s,\"gallery_index_u32\":%u,"
         "\"gallery_position_u64\":%" G_GSIZE_FORMAT
-        ",\"input_template_sha256\":%s%s%s,"
-        "\"matched_feature_u64\":%" G_GSIZE_FORMAT
-        ",\"queue_counter_u32\":%u,\"queue_eligible_i32\":%d,"
-        "\"queue_occupied_after_u64\":%" G_GSIZE_FORMAT
-        ",\"queue_occupied_before_u64\":%" G_GSIZE_FORMAT
-        ",\"queue_state_u32\":%u,\"score_i32\":%d,\"valid\":%s}",
-        result->accepted ? "true" : "false",
-        result->after_match_sha256[0] ? "\"" : "null",
-        result->after_match_sha256,
-        result->after_match_sha256[0] ? "\"" : "",
+        ",\"input_template_sha256\":",
         result->evaluated ? "true" : "false", result->gallery_index,
-        result->gallery_position,
-        result->input_template_sha256[0] ? "\"" : "null",
-        result->input_template_sha256,
-        result->input_template_sha256[0] ? "\"" : "",
-        result->match_result.matched_feature_index,
-        result->queue_counter_before_match,
-        result->match_result.study_control.queue_candidate_eligible,
-        result->queue_occupied_after_match,
-        result->queue_occupied_before_match,
-        result->queue_state_before_match, result->score,
-        result->valid ? "true" : "false");
+        result->gallery_position);
+      if (result->input_template_sha256[0])
+        goodix_debug_json_string (record, result->input_template_sha256);
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"lifecycle_update_feature_mask_u64\":");
+      if (result->evaluated)
+        g_string_append_printf (
+          record, "%" G_GUINT64_FORMAT,
+          result->match_result.lifecycle_update_feature_mask);
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"matched_feature_u64\":");
+      if (result->evaluated)
+        g_string_append_printf (record, "%" G_GSIZE_FORMAT,
+                                result->match_result.matched_feature_index);
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"queue_counter_after_study_u32\":");
+      if (result->queue_after_study_observed)
+        g_string_append_printf (record, "%u",
+                                result->queue_counter_after_study);
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"queue_counter_before_match_u32\":");
+      if (result->queue_before_match_observed)
+        g_string_append_printf (record, "%u",
+                                result->queue_counter_before_match);
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"queue_eligible_i32\":");
+      if (result->evaluated)
+        g_string_append_printf (
+          record, "%d",
+          result->match_result.study_control.queue_candidate_eligible);
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"queue_occupied_after_match_u64\":");
+      if (result->queue_after_match_observed)
+        g_string_append_printf (record, "%" G_GSIZE_FORMAT,
+                                result->queue_occupied_after_match);
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"queue_occupied_after_study_u64\":");
+      if (result->queue_after_study_observed)
+        g_string_append_printf (record, "%" G_GSIZE_FORMAT,
+                                result->queue_occupied_after_study);
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"queue_occupied_before_match_u64\":");
+      if (result->queue_before_match_observed)
+        g_string_append_printf (record, "%" G_GSIZE_FORMAT,
+                                result->queue_occupied_before_match);
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"queue_state_after_study_u32\":");
+      if (result->queue_after_study_observed)
+        g_string_append_printf (record, "%u", result->queue_state_after_study);
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"queue_state_before_match_u32\":");
+      if (result->queue_before_match_observed)
+        g_string_append_printf (record, "%u", result->queue_state_before_match);
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"score_i32\":");
+      if (result->evaluated)
+        g_string_append_printf (record, "%d", result->score);
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"valid\":");
+      if (result->validation_observed)
+        g_string_append (record, result->valid ? "true" : "false");
+      else
+        g_string_append (record, "null");
+      g_string_append (record, ",\"validation_error\":");
+      goodix_debug_json_error (record, result->validation_error);
+      g_string_append_c (record, '}');
     }
   g_string_append_printf (
     record,
     "],\"generation_id_u64\":%" G_GUINT64_FORMAT
     ",\"generation_use_index_u64\":%" G_GUINT64_FORMAT
-    ",\"live_raw_sha256\":%s%s%s,"
-    "\"partition0_count_u32\":%u,\"partition1_count_u32\":%u,"
-    "\"probe_record_count_u32\":%u,\"probe_sha256\":%s%s%s,"
-    "\"processed_image_sha256\":%s%s%s,"
-    "\"profile_u16\":%u,\"purpose_u32\":%u,\"quality_i32\":%d,"
-    "\"schema\":\"goodix53x5-runtime-debug/v2\",\"score_i32\":%d,"
-    "\"sensor_subtype_u16\":%u,\"setup_txon_sha256\":%s%s%s,"
-    "\"stage_u32\":%u,\"status_u32\":%u,"
-    "\"study_action_u32\":%u,\"tcode_u16\":%u,"
-    "\"winner_index_u32\":%u,\"winner_position_u64\":%" G_GSIZE_FORMAT "}\n",
-    output->generation_id,
-    metadata->generation_use_index,
-    "\"", metadata->live_raw_sha256, "\"",
-    output->probe_partition0_count,
-    output->probe_partition1_count, output->probe_record_count,
-    probe_sha256 ? "\"" : "null",
-    probe_sha256 ? probe_sha256 : "", probe_sha256 ? "\"" : "",
-    processed_image_sha256 ? "\"" : "null",
-    processed_image_sha256 ? processed_image_sha256 : "",
-    processed_image_sha256 ? "\"" : "",
-    output->profile, (guint) output->purpose, output->quality, output->score,
-    output->sensor_subtype,
-    "\"", metadata->setup_txon_sha256, "\"",
-    stage, (guint) output->status,
-    (guint) output->study_action, output->tcode, output->winner_index,
-    output->winner_position);
+    ",\"invalid_gallery_u32\":%u,\"lifecycle\":{"
+    "\"extraction\":{\"attempted\":%s,\"completed\":%s},"
+    "\"preprocess\":{\"attempted\":%s,\"completed\":%s},"
+    "\"study\":{\"attempted\":%s,\"completed\":%s}},"
+    "\"operation_id\":",
+    output->generation_id, metadata->generation_use_index,
+    output->invalid_gallery_count,
+    output->extraction_attempted ? "true" : "false",
+    output->extraction_completed ? "true" : "false",
+    output->preprocess_attempted ? "true" : "false",
+    output->preprocess_completed ? "true" : "false",
+    output->study_attempted ? "true" : "false",
+    output->study_completed ? "true" : "false");
+  goodix_debug_json_string (record, operation_id);
+  g_string_append_printf (
+    record,
+    ",\"partition0_count_u32\":%u,\"partition1_count_u32\":%u,"
+    "\"preprocess_status_i32\":",
+    output->probe_partition0_count, output->probe_partition1_count);
+  if (output->preprocess_status_available)
+    g_string_append_printf (record, "%d", output->preprocess_status);
+  else
+    g_string_append (record, "null");
+  g_string_append_printf (
+    record,
+    ",\"print_schema\":4,\"probe_record_count_u32\":%u,\"profile_u16\":9,"
+    "\"purpose_u32\":%u,"
+    "\"quality_i32\":",
+    output->probe_record_count, (guint) output->purpose);
+  if (output->preprocess_attempted)
+    g_string_append_printf (record, "%d", output->quality);
+  else
+    g_string_append (record, "null");
+  g_string_append_printf (
+    record,
+    ",\"schema\":\"goodix53x5-runtime-debug/v3\",\"score_i32\":");
+  if (output->evaluated_gallery_count > 0)
+    g_string_append_printf (record, "%d", output->score);
+  else
+    g_string_append (record, "null");
+  g_string_append_printf (
+    record,
+    ",\"sensor_subtype_u16\":12,\"stage_u32\":%u,\"status_u32\":%u,"
+    "\"study_action_u32\":",
+    stage, (guint) output->status);
+  if (output->study_attempted)
+    g_string_append_printf (record, "%u", (guint) output->study_action);
+  else
+    g_string_append (record, "null");
+  g_string_append_printf (
+    record,
+    ",\"tcode_u16\":%u,\"valid_gallery_u32\":%u,"
+    "\"winner_index_u32\":",
+    output->tcode, output->valid_gallery_count);
+  if (output->winner_position != G_MAXSIZE)
+    g_string_append_printf (record, "%u", output->winner_index);
+  else
+    g_string_append (record, "null");
+  g_string_append (record, ",\"winner_position_u64\":");
+  if (output->winner_position != G_MAXSIZE)
+    g_string_append_printf (record, "%" G_GSIZE_FORMAT,
+                            output->winner_position);
+  else
+    g_string_append (record, "null");
+  g_string_append (record, "}\n");
   prefix = g_strdup_printf (
-    "runtime-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT "-%u",
-    action_name,
-    output->action_epoch, output->generation_id, stage);
+    "runtime-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT "-%u-%"
+    G_GUINT64_FORMAT,
+    action_name, output->action_epoch, output->generation_id, stage,
+    chronology);
   record_len = record->len;
   record_data = g_string_free (g_steal_pointer (&record), FALSE);
   bytes = g_byte_array_new_take ((guint8 *) record_data, record_len);
-  goodix_debug_write_dump (
-    prefix, goodix_crypto_crc32_mpeg2 (bytes->data, bytes->len), bytes, "json");
-  if (dump_templates)
-    {
-      g_autofree gchar *template_prefix = NULL;
-
-      template_prefix = g_strdup_printf (
-        "template-probe-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT "-%u",
-        action_name,
-        output->action_epoch, output->generation_id, stage);
-      goodix_debug_write_gbytes (template_prefix, output->probe_template, "bin");
-      g_clear_pointer (&template_prefix, g_free);
-      template_prefix = g_strdup_printf (
-        "template-final-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT "-%u",
-        action_name,
-        output->action_epoch, output->generation_id, stage);
-      goodix_debug_write_gbytes (template_prefix, output->final_candidate, "bin");
-      for (guint i = 0; i < output->gallery_results->len; i++)
-        {
-          GoodixMilanRuntimeGalleryResult *result =
-            g_ptr_array_index (output->gallery_results, i);
-
-          g_clear_pointer (&template_prefix, g_free);
-          template_prefix = g_strdup_printf (
-            "template-input-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT
-            "-%u-%" G_GSIZE_FORMAT,
-            action_name,
-            output->action_epoch, output->generation_id, stage,
-            result->gallery_position);
-          goodix_debug_write_gbytes (
-            template_prefix, result->input_template, "bin");
-          g_clear_pointer (&template_prefix, g_free);
-          template_prefix = g_strdup_printf (
-            "template-after-match-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT
-            "-%u-%" G_GSIZE_FORMAT,
-            action_name,
-            output->action_epoch, output->generation_id, stage,
-            result->gallery_position);
-          goodix_debug_write_gbytes (
-            template_prefix, result->after_match_template, "bin");
-        }
-    }
+  if (goodix_debug_write_dump (
+        prefix, goodix_crypto_crc32_mpeg2 (bytes->data, bytes->len), bytes,
+        "json"))
+    self->debug_chronology = chronology;
+  goodix_debug_artifact_free (final_candidate_artifact);
+  goodix_debug_artifact_free (live_raw_artifact);
+  goodix_debug_artifact_free (native_probe_artifact);
+  goodix_debug_artifact_free (processed_image_artifact);
+  goodix_debug_artifact_free (setup_tx_on_artifact);
 }

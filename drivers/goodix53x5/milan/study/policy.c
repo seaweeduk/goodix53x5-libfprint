@@ -13,20 +13,82 @@
 #include <limits.h>
 #include <string.h>
 
+static inline int32_t
+study_policy_u32_as_s32 (uint32_t value)
+{
+  if (value <= INT32_MAX)
+    return (int32_t) value;
+  return -1 - (int32_t) (UINT32_MAX - value);
+}
+
+static inline int32_t
+study_policy_wrap_add (int32_t left,
+                       int32_t right)
+{
+  return study_policy_u32_as_s32 ((uint32_t) left + (uint32_t) right);
+}
+
+static inline int32_t
+study_policy_wrap_subtract (int32_t left,
+                            int32_t right)
+{
+  return study_policy_u32_as_s32 ((uint32_t) left - (uint32_t) right);
+}
+
+static inline int32_t
+study_policy_wrap_multiply (int32_t left,
+                            int32_t right)
+{
+  return study_policy_u32_as_s32 ((uint32_t) left * (uint32_t) right);
+}
+
+static inline int32_t
+study_policy_wrap_shift_left (int32_t value,
+                              unsigned int shift)
+{
+  return study_policy_u32_as_s32 ((uint32_t) value << shift);
+}
+
+static inline int32_t
+study_policy_footprint_bound (int32_t dimension)
+{
+  return study_policy_wrap_subtract (
+    study_policy_wrap_shift_left (dimension, 8), 0x100);
+}
+
+static inline int32_t
+study_policy_transform_coordinate (int32_t first_coefficient,
+                                   int32_t first_coordinate,
+                                   int32_t second_coefficient,
+                                   int32_t second_coordinate,
+                                   int32_t offset)
+{
+  return study_policy_wrap_add (
+    study_policy_wrap_add (
+      study_policy_wrap_multiply (first_coefficient, first_coordinate),
+      study_policy_wrap_multiply (second_coefficient, second_coordinate)),
+    offset);
+}
+
+static inline int32_t
+study_policy_percent_from_area (int32_t area)
+{
+  return study_policy_wrap_multiply (area, 100) /
+         GOODIX_MILAN_STUDY_MASK_SIZE;
+}
+
 static inline int
 goodix_milan_study_policy_feature_better (
   const GoodixMilanStudyPolicyFeature *candidate,
-  size_t                               candidate_index,
-  const GoodixMilanStudyPolicyFeature *selected,
-  size_t                               selected_index)
+  int32_t                               best_residual,
+  int32_t                               best_coverage,
+  int32_t                               best_overlap_count)
 {
-  return !selected || candidate->residual < selected->residual ||
-         (candidate->residual == selected->residual &&
-          (candidate->coverage < selected->coverage ||
-           (candidate->coverage == selected->coverage &&
-            (candidate->overlap_count > selected->overlap_count ||
-             (candidate->overlap_count == selected->overlap_count &&
-              candidate_index < selected_index)))));
+  return candidate->residual < best_residual ||
+         (candidate->residual == best_residual &&
+          (candidate->coverage < best_coverage ||
+           (candidate->coverage == best_coverage &&
+            candidate->overlap_count > best_overlap_count)));
 }
 
 int
@@ -36,6 +98,9 @@ goodix_milan_study_policy_select (const GoodixMilanStudyPolicyInput *input,
   const GoodixMilanStudyPolicyFeature *matched;
   const GoodixMilanStudyPolicyFeature *selected = NULL;
   size_t selected_index = SIZE_MAX;
+  int32_t best_residual = 0xfffff;
+  int32_t best_coverage = 0xfffff;
+  int32_t best_overlap_count = 0;
 
   if (!input || !result || input->feature_count == 0 ||
       input->feature_count > GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY ||
@@ -63,7 +128,8 @@ goodix_milan_study_policy_select (const GoodixMilanStudyPolicyInput *input,
 
   matched = &input->features[input->matched_feature_index];
   if (matched->quality >= 60 &&
-      (int64_t) input->probe_quality * 10 <= (int64_t) matched->quality * 6)
+      study_policy_wrap_multiply (input->probe_quality, 10) <=
+        study_policy_wrap_multiply (matched->quality, 6))
     return 0;
 
   if (matched->residual == 0)
@@ -80,10 +146,14 @@ goodix_milan_study_policy_select (const GoodixMilanStudyPolicyInput *input,
           if (candidate->active == 0 || i == input->reference_feature_index)
             continue;
           if (goodix_milan_study_policy_feature_better (
-                candidate, i, selected, selected_index))
+                candidate, best_residual, best_coverage,
+                best_overlap_count))
             {
               selected = candidate;
               selected_index = i;
+              best_residual = candidate->residual;
+              best_coverage = candidate->coverage;
+              best_overlap_count = candidate->overlap_count;
             }
         }
       if (selected && input->retained_flag != 0)
@@ -91,7 +161,7 @@ goodix_milan_study_policy_select (const GoodixMilanStudyPolicyInput *input,
           int32_t adjusted = selected->uncovered_probe_residual;
 
           if (input->template_counter > 700)
-            adjusted += 20;
+            adjusted = study_policy_wrap_add (adjusted, 20);
           if (adjusted < selected->residual)
             {
               selected = NULL;
@@ -117,36 +187,48 @@ goodix_milan_study_policy_select (const GoodixMilanStudyPolicyInput *input,
     result->primary_candidate = 1;
   else if (input->retained_flag == 0)
     {
-      if ((int64_t) input->primary_transform_area * 100 <=
-          (int64_t) GOODIX_MILAN_STUDY_MASK_SIZE * 80)
+      int32_t scaled_area = study_policy_wrap_multiply (
+        input->primary_transform_area, 100);
+      int32_t threshold = study_policy_wrap_multiply (
+        study_policy_wrap_multiply (104, 88), 80);
+
+      if (scaled_area <= threshold)
         return 0;
       selected = matched;
       selected_index = input->matched_feature_index;
     }
   else
     {
-      int32_t best_percent = INT32_MIN;
+      int32_t best_area = INT32_MIN;
 
       for (size_t i = 0; i < input->feature_count; i++)
         if (input->features[i].active != 0 && input->features[i].state != 5 &&
-            input->features[i].geometric_overlap_percent > best_percent)
+            input->features[i].geometric_overlap_area > best_area)
           {
             selected = &input->features[i];
             selected_index = i;
-            best_percent = selected->geometric_overlap_percent;
+            best_area = selected->geometric_overlap_area;
           }
+      int32_t best_percent = selected
+                               ? study_policy_percent_from_area (
+                                   selected->geometric_overlap_area)
+                               : 0;
       if (!selected ||
           (best_percent < 80 &&
            (best_percent < 60 || input->template_counter <= 1000)))
         return 0;
-      result->action = GOODIX_MILAN_STUDY_ACTION_GEOMETRIC;
-      result->selected_feature_index = selected_index;
-      return 0;
+      if (input->retained_flag == 1)
+        {
+          result->action = GOODIX_MILAN_STUDY_ACTION_GEOMETRIC;
+          result->selected_feature_index = selected_index;
+          return 0;
+        }
     }
 
-  if (input->retained_flag == 0)
+  if (input->retained_flag != 1)
     {
-      if (input->probe_coverage < matched->coverage - 10)
+      if (input->probe_coverage <
+          study_policy_wrap_subtract (matched->coverage, 10))
         return 0;
       result->action = GOODIX_MILAN_STUDY_ACTION_REPLACE_NO_RELATION;
     }
@@ -180,21 +262,23 @@ goodix_milan_study_policy_remove_footprint (
   const int32_t transform[6])
 {
   int32_t removed = 0;
+  const int32_t max_x = study_policy_footprint_bound (52);
+  const int32_t max_y = study_policy_footprint_bound (44);
 
   for (int32_t y = 0; y < 44; y++)
     for (int32_t x = 0; x < 52; x++)
       {
         size_t index = (size_t) y * 52 + (size_t) x;
-        int64_t mapped_x = (int64_t) transform[0] * x +
-                           (int64_t) transform[1] * y + transform[2];
-        int64_t mapped_y = (int64_t) transform[3] * x +
-                           (int64_t) transform[4] * y + transform[5];
+        int32_t mapped_x = study_policy_transform_coordinate (
+          transform[0], x, transform[1], y, transform[2]);
+        int32_t mapped_y = study_policy_transform_coordinate (
+          transform[3], x, transform[4], y, transform[5]);
 
-        if (mask[index] != 0 && mapped_x >= 0 && mapped_x <= 51 * 0x100 &&
-            mapped_y >= 0 && mapped_y <= 43 * 0x100)
+        if (mask[index] != 0 && mapped_x >= 0 && mapped_x <= max_x &&
+            mapped_y >= 0 && mapped_y <= max_y)
           {
             mask[index] = 0;
-            removed++;
+            removed = study_policy_wrap_add (removed, 1);
           }
       }
   return removed;
@@ -210,8 +294,30 @@ goodix_milan_study_policy_footprint_area (const int32_t transform[6])
 }
 
 int32_t
+goodix_milan_study_policy_full_footprint_area (const int32_t transform[6])
+{
+  int32_t area = 0;
+  const int32_t max_x = study_policy_footprint_bound (104);
+  const int32_t max_y = study_policy_footprint_bound (88);
+
+  for (int32_t y = 0; y < 88; y++)
+    for (int32_t x = 0; x < 104; x++)
+      {
+        int32_t mapped_x = study_policy_transform_coordinate (
+          transform[0], x, transform[1], y, transform[2]);
+        int32_t mapped_y = study_policy_transform_coordinate (
+          transform[3], x, transform[4], y, transform[5]);
+
+        area = study_policy_wrap_add (
+          area, mapped_x >= 0 && mapped_x <= max_x &&
+                  mapped_y >= 0 && mapped_y <= max_y);
+      }
+  return area;
+}
+
+int32_t
 goodix_milan_study_policy_footprint_percent (const int32_t transform[6])
 {
-  return goodix_milan_study_policy_footprint_area (transform) * 100 /
-         GOODIX_MILAN_STUDY_MASK_SIZE;
+  return study_policy_percent_from_area (
+    goodix_milan_study_policy_footprint_area (transform));
 }

@@ -27,15 +27,15 @@
 #define PIXELS GOODIX_MILAN_SENSOR_PIXELS
 
 static const char accepted_preprocess_sha256[] =
-  "35645cfcc5edb705c8a225717f907987c1d90ec1a7d48b09ee378845a906a696";
+  "3d70fb014ec834a23c51e6838ac56b0aec9683152be93e175d4db73aebb3475c";
 static const char post_render_retry_sha256[] =
   "8b9629cb2aa7bf3d44a13c9ab087b961e02adf29644c237032597bf24401d943";
 static const char feature_extraction_sha256[] =
-  "ab009fd4dd0360b0998550a874364379b145b006c9b1b1c8a2cef57083372190";
+  "5c4a2989778d3ce15ffc7f928544a1fa3a84feb8279e5928b51ca014400ed6a3";
 static const char feature_template_sha256[] =
-  "2613b09571d11ce4ed7567535a220ddb5eb17d5059c7dff8bfc97e6e5af28cdd";
+  "c18597eb4204464f53cd6cbb311f85b577fbcdb6b18a16e11e37a0f79b7c1c3e";
 static const char feature_antifake_sha256[] =
-  "2ec6a813e8a6b355693645aac1e60da4cc717bcdf57c3dbb5d12d7021b0e7572";
+  "5b2763131c54a5bfbeea4409278eaa7a6f23fd019cdc00f63c5fb35596ff74dc";
 
 static gchar *
 sha256 (const void *data,
@@ -90,6 +90,11 @@ generate_feature_frames (uint16_t *setup,
         delta = wrapped < 40 ? 300 : 1200;
         if (first_cut < 36 || second_cut < 49)
           delta = 1200;
+        /* Avoid an all-sharp synthetic score distribution. */
+        if (ABS (row - 44) <= 4 && ABS (column - 54) <= 4)
+          setup[index] = (uint16_t) (
+            baseline - delta + 800 +
+            (4 - MAX (ABS (row - 44), ABS (column - 54))) * 80);
         live[index] = (uint16_t) (baseline - delta);
       }
 }
@@ -157,7 +162,7 @@ test_preprocess_accepted (void)
     state->profile9_class_counts.profile9_class3_count,
     state->primary_contrast_valid, digest);
 
-  g_assert_cmpint (status, ==, 0);
+  g_assert_cmpint (status, ==, GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION);
   g_assert_cmpint (quality, ==, 0);
   g_assert_cmpint (coverage, ==, 0);
   g_assert_cmpint (state->selected_refined, ==, 0);
@@ -521,8 +526,11 @@ test_study_policy_actions (void)
           input.features[feature].coverage = 80;
           input.features[feature].residual = 20;
           input.features[feature].uncovered_probe_residual = 0;
+          input.features[feature].geometric_overlap_area =
+            feature == 2 ? 1945 : 1602;
           input.features[feature].geometric_overlap_percent =
-            feature == 2 ? 85 : 70;
+            input.features[feature].geometric_overlap_area * 100 /
+            GOODIX_MILAN_STUDY_MASK_SIZE;
         }
       input.features[input.matched_feature_index].residual =
         cases[i].matched_residual;
@@ -990,7 +998,7 @@ test_generated_production_replay (void)
                          &after_match, match_queue), ==,
                        GOODIX_SIGFM_TEMPLATE_OK);
       g_assert_nonnull (after_match);
-      g_assert_cmpint (result.score, ==, -4);
+      g_assert_cmpint (result.score, ==, 0);
       g_assert_cmpuint (result.matched_feature_index, ==, SIZE_MAX);
       for (size_t i = 0; i < G_N_ELEMENTS (result.match_transform); i++)
         g_assert_cmpint (result.match_transform[i],

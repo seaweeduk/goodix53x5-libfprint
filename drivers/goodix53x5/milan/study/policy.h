@@ -35,6 +35,7 @@ typedef struct
   int32_t residual;
   int32_t overlap_count;
   int32_t uncovered_probe_residual;
+  int32_t geometric_overlap_area;
   int32_t geometric_overlap_percent;
 } GoodixMilanStudyPolicyFeature;
 
@@ -78,6 +79,9 @@ goodix_milan_study_policy_remove_footprint (
 
 int32_t
 goodix_milan_study_policy_footprint_area (const int32_t transform[6]);
+
+int32_t
+goodix_milan_study_policy_full_footprint_area (const int32_t transform[6]);
 
 int32_t
 goodix_milan_study_policy_footprint_percent (const int32_t transform[6]);

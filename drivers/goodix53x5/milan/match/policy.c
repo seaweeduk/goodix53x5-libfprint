@@ -339,8 +339,9 @@ first_veto_type12 (const int32_t metrics[77],
                      (filtered > 17 || combined > 402 || geometry > 30) &&
                      (filtered > 13 || combined > 415 || geometry > 12))) &&
     (primary > 8 || filtered > 16 || combined > 402 || geometry > 18) &&
-    (primary > 10 || filtered > 16 || detail > 210 || geometry > 16 ||
-                     overlap > 229 || combined > 410 || coverage < 110) &&
+    (primary > 10 || filtered > 16 ||
+                     ((detail > 210 || geometry > 16) &&
+                      (overlap > 229 || combined > 410 || coverage < 110))) &&
     (primary > 12 || ((filtered > 17 || combined > 405 || geometry > 22) &&
                       (filtered > 22 || combined > 370 || geometry > 30 || overlap > 215))) &&
     (primary > 7 || filtered > 14 || detail > 208 || low_detail > 202 || geometry > 18) &&
@@ -1042,10 +1043,16 @@ decode_packed_c7 (int32_t  packed_c7,
 void
 goodix_milan_matcher_late_context_init (
   GoodixMilanMatcherLateContext *context,
-  int32_t                        packed_probe_c7)
+  int32_t                        packed_probe_c7,
+  int32_t                        probe_primary_histogram_class)
 {
   decode_packed_c7 (packed_probe_c7, &context->probe_low_class,
                     &context->accumulated_high_class);
+  /* Object-aware production paths provide the independent histogram class;
+   * raw legacy APIs fall back to the decoded packed-c7 low class. */
+  context->probe_primary_histogram_class =
+    probe_primary_histogram_class < 0
+      ? context->probe_low_class : probe_primary_histogram_class;
 }
 
 void
@@ -1060,7 +1067,7 @@ goodix_milan_matcher_late_context_derive (
   decode_packed_c7 (packed_feature_c7, &feature_low_class,
                     &feature_high_class);
   state[0] = context->accumulated_high_class;
-  state[1] = context->probe_low_class;
+  state[1] = context->probe_primary_histogram_class;
   state[2] = context->accumulated_high_class + feature_high_class;
   if (state[2] > 5)
     state[2] = 5;

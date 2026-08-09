@@ -42,9 +42,11 @@ typedef struct
 static void
 goodix_auth_log_runtime_result (FpDevice                       *dev,
                                 GoodixAuthTaskData              *data,
-                                const GoodixMilanRuntimeOutput *output)
+                                const GoodixMilanRuntimeOutput *output,
+                                gboolean driver_cancellation_observed)
 {
-  goodix_debug_log_runtime_result (dev, 0, &data->debug_metadata, output);
+  goodix_debug_log_runtime_result (dev, 0, &data->debug_metadata, output,
+                                   driver_cancellation_observed);
 }
 #else
 #define goodix_auth_log_runtime_result(...) G_STMT_START { } G_STMT_END
@@ -63,6 +65,8 @@ goodix_auth_task_data_free (GoodixAuthTaskData *data)
   if (!data)
     return;
   goodix_milan_runtime_input_free (data->runtime_input);
+  GOODIX53X5_DEBUG_ONLY (
+    goodix_debug_clear_runtime_metadata (&data->debug_metadata);)
   g_clear_pointer (&data->originals, g_ptr_array_unref);
   g_free (data);
 }
@@ -74,7 +78,8 @@ goodix_clear_pending_result_report (FpiDeviceGoodix53x5 *self)
   self->pending_result_action = 0;
   self->pending_verify_result = 0;
   g_clear_object (&self->pending_identify_match);
-  self->pending_updated = FALSE;
+  g_clear_object (&self->pending_update_target);
+  g_clear_pointer (&self->pending_update_data, g_variant_unref);
   g_clear_error (&self->pending_result_error);
   g_clear_error (&self->pending_learning_error);
 }
@@ -82,21 +87,18 @@ goodix_clear_pending_result_report (FpiDeviceGoodix53x5 *self)
 static void
 goodix_queue_verify_report (FpiDeviceGoodix53x5 *self,
                              FpiMatchResult       result,
-                             gboolean             updated,
                              GError              *error)
 {
   goodix_clear_pending_result_report (self);
   self->pending_result_report = TRUE;
   self->pending_result_action = FPI_DEVICE_ACTION_VERIFY;
   self->pending_verify_result = result;
-  self->pending_updated = updated;
   self->pending_result_error = error;
 }
 
 static void
 goodix_queue_identify_report (FpiDeviceGoodix53x5 *self,
                                FpPrint             *match,
-                               gboolean             updated,
                                GError              *error)
 {
   goodix_clear_pending_result_report (self);
@@ -104,7 +106,6 @@ goodix_queue_identify_report (FpiDeviceGoodix53x5 *self,
   self->pending_result_action = FPI_DEVICE_ACTION_IDENTIFY;
   if (match)
     self->pending_identify_match = g_object_ref (match);
-  self->pending_updated = updated;
   self->pending_result_error = error;
 }
 
@@ -133,6 +134,8 @@ goodix_flush_pending_result_report (FpDevice *dev)
   self->pending_result_action = 0;
   self->pending_verify_result = 0;
   g_clear_object (&self->pending_identify_match);
+  g_clear_object (&self->pending_update_target);
+  g_clear_pointer (&self->pending_update_data, g_variant_unref);
   g_clear_error (&self->pending_learning_error);
 }
 
@@ -181,24 +184,22 @@ goodix_auth_worker (GTask        *task,
                          (GDestroyNotify) goodix_milan_runtime_output_free);
 }
 
-static gboolean
-goodix_auth_build_update (FpPrint                 *original,
-                           GoodixMilanRuntimeOutput *output)
+static GVariant *
+goodix_auth_build_update (GoodixMilanRuntimeOutput *output)
 {
   g_autoptr(GError) error = NULL;
   g_autoptr(GVariant) data = NULL;
 
   if (!output->final_candidate)
-    return FALSE;
+    return NULL;
   data = goodix_milan_print_build_data (output->final_candidate, &error);
   if (!data)
     {
       if (!output->learning_error)
         output->learning_error = g_steal_pointer (&error);
-      return FALSE;
+      return NULL;
     }
-  fpi_print_set_raw_data (original, data);
-  return TRUE;
+  return g_steal_pointer (&data);
 }
 
 #ifdef GOODIX53X5_DEBUG
@@ -255,7 +256,7 @@ goodix_auth_task_done (GObject      *source_object,
   if (!action_owned)
     {
       if (output)
-        goodix_auth_log_runtime_result (dev, data, output);
+        goodix_auth_log_runtime_result (dev, data, output, FALSE);
       goodix_milan_runtime_output_free (output);
       g_clear_pointer (&self->captured_raw_image, g_free);
       if (task_owned && self->profile9_fdt.owner)
@@ -264,10 +265,21 @@ goodix_auth_task_done (GObject      *source_object,
       return;
     }
 
+  if (generation_current && output &&
+      output->action_epoch == data->action_epoch &&
+      output->generation_id == data->generation_id &&
+      output->preprocess_state_valid)
+    {
+      self->milan_generation->state = output->preprocess_state;
+      self->milan_generation->profile_state = output->profile_state;
+      if (data->action == FPI_DEVICE_ACTION_IDENTIFY)
+        goodix_milan_generation_note_identify_prelude (self->milan_generation);
+    }
+
   if (cancelled)
     {
       if (output)
-        goodix_auth_log_runtime_result (dev, data, output);
+        goodix_auth_log_runtime_result (dev, data, output, TRUE);
       goodix_milan_runtime_output_free (output);
       g_clear_pointer (&self->captured_raw_image, g_free);
       goodix_scan_set_disposition (dev, GOODIX_SCAN_DISPOSITION_CANCELLED,
@@ -290,14 +302,6 @@ goodix_auth_task_done (GObject      *source_object,
       return;
     }
 
-  if (generation_current && output->preprocess_state_valid)
-    {
-      self->milan_generation->state = output->preprocess_state;
-      self->milan_generation->profile_state = output->profile_state;
-      if (data->action == FPI_DEVICE_ACTION_IDENTIFY)
-        goodix_milan_generation_note_identify_prelude (self->milan_generation);
-    }
-
   GOODIX53X5_DEBUG_ONLY (goodix_auth_set_processed_image (self, output);)
   switch (output->status)
     {
@@ -307,7 +311,7 @@ goodix_auth_task_done (GObject      *source_object,
                               ? g_ptr_array_index (data->originals,
                                                    output->winner_index)
                               : NULL;
-        gboolean updated = FALSE;
+        g_autoptr(GVariant) update_data = NULL;
 
         if (!original)
           {
@@ -316,20 +320,25 @@ goodix_auth_task_done (GObject      *source_object,
               fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
             goto out;
           }
-        updated = goodix_auth_build_update (original, output);
+        update_data = goodix_auth_build_update (output);
         if (data->action == FPI_DEVICE_ACTION_IDENTIFY)
           {
             goodix_debug_dump_probe (data->action, "match",
                                      self->captured_raw_image,
                                      self->captured_image);
-            goodix_queue_identify_report (self, original, updated, NULL);
+            goodix_queue_identify_report (self, original, NULL);
           }
         else
           {
             goodix_debug_dump_probe (data->action, "pass",
                                      self->captured_raw_image,
                                      self->captured_image);
-            goodix_queue_verify_report (self, FPI_MATCH_SUCCESS, updated, NULL);
+            goodix_queue_verify_report (self, FPI_MATCH_SUCCESS, NULL);
+          }
+        if (update_data)
+          {
+            self->pending_update_target = g_object_ref (original);
+            self->pending_update_data = g_steal_pointer (&update_data);
           }
         if (output->learning_error)
           self->pending_learning_error = g_error_copy (output->learning_error);
@@ -344,14 +353,14 @@ goodix_auth_task_done (GObject      *source_object,
           goodix_debug_dump_probe (data->action, "miss",
                                    self->captured_raw_image,
                                    self->captured_image);
-          goodix_queue_identify_report (self, NULL, FALSE, NULL);
+          goodix_queue_identify_report (self, NULL, NULL);
         }
       else
         {
           goodix_debug_dump_probe (data->action, "fail",
                                    self->captured_raw_image,
                                    self->captured_image);
-          goodix_queue_verify_report (self, FPI_MATCH_FAIL, FALSE, NULL);
+          goodix_queue_verify_report (self, FPI_MATCH_FAIL, NULL);
         }
       goodix_scan_set_disposition (
         dev, GOODIX_SCAN_DISPOSITION_AUTH_RETRY_AFTER_UP, NULL);
@@ -363,11 +372,11 @@ goodix_auth_task_done (GObject      *source_object,
                                self->captured_image);
       if (data->action == FPI_DEVICE_ACTION_IDENTIFY)
         goodix_queue_identify_report (
-          self, NULL, FALSE,
+          self, NULL,
           fpi_device_retry_new (FP_DEVICE_RETRY_REMOVE_FINGER));
       else
         goodix_queue_verify_report (
-          self, FPI_MATCH_ERROR, FALSE,
+          self, FPI_MATCH_ERROR,
           fpi_device_retry_new (FP_DEVICE_RETRY_REMOVE_FINGER));
       goodix_scan_set_disposition (
         dev, GOODIX_SCAN_DISPOSITION_AUTH_RETRY_AFTER_UP, NULL);
@@ -387,7 +396,7 @@ goodix_auth_task_done (GObject      *source_object,
           data->action == FPI_DEVICE_ACTION_IDENTIFY ? "identify" : "verify",
           output->score, output->winner_index, output->study_action,
           output->quality, output->coverage);
-  goodix_auth_log_runtime_result (dev, data, output);
+  goodix_auth_log_runtime_result (dev, data, output, FALSE);
 out:
   goodix_milan_runtime_output_free (output);
 #ifdef GOODIX53X5_DEBUG
@@ -568,14 +577,17 @@ goodix_verify_ssm_done (FpiSsm   *ssm,
           "Native Milan auth completed without a result");
       else
         {
-          updated = self->pending_updated;
+          if (self->pending_update_target && self->pending_update_data)
+            {
+              fpi_print_set_raw_data (self->pending_update_target,
+                                      self->pending_update_data);
+              updated = TRUE;
+            }
           goodix_flush_pending_result_report (dev);
         }
     }
   if (error)
     goodix_clear_pending_result_report (self);
-
-  self->pending_updated = FALSE;
 
   if (error && goodix_error_indicates_stale_device (error))
     self->needs_reinit = TRUE;

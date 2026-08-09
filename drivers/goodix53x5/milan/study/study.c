@@ -21,6 +21,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+static inline int32_t
+milan_study_u32_as_s32 (uint32_t value)
+{
+  if (value <= INT32_MAX)
+    return (int32_t) value;
+  return -1 - (int32_t) (UINT32_MAX - value);
+}
+
+static inline int32_t
+milan_study_wrap_increment (int32_t value)
+{
+  return milan_study_u32_as_s32 ((uint32_t) value + 1U);
+}
+
+static inline int32_t
+milan_study_wrap_decrement (int32_t value)
+{
+  return milan_study_u32_as_s32 ((uint32_t) value - 1U);
+}
+
 int
 goodix_milan_study_order_key_greater (const GoodixMilanStudyOrderKey *left,
                                       const GoodixMilanStudyOrderKey *right)
@@ -405,6 +425,7 @@ goodix_milan_study_append (
   int            apply_dispatcher_prepass,
   int            complete_dispatcher_transaction,
   int            finalize_study,
+  int32_t        live_overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   uint8_t       *packed,
   size_t         packed_capacity,
   size_t        *packed_size)
@@ -420,8 +441,8 @@ goodix_milan_study_append (
   int graph_was_established;
   int result = -1;
 
-  if (!current_template || !probe_template || !relation_values || !packed ||
-      !packed_size)
+  if (!current_template || !probe_template || !relation_values ||
+      !live_overlap_counts || !packed || !packed_size)
     return -1;
   current = malloc (sizeof(*current));
   probe = malloc (sizeof(*probe));
@@ -488,6 +509,7 @@ goodix_milan_study_append (
     { 0xba, 1 },
     { 0xbb, 0 },
     { 0xbc, (int32_t) current->feature_count },
+    { 0xbd, 0 },
     { 0xbe, matched_study_count },
   };
   for (size_t i = 0; i < sizeof(scalar_patches) / sizeof(scalar_patches[0]);
@@ -504,6 +526,7 @@ goodix_milan_study_append (
   current->feature_elements[current->feature_count] = new_feature;
   current->feature_element_sizes[current->feature_count] = new_feature_size;
   current->feature_count++;
+  live_overlap_counts[old_feature_count] = 0;
   current->metadata.registration_count += (uint32_t) old_feature_count;
 
   if (!graph_was_established)
@@ -551,8 +574,7 @@ goodix_milan_study_append (
       (current->metadata.sensor_type == 12 &&
        current->feature_count == current->metadata.maximum_features &&
        goodix_milan_template_normalize_unpacked (
-         current, normalization_copies,
-         current->normalization_overlap_counts) != 0))
+          current, normalization_copies, live_overlap_counts) != 0))
     goto out;
 
   uint32_t append_count = goodix_milan_template_read_u32 (current->tail_state + 0x50c);
@@ -590,14 +612,14 @@ milan_study_policy_derive (
   int32_t                      probe_coverage,
   const int32_t                primary_transform[6],
   const int32_t                relation_transform[6],
+  const int32_t                live_overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   GoodixMilanStudyPolicyInput *input)
 {
-  GoodixMilanFeatureView views[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY];
   GoodixMilanFeatureView probe_view;
   int32_t reference_to_features[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY][6];
 
   if (!current || !probe || !primary_transform || !relation_transform ||
-      !input || current->feature_count == 0 ||
+      !live_overlap_counts || !input || current->feature_count == 0 ||
       current->feature_count > GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY ||
       probe->feature_count != 1 ||
       current->metadata.graph_established != 1 ||
@@ -625,21 +647,14 @@ milan_study_policy_derive (
   input->template_counter = (int32_t) goodix_milan_template_read_u32 (
     current->tail_state + 0x510);
 
-  int32_t adjusted_primary[6];
-  memcpy (adjusted_primary, primary_transform, sizeof(adjusted_primary));
-  adjusted_primary[2] >>= 1;
-  adjusted_primary[5] >>= 1;
   input->primary_transform_area =
-    goodix_milan_study_policy_footprint_area (adjusted_primary);
+    goodix_milan_study_policy_full_footprint_area (primary_transform);
 
   for (size_t i = 0; i < current->feature_count; i++)
     {
       GoodixMilanStudyPolicyFeature *feature = &input->features[i];
 
-      if (goodix_milan_template_parse_feature_element (
-            current->feature_elements[i], current->feature_element_sizes[i],
-            &views[i]) != 0 ||
-          goodix_milan_template_read_feature_scalar (
+      if (goodix_milan_template_read_feature_scalar (
             current->feature_elements[i], current->feature_element_sizes[i],
             0xb5, &feature->active) != 0 ||
           goodix_milan_template_read_feature_scalar (
@@ -657,42 +672,12 @@ milan_study_policy_derive (
           goodix_milan_template_reference_transform (
             current, i, 1, reference_to_features[i]) != 0)
         return -1;
+      feature->overlap_count = live_overlap_counts[i];
     }
 
   for (size_t i = 0; i < current->feature_count; i++)
     {
       GoodixMilanStudyPolicyFeature *feature = &input->features[i];
-      uint8_t residual[GOODIX_MILAN_STUDY_MASK_SIZE];
-      int32_t current_to_reference[6];
-
-      if (feature->active != 0)
-        {
-          goodix_milan_study_policy_expand_mask (
-            views[i].inline_mask, residual);
-          if (goodix_milan_template_reference_transform (
-                current, i, 0, current_to_reference) != 0)
-            return -1;
-          for (size_t other = 0; other < current->feature_count; other++)
-            {
-              int32_t footprint[6];
-
-              if (other == i || input->features[other].active == 0)
-                continue;
-              milan_compose_transform (
-                reference_to_features[other], current_to_reference, footprint);
-              footprint[2] = goodix_milan_template_normalization_sar1 (footprint[2]);
-              footprint[5] = goodix_milan_template_normalization_sar1 (footprint[5]);
-              int32_t area = goodix_milan_template_normalization_remove_footprint (
-                residual, 44, 52, 44, 52, footprint);
-
-              if (goodix_milan_template_normalization_overlap_qualifies (
-                    area, 88, 104, 1))
-                feature->overlap_count = goodix_milan_template_normalization_add (
-                  feature->overlap_count, 1);
-            }
-          current->normalization_overlap_counts[i] = feature->overlap_count;
-        }
-
       uint8_t probe_residual[GOODIX_MILAN_STUDY_MASK_SIZE];
       int32_t candidate_transform[6];
 
@@ -721,8 +706,10 @@ milan_study_policy_derive (
         reference_to_features[i], relation_transform, candidate_transform);
       candidate_transform[2] >>= 1;
       candidate_transform[5] >>= 1;
-      feature->geometric_overlap_percent =
-        goodix_milan_study_policy_footprint_percent (candidate_transform);
+      feature->geometric_overlap_area =
+        goodix_milan_study_policy_footprint_area (candidate_transform);
+      feature->geometric_overlap_percent = feature->geometric_overlap_area * 100 /
+                                           GOODIX_MILAN_STUDY_MASK_SIZE;
 
     }
   return 0;
@@ -746,6 +733,7 @@ goodix_milan_study_replace (
   const int32_t  primary_transform[6],
   int            complete_dispatcher_transaction,
   int            finalize_study,
+  int32_t        live_overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   uint8_t       *packed,
   size_t         packed_capacity,
   size_t        *packed_size,
@@ -765,8 +753,9 @@ goodix_milan_study_replace (
   size_t replacement_index = SIZE_MAX;
   int result = -1;
 
-  if (!current_template || !probe_template || !relation_values || !packed ||
-      !packed_size || !action_code || !primary_transform)
+  if (!current_template || !probe_template || !relation_values ||
+      !live_overlap_counts || !packed || !packed_size || !action_code ||
+      !primary_transform)
     return -1;
   *packed_size = 0;
   *action_code = GOODIX_MILAN_STUDY_ACTION_NONE;
@@ -793,14 +782,13 @@ goodix_milan_study_replace (
          relation_values + 1, feature_copies) != 0 ||
        milan_study_project_relations (current, relation_matrix) != 0 ||
        (current->feature_count == current->metadata.maximum_features &&
-        goodix_milan_template_normalize_unpacked (
-          current, pre_normalization_copies,
-          current->normalization_overlap_counts) != 0)))
+         goodix_milan_template_normalize_unpacked (
+           current, pre_normalization_copies, live_overlap_counts) != 0)))
     goto out;
   if (milan_study_policy_derive (
         current, probe, matched_feature_index, retained_flag, probe_quality,
         probe_coverage, primary_transform, relation_values + 1,
-        &policy_input) != 0 ||
+        live_overlap_counts, &policy_input) != 0 ||
       goodix_milan_study_policy_select (&policy_input, &policy_result) != 0)
     goto out;
   *action_code = policy_result.action;
@@ -829,6 +817,7 @@ goodix_milan_study_replace (
   int32_t target_bd;
   int32_t target_be;
   int32_t target_c0;
+  int32_t probe_c0;
   int32_t matched_be;
   GoodixMilanFeatureView target_feature;
   GoodixMilanFeatureView probe_feature;
@@ -858,6 +847,8 @@ goodix_milan_study_replace (
         current->feature_elements[replacement_index],
         current->feature_element_sizes[replacement_index], 0xc0,
         &target_c0) != 0 || goodix_milan_template_read_feature_scalar (
+        probe->feature_elements[0], probe->feature_element_sizes[0], 0xc0,
+        &probe_c0) != 0 || goodix_milan_template_read_feature_scalar (
         current->feature_elements[matched_feature_index],
         current->feature_element_sizes[matched_feature_index], 0xbe,
         &matched_be) != 0 || goodix_milan_template_parse_feature_element (
@@ -865,8 +856,7 @@ goodix_milan_study_replace (
         current->feature_element_sizes[replacement_index], &target_feature) != 0 ||
       goodix_milan_template_parse_feature_element (
         probe->feature_elements[0], probe->feature_element_sizes[0],
-        &probe_feature) != 0 || target_bd == INT32_MAX || target_bc < 0 ||
-      (size_t) target_bc >= current->feature_count)
+        &probe_feature) != 0)
     goto out;
 
   const uint8_t *matched_source =
@@ -943,11 +933,11 @@ goodix_milan_study_replace (
                 GOODIX_MILAN_STUDY_ACTION_REPLACE_NO_RELATION
               ? target_bb : 0 },
     { 0xbc, (int32_t) current->feature_count - 1 },
-    { 0xbd, target_bd + 1 },
+    { 0xbd, milan_study_wrap_increment (target_bd) },
     { 0xbe, policy_result.action ==
                 GOODIX_MILAN_STUDY_ACTION_REPLACE_NO_RELATION
               ? target_be : matched_be },
-    { 0xc0, target_c0 },
+    { 0xc0, probe_c0 != 0 && (probe_c0 & 1) != 0 ? probe_c0 : target_c0 },
   };
   for (size_t i = 0; i < sizeof(scalar_patches) / sizeof(scalar_patches[0]);
        i++)
@@ -966,7 +956,8 @@ goodix_milan_study_replace (
           goto out;
         if (ordinal > target_bc && goodix_milan_template_patch_feature_scalar (
               (uint8_t *) current->feature_elements[i],
-              current->feature_element_sizes[i], 0xbc, ordinal - 1) != 0)
+              current->feature_element_sizes[i], 0xbc,
+              milan_study_wrap_decrement (ordinal)) != 0)
           goto out;
       }
 
@@ -984,9 +975,8 @@ goodix_milan_study_replace (
   if ((policy_result.action == GOODIX_MILAN_STUDY_ACTION_GEOMETRIC ||
        policy_result.action == GOODIX_MILAN_STUDY_ACTION_REPLACE) &&
        (milan_study_project_relations (current, relation_matrix) != 0 ||
-        goodix_milan_template_normalize_unpacked (
-          current, post_normalization_copies,
-          current->normalization_overlap_counts) != 0))
+         goodix_milan_template_normalize_unpacked (
+           current, post_normalization_copies, live_overlap_counts) != 0))
     goto out;
 
   if (finalize_study)

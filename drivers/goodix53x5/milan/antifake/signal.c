@@ -9,6 +9,7 @@
  */
 
 #include "milan/milan.h"
+#include "milan/transform-private.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -24,11 +25,16 @@ goodix_milan_antifake_residual (
   uint16_t        chip_type,
   uint16_t       *residual)
 {
+  size_t count;
+
   if (!calibration || !raw_frame || !residual || rows < 2 || columns < 2 ||
       columns > SIZE_MAX / rows)
     return -1;
+  count = rows * columns;
+  if (count > SIZE_MAX / sizeof(*residual))
+    return -1;
 
-  memset (residual, 0, rows * columns * sizeof(*residual));
+  memset (residual, 0, count * sizeof(*residual));
   for (size_t row = 1; row + 1 < rows; row++)
     for (size_t column = 1; column + 1 < columns; column++)
       {
@@ -166,24 +172,40 @@ goodix_milan_antifake_impulse_filter (
           }
         if (sorted_roughness[4] * 5 <= roughness[4] * 2)
           {
-            ptrdiff_t center_x = (ptrdiff_t) column;
-            ptrdiff_t center_y = (ptrdiff_t) row;
             uint16_t neighborhood[9];
             size_t neighborhood_index = 0;
+            size_t count = rows * columns;
 
-            if (center_x < 1)
-              center_x = 1;
-            if (center_x > (ptrdiff_t) columns - 2)
-              center_x = (ptrdiff_t) columns - 2;
-            if (center_y < 1)
-              center_y = 1;
-            if (center_y > (ptrdiff_t) rows - 2)
-              center_y = (ptrdiff_t) rows - 2;
-            for (ptrdiff_t dy = -1; dy <= 1; dy++)
-              for (ptrdiff_t dx = -1; dx <= 1; dx++)
-                neighborhood[neighborhood_index++] =
-                  residual[(size_t) (center_y + dy) * columns +
-                           (size_t) (center_x + dx)];
+            /*
+             * Vendor replacement uses flat adjacency, so edge columns intentionally
+             * wrap; only allocation-end offsets use the safe coordinate-clamped
+             * fallback.
+             */
+            if (pixel >= columns + 1 && pixel + columns + 1 < count)
+              for (ptrdiff_t dy = -1; dy <= 1; dy++)
+                for (ptrdiff_t dx = -1; dx <= 1; dx++)
+                  neighborhood[neighborhood_index++] = residual[
+                    (size_t) ((ptrdiff_t) pixel +
+                              dy * (ptrdiff_t) columns + dx)];
+            else
+              {
+                ptrdiff_t center_x = (ptrdiff_t) column;
+                ptrdiff_t center_y = (ptrdiff_t) row;
+
+                if (center_x < 1)
+                  center_x = 1;
+                if (center_x > (ptrdiff_t) columns - 2)
+                  center_x = (ptrdiff_t) columns - 2;
+                if (center_y < 1)
+                  center_y = 1;
+                if (center_y > (ptrdiff_t) rows - 2)
+                  center_y = (ptrdiff_t) rows - 2;
+                for (ptrdiff_t dy = -1; dy <= 1; dy++)
+                  for (ptrdiff_t dx = -1; dx <= 1; dx++)
+                    neighborhood[neighborhood_index++] =
+                      residual[(size_t) (center_y + dy) * columns +
+                               (size_t) (center_x + dx)];
+              }
             residual[pixel] = antifake_median9_u16 (neighborhood);
           }
       }
@@ -324,10 +346,11 @@ goodix_milan_antifake_block_variation (
   int32_t mean_square = 0;
   if (valid_count != 0)
     {
+      uint32_t rounded_square_sum = square_sum + valid_count / 2;
+
       mean = (sum + valid_count / 2) / valid_count;
-      mean_square = (int32_t) (((int64_t) (int32_t) square_sum +
-                                valid_count / 2) /
-                               valid_count);
+      mean_square = goodix_milan_transform_s32 (rounded_square_sum) /
+                    (int32_t) valid_count;
     }
   uint32_t variance = (uint32_t) mean_square - mean * mean;
   if ((int32_t) variance < 0)

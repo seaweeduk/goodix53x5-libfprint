@@ -21,7 +21,7 @@ driver="$repo/drivers/goodix53x5"
 libfprint="$repo/.build/libfprint"
 build="$libfprint/builddir"
 if [[ ! -d $driver || ! -d $build ]]; then
-  printf 'current runner requires driver source and an existing .build/libfprint/builddir under %s\n' "$repo" >&2
+  printf 'current runner support build is missing; run GOODIX53X5_DEBUG=0 ./scripts/build-local.sh in %s first\n' "$repo" >&2
   exit 2
 fi
 
@@ -50,10 +50,7 @@ for index in "${!sources[@]}"; do
   sources[$index]="$driver/${sources[$index]}"
 done
 
-cflags=( -DGOODIX53X5_PARITY )
-if [[ $debug == 1 ]]; then
-  cflags+=( -DGOODIX53X5_DEBUG )
-fi
+cflags=( -DGOODIX53X5_PARITY -DGOODIX53X5_DEBUG )
 
 cc -std=c17 -O2 -Wall -Wextra -Werror "${cflags[@]}" \
   -I"$driver" -I"$build" -I"$build/libfprint" -I"$libfprint" -I"$libfprint/libfprint" \

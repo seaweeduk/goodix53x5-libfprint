@@ -26,6 +26,7 @@
 #include "milan/match/lifecycle-private.h"
 #include "milan/match/rescue.h"
 #include "milan/milan.h"
+#include "milan/private.h"
 #include "milan/study/queue.h"
 
 #include <string.h>
@@ -106,6 +107,7 @@ goodix_match_study_feature_internal (
   gsize                        *selected_feature_index,
   gboolean                      apply_dispatcher_prepass,
   gboolean                      finalize_study,
+  int32_t                       live_overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   GoodixMilanStudyTransientState *transient_state)
 {
   const guint8 *enrolled_milan;
@@ -133,7 +135,7 @@ goodix_match_study_feature_internal (
   if (!transient_state)
     transient_state = &transient_storage;
   memset (transient_state, 0, sizeof(*transient_state));
-  if (!probe_feature || !feature || !match_result ||
+  if (!probe_feature || !feature || !match_result || !live_overlap_counts ||
       !updated_feature || !action)
     return GOODIX_SIGFM_TEMPLATE_INVALID;
   enrolled_milan = feature;
@@ -147,15 +149,13 @@ goodix_match_study_feature_internal (
 
   probe_milan = probe_feature;
   probe_milan_len = probe_feature_len;
-  if (probe_milan_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE - 45 ||
-      enrolled_milan_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE - probe_milan_len -
-                              45)
+  if (probe_milan_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE)
     return GOODIX_SIGFM_TEMPLATE_INVALID;
 
   enrolled = g_malloc (sizeof(*enrolled));
   probe = g_malloc (sizeof(*probe));
   updated = g_malloc (sizeof(*updated));
-  packed_capacity = enrolled_milan_len + probe_milan_len + 45;
+  packed_capacity = GOODIX_MILAN_TEMPLATE_MAX_SIZE;
   packed = g_malloc (packed_capacity);
   if (goodix_milan_template_unpack (
         enrolled_milan, enrolled_milan_len, enrolled) != 0 ||
@@ -235,6 +235,7 @@ goodix_match_study_feature_internal (
         apply_dispatcher_prepass,
         finalize_study,
         finalize_current_study,
+        live_overlap_counts,
         packed, packed_capacity, &packed_size);
       *action = GOODIX_MILAN_STUDY_APPEND;
       if (selected_feature_index)
@@ -255,6 +256,7 @@ goodix_match_study_feature_internal (
         match_result->match_transform,
         finalize_study,
         finalize_current_study,
+        live_overlap_counts,
         packed, packed_capacity, &packed_size, &action_code,
         selected_feature_index, transient_state);
       *action = (GoodixMilanStudyAction) action_code;
@@ -300,7 +302,36 @@ typedef struct
 {
   GBytes *current;
   GoodixMatchInfo *live_features[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY];
+  int32_t live_overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY];
 } GoodixStudyFollowupContext;
+
+static gboolean
+goodix_match_initialize_study_overlap_counts (
+  const guint8 *feature,
+  gsize         feature_len,
+  int32_t       overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY])
+{
+  GoodixMilanUnpackedTemplate *unpacked;
+  uint8_t *feature_copies[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
+  gboolean result = FALSE;
+
+  if (!feature || !overlap_counts ||
+      feature_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE)
+    return FALSE;
+  memset (overlap_counts, 0,
+          GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY * sizeof(*overlap_counts));
+  unpacked = g_malloc (sizeof(*unpacked));
+  if (goodix_milan_template_unpack (feature, feature_len, unpacked) == 0 &&
+      unpacked->metadata.sensor_type == 12 &&
+      goodix_milan_template_normalize_unpacked (
+        unpacked, feature_copies, overlap_counts) == 0)
+    result = TRUE;
+
+  for (size_t i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
+    g_free (feature_copies[i]);
+  g_free (unpacked);
+  return result;
+}
 
 static gboolean
 goodix_match_set_live_feature (GoodixStudyFollowupContext *context,
@@ -356,18 +387,14 @@ goodix_match_live_gallery_result (GoodixMatchInfo                 *probe,
         live_partition_counts[i] =
           (size_t) context->live_features[i]->partition_count;
       }
-  if (goodix_milan_match_live_probe_result (
-        probe->feature_bitmaps.high_bitmap,
-        probe->feature_bitmaps.enhanced_bitmap,
-        probe->feature_bitmaps.low_bitmap,
-        probe->inline_mask, probe->rescue_mask, probe->records,
-        (size_t) probe->record_count, (size_t) probe->partition_count,
-        probe->extraction_metadata.quality,
-        probe->extraction_metadata.coverage,
-        probe->extraction_metadata.optional_c7, current_milan,
-        current_milan_size, live_records,
+  if (goodix_milan_match_info_result (
+        probe, current_milan, current_milan_size, live_records,
         live_record_counts, live_partition_counts, triggering_index,
-        match_result) != 0)
+        match_result
+#ifdef GOODIX53X5_DEBUG
+        , NULL
+#endif
+        ) != 0)
     return GOODIX_SIGFM_TEMPLATE_INVALID;
 
   if (match_result->score > 0 &&
@@ -439,7 +466,8 @@ goodix_match_study_followup (GoodixMatchInfo *queued,
     probe_data, probe_size,
     g_bytes_get_data (context->current, NULL),
     g_bytes_get_size (context->current), &match_result, TRUE,
-    &after_study, &action, selected_index, FALSE, FALSE, NULL);
+    &after_study, &action, selected_index, FALSE, FALSE,
+    context->live_overlap_counts, NULL);
   if (status != GOODIX_SIGFM_TEMPLATE_OK)
     goto invalid;
   if (action != GOODIX_MILAN_STUDY_NONE)
@@ -560,6 +588,9 @@ goodix_match_study_feature_queued (
       !goodix_study_queue_validate (queue) ||
       !goodix_match_queue_matches_template (queue, feature, feature_len))
     return GOODIX_SIGFM_TEMPLATE_INVALID;
+  if (!goodix_match_initialize_study_overlap_counts (
+        feature, feature_len, context.live_overlap_counts))
+    return GOODIX_SIGFM_TEMPLATE_INVALID;
   probe_feature = goodix_match_serialize_template (probe_info);
   if (!probe_feature)
     return GOODIX_SIGFM_TEMPLATE_INVALID;
@@ -567,7 +598,7 @@ goodix_match_study_feature_queued (
   status = goodix_match_study_feature_internal (
     probe_data, probe_size, feature, feature_len, match_result, study_eligible,
     &primary_update, &primary_action, &selected_index, TRUE, FALSE,
-    &transient);
+    context.live_overlap_counts, &transient);
   if (status != GOODIX_SIGFM_TEMPLATE_OK)
     goto out;
   if (primary_action == GOODIX_MILAN_STUDY_NONE)

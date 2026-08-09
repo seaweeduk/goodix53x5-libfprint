@@ -178,37 +178,52 @@ jobs:
           prompt: |
             Review this pull request.
 
-            If an AGENTS.md file exists, read it at the start of the review.
             Review the diff in the context of the full codebase, including unchanged code it interacts with or affects.
 
             Relevant upstream source repositories may be available as project references in the system context. Use them selectively when a finding depends on framework, SDK, protocol, or library behavior that needs source-level verification. Do not inspect every reference.
 
-            Focus on actionable findings:
+            Report only high-confidence, actionable findings:
             - Correctness bugs and behavioral regressions
             - Security, privacy, permission, or data-loss risks
             - Material performance or reliability risks
-            - Unnecessary complexity or scope introduced by this pull request
+            - Material unnecessary complexity introduced by this pull request when a concrete simpler implementation preserves all current requirements
 
-            Prefer the smallest change that fully implements the intended behavior. Examine whether added abstractions, wrappers, compatibility paths, fallbacks, validation, state, configuration, dependencies, or unrelated edits are required by a concrete current requirement.
+            Establish that each reported problem is reachable in a supported, realistic workflow. Trace the relevant callers, callees, validation, synchronization, lifecycle, and upstream or downstream contracts, and actively look for constraints that invalidate the concern. A deterministic code path, a realistic existing harness or reproduction, or an authoritative documented contract is sufficient evidence; executable reproduction is not mandatory when reachability is clear from the code.
 
-            Report unnecessary complexity when you can identify a concrete simpler implementation that preserves the required behavior. The better solution may be a local simplification or a broader refactor of the existing code directly involved in the change.
+            Some behavior can only be established with physical fingerprint hardware, the private Windows DLL or native oracle, or Ghidra. Do not imply that you reproduced behavior with resources that are unavailable. If the code and available contracts establish the defect, report it normally. If a concrete candidate materially depends on hardware behavior, timing, or an undocumented native contract and remains ambiguous after scoped repository research, do not assign it a severity or present it as a confirmed finding. Instead, add a brief `User verification needed` section naming the exact ambiguity and the most direct hardware, native-oracle, or Ghidra check. Use this only for a specific plausible concern that could materially affect the change, not for generic untested scenarios.
 
-            Watch for pull requests that patch around a flawed abstraction, add another special case, or preserve unnecessary machinery when reworking the affected design would reduce total complexity. Prefer removing or simplifying existing code over layering new behavior on top when the broader change is well-scoped and produces a clearer system.
+            Do not report a concern that depends only on manually corrupted trusted state, unsupported concurrent administrative use, abrupt process termination or power loss outside the documented recovery model, a violated upstream invariant, or an extremely narrow race without evidence that its scheduling window is practically reachable. For malformed or adversarial input, identify the actual untrusted boundary that permits it. For security findings, identify a credible attacker-controlled path. If reachability remains uncertain after checking the surrounding code and contracts, omit the finding rather than speculate.
 
-            Do not assume that fewer changed lines are inherently better. Judge the total resulting design, not just the size of the patch. Do not propose unrelated cleanup or speculative rewrites without a concrete connection to the behavior being changed.
+            Calibrate severity from both impact and practical likelihood:
+            - High: a normal supported workflow or credible attacker can cause security compromise, data loss, a crash, or failure of core functionality
+            - Medium: a realistically reachable defect with material but bounded impact
+            - Low: a localized, realistically reachable defect that is still worth changing
+            Rare or theoretical trigger conditions are not High severity. Do not inflate severity from the worst imaginable consequence when the required preconditions are unlikely.
 
-            Do not run test suites; automated checks handle that separately.
+            Prefer the smallest durable fix, not merely the smallest diff. Usually this means a local change. However, if a local patch would add branches, state, fallbacks, wrappers, validation, compatibility paths, or special cases to a flawed design, prefer a well-scoped rework of the directly affected code when it reduces total complexity and produces a clearer, more maintainable system. Do not preserve an existing architecture solely to minimize changed lines, and do not propose unrelated cleanup or speculative rewrites.
+
+            Do not require compatibility with prior development revisions unless the repository documents that behavior as shipped or persisted state that must remain supported.
+
+            Native Windows Milan behavior is authoritative for sensor type 12 / profile 9. Most changes do not require native-parity research. Consult the `milan-dev` reverse-engineering notes only when a candidate finding or its suggested fix could change intended native behavior in Milan algorithms or arithmetic, template validation or serialization, preprocessing, matching, enrollment, study policy, native command or state sequencing, or the parity harness's native contract. Generic Linux integration, build, packaging, documentation, and libfprint API issues do not require this by default.
+
+            Fetch `milan-dev` only after such a candidate arises. You may use Bash to create a detached worktree, for example:
+            `git fetch --depth=1 origin milan-dev:refs/remotes/origin/milan-dev && git worktree add --detach ../milan-dev-review origin/milan-dev`
+            Search only the directly relevant `re/milan/**` notes by symbol or contract; do not broadly read the branch. If the notes show that apparently unusual behavior intentionally matches the native driver, do not recommend defensive divergence. Defer any concrete unresolved parity question through the `User verification needed` section described above.
+
+            There is no target number of findings, and an LGTM review is a normal successful outcome. Combine symptoms with the same root cause, challenge each candidate before reporting it, and prefer no finding over a weak, speculative, or disproportionately expensive one.
+
+            Never request or recommend adding regression tests, new test cases, or new test files as a finding or suggested fix. Do not run test suites; automated checks handle that separately. You may inspect existing tests and harnesses as evidence, or recommend a focused disposable reproduction as a user-verification step, but do not ask for a committed test.
             Do not report formatting, lint, generic style preferences, speculative concerns, or pre-existing issues unless this pull request makes them worse or newly reachable.
 
-            Do not narrate the review process or mention instructions, tools, files that were absent, or checks you did not run. In particular, do not mention whether AGENTS.md existed, whether tests were run, or whether project references were consulted. Discuss only the changed code, its behavior, and actionable findings.
+            Do not narrate the review process or mention instructions, tools, files that were absent, or checks you did not run. In particular, do not mention whether tests were run or whether project references were consulted. Discuss only the changed code, its behavior, actionable findings, and any concrete user verification that is needed.
 
             Output format:
             - Use clean GitHub-flavored Markdown
-            - Start with one concise paragraph summarizing the changed behavior and overall assessment
-            - List findings by number, with severity, file/line, why it matters, and a suggested fix
+            - If findings exist, start with the numbered findings; include severity, file/line, the realistic trigger, why it matters, supporting evidence, and the smallest proportionate fix
+            - After the findings, optionally add one concise paragraph summarizing the changed behavior and overall assessment
             - Avoid generic filler and repeated summaries
 
-            If there are no actionable findings, respond with "LGTM 👍" on its own line, then leave a blank line before adding a concise explanation of why the changed behavior appears correct. Discuss the code and behavior, not the review process.
+            If there are no actionable findings and no user verification is needed, respond with "LGTM 👍" on its own line, then leave a blank line before adding a concise explanation of why the changed behavior appears correct. Discuss the code and behavior, not the review process.
 
       - name: Persist rotated OpenCode auth
         if: ${{ always() }}

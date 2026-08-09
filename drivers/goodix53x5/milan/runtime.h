@@ -70,10 +70,17 @@ typedef struct
   gchar                         after_match_sha256[65];
 #endif
 #ifdef GOODIX53X5_DEBUG
+  gboolean                      validation_observed;
+  gboolean                      queue_before_match_observed;
+  gboolean                      queue_after_match_observed;
+  gboolean                      queue_after_study_observed;
   guint32                       queue_state_before_match;
   guint32                       queue_counter_before_match;
   gsize                         queue_occupied_before_match;
   gsize                         queue_occupied_after_match;
+  guint32                       queue_state_after_study;
+  guint32                       queue_counter_after_study;
+  gsize                         queue_occupied_after_study;
 #endif
 } GoodixMilanRuntimeGalleryResult;
 
@@ -101,6 +108,14 @@ typedef struct _GoodixMilanRuntimeOutput
   gint                          quality;
   gint                          coverage;
 #ifdef GOODIX53X5_DEBUG
+  gboolean                      preprocess_attempted;
+  gboolean                      preprocess_completed;
+  gboolean                      preprocess_status_available;
+  gint32                        preprocess_status;
+  gboolean                      extraction_attempted;
+  gboolean                      extraction_completed;
+  gboolean                      study_attempted;
+  gboolean                      study_completed;
   GBytes                       *processed_image;
 #endif
   GBytes                       *probe_template;

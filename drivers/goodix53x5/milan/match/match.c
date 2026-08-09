@@ -14,12 +14,14 @@
 #include "milan/match/candidate.h"
 #include "milan/match/correspondence.h"
 #include "milan/match/geometry.h"
+#include "milan/match/info-private.h"
 #include "milan/match/overlap.h"
 #include "milan/match/fallback.h"
 #include "milan/match/policy.h"
 #include "milan/match/rescue.h"
 #include "milan/match/selection.h"
 #include "milan/relations.h"
+#include "milan/transform-private.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -32,6 +34,11 @@ typedef enum
   MILAN_MATCH_RANK_OWNER_PRIMARY,
   MILAN_MATCH_RANK_OWNER_ALTERNATE,
 } MilanMatchRankOwner;
+
+enum
+{
+  MILAN_PROBE_PRIMARY_HISTOGRAM_CLASS_UNAVAILABLE = -1,
+};
 
 typedef struct
 {
@@ -587,7 +594,7 @@ milan_match_apply_secondary (
       int32_t alternate_topology;
       int32_t alternate_geometric;
       int select_transform = 0;
-              int32_t sibling_scale_penalty;
+      int32_t sibling_scale_penalty;
       int32_t sibling_orthogonality;
       int32_t sibling_strong_orthogonality;
 
@@ -689,6 +696,7 @@ milan_match_prepared_probe (
   const uint8_t                   probe_rescue_mask[308],
   const GoodixMilanFeatureRecord *probe_records,
   size_t                          probe_record_count,
+  int32_t                         probe_primary_histogram_class,
   int32_t                         image_quality,
   int32_t                         image_coverage,
   const GoodixMilanAntifakeBlob  *probe_antifake,
@@ -834,7 +842,8 @@ milan_match_prepared_probe (
           matcher_policy.configuration[14] = (int32_t) triggering_index;
         }
       goodix_milan_matcher_late_context_init (
-        &late_policy_context, probe_feature->fields.optional_c7);
+        &late_policy_context, probe_feature->fields.optional_c7,
+        probe_primary_histogram_class);
       sibling_tail_hamming_limit =
         matcher_policy.configuration[GOODIX_MILAN_MATCHER_CONFIGURATION_OFFSET +
                               GOODIX_MILAN_MATCHER_TAIL_HAMMING_LIMIT_INDEX];
@@ -970,9 +979,6 @@ milan_match_prepared_probe (
                 enrolled->metadata.sensor_type == 12 ? 42 : 31,
                  enrolled->metadata.sensor_type == 12 ? &direct_candidate : NULL) != 0)
         continue;
-      if (enrolled->metadata.sensor_type == 12)
-        {
-        }
       milan_match_apply_secondary (
         enrolled_records, feature.record_count, enrolled_partition_count,
         probe_records, probe_record_count, probe_partition_count,
@@ -1201,15 +1207,19 @@ milan_match_prepared_probe (
                     probe_antifake, GOODIX_MILAN_ANTIFAKE_SIZE, transform,
                     comparison_metrics) != 0)
                 goto out;
+              int32_t texture_delta = goodix_milan_transform_s32 (
+                (uint32_t) goodix_milan_antifake_texture (feature.antifake) -
+                (uint32_t) goodix_milan_antifake_texture (probe_antifake));
+              int32_t mean_delta = goodix_milan_transform_s32 (
+                (uint32_t) goodix_milan_antifake_mean (feature.antifake) -
+                (uint32_t) goodix_milan_antifake_mean (probe_antifake));
+              int32_t threshold_delta = goodix_milan_transform_s32 (
+                (uint32_t) goodix_milan_antifake_threshold (feature.antifake) -
+                (uint32_t) goodix_milan_antifake_threshold (probe_antifake));
+
               blocked = goodix_milan_match_selection_block_candidate (
                 &match_selection, enrolled->metadata.sensor_type,
-                comparison_metrics,
-                goodix_milan_antifake_texture (feature.antifake) -
-                  goodix_milan_antifake_texture (probe_antifake),
-                goodix_milan_antifake_mean (feature.antifake) -
-                  goodix_milan_antifake_mean (probe_antifake),
-                goodix_milan_antifake_threshold (feature.antifake) -
-                  goodix_milan_antifake_threshold (probe_antifake),
+                comparison_metrics, texture_delta, mean_delta, threshold_delta,
                 goodix_milan_antifake_pair_score (feature.antifake),
                 direct_metrics[9], &contribution_event);
               if (blocked < 0)
@@ -1554,7 +1564,7 @@ milan_match_prepared_probe (
         matcher_policy.configuration[13] == 1 &&
         late_policy_context.probe_low_class == 0 && image_coverage > 65 &&
         image_quality > 15 && late_policy_context.accumulated_high_class < 4 &&
-        late_policy_status_counter < 3 &&
+        late_policy_context.probe_primary_histogram_class < 3 &&
         enrolled->metadata.queue_state == 0;
 #ifdef GOODIX53X5_DEBUG
       if (diagnostics)
@@ -1641,6 +1651,14 @@ milan_match_prepared_probe (
 #endif
   int32_t aggregate_score = 0;
 
+  if (active_relation_winner.valid)
+    {
+      *relation_count = active_relation_winner.count;
+      relation_values[0] = 0;
+      memcpy (relation_values + 1, active_relation_winner.routed,
+              sizeof(active_relation_winner.routed));
+    }
+
   if (rescue_applied)
     {
       *score = rescue_result.score;
@@ -1650,15 +1668,28 @@ milan_match_prepared_probe (
       if (rescue_result.retain_transform)
         memcpy (match_transform, rescue_result.selected_transform,
                 sizeof(rescue_result.selected_transform));
-      *relation_count = 0;
-      int relation_status = goodix_milan_match_reference_transform (
-        enrolled, *matched_feature_index, match_transform, relation_values);
-
-      if (relation_status < 0)
-        *relation_count = -1;
       result = 0;
       if (goodix_milan_match_selection_blocking_override (&match_selection))
         *score = -65536;
+      goto out;
+    }
+
+  if (enrolled->metadata.sensor_type == 12 &&
+      !match_selection.score_latched &&
+      (late_policy_context.accumulated_high_class >= 4 ||
+       late_policy_context.probe_primary_histogram_class >= 2))
+    {
+      *score = goodix_milan_match_selection_blocking_override (&match_selection)
+                 ? -65536 : 0;
+      result = 0;
+      goto out;
+    }
+  if (enrolled->metadata.sensor_type == 12 &&
+      !match_selection.score_latched &&
+      matcher_policy.configuration[13] == 0)
+    {
+      *score = 0;
+      result = 0;
       goto out;
     }
 
@@ -1676,25 +1707,6 @@ milan_match_prepared_probe (
           *matched_feature_index = (size_t) match_selection.selected_feature;
           memcpy (match_transform, match_selection.selected_transform,
                   sizeof(match_selection.selected_transform));
-          *relation_count = match_selection.selected_numerator;
-          int relation_status;
-
-          if (active_relation_winner.valid)
-            {
-              relation_values[0] = 0;
-              memcpy (relation_values + 1, active_relation_winner.routed,
-                      sizeof(active_relation_winner.routed));
-              relation_status = 0;
-            }
-          else
-            relation_status = goodix_milan_match_reference_transform (
-              enrolled, *matched_feature_index, match_transform,
-              relation_values);
-
-          if (relation_status < 0)
-            *relation_count = -1;
-          else if (relation_status > 0)
-            *relation_count = 0;
         }
       result = 0;
       if (goodix_milan_match_selection_blocking_override (&match_selection))
@@ -1912,6 +1924,7 @@ milan_match_probe_result_internal (
   int32_t                        image_quality,
   int32_t                        image_coverage,
   int32_t                        probe_optional_c7,
+  int32_t                        probe_primary_histogram_class,
   const GoodixMilanAntifakeBlob *probe_antifake,
   int                            caller_blocking_enabled,
   const uint8_t                 *enrolled_template,
@@ -1950,7 +1963,8 @@ milan_match_probe_result_internal (
   probe_feature.antifake = probe_antifake;
   result = milan_match_prepared_probe (
     &probe_feature, probe_rescue_mask, probe_records, probe_record_count,
-    image_quality, image_coverage, probe_antifake, caller_blocking_enabled,
+    probe_primary_histogram_class, image_quality, image_coverage, probe_antifake,
+    caller_blocking_enabled,
     enrolled_template,
     enrolled_template_size, live_records, live_record_counts,
     live_partition_counts, triggering_index,
@@ -1979,6 +1993,43 @@ milan_match_probe_result_internal (
 }
 
 int
+goodix_milan_match_info_result (
+  const GoodixMatchInfo          *probe,
+  const uint8_t                 *enrolled_template,
+  size_t                         enrolled_template_size,
+  const GoodixMilanFeatureRecord *const live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
+  const size_t                   live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
+  const size_t                   live_partition_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
+  size_t                         triggering_index,
+  GoodixMilanMatchResult        *match_result
+#ifdef GOODIX53X5_DEBUG
+  , GoodixMilanMatchDiagnostics *diagnostics
+#endif
+  )
+{
+  if (!probe)
+    return -1;
+
+  return milan_match_probe_result_internal (
+    probe->feature_bitmaps.high_bitmap,
+    probe->feature_bitmaps.enhanced_bitmap,
+    probe->feature_bitmaps.low_bitmap, probe->inline_mask, probe->rescue_mask,
+    probe->records, (size_t) probe->record_count,
+    (size_t) probe->partition_count, probe->extraction_metadata.quality,
+    probe->extraction_metadata.coverage,
+    probe->extraction_metadata.optional_c7,
+    probe->extraction_metadata.auxiliary.primary_histogram_state,
+    live_records ? NULL : &probe->antifake, live_records == NULL,
+    enrolled_template, enrolled_template_size,
+    live_records, live_record_counts, live_partition_counts, triggering_index,
+    match_result
+#ifdef GOODIX53X5_DEBUG
+    , diagnostics
+#endif
+    );
+}
+
+int
 goodix_milan_match_probe_result (
   const uint8_t                  probe_high_bitmap[286],
   const uint8_t                  probe_enhanced_bitmap[286],
@@ -2000,6 +2051,7 @@ goodix_milan_match_probe_result (
     probe_high_bitmap, probe_enhanced_bitmap, probe_low_bitmap,
     probe_inline_mask, probe_rescue_mask, probe_records, probe_record_count,
     probe_partition_count, image_quality, image_coverage, probe_optional_c7,
+    MILAN_PROBE_PRIMARY_HISTOGRAM_CLASS_UNAVAILABLE,
     probe_antifake, probe_antifake != NULL,
     enrolled_template, enrolled_template_size, NULL, NULL, NULL, SIZE_MAX,
     match_result
@@ -2033,10 +2085,12 @@ goodix_milan_match_probe_result_debug (
     probe_high_bitmap, probe_enhanced_bitmap, probe_low_bitmap,
     probe_inline_mask, probe_rescue_mask, probe_records, probe_record_count,
     probe_partition_count, image_quality, image_coverage, probe_optional_c7,
+    MILAN_PROBE_PRIMARY_HISTOGRAM_CLASS_UNAVAILABLE,
     probe_antifake, probe_antifake != NULL,
     enrolled_template, enrolled_template_size, NULL, NULL, NULL, SIZE_MAX,
     match_result, diagnostics);
 }
+
 #endif
 
 int
@@ -2064,6 +2118,7 @@ goodix_milan_match_live_probe_result (
     probe_high_bitmap, probe_enhanced_bitmap, probe_low_bitmap,
     probe_inline_mask, probe_rescue_mask, probe_records, probe_record_count,
     probe_partition_count, image_quality, image_coverage, probe_optional_c7,
+    MILAN_PROBE_PRIMARY_HISTOGRAM_CLASS_UNAVAILABLE,
     NULL, 0, enrolled_template, enrolled_template_size, live_records,
     live_record_counts, live_partition_counts, triggering_index,
     match_result
@@ -2100,6 +2155,7 @@ goodix_milan_match_live_probe_result_debug (
     probe_high_bitmap, probe_enhanced_bitmap, probe_low_bitmap,
     probe_inline_mask, probe_rescue_mask, probe_records, probe_record_count,
     probe_partition_count, image_quality, image_coverage, probe_optional_c7,
+    MILAN_PROBE_PRIMARY_HISTOGRAM_CLASS_UNAVAILABLE,
     NULL, 0, enrolled_template, enrolled_template_size, live_records,
     live_record_counts, live_partition_counts, triggering_index,
     match_result, diagnostics);

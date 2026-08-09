@@ -10,6 +10,7 @@
 
 #include "milan/print.h"
 #include "milan/relations.h"
+#include "milan/template/codec-private.h"
 
 #include <string.h>
 
@@ -39,6 +40,7 @@ goodix_milan_print_validate_template (GBytes                       *template_byt
   guint32 partition0 = 0;
   guint32 partition1 = 0;
   gint32 row_bases[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
+  gboolean order_seen[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { FALSE };
   GoodixMilanRelationMatrix relation_matrix;
 
   if (info)
@@ -70,6 +72,18 @@ goodix_milan_print_validate_template (GBytes                       *template_byt
     return goodix_milan_print_fail (
       error, GOODIX_MILAN_PRINT_ERROR_INVALID,
       "Milan template profile-9 counts are invalid");
+
+  for (gsize i = 0; i < unpacked->feature_count; i++)
+    {
+      guint32 feature_index = goodix_milan_template_read_u32 (
+        unpacked->tail_state + i * 4);
+
+      if (feature_index >= unpacked->feature_count || order_seen[feature_index])
+        return goodix_milan_print_fail (
+          error, GOODIX_MILAN_PRINT_ERROR_INVALID,
+          "Milan template order is invalid");
+      order_seen[feature_index] = TRUE;
+    }
 
   for (gsize i = 0; i < unpacked->feature_count; i++)
     {

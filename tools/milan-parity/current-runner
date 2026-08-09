@@ -11,6 +11,9 @@ import subprocess
 import sys
 
 
+IDENTITY_SCHEMA = "milan-parity-current-identity/v1"
+
+
 def canonical(value):
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
@@ -24,6 +27,56 @@ def digest_sources(repo: Path, tool: Path) -> str:
             digest.update(path.read_bytes())
     digest.update((tool / "build-current-runner").read_bytes())
     return digest.hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def require_digest(value: str, label: str) -> None:
+    if (not isinstance(value, str) or len(value) != 64 or
+            any(character not in "0123456789abcdef" for character in value)):
+        raise SystemExit(f"{label} must be a lowercase SHA-256")
+
+
+def resolve_backend(repo: Path, tool: Path, *, build: bool,
+                    expected_source_digest: str | None = None,
+                    expected_backend_sha256: str | None = None) -> dict[str, str]:
+    debug = "1"
+    source_digest = digest_sources(repo, tool)
+    if expected_source_digest is not None:
+        require_digest(expected_source_digest, "expected source digest")
+        if source_digest != expected_source_digest:
+            raise SystemExit("current-runner source digest differs from expected identity")
+    cache_root = (Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) /
+                  "milan-parity").expanduser().resolve()
+    cache_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(cache_root, 0o700)
+    backend = cache_root / "builds" / f"{source_digest}-debug-{debug}" / "current-runner"
+    if backend.is_symlink():
+        raise SystemExit(f"current-runner backend must not be a symlink: {backend}")
+    if not backend.exists() and build:
+        backend.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        subprocess.run((str(tool / "build-current-runner"), "--repo", str(repo),
+                        "--output", str(backend), "--debug", "1"), check=True)
+    if not backend.is_file() or not os.access(backend, os.X_OK):
+        raise SystemExit(f"current-runner backend is absent or not executable: {backend}")
+    backend_sha256 = sha256_file(backend)
+    if expected_backend_sha256 is not None:
+        require_digest(expected_backend_sha256, "expected backend SHA-256")
+        if backend_sha256 != expected_backend_sha256:
+            raise SystemExit("current-runner backend SHA-256 differs from expected identity")
+    return {
+        "backend_path": str(backend),
+        "backend_sha256": backend_sha256,
+        "debug": debug,
+        "schema": IDENTITY_SCHEMA,
+        "source_digest": source_digest,
+    }
 
 
 def artifact_path(root: Path, case, name: str) -> Path:
@@ -42,12 +95,30 @@ def replay_purpose(value, label: str) -> int:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True)
-    parser.add_argument("--corpus", required=True)
-    parser.add_argument("--case", required=True)
+    parser.add_argument("--identity", action="store_true")
+    parser.add_argument("--corpus")
+    parser.add_argument("--case")
+    parser.add_argument("--expected-source-digest")
+    parser.add_argument("--expected-backend-sha256")
     args = parser.parse_args()
     repo = Path(args.repo).resolve()
-    root = Path(args.corpus).resolve()
     tool = Path(__file__).resolve().parent
+    if args.identity:
+        if (args.corpus is not None or args.case is not None or
+                args.expected_source_digest is not None or
+                args.expected_backend_sha256 is not None):
+            parser.error("--identity accepts only --repo")
+        sys.stdout.buffer.write(canonical(resolve_backend(repo, tool, build=True)))
+        return
+    if args.corpus is None or args.case is None:
+        parser.error("normal mode requires --corpus and --case")
+    if args.expected_source_digest is None or args.expected_backend_sha256 is None:
+        parser.error("normal mode requires expected source and backend identities")
+    identity = resolve_backend(
+        repo, tool, build=False,
+        expected_source_digest=args.expected_source_digest,
+        expected_backend_sha256=args.expected_backend_sha256)
+    root = Path(args.corpus).resolve()
     corpus = json.loads((root / "corpus.json").read_text())
     descriptor = next(item for item in corpus["cases"] if item["id"] == args.case)
     case = json.loads((root / descriptor["input"]).read_text())
@@ -69,18 +140,7 @@ def main():
             any(not isinstance(value, int) or isinstance(value, bool) or value not in {0, 1}
                 for value in prelude_purposes)):
         raise SystemExit("replay prelude_purposes must be a same-length integer 0/1 list")
-    source_digest = digest_sources(repo, tool)
-    debug = os.environ.get("GOODIX53X5_DEBUG", "0")
-    if debug not in {"0", "1"}:
-        raise SystemExit("GOODIX53X5_DEBUG must be 0 or 1")
-    cache_root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "milan-parity"
-    cache_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(cache_root, 0o700)
-    backend = cache_root / "builds" / f"{source_digest}-debug-{debug}" / "current-runner"
-    if not backend.exists():
-        backend.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        subprocess.run((str(tool / "build-current-runner"), "--repo", str(repo),
-                        "--output", str(backend), "--debug", debug), check=True)
+    backend = Path(identity["backend_path"])
     command = [str(backend), "--case-id", args.case, "--purpose", replay["purpose"],
                "--setup", str(artifact_path(root, case, replay["setup"])),
                "--tcode", str(replay["tcode"]), "--dac-high", str(replay["dac_high"]),

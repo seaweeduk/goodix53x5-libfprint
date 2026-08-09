@@ -139,8 +139,9 @@ struct _FpiDeviceGoodix53x5
   FpiDeviceAction pending_result_action;
   FpiMatchResult  pending_verify_result;
   FpPrint        *pending_identify_match;
+  FpPrint        *pending_update_target;
+  GVariant       *pending_update_data;
   GError         *pending_result_error;
-  gboolean        pending_updated;
   GError         *pending_learning_error;
 
   /* Native CPU work is isolated in one cancellable task. Only its callback on
@@ -159,6 +160,7 @@ struct _FpiDeviceGoodix53x5
 #ifdef GOODIX53X5_DEBUG
   GoodixDebugTiming debug_timing;
   gchar             debug_capture_session_id[37];
+  guint64           debug_chronology;
 #endif
 
   /* Enrollment tracking */

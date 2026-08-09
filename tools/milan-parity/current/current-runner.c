@@ -160,24 +160,6 @@ parse_gallery (GPtrArray  *owned_bytes,
       bytes = load_bytes (separator + 1, error);
       if (!bytes)
         return FALSE;
-      /* Corpus v1 galleries may predate the raw native-payload boundary. Keep
-       * that compatibility in the parity tool, never in the production driver. */
-      {
-        static const guint8 legacy_prefix[] = "G53M\x03\x00";
-        gsize size;
-        const guint8 *data = g_bytes_get_data (bytes, &size);
-
-        if (size > sizeof(legacy_prefix) - 1 &&
-            memcmp (data, legacy_prefix, sizeof(legacy_prefix) - 1) == 0)
-          {
-            GBytes *native = g_bytes_new_from_bytes (
-              bytes, sizeof(legacy_prefix) - 1,
-              size - (sizeof(legacy_prefix) - 1));
-
-            g_bytes_unref (bytes);
-            bytes = native;
-          }
-      }
       input = goodix_milan_runtime_gallery_input_new ((guint) index, bytes);
       g_ptr_array_add (owned_bytes, g_steal_pointer (&bytes));
       g_ptr_array_add (owned_inputs, input);
@@ -212,7 +194,14 @@ main (int argc, char **argv)
   guint final_winner = G_MAXUINT;
   guint final_winner_position = G_MAXUINT;
   guint final_study_action = 0;
+  gboolean final_preprocess_attempted = FALSE;
+  gboolean final_preprocess_completed = FALSE;
+  gboolean final_extraction_attempted = FALSE;
+  gboolean final_extraction_completed = FALSE;
+  gboolean final_study_attempted = FALSE;
+  gboolean final_study_completed = FALSE;
   g_autofree gchar *final_candidate_hash = NULL;
+  g_autofree gchar *final_study_action_value = NULL;
   g_autofree gchar *study_outputs = NULL;
   g_autoptr(GString) final_gallery = g_string_new ("[");
   gboolean first_gallery = TRUE;
@@ -309,20 +298,25 @@ main (int argc, char **argv)
       preprocess_status = goodix_milan_preprocess (
         &phase_state, &phase_profile, setup, live, stage_purpose, processed,
         &quality, &coverage);
-      processed_hash = hash_data (processed, GOODIX_MILAN_SENSOR_PIXELS);
+      if (preprocess_status == 0 ||
+          preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
+        processed_hash = hash_data (processed, GOODIX_MILAN_SENSOR_PIXELS);
       phase_name = g_strdup_printf ("stage-%02" G_GSIZE_FORMAT "-preprocess",
                                     phase_number);
       phase_outputs = g_strdup_printf (
-        "{\"coverage_i32\":%d,\"processed_image_sha256\":\"%s\",\"quality_i32\":%d,"
-        "\"status_i32\":%d}", coverage, processed_hash, quality,
-        preprocess_status);
+        "{\"coverage_i32\":%d,\"processed_image_sha256\":%s%s%s,\"quality_i32\":%d,"
+        "\"status_i32\":%d}", coverage,
+        processed_hash ? "\"" : "null", processed_hash ? processed_hash : "",
+        processed_hash ? "\"" : "", quality, preprocess_status);
       if (emit_stage)
         append_phase (phases, &first_phase, phase_name, phase_outputs);
 
       if (prelude_stage)
         {
           if (preprocess_status != 0 &&
-              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY)
+              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY &&
+              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION &&
+              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
             {
               g_set_error_literal (&error, G_OPTION_ERROR,
                                    G_OPTION_ERROR_FAILED,
@@ -349,7 +343,9 @@ main (int argc, char **argv)
         }
       final_status = output->status;
       if (output->preprocess_state_valid &&
-          (memcmp (&output->preprocess_state, &phase_state, sizeof(phase_state)) != 0 ||
+          (memcmp (&output->preprocess_state, &phase_state,
+                   G_STRUCT_OFFSET (GoodixMilanPreprocessState,
+                                    extraction_classification)) != 0 ||
            memcmp (&output->profile_state, &phase_profile, sizeof(phase_profile)) != 0 ||
            output->quality != quality || output->coverage != coverage))
         {
@@ -381,7 +377,12 @@ main (int argc, char **argv)
               output->probe_record_count, probe_hash);
           else
             phase_outputs = g_strdup_printf (
-              "{\"active_record_count_u32\":%u}", output->probe_record_count);
+              "{\"active_record_count_u32\":%u,\"partition0_count_u32\":%u,"
+              "\"partition1_count_u32\":%u,\"probe_record_count_u32\":%u,"
+              "\"probe_template_sha256\":\"%s\"}",
+              output->probe_record_count, output->probe_partition0_count,
+              output->probe_partition1_count, output->probe_record_count,
+              probe_hash);
           append_phase (phases, &first_phase, phase_name, phase_outputs);
         }
       if (!prelude_stage && stage_purpose == GOODIX_MILAN_PURPOSE_ENROLL &&
@@ -413,10 +414,31 @@ main (int argc, char **argv)
       if (target_stage && stage_purpose == GOODIX_MILAN_PURPOSE_IDENTIFY &&
           purpose == GOODIX_MILAN_PURPOSE_IDENTIFY)
         {
+          if (!output->probe_template)
+            append_phase (
+              phases, &first_phase, "stage-01-extract-antifake",
+              "{\"active_record_count_u32\":null,"
+              "\"partition0_count_u32\":null,"
+              "\"partition1_count_u32\":null,"
+              "\"probe_record_count_u32\":null,"
+              "\"probe_template_sha256\":null}");
           for (gsize position = 0; position < output->gallery_results->len; position++)
             {
               GoodixMilanRuntimeGalleryResult *result =
                 g_ptr_array_index (output->gallery_results, position);
+              g_autofree gchar *before_match_occupancy = NULL;
+              g_autofree gchar *after_match_occupancy = NULL;
+              g_autofree gchar *after_study_occupancy = NULL;
+
+              if (result->queue_before_match_observed)
+                before_match_occupancy = g_strdup_printf (
+                  "%" G_GSIZE_FORMAT, result->queue_occupied_before_match);
+              if (result->queue_after_match_observed)
+                after_match_occupancy = g_strdup_printf (
+                  "%" G_GSIZE_FORMAT, result->queue_occupied_after_match);
+              if (result->queue_after_study_observed)
+                after_study_occupancy = g_strdup_printf (
+                  "%" G_GSIZE_FORMAT, result->queue_occupied_after_study);
 
               if (!first_gallery)
                 g_string_append_c (final_gallery, ',');
@@ -425,21 +447,35 @@ main (int argc, char **argv)
                 final_gallery,
                 "{\"accepted\":%s,\"after_match_sha256\":%s%s%s,"
                 "\"evaluated\":%s,\"gallery_index_u32\":%u,"
-                "\"gallery_position_u64\":%" G_GSIZE_FORMAT ",\"score_i32\":%d,"
+                "\"gallery_position_u64\":%" G_GSIZE_FORMAT ","
+                "\"queue_occupied_after_match_u64\":%s,"
+                "\"queue_occupied_after_study_u64\":%s,"
+                "\"queue_occupied_before_match_u64\":%s,"
+                "\"score_i32\":%d,"
                 "\"valid\":%s}",
                 result->accepted ? "true" : "false",
                 result->after_match_sha256[0] ? "\"" : "null",
                 result->after_match_sha256,
                 result->after_match_sha256[0] ? "\"" : "",
                 result->evaluated ? "true" : "false", result->gallery_index,
-                result->gallery_position, result->score,
+                result->gallery_position,
+                after_match_occupancy ? after_match_occupancy : "null",
+                after_study_occupancy ? after_study_occupancy : "null",
+                before_match_occupancy ? before_match_occupancy : "null",
+                result->score,
                 result->valid ? "true" : "false");
             }
           final_score = output->score;
           final_winner = output->winner_index;
           final_winner_position = output->winner_position > G_MAXUINT
-                                    ? G_MAXUINT : (guint) output->winner_position;
+                                     ? G_MAXUINT : (guint) output->winner_position;
           final_study_action = output->study_action;
+          final_preprocess_attempted = output->preprocess_attempted;
+          final_preprocess_completed = output->preprocess_completed;
+          final_extraction_attempted = output->extraction_attempted;
+          final_extraction_completed = output->extraction_completed;
+          final_study_attempted = output->study_attempted;
+          final_study_completed = output->study_completed;
           if (output->final_candidate)
             final_candidate_hash = hash_bytes (output->final_candidate);
         }
@@ -449,11 +485,14 @@ main (int argc, char **argv)
     }
   if (purpose == GOODIX_MILAN_PURPOSE_IDENTIFY)
     {
+      final_study_action_value = final_study_attempted
+                                   ? g_strdup_printf ("%u", final_study_action)
+                                   : g_strdup ("null");
       study_outputs = g_strdup_printf (
-        "{\"final_candidate_sha256\":%s%s%s,\"study_action_u32\":%u}",
+        "{\"final_candidate_sha256\":%s%s%s,\"study_action_u32\":%s}",
         final_candidate_hash ? "\"" : "null",
         final_candidate_hash ? final_candidate_hash : "",
-        final_candidate_hash ? "\"" : "", final_study_action);
+        final_candidate_hash ? "\"" : "", final_study_action_value);
       append_phase (phases, &first_phase, "stage-01-study", study_outputs);
     }
   g_string_append_c (phases, ']');
@@ -465,7 +504,7 @@ main (int argc, char **argv)
 
       g_print ("{\"case_id\":\"%s\",\"phases\":%s,\"policy\":{"
                "\"anti_fake_mode\":1,\"boundary_policy\":\"canonical-zero-v1\","
-               "\"print_schema\":3,\"profile\":9,\"subtype\":12},"
+               "\"print_schema\":4,\"profile\":9,\"subtype\":12},"
                "\"result\":{\"accepted_stages_u32\":%u,"
                "\"final_template_sha256\":%s%s%s},"
                "\"schema\":\"milan-parity-record/v1\"}\n",
@@ -477,10 +516,14 @@ main (int argc, char **argv)
     {
       g_print ("{\"case_id\":\"%s\",\"phases\":%s,\"policy\":{"
                "\"anti_fake_mode\":1,\"boundary_policy\":\"canonical-zero-v1\","
-               "\"print_schema\":3,\"profile\":9,\"subtype\":12},"
+               "\"print_schema\":4,\"profile\":9,\"subtype\":12},"
                "\"result\":{\"accepted\":%s,\"final_candidate_sha256\":%s%s%s,"
-               "\"gallery\":%s,\"score_i32\":%d,\"status_u32\":%u,"
-               "\"study_action_u32\":%u,\"winner_index_u32\":%u,"
+               "\"gallery\":%s,\"lifecycle\":{"
+               "\"extraction\":{\"attempted\":%s,\"completed\":%s},"
+               "\"preprocess\":{\"attempted\":%s,\"completed\":%s},"
+               "\"study\":{\"attempted\":%s,\"completed\":%s}},"
+               "\"score_i32\":%d,\"status_u32\":%u,"
+               "\"study_action_u32\":%s,\"winner_index_u32\":%u,"
                "\"winner_position_u32\":%u},"
                "\"schema\":\"milan-parity-record/v1\"}\n",
                case_id, phases->str,
@@ -488,7 +531,13 @@ main (int argc, char **argv)
                final_candidate_hash ? "\"" : "null",
                final_candidate_hash ? final_candidate_hash : "",
                final_candidate_hash ? "\"" : "", final_gallery->str,
-               final_score, final_status, final_study_action, final_winner,
+               final_extraction_attempted ? "true" : "false",
+               final_extraction_completed ? "true" : "false",
+               final_preprocess_attempted ? "true" : "false",
+               final_preprocess_completed ? "true" : "false",
+               final_study_attempted ? "true" : "false",
+               final_study_completed ? "true" : "false",
+               final_score, final_status, final_study_action_value, final_winner,
                final_winner_position);
     }
   return 0;

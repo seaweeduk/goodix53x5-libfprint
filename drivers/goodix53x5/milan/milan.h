@@ -20,7 +20,15 @@
 #define GOODIX_MILAN_SENSOR_COLUMNS 108
 #define GOODIX_MILAN_SENSOR_PIXELS \
   (GOODIX_MILAN_SENSOR_ROWS * GOODIX_MILAN_SENSOR_COLUMNS)
+#define GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS 88
+#define GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS 104
+#define GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS \
+  (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS * \
+   GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS)
+#define GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION 0x29aa
+#define GOODIX_MILAN_PREPROCESS_RETRY_SETUP_ADMISSION 0x29bb
 #define GOODIX_MILAN_PREPROCESS_RETRY 0x7531
+#define GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION 0xc351
 #define GOODIX_MILAN_ANTIFAKE_AMBIGUOUS 1
 #define GOODIX_MILAN_ANTIFAKE_SIZE 0x1abcU
 #define GOODIX_MILAN_ANTIFAKE_DEFINED_MATERIAL_SIZE GOODIX_MILAN_ANTIFAKE_SIZE
@@ -251,6 +259,23 @@ typedef struct
 
 typedef struct
 {
+  uint8_t  retained_class_planes[3]
+                                [GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS];
+  uint32_t retained_count;
+  int32_t  prior_coverage;
+  uint32_t high_class_hysteresis;
+  int32_t  prior_merged_high_class;
+} GoodixMilanExtractionClassificationState;
+
+typedef struct
+{
+  uint8_t primary_histogram_state;
+  uint8_t prior_selected_plane;
+  uint8_t promoted_secondary_histogram_state;
+} GoodixMilanExtractionAuxiliaryState;
+
+typedef struct
+{
   uint16_t setup_map[GOODIX_MILAN_SENSOR_PIXELS];
   uint16_t calibration_map[GOODIX_MILAN_SENSOR_PIXELS];
   uint16_t coarse_reference[GOODIX_MILAN_SENSOR_PIXELS / 4];
@@ -273,6 +298,11 @@ typedef struct
   int32_t  primary_contrast_valid;
   int32_t  selected_refined;
   GoodixMilanPostRenderObservations post_render;
+  /* Retained planes/hysteresis persist in generation-owned preprocess state.
+   * Auxiliary bytes describe the latest completed preprocessing call and feed
+   * extraction/matcher policy. */
+  GoodixMilanExtractionClassificationState extraction_classification;
+  GoodixMilanExtractionAuxiliaryState extraction_auxiliary;
 } GoodixMilanPreprocessState;
 
 _Static_assert (sizeof (GoodixMilanProfile9ClassCounts) == 12,
@@ -368,13 +398,44 @@ _Static_assert (offsetof (GoodixMilanPreprocessState, post_render) +
 _Static_assert (offsetof (GoodixMilanPreprocessState, post_render) +
                   offsetof (GoodixMilanPostRenderObservations, status) == 147392,
                 "Milan preprocess post-render status moved");
-_Static_assert (sizeof (GoodixMilanPreprocessState) == 147396,
+_Static_assert (sizeof (GoodixMilanExtractionClassificationState) == 27472,
+                "Milan extraction classification state size changed");
+_Static_assert (_Alignof (GoodixMilanExtractionClassificationState) == 4,
+                "Milan extraction classification state alignment changed");
+_Static_assert (offsetof (GoodixMilanPreprocessState,
+                          extraction_classification) == 147396,
+                "Milan extraction classification state moved");
+_Static_assert (offsetof (GoodixMilanExtractionClassificationState,
+                          retained_count) == 27456,
+                "Milan extraction retained count moved");
+_Static_assert (offsetof (GoodixMilanExtractionClassificationState,
+                          prior_coverage) == 27460,
+                "Milan extraction prior coverage moved");
+_Static_assert (offsetof (GoodixMilanExtractionClassificationState,
+                          high_class_hysteresis) == 27464,
+                "Milan extraction hysteresis moved");
+_Static_assert (offsetof (GoodixMilanExtractionClassificationState,
+                          prior_merged_high_class) == 27468,
+                "Milan extraction prior high class moved");
+_Static_assert (sizeof (GoodixMilanExtractionAuxiliaryState) == 3,
+                "Milan extraction auxiliary state size changed");
+_Static_assert (offsetof (GoodixMilanPreprocessState,
+                          extraction_auxiliary) == 174868,
+                "Milan extraction auxiliary state moved");
+_Static_assert (sizeof (GoodixMilanPreprocessState) == 174872,
                 "Milan preprocess state size changed");
 _Static_assert (_Alignof (GoodixMilanPreprocessState) == 4,
                 "Milan preprocess state alignment changed");
 
 void goodix_milan_preprocess_reset (
   GoodixMilanPreprocessState *state);
+
+int goodix_milan_preprocess_clamp_and_admit_raw (
+  uint16_t *frame,
+  size_t    rows,
+  size_t    columns,
+  size_t    border,
+  unsigned  required_percent);
 
 int goodix_milan_preprocess (
   GoodixMilanPreprocessState *state,
@@ -421,6 +482,7 @@ int goodix_milan_profile9_build_contrast_mask (
 int goodix_milan_profile9_build_broken_mask (
   GoodixMilanPreprocessState *state,
   const uint16_t             *difference,
+  const uint16_t             *setup_map,
   const uint16_t             *normalized_live,
   const uint8_t              *contrast_mask,
   size_t                      rows,
@@ -1073,6 +1135,7 @@ int goodix_milan_study_append (
   int             apply_dispatcher_prepass,
   int             complete_dispatcher_transaction,
   int             finalize_study,
+  int32_t         live_overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   uint8_t        *packed,
   size_t          packed_capacity,
   size_t         *packed_size);
@@ -1094,6 +1157,7 @@ int goodix_milan_study_replace (
   const int32_t   primary_transform[6],
   int             complete_dispatcher_transaction,
   int             finalize_study,
+  int32_t         live_overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   uint8_t        *packed,
   size_t          packed_capacity,
   size_t         *packed_size,
