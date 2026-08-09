@@ -26,6 +26,7 @@
   (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS * \
    GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS)
 #define GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION 0x29aa
+#define GOODIX_MILAN_PREPROCESS_RETRY_SETUP_ADMISSION 0x29bb
 #define GOODIX_MILAN_PREPROCESS_RETRY 0x7531
 #define GOODIX_MILAN_ANTIFAKE_AMBIGUOUS 1
 #define GOODIX_MILAN_ANTIFAKE_SIZE 0x1abcU
@@ -427,6 +428,13 @@ _Static_assert (_Alignof (GoodixMilanPreprocessState) == 4,
 
 void goodix_milan_preprocess_reset (
   GoodixMilanPreprocessState *state);
+
+int goodix_milan_preprocess_clamp_and_admit_raw (
+  uint16_t *frame,
+  size_t    rows,
+  size_t    columns,
+  size_t    border,
+  unsigned  required_percent);
 
 int goodix_milan_preprocess (
   GoodixMilanPreprocessState *state,

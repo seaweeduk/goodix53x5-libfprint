@@ -25,7 +25,6 @@
 #define MILAN_PROFILE9_UPDATE_BASE UINT16_C(9000)
 #define MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MIN_EXCLUSIVE UINT16_C(100)
 #define MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MAX_EXCLUSIVE UINT16_C(0x0ed8)
-#define MILAN_PROFILE9_RAW_ADMISSION_REQUIRED_PERCENT 15
 
 static const uint16_t milan_update_kernel[5] = {
   7869, 15328, 19142, 15328, 7869,
@@ -58,9 +57,6 @@ static void profile9_update_source (const uint16_t *normalized_live,
 static int profile9_normalize_live (uint16_t *frame,
                                     size_t    rows,
                                     size_t    columns);
-static int milan_profile9_live_frame_admitted (const uint16_t *frame,
-                                                size_t          rows,
-                                                size_t          columns);
 static void milan_profile9_encode_metadata (uint8_t       *image,
                                             const uint8_t *mask,
                                             size_t         rows,
@@ -176,12 +172,10 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
     {
       if (setup_map[i] > MILAN_ADC_MAX)
         setup_map[i] = MILAN_ADC_MAX;
-      if (normalized_live[i] > MILAN_ADC_MAX)
-        normalized_live[i] = MILAN_ADC_MAX;
     }
-  if (!milan_profile9_live_frame_admitted (
+  if (!goodix_milan_preprocess_clamp_and_admit_raw (
         normalized_live, GOODIX_MILAN_SENSOR_ROWS,
-        GOODIX_MILAN_SENSOR_COLUMNS))
+        GOODIX_MILAN_SENSOR_COLUMNS, 2, 15))
     {
       result = GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION;
       goto out;
@@ -303,18 +297,26 @@ is_invalid_border_sample (uint16_t sample)
   return sample == 0 || sample == MILAN_ADC_MAX;
 }
 
-static int
-milan_profile9_live_frame_admitted (const uint16_t *frame,
-                                     size_t          rows,
-                                     size_t          columns)
+int
+goodix_milan_preprocess_clamp_and_admit_raw (uint16_t *frame,
+                                              size_t    rows,
+                                              size_t    columns,
+                                              size_t    border,
+                                              unsigned  required_percent)
 {
   size_t samples = 0;
   size_t admitted = 0;
 
-  if (!frame || rows <= 4 || columns <= 4)
+  if (!frame || required_percent > 100 || border > rows / 2 ||
+      border > columns / 2 || rows - border <= border ||
+      columns - border <= border || columns > SIZE_MAX / rows)
     return 0;
-  for (size_t row = 2; row < rows - 2; row++)
-    for (size_t column = 2; column < columns - 2; column++)
+
+  for (size_t i = 0; i < rows * columns; i++)
+    if (frame[i] > MILAN_ADC_MAX)
+      frame[i] = MILAN_ADC_MAX;
+  for (size_t row = border; row < rows - border; row++)
+    for (size_t column = border; column < columns - border; column++)
       {
         uint16_t sample = frame[row * columns + column];
 
@@ -322,8 +324,8 @@ milan_profile9_live_frame_admitted (const uint16_t *frame,
         admitted += sample > MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MIN_EXCLUSIVE &&
                     sample < MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MAX_EXCLUSIVE;
       }
-  return samples * MILAN_PROFILE9_RAW_ADMISSION_REQUIRED_PERCENT <
-         admitted * 100;
+  return admitted > (samples / 100) * required_percent +
+                    ((samples % 100) * required_percent) / 100;
 }
 
 int

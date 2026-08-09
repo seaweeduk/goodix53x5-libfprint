@@ -98,6 +98,7 @@ goodix_milan_base_attempt_reset (GoodixMilanBaseAttempt *attempt)
   goodix_milan_base_attempt_release_frames (attempt);
   attempt->stage = GOODIX_MILAN_BASE_STAGE_IDLE;
   attempt->mad = 0;
+  attempt->admission_status = 0;
 }
 
 void
@@ -109,6 +110,7 @@ goodix_milan_base_attempt_cancel (GoodixMilanBaseAttempt *attempt)
   goodix_milan_base_attempt_release_frames (attempt);
   attempt->stage = GOODIX_MILAN_BASE_STAGE_CANCELLED;
   attempt->mad = 0;
+  attempt->admission_status = 0;
 }
 
 void
@@ -137,6 +139,7 @@ goodix_milan_base_attempt_admit (GoodixMilanBaseAttempt *attempt,
   g_return_val_if_fail (attempt != NULL, FALSE);
 
   attempt->stage = GOODIX_MILAN_BASE_STAGE_ADMIT_PAIR;
+  attempt->admission_status = 0;
   if (!goodix_milan_base_pair_mad (attempt->tx_on, attempt->tx_on_values,
                                    attempt->tx_off, attempt->tx_off_values,
                                    &attempt->mad, error))
@@ -147,6 +150,17 @@ goodix_milan_base_attempt_admit (GoodixMilanBaseAttempt *attempt,
 
   if (attempt->mad >= GOODIX_MILAN_BASE_MAD_LIMIT)
     {
+      goodix_milan_base_attempt_release_frames (attempt);
+      attempt->stage = GOODIX_MILAN_BASE_STAGE_REJECTED;
+      return FALSE;
+    }
+
+  if (!goodix_milan_preprocess_clamp_and_admit_raw (
+        attempt->tx_on, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
+        GOODIX_MILAN_BASE_BORDER, 85))
+    {
+      attempt->admission_status =
+        GOODIX_MILAN_PREPROCESS_RETRY_SETUP_ADMISSION;
       goodix_milan_base_attempt_release_frames (attempt);
       attempt->stage = GOODIX_MILAN_BASE_STAGE_REJECTED;
       return FALSE;
