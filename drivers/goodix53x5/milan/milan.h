@@ -1126,6 +1126,7 @@ int goodix_milan_study_append (
   int             apply_dispatcher_prepass,
   int             complete_dispatcher_transaction,
   int             finalize_study,
+  int32_t         live_overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   uint8_t        *packed,
   size_t          packed_capacity,
   size_t         *packed_size);
@@ -1147,6 +1148,7 @@ int goodix_milan_study_replace (
   const int32_t   primary_transform[6],
   int             complete_dispatcher_transaction,
   int             finalize_study,
+  int32_t         live_overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   uint8_t        *packed,
   size_t          packed_capacity,
   size_t         *packed_size,
