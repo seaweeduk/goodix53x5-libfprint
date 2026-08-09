@@ -488,6 +488,7 @@ goodix_milan_study_append (
     { 0xba, 1 },
     { 0xbb, 0 },
     { 0xbc, (int32_t) current->feature_count },
+    { 0xbd, 0 },
     { 0xbe, matched_study_count },
   };
   for (size_t i = 0; i < sizeof(scalar_patches) / sizeof(scalar_patches[0]);

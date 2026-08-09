@@ -147,15 +147,13 @@ goodix_match_study_feature_internal (
 
   probe_milan = probe_feature;
   probe_milan_len = probe_feature_len;
-  if (probe_milan_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE - 45 ||
-      enrolled_milan_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE - probe_milan_len -
-                              45)
+  if (probe_milan_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE)
     return GOODIX_SIGFM_TEMPLATE_INVALID;
 
   enrolled = g_malloc (sizeof(*enrolled));
   probe = g_malloc (sizeof(*probe));
   updated = g_malloc (sizeof(*updated));
-  packed_capacity = enrolled_milan_len + probe_milan_len + 45;
+  packed_capacity = GOODIX_MILAN_TEMPLATE_MAX_SIZE;
   packed = g_malloc (packed_capacity);
   if (goodix_milan_template_unpack (
         enrolled_milan, enrolled_milan_len, enrolled) != 0 ||
