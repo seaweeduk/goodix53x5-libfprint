@@ -166,8 +166,13 @@ milan_antifake_build_class (
 
   if (chip_type == 12)
     {
+      if (columns != 0 && rows > SIZE_MAX / columns)
+        goto out;
       size_t packed_pixels = rows * columns;
       uint8_t *packed_mask = goodix_milan_antifake_mask (antifake);
+
+      if (packed_pixels > GOODIX_MILAN_ANTIFAKE_MASK_SIZE * 8)
+        goto out;
 
       memset (packed_mask, 0, GOODIX_MILAN_ANTIFAKE_MASK_SIZE);
       for (size_t i = 0; i < packed_pixels; i++)
