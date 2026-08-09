@@ -118,7 +118,7 @@ goodix_milan_study_policy_select (const GoodixMilanStudyPolicyInput *input,
   else if (input->retained_flag == 0)
     {
       if ((int64_t) input->primary_transform_area * 100 <=
-          (int64_t) GOODIX_MILAN_STUDY_MASK_SIZE * 80)
+          (int64_t) (104 * 88) * 80)
         return 0;
       selected = matched;
       selected_index = input->matched_feature_index;
@@ -207,6 +207,25 @@ goodix_milan_study_policy_footprint_area (const int32_t transform[6])
 
   memset (mask, 1, sizeof(mask));
   return goodix_milan_study_policy_remove_footprint (mask, transform);
+}
+
+int32_t
+goodix_milan_study_policy_full_footprint_area (const int32_t transform[6])
+{
+  int32_t area = 0;
+
+  for (int32_t y = 0; y < 88; y++)
+    for (int32_t x = 0; x < 104; x++)
+      {
+        int64_t mapped_x = (int64_t) transform[0] * x +
+                           (int64_t) transform[1] * y + transform[2];
+        int64_t mapped_y = (int64_t) transform[3] * x +
+                           (int64_t) transform[4] * y + transform[5];
+
+        area += mapped_x >= 0 && mapped_x <= 103 * 0x100 &&
+                mapped_y >= 0 && mapped_y <= 87 * 0x100;
+      }
+  return area;
 }
 
 int32_t
