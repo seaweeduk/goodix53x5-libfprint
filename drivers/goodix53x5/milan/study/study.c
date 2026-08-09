@@ -626,12 +626,8 @@ milan_study_policy_derive (
   input->template_counter = (int32_t) goodix_milan_template_read_u32 (
     current->tail_state + 0x510);
 
-  int32_t adjusted_primary[6];
-  memcpy (adjusted_primary, primary_transform, sizeof(adjusted_primary));
-  adjusted_primary[2] >>= 1;
-  adjusted_primary[5] >>= 1;
   input->primary_transform_area =
-    goodix_milan_study_policy_footprint_area (adjusted_primary);
+    goodix_milan_study_policy_full_footprint_area (primary_transform);
 
   for (size_t i = 0; i < current->feature_count; i++)
     {
