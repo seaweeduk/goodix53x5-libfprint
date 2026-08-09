@@ -298,7 +298,8 @@ main (int argc, char **argv)
       preprocess_status = goodix_milan_preprocess (
         &phase_state, &phase_profile, setup, live, stage_purpose, processed,
         &quality, &coverage);
-      if (preprocess_status == 0)
+      if (preprocess_status == 0 ||
+          preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
         processed_hash = hash_data (processed, GOODIX_MILAN_SENSOR_PIXELS);
       phase_name = g_strdup_printf ("stage-%02" G_GSIZE_FORMAT "-preprocess",
                                     phase_number);
@@ -314,7 +315,8 @@ main (int argc, char **argv)
         {
           if (preprocess_status != 0 &&
               preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY &&
-              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION)
+              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION &&
+              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
             {
               g_set_error_literal (&error, G_OPTION_ERROR,
                                    G_OPTION_ERROR_FAILED,

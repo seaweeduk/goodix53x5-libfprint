@@ -127,6 +127,7 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   int selected_refined;
   int metadata_mode;
   int apply_metadata_mask;
+  int classification_status;
   int post_status;
   int result = -1;
 
@@ -236,10 +237,12 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
     }
   admitted_percent = (uint16_t) (admitted_pixels * 100 / count);
 
-  if (goodix_milan_profile9_build_broken_mask (
-        state, difference, setup_map, normalized_live, contrast_mask,
-        GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, broken_mask,
-        NULL, &metadata_mode, &apply_metadata_mask) != 0)
+  classification_status = goodix_milan_profile9_build_broken_mask (
+    state, difference, setup_map, normalized_live, contrast_mask,
+    GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, broken_mask,
+    NULL, &metadata_mode, &apply_metadata_mask);
+  if (classification_status != 0 &&
+      classification_status != GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
     goto out;
 
   if (goodix_milan_preprocess_contrast (
@@ -273,7 +276,8 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   memcpy (state->primary_contrast, contrast, count);
   state->primary_contrast_valid = 1;
   state->selected_refined = selected_refined;
-  result = post_status;
+  result = classification_status == GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION
+             ? classification_status : post_status;
 
 out:
   free (selection_mask);

@@ -314,7 +314,8 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
 #endif
   if (preprocess_status != 0 &&
       preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY &&
-      preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION)
+      preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION &&
+      preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
     {
       output->status = GOODIX_MILAN_RUNTIME_RETRY;
       g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
@@ -324,12 +325,14 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
     }
 #ifdef GOODIX53X5_DEBUG
   output->preprocess_completed = preprocess_status == 0;
-  if (output->preprocess_completed)
+  if (output->preprocess_completed ||
+      preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
     output->processed_image = g_bytes_new (processed, GOODIX_MILAN_SENSOR_PIXELS);
 #endif
   output->preprocess_state_valid = TRUE;
   if (preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY ||
-      preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION)
+      preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION ||
+      preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
     {
       output->status = GOODIX_MILAN_RUNTIME_RETRY;
       g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,

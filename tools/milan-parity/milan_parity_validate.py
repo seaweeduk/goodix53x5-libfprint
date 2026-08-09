@@ -352,6 +352,11 @@ def validate_runtime(value: Any, path: Path, match: re.Match[str],
     if preprocess_status in {0x29AA, 0x29BB} and (
             runtime["coverage_i32"] != 0 or runtime["quality_i32"] != 0):
         raise HarnessError(f"early preprocess retry outputs must be zero: {path.name}")
+    if preprocess_status == 0xC351 and (
+            runtime["status_u32"] != 2 or extraction["attempted"] or
+            study["attempted"] or runtime["gallery"] or
+            runtime["probe_record_count_u32"] != 0):
+        raise HarnessError(f"classification retry lifecycle differs: {path.name}")
     if extraction["attempted"] and not preprocess["completed"]:
         raise HarnessError(f"extraction preceded completed preprocessing: {path.name}")
     if study["attempted"] and not extraction["completed"]:
@@ -465,7 +470,8 @@ def validate_runtime(value: Any, path: Path, match: re.Match[str],
     resolved = _artifacts(dump, runtime["artifacts"], len(runtime["gallery"]),
                           f"{path.name}.artifacts")
     processed_present = resolved["processed_image"] is not None
-    if processed_present is not preprocess["completed"]:
+    processed_expected = preprocess["completed"] or preprocess_status == 0xC351
+    if processed_present is not processed_expected:
         raise HarnessError(
             f"processed_image artifact/hash presence differs from runtime state: {path.name}")
     if ((resolved["native_probe"] is not None) is not extraction["completed"]):
@@ -594,7 +600,7 @@ def _chronology(runtimes: list[dict[str, Any]]) -> None:
 
 def _preprocess_state_committed(runtime: dict[str, Any]) -> bool:
     return (not runtime["cancellation"]["runtime_observed"] and
-            runtime["preprocess_status_i32"] in {0, 0x29AA, 0x7531})
+            runtime["preprocess_status_i32"] in {0, 0x29AA, 0x7531, 0xC351})
 
 
 def _prelude(runtimes: list[dict[str, Any]], current: dict[str, Any]) -> list[tuple[Path, int]]:
