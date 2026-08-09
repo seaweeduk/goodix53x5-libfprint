@@ -39,18 +39,18 @@
 #define MALLOC_IAT_RVA 0x9a328
 #define FREE_IAT_RVA 0x9a330
 #define FEATURE_DELETE_RVA 0x37b10
-#define ENQUEUE_RVA 0x462a0
-#define QUEUE_POINTERS_OFFSET 0x8d10
 #define QUEUE_RANKS_OFFSET 0x8db0
 #define QUEUE_CAPACITY 20
 #define FEATURE_MATRIX_OFFSET 0x20
 #define FEATURE_MATRIX_BYTES 2288
-#define PREPROCESS_RETRY_VALIDATION_A 0x29aa
+#define PREPROCESS_RETRY_RAW_ADMISSION 0x29aa
 #define PREPROCESS_RETRY_VALIDATION_B 0x29bb
 #define PREPROCESS_RETRY_STATEFUL     0x7531
 #define FEATURE_MATRIX_ALLOCATION (0x20 + FEATURE_MATRIX_BYTES)
 #define FEATURE_MATRIX_SHADOW_ALLOCATION (FEATURE_MATRIX_ALLOCATION + 1)
 #define FEATURE_RECORD_LIMIT 150
+#define FEATURE_RECORD_SIZE 0x38
+#define TEMPLATE_TAIL_SIZE 0x520
 
 typedef struct
 {
@@ -126,9 +126,6 @@ typedef int32_t (*template_study_fn) (int32_t *updated);
 typedef void *(*dll_malloc_fn) (size_t size);
 typedef void (*dll_free_fn) (void *memory);
 typedef int32_t (*feature_delete_fn) (void **feature);
-typedef void (*enqueue_fn) (void *probe, void *gallery, void **queue,
-                            int32_t *ranks, uint32_t capacity);
-
 typedef struct
 {
   HMODULE module;
@@ -406,6 +403,255 @@ pack_template (oracle_api *api, void *object, packed_template *packed)
   return 1;
 }
 
+static void
+write_u32 (uint8_t *output, uint32_t value)
+{
+  memcpy (output, &value, sizeof (value));
+}
+
+static uint8_t *
+pack_tagged_u32 (uint8_t *output, uint8_t tag, uint32_t value)
+{
+  *output++ = tag;
+  write_u32 (output, value);
+  return output + sizeof (value);
+}
+
+static uint8_t *
+pack_bitmap (uint8_t *output, uint8_t tag, const uint8_t bitmap[286])
+{
+  *output++ = tag;
+  write_u32 (output, 286 + 25);
+  output += 4;
+  output = pack_tagged_u32 (output, 0xc1, 52);
+  output = pack_tagged_u32 (output, 0xc2, 44);
+  output = pack_tagged_u32 (output, 0xc3, UINT32_MAX);
+  output = pack_tagged_u32 (output, 0xc4, 8);
+  *output++ = 0xc5;
+  write_u32 (output, 286);
+  output += 4;
+  memcpy (output, bitmap, 286);
+  return output + 286;
+}
+
+static uint32_t
+template_crc32 (const uint8_t *data, size_t size)
+{
+  uint32_t crc = UINT32_MAX;
+
+  for (size_t i = 0; i < size; i++)
+    {
+      crc ^= data[i];
+      for (size_t bit = 0; bit < 8; bit++)
+        crc = (crc >> 1) ^
+              (0xedb88320U & (uint32_t) -(int32_t) (crc & 1));
+    }
+  return ~crc;
+}
+
+static int
+serialize_identify_probe (const void *probe, packed_template *packed,
+                          int32_t *record_count_out,
+                          int32_t *partition0_count_out)
+{
+  static const size_t bitmap_offsets[3] = { 0x08, 0x10, 0x18 };
+  static const uint8_t bitmap_tags[3] = { 0xb2, 0xcf, 0xcd };
+  static const size_t field_offsets[11] = {
+    0x110, 0x114, 0x118, 0x11c, 0x120, 0x124,
+    0x128, 0x12c, 0x130, 0x134, 0x14c,
+  };
+  static const uint8_t field_tags[11] = {
+    0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xc0,
+  };
+  static const uint8_t header_tags[13] = {
+    0x81, 0x98, 0x9a, 0x9b, 0x91, 0x97, 0x92,
+    0x9e, 0x9f, 0x9c, 0x9d, 0xfa, 0xfb,
+  };
+  static const uint32_t header_values[13] = {
+    0x11f248ea, 12, 88, 104, 1, 1, 1, 150, 150, 1, 1, 0, 0,
+  };
+  static const uint8_t descriptor_swap[8] = { 0, 1, 1, 0, 1, 0, 0, 1 };
+  static const char version[] = "Milan_v_3.01.09.10.50";
+  const uint8_t *feature = probe;
+  const uint8_t *records;
+  const uint8_t *antifake;
+  const uint8_t *bitmaps[3];
+  uint8_t tail[TEMPLATE_TAIL_SIZE];
+  int32_t record_count;
+  int32_t partition0_count;
+  int32_t optional_c7;
+  size_t feature_size;
+  size_t total_size;
+  uint8_t *output;
+
+  memset (packed, 0, sizeof (*packed));
+  if (!probe || !record_count_out || !partition0_count_out)
+    return 0;
+  memcpy (&record_count, feature + 0xf0, sizeof (record_count));
+  memcpy (&records, feature + 0xf8, sizeof (records));
+  memcpy (&antifake, feature + 0x160, sizeof (antifake));
+  memcpy (&optional_c7, feature + 0x150, sizeof (optional_c7));
+  memcpy (&partition0_count, feature + 0x118, sizeof (partition0_count));
+  if (record_count < 0 || record_count > FEATURE_RECORD_LIMIT ||
+      partition0_count < 0 || partition0_count > record_count ||
+      !records || !antifake)
+    return 0;
+  for (size_t i = 0; i < 3; i++)
+    {
+      const matrix_header *bitmap;
+
+      memcpy (&bitmap, feature + bitmap_offsets[i], sizeof (bitmap));
+      if (!bitmap || !bitmap->data || bitmap->size != 286)
+        return 0;
+      bitmaps[i] = bitmap->data;
+    }
+
+  feature_size = 7945 + (size_t) record_count * 32 +
+                 (optional_c7 != 0 ? 5 : 0);
+  total_size = feature_size + 1433;
+  if (total_size > INT32_MAX)
+    return 0;
+  packed->data = malloc (total_size);
+  if (!packed->data)
+    return 0;
+  packed->size = (int32_t) total_size;
+
+  packed->data[0] = 0x87;
+  packed->data[5] = 0x86;
+  output = packed->data + 10;
+  for (size_t i = 0; i < 13; i++)
+    output = pack_tagged_u32 (output, header_tags[i], header_values[i]);
+  *output++ = 0x95;
+  write_u32 (output, (uint32_t) (feature_size - 5));
+  output += 4;
+  output = pack_bitmap (output, bitmap_tags[0], bitmaps[0]);
+  output = pack_bitmap (output, bitmap_tags[1], bitmaps[1]);
+  *output++ = 0xce;
+  write_u32 (output, 72);
+  output += 4;
+  memcpy (output, feature + 0x28, 72);
+  output += 72;
+  output = pack_bitmap (output, bitmap_tags[2], bitmaps[2]);
+  *output++ = 0xb3;
+  write_u32 (output, (uint32_t) record_count);
+  output += 4;
+  *output++ = 0xbf;
+  *output++ = 1;
+  write_u32 (output, 0x1abc);
+  output += 4;
+  memcpy (output, antifake, 0x1abc);
+  output += 0x1abc;
+  *output++ = 0xb4;
+  write_u32 (output, (uint32_t) record_count * 32);
+  output += 4;
+  for (int32_t i = 0; i < record_count; i++)
+    {
+      const uint8_t *record = records + (size_t) i * FEATURE_RECORD_SIZE;
+      uint8_t *packed_record = output + (size_t) i * 32;
+      uint16_t x;
+      uint16_t y;
+      int16_t orientation;
+      uint32_t position;
+
+      memcpy (&x, record + 2, sizeof (x));
+      memcpy (&y, record + 4, sizeof (y));
+      memcpy (&orientation, record + 6, sizeof (orientation));
+      position = (((uint32_t) x << 12) | y) << 4 |
+                 (orientation < 0
+                    ? (uint8_t) ((-(int32_t) orientation >> 8) + 0x80)
+                    : (uint8_t) (orientation >> 8));
+      memcpy (packed_record, &position, sizeof (position));
+      for (size_t j = 0; j < 8; j++)
+        {
+          uint8_t first = record[16 + j];
+          uint8_t second = record[24 + j];
+          uint8_t high_first = ((first ^ second) & 0x0f) ^ first;
+          uint8_t high_second = ((first ^ second) & 0x0f) ^ second;
+
+          packed_record[4 + j * 2] =
+            descriptor_swap[j] == 0 ? high_second : high_first;
+          packed_record[5 + j * 2] =
+            descriptor_swap[j] == 0 ? high_first : high_second;
+        }
+      memcpy (packed_record + 20, record + 32, 4);
+      memcpy (packed_record + 24, record + 40, 8);
+    }
+  output += (size_t) record_count * 32;
+  for (size_t i = 0; i < 11; i++)
+    {
+      uint32_t value;
+
+      memcpy (&value, feature + field_offsets[i], sizeof (value));
+      output = pack_tagged_u32 (output, field_tags[i], value);
+    }
+  if (optional_c7 != 0)
+    output = pack_tagged_u32 (output, 0xc7, (uint32_t) optional_c7);
+
+  output = pack_tagged_u32 (output, 0x93, 20);
+  output = pack_tagged_u32 (output, 0xf2, UINT32_MAX);
+  output = pack_tagged_u32 (output, 0xf3, UINT32_MAX);
+  output = pack_tagged_u32 (output, 0xf4, UINT32_MAX);
+  output = pack_tagged_u32 (output, 0xf5, 0);
+  *output++ = 0x94;
+  write_u32 (output, 0x530);
+  output += 4;
+
+  memset (tail, 0, sizeof (tail));
+  memset (tail, 0xff, 200);
+  memset (tail, 0, sizeof (uint32_t));
+  memset (tail + 0xc8, 0xff, sizeof (uint32_t));
+  memcpy (tail + 0xcc, version, sizeof (version));
+  *output++ = 0xa1;
+  write_u32 (output, 200);
+  output += 4;
+  memcpy (output, tail, 200);
+  output += 200;
+  uint32_t value;
+  memcpy (&value, tail + 0xc8, sizeof (value));
+  output = pack_tagged_u32 (output, 0xa2, value);
+  *output++ = 0xa3;
+  write_u32 (output, 64);
+  output += 4;
+  memcpy (output, tail + 0xcc, 64);
+  output += 64;
+  *output++ = 0xa4;
+  write_u32 (output, 0x400);
+  output += 4;
+  memcpy (output, tail + 0x10c, 0x400);
+  output += 0x400;
+  for (size_t i = 0; i < 4; i++)
+    {
+      memcpy (&value, tail + 0x50c + i * 4, sizeof (value));
+      output = pack_tagged_u32 (output, (uint8_t) (0xa5 + i), value);
+    }
+  if ((size_t) (output - packed->data) != total_size)
+    {
+      free (packed->data);
+      memset (packed, 0, sizeof (*packed));
+      return 0;
+    }
+  write_u32 (packed->data + 6, (uint32_t) (total_size - 10));
+  write_u32 (packed->data + 1,
+             template_crc32 (packed->data + 10, total_size - 10));
+  *record_count_out = record_count;
+  *partition0_count_out = partition0_count;
+  return 1;
+}
+
+static int
+queue_occupancy (const int32_t ranks[QUEUE_CAPACITY])
+{
+  int occupied = 0;
+
+  for (int i = 0; i < QUEUE_CAPACITY; i++)
+    {
+      if (ranks[i] < -1 || ranks[i] >= QUEUE_CAPACITY)
+        return -1;
+      occupied += ranks[i] >= 0;
+    }
+  return occupied;
+}
+
 static int
 write_code_byte (uint8_t *address, uint8_t value)
 {
@@ -481,11 +727,10 @@ boundary_handler (PEXCEPTION_POINTERS exception)
 
 static int
 run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
-              const wchar_t *base_path, const wchar_t *live_path,
-              const wchar_t *template_path, int study_enabled,
-              int enqueue_current_probe,
-              const wchar_t *const *prelude_arguments,
-              int prelude_count)
+               const wchar_t *base_path, const wchar_t *live_path,
+               const wchar_t *template_path,
+               const wchar_t *const *prelude_arguments,
+               int prelude_count)
 {
   oracle_api api;
   uint16_t *base = NULL;
@@ -500,6 +745,7 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
   uint8_t processed_data[PROCESSED_FRAME_SIZE];
   image_descriptor processed;
   int32_t preprocess_quality[2] = { 0 };
+  int32_t preprocess_status = -1;
   uint32_t identify_quality[2] = { 0 };
   uint32_t matched_index = UINT32_MAX;
   int32_t score = 0;
@@ -509,18 +755,27 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
   int32_t exit_status = -1;
   packed_template after_match = { 0 };
   packed_template after_study = { 0 };
+  packed_template probe_template = { 0 };
   const uint8_t *next_persistent_data;
   size_t next_persistent_size;
   feature_delete_fn feature_delete = NULL;
-  enqueue_fn enqueue = NULL;
   PVOID handler = NULL;
   void *malloc_address;
   void *free_address;
   char result[4096];
   int matched;
   int persistence_advanced;
-  int queue_before = 0;
-  int queue_after = 0;
+  int probe_record_count = -1;
+  int probe_partition0_count = -1;
+  int queue_before_match = -1;
+  int queue_after_match = -1;
+  int queue_after_study = -1;
+  int preprocess_attempted = 0;
+  int preprocess_completed = 0;
+  int extraction_attempted = 0;
+  int extraction_completed = 0;
+  int study_attempted = 0;
+  int study_completed = 0;
   int ok = 0;
 
   memset (&api, 0, sizeof (api));
@@ -539,14 +794,6 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
   if (!base || !live || !template_input || template_input_size > INT32_MAX ||
       template_input_size > MAX_TEMPLATE_SIZE)
     goto out;
-  /* Corpus v1 templates used a driver-owned prefix. Accept it only at this
-   * historical parity boundary; the DLL and production driver use raw bytes. */
-  if (template_input_size > 6 &&
-      memcmp (template_input, "G53M\x03\x00", 6) == 0)
-    {
-      memmove (template_input, template_input + 6, template_input_size - 6);
-      template_input_size -= 6;
-    }
   if (!open_api (&api, dll_path) || !start_generation (&api, base))
     goto out;
   for (int i = 0; i < prelude_count; i++)
@@ -565,7 +812,7 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
         &api, prelude, processed_data, &processed, preprocess_quality,
         prelude_purpose);
       if (prelude_status != 0 &&
-          prelude_status != PREPROCESS_RETRY_VALIDATION_A &&
+          prelude_status != PREPROCESS_RETRY_RAW_ADMISSION &&
           prelude_status != PREPROCESS_RETRY_VALIDATION_B &&
           prelude_status != PREPROCESS_RETRY_STATEFUL)
         goto out;
@@ -573,11 +820,49 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
       prelude = NULL;
     }
   if (api.template_unpack (template_input, (int32_t) template_input_size, NULL,
-                           &template_object) != 0 ||
-      !template_object ||
-      preprocess_frame (&api, live, processed_data, &processed,
-                        preprocess_quality, PURPOSE_IDENTIFY) != 0)
+                           &template_object) != 0 || !template_object)
     goto out;
+  preprocess_attempted = 1;
+  preprocess_status = preprocess_frame (
+    &api, live, processed_data, &processed, preprocess_quality,
+    PURPOSE_IDENTIFY);
+  if (preprocess_status != 0)
+    {
+      if (preprocess_status != PREPROCESS_RETRY_RAW_ADMISSION &&
+          preprocess_status != PREPROCESS_RETRY_VALIDATION_B &&
+          preprocess_status != PREPROCESS_RETRY_STATEFUL)
+        goto out;
+      exit_status = api.preprocessor_exit ();
+      api.preprocessor_started = 0;
+      if (exit_status != 0)
+        goto out;
+      int length = snprintf (
+        result, sizeof (result),
+        "{\"schema\":\"milan-parity-native-oracle/v1\","
+        "\"profile\":9,\"subtype\":12,\"purpose\":0,"
+        "\"anti_fake_mode\":1,\"recognition_mode\":1,"
+        "\"normal_extraction\":false,\"normal_antifake\":false,"
+        "\"prelude_frames\":%d,"
+        "\"execution_mode\":\"natural-identify-study-v1\","
+        "\"hook_hits\":0,"
+        "\"preprocess\":{\"status\":%ld,\"quality\":%ld,"
+        "\"coverage\":%ld},"
+        "\"lifecycle\":{"
+        "\"extraction\":{\"attempted\":false,\"completed\":false},"
+        "\"preprocess\":{\"attempted\":true,\"completed\":false},"
+        "\"study\":{\"attempted\":false,\"completed\":false}},"
+        "\"preprocessor_exit_status\":%ld}\n",
+        prelude_count, (long) preprocess_status,
+        (long) preprocess_quality[1], (long) preprocess_quality[0],
+        (long) exit_status);
+      if (length < 0 || (size_t) length >= sizeof (result) ||
+          !write_file (output_directory, L"oracle-result.json", result,
+                       (size_t) length))
+        goto out;
+      ok = 1;
+      goto out;
+    }
+  preprocess_completed = 1;
 
   boundary_module = api.module;
   boundary_site = (uint8_t *) api.module + IDENTIFY_PRE_ANTIFAKE_RVA;
@@ -588,9 +873,8 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
   memcpy (&boundary_free, &free_address, sizeof (boundary_free));
   feature_delete = (feature_delete_fn) (void *)
     ((uint8_t *) api.module + FEATURE_DELETE_RVA);
-  enqueue = (enqueue_fn) (void *) ((uint8_t *) api.module + ENQUEUE_RVA);
   if (boundary_saved_byte != 0x4c || !boundary_malloc || !boundary_free ||
-      !feature_delete || !enqueue)
+      !feature_delete)
     goto out;
   handler = AddVectoredExceptionHandler (1, boundary_handler);
   if (!handler || !write_code_byte (boundary_site, 0xcc))
@@ -599,54 +883,63 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
   candidate_data = *(void **) template_object;
   candidate = &candidate_data;
   candidates[0] = candidate;
+  int32_t *ranks = (int32_t *) ((uint8_t *) candidate_data +
+                                QUEUE_RANKS_OFFSET);
+  queue_before_match = queue_occupancy (ranks);
+  if (queue_before_match < 0)
+    goto out;
+  extraction_attempted = 1;
   identify_status = api.identify_image (
     &processed, api.auxiliary, candidates, 1, &matched_index, &score,
     identify_quality, 0, 1, api.calibration, live, T_CODE, DAC_HIGH, DAC_LOW,
     ANTIFAKE_MODE);
-  if (boundary_rearm_site || !write_code_byte (boundary_site, boundary_saved_byte))
+  if (boundary_rearm_site ||
+      !write_code_byte (boundary_site, boundary_saved_byte))
     goto out;
   RemoveVectoredExceptionHandler (handler);
   handler = NULL;
   if (boundary_error || boundary_hook_hits != 1 || identify_status != 0 ||
       (matched_index != 0 && matched_index != UINT32_MAX) ||
       ((matched_index == 0) != (score > 0)) ||
-      !pack_template (&api, template_object, &after_match))
+      !serialize_identify_probe (
+        *(void **) ((uint8_t *) api.module + PROBE_GLOBAL_RVA), &probe_template,
+        &probe_record_count, &probe_partition0_count) ||
+      boundary_record_count != probe_record_count)
+    goto out;
+  extraction_completed = 1;
+  if (!pack_template (&api, template_object, &after_match) ||
+      (queue_after_match = queue_occupancy (ranks)) < 0)
     goto out;
   matched = matched_index == 0;
-  if (study_enabled && matched)
+  if (matched)
     {
-      int32_t *ranks = (int32_t *) ((uint8_t *) candidate_data +
-                                    QUEUE_RANKS_OFFSET);
-
-      if (enqueue_current_probe)
-        enqueue (*(void **) ((uint8_t *) api.module + PROBE_GLOBAL_RVA),
-                 candidate_data,
-                 (void **) ((uint8_t *) candidate_data + QUEUE_POINTERS_OFFSET),
-                 ranks, QUEUE_CAPACITY);
-      for (int i = 0; i < QUEUE_CAPACITY; i++)
-        if (ranks[i] >= 0)
-          queue_before++;
+      study_attempted = 1;
       study_status = api.template_study (&study_update);
-      if (study_status != 0 || study_update < 0 || study_update > 5)
+      if (study_status != 0)
         goto out;
-      for (int i = 0; i < QUEUE_CAPACITY; i++)
-        if (ranks[i] >= 0)
-          queue_after++;
+      study_completed = 1;
+      if (study_update < 0 || study_update > 5)
+        goto out;
+      queue_after_study = queue_occupancy (ranks);
+      if (queue_after_study < 0)
+        goto out;
     }
   if (!pack_template (&api, template_object, &after_study))
     goto out;
-  persistence_advanced = study_enabled && matched && study_update > 0;
+  persistence_advanced = matched && study_update > 0;
   next_persistent_data = persistence_advanced ? after_study.data : template_input;
   next_persistent_size = persistence_advanced
                            ? (size_t) after_study.size : template_input_size;
   if (!write_file (output_directory, L"processed.u8", processed_data,
-                   sizeof (processed_data)) ||
+                    sizeof (processed_data)) ||
       !write_file (output_directory, L"loaded-before-match.bin", template_input,
                    template_input_size) ||
       !write_file (output_directory, L"after-match.bin", after_match.data,
                    (size_t) after_match.size) ||
       !write_file (output_directory, L"after-study.bin", after_study.data,
-                   (size_t) after_study.size) ||
+                    (size_t) after_study.size) ||
+      !write_file (output_directory, L"probe-template.bin", probe_template.data,
+                   (size_t) probe_template.size) ||
       !write_file (output_directory, L"next-persistent.bin",
                    next_persistent_data, next_persistent_size))
     goto out;
@@ -654,6 +947,20 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
   api.preprocessor_started = 0;
   if (exit_status != 0)
     goto out;
+  char after_study_occupancy[32];
+  char study_action[32];
+  if (matched)
+    {
+      snprintf (after_study_occupancy, sizeof (after_study_occupancy), "%d",
+                queue_after_study);
+      snprintf (study_action, sizeof (study_action), "%ld",
+                (long) study_update);
+    }
+  else
+    {
+      memcpy (after_study_occupancy, "null", 5);
+      memcpy (study_action, "null", 5);
+    }
   int length = snprintf (
     result, sizeof (result),
     "{\"schema\":\"milan-parity-native-oracle/v1\","
@@ -664,25 +971,39 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
     "\"in_range_bytes_preserved\":true,\"shadow_payload_bytes\":2289,"
     "\"matrix_header_size_field\":2288,\"dll_allocator_owned\":true,"
     "\"normal_destructor_compatible\":true,\"prelude_frames\":%d,"
+    "\"execution_mode\":\"natural-identify-study-v1\","
     "\"hook_hits\":%d,"
     "\"active_record_count\":%d,"
+    "\"partition0_count\":%d,\"partition1_count\":%d,"
     "\"preprocess\":{\"status\":0,\"quality\":%ld,\"coverage\":%ld},"
     "\"identify\":{\"status\":%ld,\"matched_index\":%lu,"
     "\"score\":%ld,\"quality\":%lu,\"coverage\":%lu},"
-    "\"study\":{\"enabled\":%s,\"called\":%s,\"status\":%ld,"
-    "\"update\":%ld},\"queue\":{\"injected\":%s,"
-    "\"occupied_before_study\":%d,\"occupied_after_study\":%d},"
+    "\"study\":{\"enabled\":true,\"called\":%s,\"status\":%ld,"
+    "\"update\":%s},\"queue\":{\"occupied_before_match\":%d,"
+    "\"occupied_after_match_before_study\":%d,"
+    "\"occupied_after_study\":%s},"
+    "\"lifecycle\":{"
+    "\"extraction\":{\"attempted\":%s,\"completed\":%s},"
+    "\"preprocess\":{\"attempted\":%s,\"completed\":%s},"
+    "\"study\":{\"attempted\":%s,\"completed\":%s}},"
     "\"persistence_advanced\":%s,"
     "\"preprocessor_exit_status\":%ld}\n",
-    prelude_count, boundary_hook_hits, boundary_record_count,
+    prelude_count, boundary_hook_hits, probe_record_count,
+    probe_partition0_count, probe_record_count - probe_partition0_count,
     (long) preprocess_quality[1],
     (long) preprocess_quality[0], (long) identify_status,
     (unsigned long) matched_index, (long) score,
     (unsigned long) identify_quality[1],
-    (unsigned long) identify_quality[0], study_enabled ? "true" : "false",
-    study_enabled && matched ? "true" : "false", (long) study_status,
-    (long) study_update, enqueue_current_probe ? "true" : "false",
-    queue_before, queue_after, persistence_advanced ? "true" : "false",
+    (unsigned long) identify_quality[0], matched ? "true" : "false",
+    (long) study_status, study_action, queue_before_match,
+    queue_after_match, after_study_occupancy,
+    extraction_attempted ? "true" : "false",
+    extraction_completed ? "true" : "false",
+    preprocess_attempted ? "true" : "false",
+    preprocess_completed ? "true" : "false",
+    study_attempted ? "true" : "false",
+    study_completed ? "true" : "false",
+    persistence_advanced ? "true" : "false",
     (long) exit_status);
   if (length < 0 || (size_t) length >= sizeof (result) ||
       !write_file (output_directory, L"oracle-result.json", result,
@@ -701,6 +1022,7 @@ out:
     feature_delete ((void **) ((uint8_t *) api.module + PROBE_GLOBAL_RVA));
   free (after_match.data);
   free (after_study.data);
+  free (probe_template.data);
   if (template_object && api.template_delete)
     api.template_delete (template_object);
   free (template_input);
@@ -816,26 +1138,22 @@ run_batch (const wchar_t *dll_path, const wchar_t *manifest_path)
               goto line_out;
             fields[field_count++] = cursor + 1;
           }
-      if (field_count < 5 ||
-          (strcmp (fields[4], "0") != 0 && strcmp (fields[4], "1") != 0))
+      if (field_count < 4)
         goto line_out;
       for (int i = 0; i < field_count; i++)
         {
-          if (i == 4)
-            continue;
           wide[i] = utf8_to_wide (fields[i]);
           if (!wide[i])
             goto line_out;
         }
       child_argv[0] = executable;
-      child_argv[1] = L"study";
+      child_argv[1] = L"natural";
       child_argv[2] = dll_path;
       child_argv[3] = wide[0];
       child_argv[4] = wide[1];
       child_argv[5] = wide[2];
       child_argv[6] = wide[3];
-      child_argv[7] = fields[4][0] == '1' ? L"1" : L"0";
-      for (int i = 5; i < field_count; i++)
+      for (int i = 4; i < field_count; i++)
         child_argv[i + 3] = wide[i];
       child_argv[field_count + 3] = NULL;
       if (_wspawnv (_P_WAIT, executable, child_argv) != 0)
@@ -860,8 +1178,6 @@ line_out:
 int
 wmain (int argc, wchar_t **argv)
 {
-  int study_enabled;
-
   setvbuf (stdout, NULL, _IONBF, 0);
   if (argc == 4 && wcscmp (argv[1], L"batch") == 0)
     {
@@ -869,22 +1185,16 @@ wmain (int argc, wchar_t **argv)
         return 1;
       return 0;
     }
-  if (argc < 8 ||
-      (wcscmp (argv[1], L"identify") != 0 &&
-       wcscmp (argv[1], L"study") != 0))
+  if (argc < 7 || wcscmp (argv[1], L"natural") != 0)
     {
       fwprintf (stderr,
-                L"usage: %ls identify|study DLL OUTPUT BASE LIVE TEMPLATE ENQUEUE [PURPOSE:PRELUDE...]\n"
-                L"       %ls batch DLL MANIFEST\n",
+                 L"usage: %ls natural DLL OUTPUT BASE LIVE TEMPLATE [PURPOSE:PRELUDE...]\n"
+                 L"       %ls batch DLL MANIFEST\n",
                 argv[0],
                 argv[0]);
       return 2;
     }
-  study_enabled = wcscmp (argv[1], L"study") == 0;
-  int enqueue_current_probe = wcscmp (argv[7], L"1") == 0;
-  if (!enqueue_current_probe && wcscmp (argv[7], L"0") != 0)
-    return 2;
-  for (int i = 8; i < argc; i++)
+  for (int i = 7; i < argc; i++)
     {
       int32_t purpose;
       const wchar_t *path;
@@ -896,8 +1206,7 @@ wmain (int argc, wchar_t **argv)
         }
     }
   if (!run_boundary (argv[2], argv[3], argv[4], argv[5], argv[6],
-                     study_enabled, enqueue_current_probe,
-                     (const wchar_t *const *) &argv[8], argc - 8))
+                      (const wchar_t *const *) &argv[7], argc - 7))
     {
       fwprintf (stderr, L"native oracle failed\n");
       return 1;
