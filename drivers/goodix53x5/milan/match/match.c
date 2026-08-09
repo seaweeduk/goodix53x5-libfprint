@@ -21,6 +21,7 @@
 #include "milan/match/rescue.h"
 #include "milan/match/selection.h"
 #include "milan/relations.h"
+#include "milan/transform-private.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -1206,15 +1207,19 @@ milan_match_prepared_probe (
                     probe_antifake, GOODIX_MILAN_ANTIFAKE_SIZE, transform,
                     comparison_metrics) != 0)
                 goto out;
+              int32_t texture_delta = goodix_milan_transform_s32 (
+                (uint32_t) goodix_milan_antifake_texture (feature.antifake) -
+                (uint32_t) goodix_milan_antifake_texture (probe_antifake));
+              int32_t mean_delta = goodix_milan_transform_s32 (
+                (uint32_t) goodix_milan_antifake_mean (feature.antifake) -
+                (uint32_t) goodix_milan_antifake_mean (probe_antifake));
+              int32_t threshold_delta = goodix_milan_transform_s32 (
+                (uint32_t) goodix_milan_antifake_threshold (feature.antifake) -
+                (uint32_t) goodix_milan_antifake_threshold (probe_antifake));
+
               blocked = goodix_milan_match_selection_block_candidate (
                 &match_selection, enrolled->metadata.sensor_type,
-                comparison_metrics,
-                goodix_milan_antifake_texture (feature.antifake) -
-                  goodix_milan_antifake_texture (probe_antifake),
-                goodix_milan_antifake_mean (feature.antifake) -
-                  goodix_milan_antifake_mean (probe_antifake),
-                goodix_milan_antifake_threshold (feature.antifake) -
-                  goodix_milan_antifake_threshold (probe_antifake),
+                comparison_metrics, texture_delta, mean_delta, threshold_delta,
                 goodix_milan_antifake_pair_score (feature.antifake),
                 direct_metrics[9], &contribution_event);
               if (blocked < 0)
