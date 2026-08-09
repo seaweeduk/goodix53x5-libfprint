@@ -386,6 +386,11 @@ milan_runtime_harness_scan_set_disposition (
     }
   if (disposition == GOODIX_SCAN_DISPOSITION_AUTH_SUCCESS)
     {
+      if (pause_cycle_settled)
+        {
+          paused_ssm = ssm;
+          return;
+        }
       fpi_ssm_mark_completed (ssm);
       return;
     }
@@ -1001,6 +1006,33 @@ test_cancellation_no_publication (void)
   g_assert_cmpuint (plan.study_calls, ==, 1);
   g_assert_cmpuint (self->milan_generation->state.sample_count, ==,
                     sample_count);
+  clear_result (&result);
+
+  reset_plan (positive, templates, G_N_ELEMENTS (positive), update);
+  pause_cycle_settled = TRUE;
+  cancel = g_cancellable_new ();
+  fp_device_verify (device, print, cancel, match_report, &result, NULL,
+                    verify_done, &result);
+  wait_paused ();
+  g_assert_true (self->pending_result_report);
+  g_assert_true (self->pending_update_target == print);
+  g_assert_nonnull (self->pending_update_data);
+  g_autoptr(GBytes) pending = get_print_template (print);
+  g_assert_true (g_bytes_equal (pending, stored));
+  g_cancellable_cancel (cancel);
+  wait_cancelled ();
+  fpi_ssm_mark_failed (paused_ssm, g_error_new_literal (
+    G_IO_ERROR, G_IO_ERROR_CANCELLED, "late cancellation"));
+  paused_ssm = NULL;
+  pause_cycle_settled = FALSE;
+  wait_done (&result);
+  g_assert_cmpuint (result.reports, ==, 0);
+  g_assert_false (result.updated);
+  g_autoptr(GBytes) unchanged = get_print_template (print);
+  g_assert_true (g_bytes_equal (unchanged, stored));
+  g_assert_false (self->pending_result_report);
+  g_assert_null (self->pending_update_target);
+  g_assert_null (self->pending_update_data);
   clear_result (&result);
   close_device (device);
 }
