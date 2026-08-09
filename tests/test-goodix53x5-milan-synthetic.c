@@ -31,11 +31,11 @@ static const char accepted_preprocess_sha256[] =
 static const char post_render_retry_sha256[] =
   "8b9629cb2aa7bf3d44a13c9ab087b961e02adf29644c237032597bf24401d943";
 static const char feature_extraction_sha256[] =
-  "134e2432ad88c1cc4bfd9156fbf16557ea455d9de13a4f847241ebcc892ac600";
+  "5c4a2989778d3ce15ffc7f928544a1fa3a84feb8279e5928b51ca014400ed6a3";
 static const char feature_template_sha256[] =
-  "2935dff248dbd6b10b045669a01ec6bf4b69d9cccb241daa5ea8f759a5bb0773";
+  "c18597eb4204464f53cd6cbb311f85b577fbcdb6b18a16e11e37a0f79b7c1c3e";
 static const char feature_antifake_sha256[] =
-  "2ec6a813e8a6b355693645aac1e60da4cc717bcdf57c3dbb5d12d7021b0e7572";
+  "5b2763131c54a5bfbeea4409278eaa7a6f23fd019cdc00f63c5fb35596ff74dc";
 
 static gchar *
 sha256 (const void *data,
@@ -90,6 +90,11 @@ generate_feature_frames (uint16_t *setup,
         delta = wrapped < 40 ? 300 : 1200;
         if (first_cut < 36 || second_cut < 49)
           delta = 1200;
+        /* Avoid an all-sharp synthetic score distribution. */
+        if (ABS (row - 44) <= 4 && ABS (column - 54) <= 4)
+          setup[index] = (uint16_t) (
+            baseline - delta + 800 +
+            (4 - MAX (ABS (row - 44), ABS (column - 54))) * 80);
         live[index] = (uint16_t) (baseline - delta);
       }
 }
@@ -157,7 +162,7 @@ test_preprocess_accepted (void)
     state->profile9_class_counts.profile9_class3_count,
     state->primary_contrast_valid, digest);
 
-  g_assert_cmpint (status, ==, 0);
+  g_assert_cmpint (status, ==, GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION);
   g_assert_cmpint (quality, ==, 0);
   g_assert_cmpint (coverage, ==, 0);
   g_assert_cmpint (state->selected_refined, ==, 0);

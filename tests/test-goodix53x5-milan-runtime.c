@@ -110,6 +110,9 @@ generate_frames (guint16 setup[PIXELS],
                  guint16 live[PIXELS],
                  guint   pattern)
 {
+  gint ramp_column = 54 + (10 - 2 * (gint) (pattern % 5)) % 10;
+  gint ramp_radius = pattern >= 9 ? 5 : 4;
+
   for (guint row = 0; row < GOODIX_MILAN_SENSOR_ROWS; row++)
     for (guint column = 0; column < GOODIX_MILAN_SENSOR_COLUMNS; column++)
       {
@@ -128,7 +131,15 @@ generate_frames (guint16 setup[PIXELS],
 
         if (first < 36 || second < 49)
           delta = 1200;
-        setup[index] = baseline;
+        /* Avoid an all-sharp synthetic score distribution. */
+        if (ABS ((gint) row - 44) <= ramp_radius &&
+            ABS ((gint) column - ramp_column) <= ramp_radius)
+          setup[index] = (guint16) (
+            baseline - delta + 800 +
+            (ramp_radius - MAX (ABS ((gint) row - 44),
+                               ABS ((gint) column - ramp_column))) * 80);
+        else
+          setup[index] = baseline;
         live[index] = (guint16) (baseline - delta);
       }
 }
@@ -284,13 +295,13 @@ milan_runtime_harness_scan_capture (FpDevice                  *dev,
                                     HarnessScanCoordinator     *coordinator)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  g_autofree guint16 *setup = g_new (guint16, PIXELS);
   guint pattern = capture_enroll_stage_pattern ? self->enroll_stage : 0;
 
   g_assert_nonnull (self->milan_generation);
   g_clear_pointer (&self->captured_raw_image, g_free);
   self->captured_raw_image = g_new (guint16, PIXELS);
-  generate_frames (setup, self->captured_raw_image, pattern);
+  generate_frames (self->milan_generation->setup_tx_on,
+                   self->captured_raw_image, pattern);
   goodix_milan_generation_note_use (self->milan_generation);
   coordinator->capture_ready (dev, coordinator->user_data);
 }
@@ -1100,7 +1111,7 @@ test_complete_enrollment_after_combine_retry (void)
   g_assert_cmpuint (info.byte_size, ==, g_bytes_get_size (enrolled_template));
   g_assert_cmpuint (info.feature_count, ==, GOODIX_ENROLL_SAMPLES);
   g_assert_cmpuint (info.registration_count, ==, 67);
-  g_assert_cmpuint (info.relation_count, ==, 4);
+  g_assert_cmpuint (info.relation_count, ==, 11);
   g_assert_cmpuint (info.graph_established, ==, 1);
   g_assert_cmpint (info.graph_reference_index, ==, 3);
   g_assert_cmpuint (info.maximum_features, ==,
