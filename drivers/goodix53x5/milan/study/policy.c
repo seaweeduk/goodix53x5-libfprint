@@ -145,12 +145,15 @@ goodix_milan_study_policy_select (const GoodixMilanStudyPolicyInput *input,
           (best_percent < 80 &&
            (best_percent < 60 || input->template_counter <= 1000)))
         return 0;
-      result->action = GOODIX_MILAN_STUDY_ACTION_GEOMETRIC;
-      result->selected_feature_index = selected_index;
-      return 0;
+      if (input->retained_flag == 1)
+        {
+          result->action = GOODIX_MILAN_STUDY_ACTION_GEOMETRIC;
+          result->selected_feature_index = selected_index;
+          return 0;
+        }
     }
 
-  if (input->retained_flag == 0)
+  if (input->retained_flag != 1)
     {
       if (input->probe_coverage < matched->coverage - 10)
         return 0;
