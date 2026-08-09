@@ -21,6 +21,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+static inline int32_t
+milan_study_u32_as_s32 (uint32_t value)
+{
+  if (value <= INT32_MAX)
+    return (int32_t) value;
+  return -1 - (int32_t) (UINT32_MAX - value);
+}
+
+static inline int32_t
+milan_study_wrap_increment (int32_t value)
+{
+  return milan_study_u32_as_s32 ((uint32_t) value + 1U);
+}
+
+static inline int32_t
+milan_study_wrap_decrement (int32_t value)
+{
+  return milan_study_u32_as_s32 ((uint32_t) value - 1U);
+}
+
 int
 goodix_milan_study_order_key_greater (const GoodixMilanStudyOrderKey *left,
                                       const GoodixMilanStudyOrderKey *right)
@@ -836,8 +856,7 @@ goodix_milan_study_replace (
         current->feature_element_sizes[replacement_index], &target_feature) != 0 ||
       goodix_milan_template_parse_feature_element (
         probe->feature_elements[0], probe->feature_element_sizes[0],
-        &probe_feature) != 0 || target_bd == INT32_MAX || target_bc < 0 ||
-      (size_t) target_bc >= current->feature_count)
+        &probe_feature) != 0)
     goto out;
 
   const uint8_t *matched_source =
@@ -914,7 +933,7 @@ goodix_milan_study_replace (
                 GOODIX_MILAN_STUDY_ACTION_REPLACE_NO_RELATION
               ? target_bb : 0 },
     { 0xbc, (int32_t) current->feature_count - 1 },
-    { 0xbd, target_bd + 1 },
+    { 0xbd, milan_study_wrap_increment (target_bd) },
     { 0xbe, policy_result.action ==
                 GOODIX_MILAN_STUDY_ACTION_REPLACE_NO_RELATION
               ? target_be : matched_be },
@@ -937,7 +956,8 @@ goodix_milan_study_replace (
           goto out;
         if (ordinal > target_bc && goodix_milan_template_patch_feature_scalar (
               (uint8_t *) current->feature_elements[i],
-              current->feature_element_sizes[i], 0xbc, ordinal - 1) != 0)
+              current->feature_element_sizes[i], 0xbc,
+              milan_study_wrap_decrement (ordinal)) != 0)
           goto out;
       }
 
