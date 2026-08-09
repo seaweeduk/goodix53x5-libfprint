@@ -521,8 +521,11 @@ test_study_policy_actions (void)
           input.features[feature].coverage = 80;
           input.features[feature].residual = 20;
           input.features[feature].uncovered_probe_residual = 0;
+          input.features[feature].geometric_overlap_area =
+            feature == 2 ? 1945 : 1602;
           input.features[feature].geometric_overlap_percent =
-            feature == 2 ? 85 : 70;
+            input.features[feature].geometric_overlap_area * 100 /
+            GOODIX_MILAN_STUDY_MASK_SIZE;
         }
       input.features[input.matched_feature_index].residual =
         cases[i].matched_residual;

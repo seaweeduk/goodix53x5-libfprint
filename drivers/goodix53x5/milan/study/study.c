@@ -718,8 +718,10 @@ milan_study_policy_derive (
         reference_to_features[i], relation_transform, candidate_transform);
       candidate_transform[2] >>= 1;
       candidate_transform[5] >>= 1;
-      feature->geometric_overlap_percent =
-        goodix_milan_study_policy_footprint_percent (candidate_transform);
+      feature->geometric_overlap_area =
+        goodix_milan_study_policy_footprint_area (candidate_transform);
+      feature->geometric_overlap_percent = feature->geometric_overlap_area * 100 /
+                                           GOODIX_MILAN_STUDY_MASK_SIZE;
 
     }
   return 0;
