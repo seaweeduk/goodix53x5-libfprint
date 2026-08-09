@@ -1808,10 +1808,14 @@ goodix_milan_profile9_build_broken_mask (
   else if (class2_count > 300 || class1_count > 300 ||
            class1_count + class2_count > 300)
     *mode = 5;
-  result = class3_count * 100 > active_count * 30 ||
-           (primary_histogram_state == 2 &&
-            class3_count * 100 > active_count * 10)
-             ? GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION : 0;
+  result = 0;
+  if (class3_count * 100 > active_count * 30 ||
+      (primary_histogram_state == 2 &&
+       class3_count * 100 > active_count * 10))
+    {
+      *mode = 9;
+      result = GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION;
+    }
 
 out:
   free (class2_scores);

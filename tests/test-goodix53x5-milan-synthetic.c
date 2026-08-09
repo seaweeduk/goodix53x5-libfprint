@@ -27,7 +27,7 @@
 #define PIXELS GOODIX_MILAN_SENSOR_PIXELS
 
 static const char accepted_preprocess_sha256[] =
-  "35645cfcc5edb705c8a225717f907987c1d90ec1a7d48b09ee378845a906a696";
+  "3d70fb014ec834a23c51e6838ac56b0aec9683152be93e175d4db73aebb3475c";
 static const char post_render_retry_sha256[] =
   "8b9629cb2aa7bf3d44a13c9ab087b961e02adf29644c237032597bf24401d943";
 static const char feature_extraction_sha256[] =
