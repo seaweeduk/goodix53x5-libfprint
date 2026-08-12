@@ -238,7 +238,7 @@ goodix_crypto_gea_decrypt (const guint8 *key4,
   guint32 adjacent_key_xor, keystream_bits;
   guint16 key_low_word, ciphertext_word, keystream_word;
 
-  for (gsize i = 0; i < in_len; i += 2)
+  for (gsize i = 0; i + 1 < in_len; i += 2)
     {
       adjacent_key_xor = (key >> 1 ^ key) & 0xFFFFFFFF;
       keystream_bits = (((((((
@@ -274,6 +274,9 @@ goodix_crypto_gea_decrypt (const guint8 *key4,
       out[i] = plaintext_word & 0xFF;
       out[i + 1] = (plaintext_word >> 8) & 0xFF;
     }
+
+  if (in_len % 2 != 0)
+    out[in_len - 1] = in[in_len - 1];
 }
 
 /**
@@ -492,6 +495,13 @@ goodix_crypto_gtls_decrypt_sensor_data (GoodixGtlsCtx *ctx,
   /* Extract and verify CRC */
   msg_gea_crc = goodix_crypto_decode_u32 (gea_data + gea_data_len - 4);
   gea_data_len -= 4;
+
+  if (gea_data_len % 2 != 0)
+    {
+      fp_warn ("GEA data length is odd: %zu", gea_data_len);
+      g_free (gea_encrypted);
+      return NULL;
+    }
 
   computed_crc = goodix_crypto_crc32_mpeg2 (gea_data, gea_data_len);
   if (computed_crc != msg_gea_crc)
