@@ -250,6 +250,16 @@ lifecycle fields, conditional odd nonzero probe `c0`, matched-owned `be`, wrappe
 counters, incident-edge clearing, reference reanchoring, post-replacement
 normalization, final type-12 order, and one positive candidate pack.
 
+The DLL additionally copies four matched-feature anti-fake scalars into the
+probe at `FUN_1800469f0:0x180046a97..0x180046acd` before it knows whether an
+action will succeed. Current source delays those writes until it owns a
+successful append/replacement working feature. This is output-exact: primary
+action zero never packs and destroys its single-use probe; queued re-matches use
+a zero anti-fake blocker seed; a later successful selector overwrites the same
+four scalars again; and queue bodies are transient. The extra queued source
+coverage check is likewise producer-refuted because both native and DLL queue
+admission already require strict coverage `>65` and quality `>15`.
+
 Queued follow-up also preserves the recovered contract: physical slots are
 visited in order, rank is age rather than traversal order, each rematch sees the
 unfinalized live gallery, entries are consumed only after a nonnegative ordinary
@@ -259,8 +269,8 @@ the previously corrected ownership boundary: candidate bytes are applied to the
 `FpPrint` only in the final successful SSM path. Study or pack failure suppresses
 the candidate while preserving the successful match result.
 
-One surrounding synthetic-valid append defect was found, but it is not in the
-action-4 path. For an established graph, DLL assembly
+One surrounding synthetic-valid append defect was found and corrected, but it is
+not in the action-4 path. For an established graph, DLL assembly
 `FUN_1800469f0:0x180046c37..0x180046c4c` installs the appended reference edge
 only for exact matched `b5/+0x110 == 1`. Pre-fix
 `goodix_milan_study_append()` tested nonzero. The packed validator accepts
