@@ -62,7 +62,7 @@ def resolve_backend(repo: Path, tool: Path, *, build: bool,
     if not backend.exists() and build:
         backend.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         subprocess.run((str(tool / "build-current-runner"), "--repo", str(repo),
-                        "--output", str(backend), "--debug", "1"), check=True)
+                        "--output", str(backend)), check=True)
     if not backend.is_file() or not os.access(backend, os.X_OK):
         raise SystemExit(f"current-runner backend is absent or not executable: {backend}")
     backend_sha256 = sha256_file(backend)

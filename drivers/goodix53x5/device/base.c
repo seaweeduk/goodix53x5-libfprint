@@ -742,10 +742,11 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
         if (data->forced_refresh)
           self->profile9_fdt.refresh_outcome =
             GOODIX_PROFILE9_FDT_REFRESH_OUTCOME_PUBLISHED;
-        fp_info ("Admitted Milan generation id=%" G_GUINT64_FORMAT
-                 " subtype=%u MAD=%" G_GUINT64_FORMAT,
-                 generation_id, self->milan_sensor_subtype,
-                 data->attempt.mad);
+        GOODIX53X5_DEBUG_ONLY (
+          fp_info ("Admitted Milan generation id=%" G_GUINT64_FORMAT
+                   " subtype=%u MAD=%" G_GUINT64_FORMAT,
+                   generation_id, self->milan_sensor_subtype,
+                   data->attempt.mad);)
         data->leave_powered = TRUE;
         goodix_base_timing_done (self, dev, "base_generation");
         fpi_ssm_mark_completed (ssm);

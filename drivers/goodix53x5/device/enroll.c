@@ -223,11 +223,13 @@ goodix_enroll_task_done (GObject      *source_object,
       g_ptr_array_add (self->enroll_features,
                        g_bytes_ref (output->probe_template));
       self->enroll_stage++;
-      fp_dbg ("Native Milan enrollment stage %d/%d quality=%d coverage=%d "
-              "records=%u partitions=%u/%u",
-              self->enroll_stage, GOODIX_ENROLL_SAMPLES, output->quality,
-              output->coverage, output->probe_record_count,
-              output->probe_partition0_count, output->probe_partition1_count);
+      GOODIX53X5_DEBUG_ONLY (
+        fp_dbg ("Native Milan enrollment stage %d/%d quality=%d coverage=%d "
+                "records=%u partitions=%u/%u",
+                self->enroll_stage, GOODIX_ENROLL_SAMPLES, output->quality,
+                output->coverage, output->probe_record_count,
+                output->probe_partition0_count,
+                output->probe_partition1_count);)
       self->pending_enroll_progress = TRUE;
       self->pending_enroll_stage = self->enroll_stage;
       g_clear_error (&self->pending_enroll_error);
