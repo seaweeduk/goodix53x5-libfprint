@@ -173,7 +173,7 @@ goodix_milan_study_policy_select (const GoodixMilanStudyPolicyInput *input,
           size_t zero_count = 0;
 
           for (size_t i = 0; i < input->feature_count; i++)
-            zero_count += input->features[i].active != 0 &&
+            zero_count += input->features[i].active == 1 &&
                           input->features[i].residual == 0;
           if (selected->residual != 0 || zero_count < 3)
             {
