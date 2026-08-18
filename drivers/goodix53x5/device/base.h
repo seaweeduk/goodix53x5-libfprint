@@ -120,7 +120,6 @@ typedef struct
   gboolean                   admitted;
   gboolean                   identify_prelude_seen;
   guint                      identify_prelude_count;
-  guint                      enrollment_stages;
   guint64                    use_count;
 } GoodixMilanGeneration;
 
@@ -167,7 +166,6 @@ void goodix_milan_generation_free (GoodixMilanGeneration *generation);
 void goodix_milan_generation_invalidate (GoodixMilanGeneration **generation);
 guint64 goodix_milan_generation_note_use (GoodixMilanGeneration *generation);
 void goodix_milan_generation_note_identify_prelude (GoodixMilanGeneration *generation);
-void goodix_milan_generation_note_enrollment_stage (GoodixMilanGeneration *generation);
 
 gboolean goodix_milan_replace_raw_frame (guint16 **owner,
                                          guint16 **frame,

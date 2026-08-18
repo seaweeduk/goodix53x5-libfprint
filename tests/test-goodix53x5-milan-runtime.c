@@ -1058,7 +1058,6 @@ test_enrollment_combine_retry (void)
   g_assert_cmpint (progress.retry_code, ==, FP_DEVICE_RETRY_REMOVE_FINGER);
   g_assert_cmpint (self->enroll_stage, ==, 0);
   g_assert_cmpuint (self->enroll_features->len, ==, 0);
-  g_assert_cmpuint (self->milan_generation->enrollment_stages, ==, 0);
 
   fpi_ssm_mark_failed (paused_ssm, g_error_new_literal (
     G_IO_ERROR, G_IO_ERROR_CANCELLED, "combine retry observed"));

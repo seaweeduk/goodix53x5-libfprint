@@ -276,14 +276,6 @@ goodix_milan_generation_note_identify_prelude (GoodixMilanGeneration *generation
     generation->identify_prelude_count++;
 }
 
-void
-goodix_milan_generation_note_enrollment_stage (GoodixMilanGeneration *generation)
-{
-  g_return_if_fail (generation != NULL);
-  if (generation->enrollment_stages < G_MAXUINT)
-    generation->enrollment_stages++;
-}
-
 gboolean
 goodix_milan_replace_raw_frame (guint16 **owner,
                                 guint16 **frame,

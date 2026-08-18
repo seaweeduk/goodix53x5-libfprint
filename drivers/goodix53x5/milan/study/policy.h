@@ -82,6 +82,3 @@ goodix_milan_study_policy_footprint_area (const int32_t transform[6]);
 
 int32_t
 goodix_milan_study_policy_full_footprint_area (const int32_t transform[6]);
-
-int32_t
-goodix_milan_study_policy_footprint_percent (const int32_t transform[6]);

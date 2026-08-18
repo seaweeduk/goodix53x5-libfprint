@@ -410,7 +410,6 @@ goodix_match_live_gallery_result (GoodixMatchInfo                 *probe,
           g_free (updated_milan);
           return GOODIX_SIGFM_TEMPLATE_INVALID;
         }
-      current_milan = updated_milan;
       current_milan_size = updated_milan_size;
     }
   if (updated_milan)

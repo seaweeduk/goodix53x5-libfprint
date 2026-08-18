@@ -137,7 +137,6 @@ goodix_match_serialized_feature_result_internal (
               g_free (normalized_milan);
               return GOODIX_SIGFM_TEMPLATE_INVALID;
             }
-          matched_milan = updated_milan;
           normalized_milan_len = updated_milan_len;
         }
       if (updated_milan)
