@@ -392,10 +392,11 @@ goodix_auth_task_done (GObject      *source_object,
       g_assert_not_reached ();
     }
 
-  fp_dbg ("Native Milan %s score=%d winner=%u action=%u quality=%d coverage=%d",
-          data->action == FPI_DEVICE_ACTION_IDENTIFY ? "identify" : "verify",
-          output->score, output->winner_index, output->study_action,
-          output->quality, output->coverage);
+  GOODIX53X5_DEBUG_ONLY (
+    fp_dbg ("Native Milan %s score=%d winner=%u action=%u quality=%d coverage=%d",
+            data->action == FPI_DEVICE_ACTION_IDENTIFY ? "identify" : "verify",
+            output->score, output->winner_index, output->study_action,
+            output->quality, output->coverage);)
   goodix_auth_log_runtime_result (dev, data, output, FALSE);
 out:
   goodix_milan_runtime_output_free (output);
