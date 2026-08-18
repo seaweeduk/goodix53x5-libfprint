@@ -76,14 +76,11 @@ this export then serializes that final object. Authoritative sequence 3 closes a
 129,303 bytes and SHA-256
 `c971239885adccdcaece80b31dc9e5e3abea6b0cc428b1b82307cb05fe12b181`.
 
-Native currently gives its queued matcher an intermediate packed gallery that is
-byte-identical to the primary-only finalized DLL result `081c3e...`. Packing is
-not itself mutating, but the order/tail finalization performed before that pack
-changes subsequent matcher traversal. Native also serializes Q, which loses the
-DLL full live-feature boundary. A native gallery bridge may use an internal,
-non-published serialization only if it preserves unfinalized order/tail and
-continues to match against full prepared/live Q; the validated update candidate
-must remain the single post-queue pack.
+Historical native code gave its queued matcher an intermediate packed gallery
+byte-identical to the primary-only finalized DLL result `081c3e...` and
+serialized Q, losing the full live-feature boundary. Current source preserves
+unfinalized order/tail and full prepared/live Q through queue exhaustion. The
+validated update candidate is the single post-queue final pack.
 
 ## Action-0 Exclusion
 

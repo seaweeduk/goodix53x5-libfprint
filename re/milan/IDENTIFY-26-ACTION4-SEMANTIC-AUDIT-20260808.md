@@ -231,3 +231,55 @@ discovering campaign, all 643 from the enrollment follow-up campaign, and all
 differences. The older 299-operation dump is excluded because it predates the
 required runtime-v3 `preprocess_status_i32` field and is not current-schema
 evidence.
+
+## Complete Source Re-Audit (2026-08-18)
+
+A fresh profile-9/type-12 audit re-derived the action-4 path from current DLL
+decompilation and assembly, then compared current production source from matcher
+evidence production through deferred authentication publication. No action-4
+production correction was found.
+
+The matcher keeps selected owner `+0x648/+0x650` independent from the strict
+active relation winner `+0x668/+0x66c`; retained count/flag and action/finalizer
+gates remain separately owned. The full-capacity dispatcher prepass, matched-zero
+target fast path, active/nonreference scan, signed residual/coverage/overlap rank,
+uncovered-probe veto, age adjustment, geometric fallback, and exact
+retained-flag action split agree with current source. Replacement agrees on
+probe-owned records/maps/quality/coverage/anti-fake body, target-owned `c7` and
+lifecycle fields, conditional odd nonzero probe `c0`, matched-owned `be`, wrapped
+counters, incident-edge clearing, reference reanchoring, post-replacement
+normalization, final type-12 order, and one positive candidate pack.
+
+Queued follow-up also preserves the recovered contract: physical slots are
+visited in order, rank is age rather than traversal order, each rematch sees the
+unfinalized live gallery, entries are consumed only after a nonnegative ordinary
+selector result, and external action 5 replaces the primary action only after a
+committed queued mutation. Runtime cancellation and driver publication retain
+the previously corrected ownership boundary: candidate bytes are applied to the
+`FpPrint` only in the final successful SSM path. Study or pack failure suppresses
+the candidate while preserving the successful match result.
+
+One surrounding synthetic-valid append defect was found, but it is not in the
+action-4 path. For an established graph, DLL assembly
+`FUN_1800469f0:0x180046c37..0x180046c4c` installs the appended reference edge
+only for exact matched `b5/+0x110 == 1`. Pre-fix
+`goodix_milan_study_append()` tested nonzero. The packed validator accepts
+`b5=2`, so pre-fix source appended the feature and additionally materialized an
+edge that the DLL omits. Known extraction, enrollment, retained-refresh, and
+first-graph producers emit only zero or one, making this synthetic-valid rather
+than a demonstrated natural hardware path. The generic source correction changes
+only that established-graph append predicate from nonzero to exact one; action-4
+target eligibility remains nonzero.
+
+Malformed or allocation-failure parity is intentionally not claimed. The DLL
+mutates live objects through void helpers, ignores some allocation/pack failures,
+and has no rollback boundary; current source uses checked working copies and
+publishes no candidate on failure. Reproducing DLL partial mutation or process
+fault behavior would reduce safety without changing valid action-4 semantics.
+
+Verification for this re-audit used fresh Ghidra output from the approved DLL
+SHA-256 above, a focused current-source `b5=2` append discriminator, and a clean
+rebuild followed by all three existing Milan state, synthetic, and runtime suites
+(`3/3` passed). After correcting the inherited append predicate, the aligned
+direct witness is byte-identical and the standing campaigns pass at `450/450`
+and `643/643`.

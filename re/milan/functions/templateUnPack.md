@@ -52,8 +52,9 @@ Feature scalar decoding is also permissive for `b5`: `FUN_18003d6c0` copies the
 packed dword directly to live `+0x110` at `0x18003ded1..0x18003dedd`, without a
 Boolean check. A packed `b5=2` is therefore synthetic-valid decoder input, not a
 decode-rejected malformed value. Known production writers still emit only zero
-or one; the resulting rare action-2 policy distinction is maintained in
-`FUN_180045530.md`.
+or one. The resulting rare exact-one distinctions are maintained in
+`FUN_180045530.md` for full-capacity action-2 policy and `FUN_1800469f0.md` for
+established-graph action-1 relation installation.
 
 Evidence is the decompile at `0x1800021b0`, especially the call to
 `FUN_18003e3a0` and the success assignment at `0x18000225f..0x180002274`.

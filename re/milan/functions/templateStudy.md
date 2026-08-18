@@ -187,9 +187,8 @@ Native now commits and packs code 3 instead of discarding it. The six positive
 code-2/code-3 packed results are byte-exact to that ledger, the wrapper returns
 the same positive action and payload, and failed packing publishes no updated
 template. The subsequent queue recovery resolves supersession to 5 as an
-intra-match deep-owned 20-entry contract; runtime implementation remains a
-separate milestone and must execute a real positive queued mutation rather than
-fake a 3-to-5 mapping.
+intra-match deep-owned 20-entry contract. Current runtime executes the real
+queued mutation and never fakes a 3-to-5 mapping.
 
 ## Error And Rollback Boundary
 
@@ -239,12 +238,13 @@ unchanged.
 
 ## Complete Study-Path Audit
 
-The profile-9/type-12 audit is recorded in
-`re/milan/STUDY-PATH-COVERAGE.md`. This export's action, positive packing,
-single-use probe ownership, and actions `1..5` are covered. First-graph append,
-full-capacity retained normalization, action-5 handoff, and dispatcher-entered
-action-0 transient finalization are implemented. Shared evidence gate zero is
-excluded because this export skips the dispatcher entirely.
+The fresh profile-9/type-12 action-5 audit is recorded in
+`re/milan/ACTION5-FRESH-AUDIT-20260818.md`. This export's action, positive
+packing, single-use probe ownership, and actions `1..5` are covered. First-graph
+append, full-capacity retained normalization, action-5 handoff, and
+dispatcher-entered action-0 transient finalization are implemented. Shared
+evidence gate zero is excluded because this export skips the dispatcher
+entirely.
 
 For this profile, the authoritative selector/replacement chain is
 `FUN_1800469f0 -> FUN_180045530/FUN_1800458c0 -> FUN_1800452e0`, with
@@ -279,6 +279,16 @@ focused discriminator then returns action `0` with no selected index, matching
 the DLL; the existing suites and standing campaigns pass at `450/450` and
 `643/643`. The witness is recorded in `FUN_180045530.md` and
 `FUN_1800469f0.md`.
+
+The same audit series found an independent synthetic-valid append distinction.
+The DLL copies matched `b5` to the appended feature unchanged but installs an
+established-graph reference edge only for exact matched `b5==1`; native tested
+nonzero. Packed `b5=2` therefore produced one extra native relation. Changing
+only the edge predicate to exact one makes the aligned direct append outputs
+byte-identical at 39,723 bytes and SHA-256
+`a37131112c97939b40d2e228a677c9cc861fa0f9205546e15e84c1d78b215aa4`.
+The existing suites and standing campaigns pass at `450/450` and `643/643`.
+`FUN_1800469f0.md` records the complete witness.
 
 The native offline API returns a validated candidate for positive actions, and
 the production libfprint verify/identify path now runs that runtime and applies
@@ -407,3 +417,24 @@ Production commit `8e4a160` sizes the private clean-room study output to the
 existing 1 MiB profile limit, preserving checked packing while accommodating
 the maximum valid retained-relation growth. Independent 450- and 643-operation
 campaigns pass 1,093/1,093 selected operations after this correction.
+
+## Established-Graph Append `b5` Predicate Audit (2026-08-18)
+
+Fresh assembly re-derivation found one synthetic-valid action-1 difference.
+After ordinary append, `FUN_1800469f0:0x180046c37..0x180046c4c` calls the
+relation installer only for exact matched `b5/+0x110 == 1`. Current
+`goodix_milan_study_append()` uses nonzero at
+`drivers/goodix53x5/milan/study/study.c:555..558`. The current packed validator
+does not constrain `b5` to Boolean, so established-graph matched `b5=2` is a
+valid generic discriminator: the new feature inherits two on both sides, while
+current source alone materializes its reference-star edge. All known natural
+producers write zero or one. This finding is independent of the earlier
+full-capacity action-2 three-zero-residual exact-one predicate.
+
+A same-input direct DLL/current witness closes the export-side uncertainty. The
+two-feature established gallery starts with one relation and matched `b5=2`;
+both sides append index 2 with action 1 and preserve appended `b5=2`. The
+approved DLL packs three features with one relation, while current source packs
+three features with two relations. The DLL output remains canonically decodable,
+so this is an observable synthetic-valid persistence difference rather than an
+unreachable instruction pattern or malformed-input crash.
