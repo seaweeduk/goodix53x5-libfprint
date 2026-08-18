@@ -552,7 +552,7 @@ goodix_milan_study_append (
       current->metadata.graph_reference_index = (int32_t) matched_feature_index;
       current->metadata.graph_established = 1;
     }
-  if ((!graph_was_established || matched_active != 0) &&
+  if ((!graph_was_established || matched_active == 1) &&
       goodix_milan_relation_matrix_store_reference (
         relation_matrix, old_feature_count, relation_values + 1) != 0)
     goto out;
