@@ -276,14 +276,6 @@ goodix_milan_generation_note_identify_prelude (GoodixMilanGeneration *generation
     generation->identify_prelude_count++;
 }
 
-void
-goodix_milan_generation_note_enrollment_stage (GoodixMilanGeneration *generation)
-{
-  g_return_if_fail (generation != NULL);
-  if (generation->enrollment_stages < G_MAXUINT)
-    generation->enrollment_stages++;
-}
-
 gboolean
 goodix_milan_replace_raw_frame (guint16 **owner,
                                 guint16 **frame,
@@ -750,10 +742,11 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
         if (data->forced_refresh)
           self->profile9_fdt.refresh_outcome =
             GOODIX_PROFILE9_FDT_REFRESH_OUTCOME_PUBLISHED;
-        fp_info ("Admitted Milan generation id=%" G_GUINT64_FORMAT
-                 " subtype=%u MAD=%" G_GUINT64_FORMAT,
-                 generation_id, self->milan_sensor_subtype,
-                 data->attempt.mad);
+        GOODIX53X5_DEBUG_ONLY (
+          fp_info ("Admitted Milan generation id=%" G_GUINT64_FORMAT
+                   " subtype=%u MAD=%" G_GUINT64_FORMAT,
+                   generation_id, self->milan_sensor_subtype,
+                   data->attempt.mad);)
         data->leave_powered = TRUE;
         goodix_base_timing_done (self, dev, "base_generation");
         fpi_ssm_mark_completed (ssm);

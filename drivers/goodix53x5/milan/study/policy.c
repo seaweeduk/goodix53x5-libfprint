@@ -194,7 +194,6 @@ goodix_milan_study_policy_select (const GoodixMilanStudyPolicyInput *input,
 
       if (scaled_area <= threshold)
         return 0;
-      selected = matched;
       selected_index = input->matched_feature_index;
     }
   else
@@ -313,11 +312,4 @@ goodix_milan_study_policy_full_footprint_area (const int32_t transform[6])
                   mapped_y >= 0 && mapped_y <= max_y);
       }
   return area;
-}
-
-int32_t
-goodix_milan_study_policy_footprint_percent (const int32_t transform[6])
-{
-  return study_policy_percent_from_area (
-    goodix_milan_study_policy_footprint_area (transform));
 }

@@ -990,11 +990,13 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
     case GOODIX_CAPTURE_STORE:
       if (self->milan_generation)
         {
+          GOODIX53X5_DEBUG_ONLY (
           guint64 use = goodix_milan_generation_note_use (self->milan_generation);
 
           fp_info ("Using Milan generation id=%" G_GUINT64_FORMAT
                    " use=%" G_GUINT64_FORMAT,
                    self->milan_generation->generation_id, use);
+          )
         }
       fpi_ssm_mark_completed (ssm);
       break;

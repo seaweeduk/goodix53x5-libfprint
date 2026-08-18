@@ -39,6 +39,18 @@ typedef struct
 } GoodixAuthTaskData;
 
 #ifdef GOODIX53X5_DEBUG
+static const gchar *
+goodix_auth_finger_name (FpFinger finger)
+{
+  static const gchar * const names[] = {
+    "unknown", "left-thumb", "left-index", "left-middle", "left-ring",
+    "left-little", "right-thumb", "right-index", "right-middle",
+    "right-ring", "right-little"
+  };
+
+  return (guint) finger < G_N_ELEMENTS (names) ? names[finger] : "unknown";
+}
+
 static void
 goodix_auth_log_runtime_result (FpDevice                       *dev,
                                 GoodixAuthTaskData              *data,
@@ -234,6 +246,10 @@ goodix_auth_task_done (GObject      *source_object,
   gboolean action_owned;
   gboolean generation_current;
   gboolean cancelled;
+  GOODIX53X5_DEBUG_ONLY (const gchar *finger_name = "none";)
+  GOODIX53X5_DEBUG_ONLY (FpPrint *winner_print = NULL;)
+  GOODIX53X5_DEBUG_ONLY (g_autofree gchar *template_features = NULL;)
+  GOODIX53X5_DEBUG_ONLY (g_autofree gchar *winner = NULL;)
 
   (void) user_data;
   task_owned = self->milan_task == G_TASK (result);
@@ -392,11 +408,25 @@ goodix_auth_task_done (GObject      *source_object,
       g_assert_not_reached ();
     }
 
-  fp_dbg ("Native Milan %s score=%d winner=%u action=%u quality=%d coverage=%d",
-          data->action == FPI_DEVICE_ACTION_IDENTIFY ? "identify" : "verify",
-          output->score, output->winner_index, output->study_action,
-          output->quality, output->coverage);
   goodix_auth_log_runtime_result (dev, data, output, FALSE);
+  GOODIX53X5_DEBUG_ONLY (
+    winner = goodix_debug_format_winner (output->winner_index,
+                                         output->winner_position);
+    template_features = goodix_debug_format_template_features (output);
+    if (output->winner_index < data->originals->len)
+      winner_print = g_ptr_array_index (data->originals, output->winner_index);
+    if (winner_print)
+      finger_name = goodix_auth_finger_name (
+        fp_print_get_finger (winner_print));
+
+    fp_dbg ("Native Milan %s status=%s(%u) score=%d finger=%s winner=%s "
+            "study=%s(%u) template_features=%s quality=%d coverage=%d",
+            data->action == FPI_DEVICE_ACTION_IDENTIFY ? "identify" : "verify",
+            goodix_debug_runtime_status_name (output->status),
+            (guint) output->status, output->score, finger_name, winner,
+            goodix_debug_study_action_name (output->study_action),
+            (guint) output->study_action,
+            template_features, output->quality, output->coverage);)
 out:
   goodix_milan_runtime_output_free (output);
 #ifdef GOODIX53X5_DEBUG
