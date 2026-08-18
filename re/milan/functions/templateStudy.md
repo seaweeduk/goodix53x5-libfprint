@@ -268,6 +268,18 @@ old `bc=-1 -> target bc=39`. Closure validation records a clean release build,
 all three existing Milan suites (`3/3`), and exact campaign results `450/450`
 and `643/643`.
 
+Those campaigns cover Boolean-produced state and do not establish the complete
+generic packed-input contract. A 2026-08-18 current-head audit found that native
+flag-zero ranked-primary validation counted `b5!=0`, whereas DLL
+`FUN_180045530:0x180045620..0x180045645` counts exact `b5==1`. The native codec
+and print validator accept non-Boolean packed `b5`, making this a
+synthetic-valid action-2 parity defect; known production producers remain
+Boolean. The one-predicate correction changes only that count to exact one. The
+focused discriminator then returns action `0` with no selected index, matching
+the DLL; the existing suites and standing campaigns pass at `450/450` and
+`643/643`. The witness is recorded in `FUN_180045530.md` and
+`FUN_1800469f0.md`.
+
 The native offline API returns a validated candidate for positive actions, and
 the production libfprint verify/identify path now runs that runtime and applies
 positive template updates. fprintd remains an external consumer of the standard
@@ -290,18 +302,25 @@ external action 5, 11 features/seven relations, final order
 `[10,9,8,7,2,1,0,4,5,6,3]`, and packed SHA-256
 `c971239885adccdcaece80b31dc9e5e3abea6b0cc428b1b82307cb05fe12b181`.
 
-Native's callback gallery is current but prematurely finalized: it is
-byte-identical to the primary-only DLL finalized payload `081c3e...`. Native
-consequently returns selected 9 with direct/lifecycle mask `0x300` instead of DLL
-`0x200`, adding feature-8 `be` and reordering the prefix. Its Q is also a
-serialized one-feature packed template rather than the DLL full live deep copy.
-A gallery-only unfinalized substitution yields `39/8`, mask `0x181`,
-so deferral alone is insufficient. The bounded implementation task is to retain
+This was the pre-fix native state: the callback gallery was current but
+prematurely finalized and byte-identical to the primary-only DLL finalized
+payload `081c3e...`. Native consequently returned selected 9 with
+direct/lifecycle mask `0x300` instead of DLL `0x200`, adding feature-8 `be` and
+reordering the prefix. Its Q was a serialized one-feature packed template rather
+than the DLL full live deep copy. A gallery-only unfinalized substitution yielded
+`39/8`, mask `0x181`, so deferral alone was insufficient. The bounded
+implementation task was to retain
 full prepared/live Q and one mutable G transaction, preserve matcher
 direct/aggregate and selector normalization semantics, defer order/tail and final
 publication packing until queue exhaustion, then expose 5 only after a committed
 queued selector. Artifact root is
 `study-action5-handoff-unit2-v1` under the persistent derived dataset.
+
+Current source implements that ownership and timing contract. It retains the
+deep-owned transformed live queue entry, updates one unfinalized shared gallery,
+and performs final type-12 order/tail generation once after queue exhaustion.
+The current closure and action-2 versus action-3/4 live-overlap distinction are
+recorded in `FUN_18005d330.md` and `FUN_180044fc0.md`.
 
 ## Full-Capacity Retained Normalization Closure
 

@@ -91,8 +91,8 @@ That selected affine routes through feature 8's slot 29
 [256,-16,3348,16,256,-2342]
 ```
 
-This is exactly the wrong current after-study relation, which identifies the
-current overwrite source.
+This is exactly the wrong historical pre-fix after-study relation, which
+identified the overwrite source.
 
 Ghidra fixes the native ownership boundary. `FUN_18005d9e0` writes only:
 
@@ -107,12 +107,12 @@ score, and action gates while preserving the earlier active direct-positive
 relation winner. Selected transform and study relation transform are
 intentionally different after this mixed direct-then-rescue path.
 
-Current `milan_match_prepared_probe()` instead enters its `rescue_applied`
-branch, resets `relation_count` to zero, and calls
+Historical `milan_match_prepared_probe()` instead entered its `rescue_applied`
+branch, reset `relation_count` to zero, and called
 `goodix_milan_match_reference_transform()` using rescue-selected feature 8 and
 the rescue-selected affine. The local feature-33
 `GoodixMilanActiveRelationWinner` is valid at that point (`feature=33`,
-`count=10`) but is discarded. This is the root cause.
+`count=10`) but was discarded. This was the root cause.
 
 ## Study Replacement Path
 
@@ -132,7 +132,7 @@ feature39.b6 + reference = 742 + 0 = 742
 The packed relation is ordinal 37 of 38 and has relation index 742. The target
 selection, feature copy, lifecycle scalars, relation cardinality, and every
 other packed byte are exact. Only the transform argument reaching this helper
-is wrong in current source.
+was wrong in the affected source revision.
 
 `FUN_180047120`, called at `FUN_1800469f0:0x180046e8c` for action 4, reads the
 reference star to recompute feature `bb` and overlap counts. It does not mutate
@@ -167,16 +167,31 @@ must publish the active winner's strict metric count as well as its routed
 affine. If no active relation winner exists, rescue must leave the initialized
 relation evidence alone rather than synthesize it from the rescue selection.
 
-An ephemeral end-to-end control changed only current match publication before
+An ephemeral end-to-end control changed only then-current match publication before
 ordinary queued study: relation count `0 -> 10` and relation affine
 `[256,-16,3348,16,256,-2342] -> [254,-35,5792,35,254,-2496]`. The unchanged
-current study path still selected action 4 and produced 487055 bytes, but its
-SHA-256 changed from the current
+study path still selected action 4 and produced 487055 bytes, but its SHA-256
+changed from the then-current
 `c3291376c0339ac5b1c6e958f2c4af3ef5ec0d4e349704ff44d62cb094cd3fbc` to the
 exact approved
 `e1094cc9a9a08af3185bb8f41d4c86300eefd831cf9652600e4e84e6e1208f0a`.
 This confirms that no second study/lifecycle/packing correction is hidden behind
 the evidence-owner fix.
+
+## Current Production Closure
+
+Production commit `1b017754` implements the correction above. Current
+`milan_match_prepared_probe()` publishes `active_relation_winner.count` and its
+routed affine before the `rescue_applied` branch, removes rescue-selected
+relation reconstruction, and leaves initialized zero/identity evidence when no
+active winner exists. Identify 305 therefore reaches the unchanged study chain
+with relation count/affine `10/[254,-35,5792,35,254,-2496]`.
+
+This closure is action-independent at the producer boundary. A later geometric
+action 3 and a primary action 4 both consume the same preserved evidence through
+`FUN_1800469f0 -> FUN_180045d40`; neither selector family may reroute it from the
+recognition-selected feature. The historical hashes above remain root-cause
+evidence, not a description of current production output.
 
 ## Why Existing Controls Missed It
 
