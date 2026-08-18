@@ -495,6 +495,107 @@ goodix_debug_action_name (FpiDeviceAction action)
   g_assert_not_reached ();
 }
 
+static const gchar *
+goodix_debug_purpose_name (GoodixMilanPreprocessPurpose purpose)
+{
+  static const gchar * const names[] = { "authentication", "enrollment" };
+
+  return (guint) purpose < G_N_ELEMENTS (names) ? names[purpose] : "unknown";
+}
+
+const gchar *
+goodix_debug_runtime_status_name (guint status)
+{
+  static const gchar * const names[] = {
+    "match", "no-match", "retry", "invalid-data", "cancelled"
+  };
+
+  return status < G_N_ELEMENTS (names) ? names[status] : "unknown";
+}
+
+const gchar *
+goodix_debug_study_action_name (guint action)
+{
+  static const gchar * const names[] = {
+    "none", "append", "replace-no-relation", "geometric", "replace", "queued"
+  };
+
+  return action < G_N_ELEMENTS (names) ? names[action] : "unknown";
+}
+
+gchar *
+goodix_debug_format_winner (guint index, gsize position)
+{
+  if (index == G_MAXUINT && position == G_MAXSIZE)
+    return g_strdup ("none");
+  if (index == G_MAXUINT || position == G_MAXSIZE)
+    return g_strdup_printf ("invalid(index=%u,position=%" G_GSIZE_FORMAT ")",
+                            index, position);
+  return g_strdup_printf ("gallery(index=%u,position=%" G_GSIZE_FORMAT ")",
+                          index, position);
+}
+
+gchar *
+goodix_debug_format_template_features (const GoodixMilanRuntimeOutput *output)
+{
+  GoodixMilanRuntimeGalleryResult *winner;
+  guint before;
+  guint after;
+  guint maximum;
+
+  if (output->winner_position >= output->gallery_results->len)
+    return g_strdup ("none");
+  winner = g_ptr_array_index (output->gallery_results, output->winner_position);
+  before = winner->template_info.feature_count;
+  after = output->final_candidate
+            ? output->final_candidate_info.feature_count
+            : before;
+  maximum = output->final_candidate
+              ? output->final_candidate_info.maximum_features
+              : winner->template_info.maximum_features;
+  if (!output->final_candidate)
+    return g_strdup_printf ("%u/%u", before, maximum);
+  return g_strdup_printf ("%u->%u/%u", before, after, maximum);
+}
+
+static const gchar *
+goodix_debug_checkpoint_name (GoodixMilanRuntimeCheckpoint checkpoint)
+{
+  static const gchar * const names[] = {
+    "none", "before-preprocess", "after-preprocess", "after-extract",
+    "before-gallery", "after-gallery", "before-study", "after-study"
+  };
+
+  return (guint) checkpoint < G_N_ELEMENTS (names) ? names[checkpoint] : "unknown";
+}
+
+static gchar *
+goodix_debug_format_cancellation (const GoodixMilanRuntimeOutput *output)
+{
+  const gchar *checkpoint = goodix_debug_checkpoint_name (
+    output->cancellation.cancelled_at);
+
+  if (output->cancellation.cancelled_at == GOODIX_MILAN_RUNTIME_CHECKPOINT_NONE)
+    return g_strdup ("none");
+  if (output->cancellation.cancelled_gallery_position == G_MAXSIZE)
+    return g_strdup (checkpoint);
+  return g_strdup_printf ("%s(gallery-position=%" G_GSIZE_FORMAT ")",
+                          checkpoint,
+                          output->cancellation.cancelled_gallery_position);
+}
+
+static gchar *
+goodix_debug_format_error (const GError *error)
+{
+  const gchar *domain;
+
+  if (!error)
+    return g_strdup ("none");
+  domain = g_quark_to_string (error->domain);
+  return g_strdup_printf ("%s(%d):%s", domain ? domain : "unknown-domain",
+                          error->code, error->message);
+}
+
 void
 goodix_debug_timing_log (FpDevice    *dev,
                          const gchar *scope,
@@ -621,6 +722,9 @@ goodix_debug_capture_runtime_metadata (GoodixDebugRuntimeMetadata *metadata,
   goodix_debug_clear_runtime_metadata (metadata);
   metadata->action = action;
   metadata->generation_use_index = generation_use_index;
+  if (!goodix_debug_env_enabled ("GOODIX53X5_DUMP_TEMPLATES") ||
+      !goodix_debug_dump_enabled ())
+    return;
   metadata->setup_tx_on = goodix_debug_raw12_le_bytes (setup_tx_on);
   metadata->live_raw = goodix_debug_raw12_le_bytes (live_raw);
 }
@@ -643,9 +747,14 @@ goodix_debug_log_runtime_result (FpDevice                         *dev,
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   const gchar *dump_dir = goodix_debug_dump_dir ();
+  g_autofree gchar *cancellation = NULL;
   g_autofree gchar *common_prefix = NULL;
+  g_autofree gchar *learning_error = NULL;
   g_autofree gchar *operation_id = NULL;
   g_autofree gchar *prefix = NULL;
+  g_autofree gchar *runtime_error = NULL;
+  g_autofree gchar *template_features = NULL;
+  g_autofree gchar *winner = NULL;
   g_autoptr(GPtrArray) gallery_artifacts = NULL;
   g_autoptr(GString) record = NULL;
   g_autoptr(GByteArray) bytes = NULL;
@@ -661,9 +770,50 @@ goodix_debug_log_runtime_result (FpDevice                         *dev,
   guint64 chronology;
   gboolean runtime_cancelled;
 
-  if (!goodix_debug_env_enabled ("GOODIX53X5_LOG_DIAGNOSTICS") ||
-      !goodix_debug_env_enabled ("GOODIX53X5_DUMP_TEMPLATES") || !dump_dir ||
-      metadata == NULL || output == NULL)
+  if (metadata == NULL || output == NULL)
+    return;
+  action_name = goodix_debug_action_name (metadata->action);
+  winner = goodix_debug_format_winner (output->winner_index,
+                                       output->winner_position);
+  template_features = goodix_debug_format_template_features (output);
+  cancellation = goodix_debug_format_cancellation (output);
+  runtime_error = goodix_debug_format_error (output->error);
+  learning_error = goodix_debug_format_error (output->learning_error);
+  if (goodix_debug_env_enabled ("GOODIX53X5_LOG_DIAGNOSTICS"))
+    fp_info ("diagnostic[%s] epoch=%" G_GUINT64_FORMAT
+             " generation=%" G_GUINT64_FORMAT
+             " stage=%u processing=%s(%u) status=%s(%u) quality=%d coverage=%d "
+             "probe_records=%u partitions=%u/%u score=%d winner=%s"
+             " study=%s(%u) attempted=%s completed=%s "
+             "study_gates=finalize:%s/action:%s/queue:%s "
+             "template_features=%s "
+             "gallery=%u-valid/%u-invalid/%u-evaluated "
+             "cancel=%s error=%s learning_error=%s",
+             action_name,
+             output->action_epoch, output->generation_id, stage,
+             goodix_debug_purpose_name (output->purpose),
+             (guint) output->purpose,
+             goodix_debug_runtime_status_name (output->status),
+             (guint) output->status,
+             output->quality, output->coverage,
+             output->probe_record_count, output->probe_partition0_count,
+             output->probe_partition1_count, output->score, winner,
+             goodix_debug_study_action_name (output->study_action),
+             (guint) output->study_action,
+             output->study_attempted ? "yes" : "no",
+             output->study_completed ? "yes" : "no",
+             output->match_result.study_control.study_finalization_gate
+               ? "yes" : "no",
+             output->match_result.study_control.study_action_gate
+               ? "yes" : "no",
+             output->match_result.study_control.queue_candidate_eligible
+               ? "yes" : "no",
+             template_features,
+             output->valid_gallery_count,
+             output->invalid_gallery_count, output->evaluated_gallery_count,
+             cancellation, runtime_error, learning_error);
+
+  if (!goodix_debug_env_enabled ("GOODIX53X5_DUMP_TEMPLATES") || !dump_dir)
     return;
   if (!goodix_debug_valid_sha256 (
         goodix_debug_build_id_marker + sizeof (GOODIX53X5_BUILD_ID_MARKER) - 1) ||
@@ -682,7 +832,6 @@ goodix_debug_log_runtime_result (FpDevice                         *dev,
       return;
     }
   chronology = self->debug_chronology + 1;
-  action_name = goodix_debug_action_name (metadata->action);
   common_prefix = g_strdup_printf (
     "runtime-artifact-%s-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT
     "-%u-%" G_GUINT64_FORMAT,
@@ -732,28 +881,6 @@ goodix_debug_log_runtime_result (FpDevice                         *dev,
       g_ptr_array_add (gallery_artifacts, artifacts);
       g_clear_pointer (&prefix, g_free);
     }
-
-  fp_info ("diagnostic[%s] epoch=%" G_GUINT64_FORMAT
-           " generation=%" G_GUINT64_FORMAT
-           " stage=%u purpose=%u status=%u quality=%d coverage=%d "
-           "records=%u partitions=%u/%u score=%d winner=%u/%" G_GSIZE_FORMAT
-           " study=%u gallery=%u/%u/%u cancel=%u/%" G_GSIZE_FORMAT
-           "error=%u:%d learning_error=%u:%d",
-           action_name,
-           output->action_epoch, output->generation_id, stage,
-           (guint) output->purpose, (guint) output->status,
-           output->quality, output->coverage,
-           output->probe_record_count, output->probe_partition0_count,
-           output->probe_partition1_count, output->score, output->winner_index,
-           output->winner_position,
-           (guint) output->study_action, output->valid_gallery_count,
-           output->invalid_gallery_count, output->evaluated_gallery_count,
-           (guint) output->cancellation.cancelled_at,
-           output->cancellation.cancelled_gallery_position,
-           output->error ? output->error->domain : 0,
-           output->error ? output->error->code : 0,
-            output->learning_error ? output->learning_error->domain : 0,
-            output->learning_error ? output->learning_error->code : 0);
 
   runtime_cancelled = output->status == GOODIX_MILAN_RUNTIME_CANCELLED ||
                       output->cancellation.cancelled_at !=

@@ -17,7 +17,7 @@ typedef struct _GoodixMilanRuntimeOutput GoodixMilanRuntimeOutput;
 
 #ifdef GOODIX53X5_DEBUG
 
-/* The diagnostic build recognizes:
+/* The diagnostic build recognizes these independent controls:
  * GOODIX53X5_DUMP_DIR, GOODIX53X5_DUMP_PROBES, GOODIX53X5_DUMP_TEMPLATES,
  * GOODIX53X5_LOG_TIMING, and GOODIX53X5_LOG_DIAGNOSTICS. */
 #define GOODIX53X5_DEBUG_ONLY(...) __VA_ARGS__
@@ -65,6 +65,11 @@ void goodix_debug_dump_probe (FpiDeviceAction action,
                               const guint8   *img);
 
 gboolean goodix_debug_timing_enabled (void);
+const gchar *goodix_debug_runtime_status_name (guint status);
+const gchar *goodix_debug_study_action_name (guint action);
+gchar *goodix_debug_format_winner (guint index, gsize position);
+gchar *goodix_debug_format_template_features (
+  const GoodixMilanRuntimeOutput *output);
 void goodix_debug_timing_log (FpDevice    *dev,
                               const gchar *scope,
                               const gchar *event,

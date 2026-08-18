@@ -148,6 +148,14 @@ the capture is deliberately retired. `GOODIX53X5_DUMP_PROBES=all` and
 candidates are emitted whenever the dump directory is configured; TX-off
 reference frames are not replay setup.
 
+The debug controls are independent outside this full-capture configuration.
+`GOODIX53X5_LOG_TIMING=1` enables timing logs, while
+`GOODIX53X5_LOG_DIAGNOSTICS=1` enables one-line runtime summaries without
+requiring a dump directory. `GOODIX53X5_DUMP_TEMPLATES=1` with a dump directory
+emits the runtime manifest and binary parity artifacts without requiring either
+logging option. Probe images remain separately controlled by
+`GOODIX53X5_DUMP_PROBES=none|failed|all`.
+
 ## 5. Create The Exact Build Manifest
 
 First confirm the installed library is the current debug build:
