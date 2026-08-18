@@ -931,23 +931,6 @@ typedef struct
   int      valid;
 } GoodixMilanStudyTransientState;
 
-int goodix_milan_match_probe_result (
-  const uint8_t                  probe_high_bitmap[286],
-  const uint8_t                  probe_enhanced_bitmap[286],
-  const uint8_t                  probe_low_bitmap[286],
-  const uint8_t                  probe_inline_mask[72],
-  const uint8_t                  probe_rescue_mask[308],
-  const GoodixMilanFeatureRecord *probe_records,
-  size_t                         probe_record_count,
-  size_t                         probe_partition_count,
-  int32_t                        image_quality,
-  int32_t                        image_coverage,
-  int32_t                        probe_optional_c7,
-  const GoodixMilanAntifakeBlob *probe_antifake,
-  const uint8_t                 *enrolled_template,
-  size_t                         enrolled_template_size,
-  GoodixMilanMatchResult        *match_result);
-
 #ifdef GOODIX53X5_DEBUG
 int goodix_milan_match_probe_result_debug (
   const uint8_t                  probe_high_bitmap[286],

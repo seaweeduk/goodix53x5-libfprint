@@ -112,7 +112,6 @@ goodix_debug_write_dump (const gchar      *prefix,
     published = FALSE;
   if (fd >= 0 && close (fd) != 0)
     published = FALSE;
-  fd = -1;
   if (!published)
     {
       gint saved_errno = errno;
@@ -254,7 +253,6 @@ goodix_debug_publish_artifact (const gchar *prefix,
     published = FALSE;
   if (fd >= 0 && close (fd) != 0)
     published = FALSE;
-  fd = -1;
   if (!published)
     {
       gint saved_errno = errno;

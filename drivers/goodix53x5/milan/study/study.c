@@ -899,7 +899,6 @@ goodix_milan_study_replace (
                 (uint32_t) target_feature.fields.optional_c7);
             }
           goodix_milan_template_write_u32 (cursor + 1, (uint32_t) (replacement_size - 5));
-          source = cursor;
           source_size = replacement_size;
         }
       else
