@@ -37,6 +37,14 @@ milan_descriptor_distance (const GoodixMilanFeatureRecord *first,
   return distance;
 }
 
+static int32_t
+milan_spatial_distance_squared_s32 (int32_t dx,
+                                    int32_t dy)
+{
+  return goodix_milan_transform_s32 (
+    (uint32_t) dx * (uint32_t) dx + (uint32_t) dy * (uint32_t) dy);
+}
+
 size_t
 goodix_milan_match_feature_records (const GoodixMilanFeatureRecord *prior,
                              size_t                          prior_count,
@@ -83,7 +91,7 @@ goodix_milan_match_feature_records (const GoodixMilanFeatureRecord *prior,
           int32_t dy = (int32_t) current_y -
                        (int32_t) (uint16_t) selected->refined_y;
 
-          if ((int64_t) dx * dx + (int64_t) dy * dy >= 0x10000)
+          if (milan_spatial_distance_squared_s32 (dx, dy) >= 0x10000)
             {
               i++;
               continue;
@@ -271,7 +279,7 @@ goodix_milan_match_correspondences_partitioned (
           int32_t dy = (int32_t) probe_y -
                        (int32_t) (uint16_t) selected->refined_y;
 
-          if ((int64_t) dx * dx + (int64_t) dy * dy >= 0x10000)
+          if (milan_spatial_distance_squared_s32 (dx, dy) >= 0x10000)
             {
               i++;
               continue;
@@ -399,7 +407,7 @@ goodix_milan_match_relaxed_correspondences (
           int32_t dy = (int32_t) enrolled_y -
                        (int32_t) (uint16_t) selected->refined_y;
 
-          if ((int64_t) dx * dx + (int64_t) dy * dy >= 0x10000)
+          if (milan_spatial_distance_squared_s32 (dx, dy) >= 0x10000)
             {
               i++;
               continue;
@@ -608,7 +616,7 @@ goodix_milan_match_alternate_correspondences_internal (
               int32_t dy = (int32_t) probe_y -
                            (int32_t) (uint16_t) selected->refined_y;
 
-              if ((int64_t) dx * dx + (int64_t) dy * dy >= 0x10000)
+              if (milan_spatial_distance_squared_s32 (dx, dy) >= 0x10000)
                 {
                   i++;
                   continue;
@@ -737,7 +745,7 @@ milan_store_cross_class_match (
       int32_t dy = (int32_t) probe_y -
                    (int32_t) (uint16_t) selected->refined_y;
 
-      if ((int64_t) dx * dx + (int64_t) dy * dy >= 0x10000)
+      if (milan_spatial_distance_squared_s32 (dx, dy) >= 0x10000)
         {
           i++;
           continue;
@@ -745,8 +753,12 @@ milan_store_cross_class_match (
       if (best_distance >= matches[i].best_distance)
         {
           if (!replaced)
-            replaced = -1;
-          break;
+            {
+              replaced = -1;
+              break;
+            }
+          i++;
+          continue;
         }
       if (!replaced)
         {
