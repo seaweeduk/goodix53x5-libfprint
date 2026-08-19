@@ -1592,14 +1592,49 @@ out:
   return result;
 }
 
-int
-goodix_milan_feature_base_maps (const uint8_t *frame,
+void
+goodix_milan_feature_pack_inline_mask (const uint8_t *validity_mask,
                                        size_t         rows,
                                        size_t         columns,
-                                       uint8_t       *high_bitmap,
-                                       uint8_t       *low_bitmap,
-                                       uint8_t       *feature_mask,
                                        uint8_t       *inline_mask)
+{
+  size_t block_rows = (rows + 3) / 4;
+  size_t block_columns = (columns + 3) / 4;
+
+  memset (inline_mask, 0, (block_rows * block_columns + 7) / 8);
+  for (size_t block_row = 0; block_row < block_rows; block_row++)
+    for (size_t block_column = 0; block_column < block_columns; block_column++)
+      {
+        size_t foreground = 0;
+        size_t pixels = 0;
+
+        for (size_t y = block_row * 4;
+             y < rows && y < block_row * 4 + 4; y++)
+          for (size_t x = block_column * 4;
+               x < columns && x < block_column * 4 + 4; x++)
+            {
+              foreground += validity_mask[y * columns + x] != 0;
+              pixels++;
+            }
+        if (foreground * 2 >= pixels)
+          {
+            size_t bit = block_row * block_columns + block_column;
+
+            inline_mask[bit / 8] |= (uint8_t) (1U << (bit & 7));
+          }
+      }
+}
+
+int
+goodix_milan_feature_base_maps_with_validity (
+  const uint8_t *frame,
+  size_t         rows,
+  size_t         columns,
+  uint8_t       *high_bitmap,
+  uint8_t       *low_bitmap,
+  uint8_t       *feature_mask,
+  uint8_t       *inline_mask,
+  uint8_t       *validity_mask)
 {
   size_t cropped_columns;
   size_t cropped_count;
@@ -1640,6 +1675,8 @@ goodix_milan_feature_base_maps (const uint8_t *frame,
   if (quality_coverage_mask_core (cropped, rows, cropped_columns, 0x6e, 1,
                                   mask, &ignored_coverage) != 0)
     goto out;
+  if (validity_mask)
+    memcpy (validity_mask, mask, cropped_count);
 
   for (size_t row = 0; row < rows; row++)
     {
@@ -1696,34 +1733,8 @@ goodix_milan_feature_base_maps (const uint8_t *frame,
         }
     }
   if (inline_mask)
-    {
-      size_t block_rows = (rows + 3) / 4;
-      size_t block_columns = (cropped_columns + 3) / 4;
-
-      memset (inline_mask, 0, (block_rows * block_columns + 7) / 8);
-      for (size_t block_row = 0; block_row < block_rows; block_row++)
-        for (size_t block_column = 0; block_column < block_columns;
-             block_column++)
-          {
-            size_t foreground = 0;
-            size_t pixels = 0;
-
-            for (size_t y = block_row * 4;
-                 y < rows && y < block_row * 4 + 4; y++)
-              for (size_t x = block_column * 4;
-                   x < cropped_columns && x < block_column * 4 + 4; x++)
-                {
-                  foreground += mask[y * cropped_columns + x] != 0;
-                  pixels++;
-                }
-            if (foreground * 2 >= pixels)
-              {
-                size_t bit = block_row * block_columns + block_column;
-
-                inline_mask[bit / 8] |= (uint8_t) (1U << (bit & 7));
-              }
-          }
-    }
+    goodix_milan_feature_pack_inline_mask (
+      mask, rows, cropped_columns, inline_mask);
   result = 0;
 
 out:
@@ -1732,6 +1743,20 @@ out:
   free (mask);
   free (cropped);
   return result;
+}
+
+int
+goodix_milan_feature_base_maps (const uint8_t *frame,
+                                size_t         rows,
+                                size_t         columns,
+                                uint8_t       *high_bitmap,
+                                uint8_t       *low_bitmap,
+                                uint8_t       *feature_mask,
+                                uint8_t       *inline_mask)
+{
+  return goodix_milan_feature_base_maps_with_validity (
+    frame, rows, columns, high_bitmap, low_bitmap, feature_mask, inline_mask,
+    NULL);
 }
 
 

@@ -318,8 +318,93 @@ goodix_milan_feature_should_retry_scale_space (size_t       materialized_count,
          configured_retry != 0;
 }
 
-int
-goodix_milan_feature_extract_records_mode_configured (
+static int
+feature_filter_broken_pixels (GoodixMilanFeatureRecord *records,
+                              size_t                   *record_count,
+                              const uint8_t            *broken_mask,
+                              size_t                    rows,
+                              size_t                    columns,
+                              uint8_t                  *validity_mask,
+                              int                       high_class)
+{
+  size_t stride = columns + 1;
+  size_t radius = high_class < 4 ? 2 : 5;
+  int16_t *integral = calloc ((rows + 1) * stride, sizeof(*integral));
+  uint16_t *local_zeros = calloc (rows * columns, sizeof(*local_zeros));
+  int global_zeros = 0;
+  int result = -1;
+
+  if (!integral || !local_zeros)
+    goto out;
+  for (size_t y = 0; y < rows; y++)
+    for (size_t x = 0; x < columns; x++)
+      {
+        size_t source = y * columns + x;
+        size_t destination = (y + 1) * stride + x + 1;
+        int zero = broken_mask[source] == 0;
+
+        global_zeros += zero;
+        integral[destination] = (int16_t) (
+          integral[destination - stride] + integral[destination - 1] -
+          integral[destination - stride - 1] + zero);
+      }
+  if (global_zeros >= 50)
+    {
+      for (size_t y = 0; y < rows; y++)
+        for (size_t x = 0; x < columns; x++)
+          {
+            size_t left = x > radius ? x - radius : 0;
+            size_t top = y > radius ? y - radius : 0;
+            size_t right = x + radius + 1 < columns
+                             ? x + radius + 1
+                             : columns;
+            size_t bottom = y + radius + 1 < rows ? y + radius + 1 : rows;
+
+            local_zeros[y * columns + x] = (uint16_t) (
+              integral[bottom * stride + right] -
+              integral[top * stride + right] -
+              integral[bottom * stride + left] +
+              integral[top * stride + left]);
+          }
+      if (high_class >= 4)
+        {
+          size_t validity_columns = columns / 8 * 8;
+
+          for (size_t y = 0; y < rows; y++)
+            for (size_t x = 0; x < validity_columns; x++)
+              if (local_zeros[y * columns + x] != 0)
+                validity_mask[y * validity_columns + x] = 0;
+        }
+      for (size_t i = 0; i < *record_count;)
+        {
+          size_t x = ((uint16_t) records[i].refined_x + 0x80) >> 8;
+          size_t y = ((uint16_t) records[i].refined_y + 0x80) >> 8;
+
+          /* Native checks only x before indexing the unshifted 108-wide map. */
+          if (x < columns && local_zeros[y * columns + x] > 1)
+            {
+              (*record_count)--;
+              if (i != *record_count)
+                {
+                  records[i] = records[*record_count];
+                  memset (&records[*record_count], 0,
+                          sizeof(records[*record_count]));
+                }
+              continue;
+            }
+          i++;
+        }
+    }
+  result = 0;
+
+out:
+  free (local_zeros);
+  free (integral);
+  return result;
+}
+
+static int
+feature_extract_records (
   const uint8_t            *frame,
   size_t                    rows,
   size_t                    columns,
@@ -328,7 +413,10 @@ goodix_milan_feature_extract_records_mode_configured (
   size_t                   *record_count,
   size_t                   *zero_flag_count,
   int                       expand_records,
-  int                       configured_retry)
+  int                       configured_retry,
+  const uint8_t            *broken_mask,
+  uint8_t                  *validity_mask,
+  int                       high_class)
 {
   GoodixMilanFeatureRecord
     materialized[MILAN_FEATURE_MATERIALIZED_LIMIT];
@@ -404,6 +492,11 @@ goodix_milan_feature_extract_records_mode_configured (
   *record_count = feature_finish_pretransform_records (
     magnitude, gradient_orientation, rows, cropped_columns, records, limit,
     materialized, ranks, auxiliary, materialized_count);
+  if (broken_mask && *record_count != 0 &&
+      feature_filter_broken_pixels (
+        records, record_count, broken_mask, rows, columns, validity_mask,
+        high_class) != 0)
+    goto out;
   for (size_t i = 0; i < *record_count; i++)
     goodix_milan_feature_transform_record ((uint8_t *) &records[i],
                                             expand_records);
@@ -421,6 +514,42 @@ out:
   free (dense_orientation);
   free (cropped);
   return result;
+}
+
+int
+goodix_milan_feature_extract_records_mode_configured (
+  const uint8_t            *frame,
+  size_t                    rows,
+  size_t                    columns,
+  GoodixMilanFeatureRecord *records,
+  size_t                    capacity,
+  size_t                   *record_count,
+  size_t                   *zero_flag_count,
+  int                       expand_records,
+  int                       configured_retry)
+{
+  return feature_extract_records (
+    frame, rows, columns, records, capacity, record_count, zero_flag_count,
+    expand_records, configured_retry, NULL, NULL, 0);
+}
+
+int
+goodix_milan_feature_extract_records_mode_masked (
+  const uint8_t            *frame,
+  size_t                    rows,
+  size_t                    columns,
+  GoodixMilanFeatureRecord *records,
+  size_t                    capacity,
+  size_t                   *record_count,
+  size_t                   *zero_flag_count,
+  int                       expand_records,
+  const uint8_t            *broken_mask,
+  uint8_t                  *validity_mask,
+  int                       high_class)
+{
+  return feature_extract_records (
+    frame, rows, columns, records, capacity, record_count, zero_flag_count,
+    expand_records, 1, broken_mask, validity_mask, high_class);
 }
 
 int
