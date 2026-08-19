@@ -900,12 +900,14 @@ goodix_milan_match_cross_class_alternate_correspondences (
         (uint16_t) enrolled_records[enrolled_index].refined_x;
       int32_t enrolled_y =
         (uint16_t) enrolled_records[enrolled_index].refined_y;
-      int32_t inverse_x =
-        (((inverse[0] * enrolled_x + inverse[1] * enrolled_y +
-           inverse[2] * 0x100 + 0x80) >> 8) + 0x80) >> 8;
-      int32_t inverse_y =
-        (((inverse[3] * enrolled_x + inverse[4] * enrolled_y +
-           inverse[5] * 0x100 + 0x80) >> 8) + 0x80) >> 8;
+      int32_t inverse_x = milan_match_scan_round_pixel_s32 (
+        milan_match_scan_raw_s32 (
+          inverse[0], (uint32_t) enrolled_x,
+          inverse[1], (uint32_t) enrolled_y, inverse[2]));
+      int32_t inverse_y = milan_match_scan_round_pixel_s32 (
+        milan_match_scan_raw_s32 (
+          inverse[3], (uint32_t) enrolled_x,
+          inverse[4], (uint32_t) enrolled_y, inverse[5]));
       size_t probe_begin = enrolled_index < enrolled_partition_count
                              ? 0
                              : probe_partition_count;
@@ -927,19 +929,26 @@ goodix_milan_match_cross_class_alternate_correspondences (
             sibling_tail_hamming_limit);
           int32_t probe_x = (uint16_t) probe_records[probe_index].refined_x;
           int32_t probe_y = (uint16_t) probe_records[probe_index].refined_y;
-          int64_t raw_x = (int64_t) primary_transform[0] * probe_x +
-                          (int64_t) primary_transform[1] * probe_y +
-                          (int64_t) primary_transform[2] * 0x100;
-          int64_t raw_y = (int64_t) primary_transform[3] * probe_x +
-                          (int64_t) primary_transform[4] * probe_y +
-                          (int64_t) primary_transform[5] * 0x100;
-          int32_t transformed_x = (int32_t) (raw_x >> 8);
-          int32_t transformed_y = (int32_t) (raw_y >> 8);
-          int32_t pixel_x = (int32_t) (((raw_x + 0x80) >> 8) + 0x80) >> 8;
-          int32_t pixel_y = (int32_t) (((raw_y + 0x80) >> 8) + 0x80) >> 8;
+          int32_t raw_x = milan_match_scan_raw_s32 (
+            primary_transform[0], (uint32_t) probe_x,
+            primary_transform[1], (uint32_t) probe_y,
+            primary_transform[2]);
+          int32_t raw_y = milan_match_scan_raw_s32 (
+            primary_transform[3], (uint32_t) probe_x,
+            primary_transform[4], (uint32_t) probe_y,
+            primary_transform[5]);
+          int32_t transformed_x = goodix_milan_transform_sar32 (
+            (uint32_t) raw_x, 8);
+          int32_t transformed_y = goodix_milan_transform_sar32 (
+            (uint32_t) raw_y, 8);
+          int32_t pixel_x = milan_match_scan_round_pixel_s32 (raw_x);
+          int32_t pixel_y = milan_match_scan_round_pixel_s32 (raw_y);
 
-          if (distance < 0 || abs (transformed_x - enrolled_x) > 0x1500 ||
-              abs (transformed_y - enrolled_y) > 0x1500 ||
+          if (distance < 0 ||
+              !milan_match_scan_residual_within (
+                transformed_x, (uint32_t) enrolled_x) ||
+              !milan_match_scan_residual_within (
+                transformed_y, (uint32_t) enrolled_y) ||
               pixel_x <= 5 || pixel_x > 104 - 5 ||
               pixel_y <= 5 || pixel_y > 88 - 5)
             continue;
