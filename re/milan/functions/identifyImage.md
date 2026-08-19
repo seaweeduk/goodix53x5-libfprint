@@ -70,6 +70,10 @@ At that point owning global `0x18024ebe8` contains the normal `0x168` live
 feature and its active 56-byte records. Replacing only feature matrix `+0x20`
 with an allocator-compatible shadow does not bypass extraction, anti-fake
 construction, candidate matching, evidence publication, or ownership cleanup.
+This matrix is the pre-filter `52x44` owner built before optional broken-pixel
+clearing and is the later anti-fake mask input. It is independent of rescue
+matrix `+0x140`, which extraction derives from finalized inline mask `+0x28` and
+which `FUN_18005d9e0` consumes during aggregate rescue.
 
 The intervention resumes the original instruction at `0x180001dbd` through a
 single-step breakpoint rearm. It does not alter the extraction call at
