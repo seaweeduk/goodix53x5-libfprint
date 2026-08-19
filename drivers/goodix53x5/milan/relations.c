@@ -474,6 +474,154 @@ goodix_milan_relation_matrix_replace (
     matrix, feature_index, new_feature_to_reference);
 }
 
+static int
+goodix_milan_relation_matrix_read_to_first (
+  GoodixMilanRelationMatrix *matrix,
+  size_t                          first,
+  size_t                          second,
+  int32_t                        *rank,
+  int32_t                         transform[6])
+{
+  GoodixMilanRelationSlot *slot;
+
+  if (!matrix || !rank || !transform || first == second)
+    return -1;
+  slot = goodix_milan_enrollment_relation_slot (matrix, first, second);
+  if (!slot)
+    return -1;
+  *rank = slot->values[0];
+  if (second > first)
+    memcpy (transform, slot->values + 1, 6 * sizeof(*transform));
+  else if (goodix_milan_transform_invert (
+             slot->values + 1, transform) != 0)
+    return -1;
+  return 0;
+}
+
+static int
+goodix_milan_relation_matrix_store_to_first (
+  GoodixMilanRelationMatrix *matrix,
+  size_t                          first,
+  size_t                          second,
+  const int32_t                   transform[6])
+{
+  GoodixMilanRelationSlot *slot;
+
+  if (!matrix || !transform || first == second)
+    return -1;
+  slot = goodix_milan_enrollment_relation_slot (matrix, first, second);
+  if (!slot)
+    return -1;
+  if (second > first)
+    memcpy (slot->values + 1, transform, 6 * sizeof(*transform));
+  else if (goodix_milan_transform_invert (
+             transform, slot->values + 1) != 0)
+    return -1;
+  slot->values[0] = 2;
+  return 0;
+}
+
+int
+goodix_milan_relation_matrix_close (
+  GoodixMilanRelationMatrix *matrix,
+  int32_t                         active_markers[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY])
+{
+  static const int32_t identity[6] = { 0x100, 0, 0, 0, 0x100, 0 };
+  int32_t path_quality[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY]
+                      [GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
+  int32_t visited[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY];
+  size_t worklist[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY];
+  int changed = 0;
+
+  if (!matrix || !active_markers || matrix->feature_count == 0 ||
+      matrix->feature_count > GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
+    return -1;
+  for (size_t feature = 0; feature < matrix->feature_count; feature++)
+    if (matrix->row_bases[feature] !=
+        goodix_milan_relation_matrix_expected_row_base (feature))
+      return -1;
+
+  /* Native scans candidates downward and consumes each root's worklist LIFO. */
+  for (size_t root = 0; root < matrix->feature_count; root++)
+    {
+      size_t worklist_size = 1;
+
+      for (size_t feature = 0; feature < matrix->feature_count; feature++)
+        visited[feature] = -1;
+      visited[root] = 0;
+      worklist[0] = root;
+
+      while (worklist_size != 0)
+        {
+          size_t current = worklist[--worklist_size];
+          int32_t current_to_root[6];
+          int32_t root_quality = 0;
+
+          memcpy (current_to_root, identity, sizeof(current_to_root));
+          if (current != root)
+            {
+              if (goodix_milan_relation_matrix_read_to_first (
+                    matrix, root, current, &root_quality,
+                    current_to_root) != 0)
+                return -1;
+              path_quality[root][current] = root_quality;
+              path_quality[current][root] = root_quality;
+            }
+
+          for (size_t candidate = matrix->feature_count; candidate-- > 0;)
+            {
+              int32_t candidate_to_current[6];
+              int32_t edge_rank;
+              int32_t direct_rank;
+              int32_t direct_transform[6];
+              int32_t bottleneck;
+              int32_t candidate_to_root[6];
+
+              if (visited[candidate] > -1 || candidate == current)
+                continue;
+              if (goodix_milan_relation_matrix_read_to_first (
+                    matrix, current, candidate, &edge_rank,
+                    candidate_to_current) != 0)
+                return -1;
+              if (edge_rank <= 0)
+                continue;
+
+              path_quality[current][candidate] = edge_rank;
+              path_quality[candidate][current] = edge_rank;
+              visited[candidate] = (int32_t) root;
+              if (worklist_size >= matrix->feature_count)
+                return -1;
+              worklist[worklist_size++] = candidate;
+              bottleneck = root_quality < edge_rank ? root_quality : edge_rank;
+
+              if (current == root)
+                continue;
+              if (goodix_milan_relation_matrix_read_to_first (
+                    matrix, root, candidate, &direct_rank,
+                    direct_transform) != 0)
+                return -1;
+              if (direct_rank > 2 ||
+                  (direct_rank == 2 &&
+                   path_quality[root][candidate] >= bottleneck))
+                continue;
+
+              goodix_milan_transform_compose (
+                current_to_root, candidate_to_current, candidate_to_root);
+              if (goodix_milan_relation_matrix_store_to_first (
+                    matrix, root, candidate, candidate_to_root) != 0)
+                return -1;
+              path_quality[root][candidate] = bottleneck;
+              path_quality[candidate][root] = bottleneck;
+              changed = 1;
+              if (active_markers[root] == 1 ||
+                  active_markers[candidate] == 1)
+                active_markers[root] = active_markers[candidate] = 1;
+            }
+        }
+    }
+  return changed;
+}
+
 int
 goodix_milan_relation_matrix_project_reference_star (
   const GoodixMilanRelationMatrix *matrix,
