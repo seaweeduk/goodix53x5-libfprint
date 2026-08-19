@@ -581,6 +581,7 @@ goodix_match_extract_planes (const guint8  *image,
         }
     }
 #endif
+  goodix_milan_feature_mask_expand (inline_mask, feature_mask);
   if (calibration && raw_frame &&
       goodix_milan_template_initialize_tail (
         image, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, tail_state,
