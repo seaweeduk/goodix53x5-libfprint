@@ -170,12 +170,14 @@ goodix_match_combine_templates (GPtrArray *templates)
   GoodixMilanTemplateMetadata metadata = { 0 };
   guint8 tail_state[0x520] = { 0 };
   guint8 *combined = NULL;
+  guint8 *normalized = NULL;
   size_t combined_capacity = 1433;
   size_t combined_size = 0;
+  size_t normalized_size = 0;
   GBytes *result = NULL;
 
   if (!templates || templates->len == 0 ||
-      templates->len > GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
+      templates->len > GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT)
     return NULL;
   unpacked = g_new0 (GoodixMilanUnpackedTemplate, 1);
   relation_matrix = g_new0 (GoodixMilanRelationMatrix, 1);
@@ -392,6 +394,9 @@ goodix_match_combine_templates (GPtrArray *templates)
         }
       metadata.registration_count += i;
     }
+  if (templates->len == GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT &&
+      goodix_milan_relation_matrix_close (relation_matrix, active) < 0)
+    goto out;
   for (guint i = 0; i < templates->len; i++)
     goodix_match_set_feature_scalar (
       element_copies[i], element_sizes[i], 0, active[i] ? 1 : 0);
@@ -410,13 +415,27 @@ goodix_match_combine_templates (GPtrArray *templates)
         tail_state, sizeof(tail_state), combined, combined_capacity,
         &combined_size) != 0)
     goto out;
-  result = g_bytes_new_take (combined, combined_size);
-  combined = NULL;
+  if (templates->len == GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT)
+    {
+      normalized = g_malloc (combined_capacity);
+      if (goodix_milan_template_normalize (
+            combined, combined_size, normalized, combined_capacity,
+            &normalized_size) != 0)
+        goto out;
+      result = g_bytes_new_take (normalized, normalized_size);
+      normalized = NULL;
+    }
+  else
+    {
+      result = g_bytes_new_take (combined, combined_size);
+      combined = NULL;
+    }
 
 out:
   for (guint i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
     g_free (element_copies[i]);
   g_free (combined);
+  g_free (normalized);
   g_free (relation_matrix);
   g_free (unpacked);
   return result;

@@ -134,6 +134,11 @@ goodix_milan_relation_matrix_replace (
   const int32_t                   new_feature_to_reference[6]);
 
 int
+goodix_milan_relation_matrix_close (
+  GoodixMilanRelationMatrix *matrix,
+  int32_t                         active_markers[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY]);
+
+int
 goodix_milan_relation_matrix_project_reference_star (
   const GoodixMilanRelationMatrix *matrix,
   GoodixMilanTemplateRelation          *relations,
