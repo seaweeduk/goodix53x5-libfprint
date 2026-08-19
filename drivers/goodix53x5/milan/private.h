@@ -44,6 +44,31 @@ int feature_build_dense_orientation (const uint8_t *frame,
                                      uint8_t       *orientation);
 void goodix_milan_feature_mask_expand (const uint8_t packed[72],
                                 uint8_t       mask[44 * 52]);
+int goodix_milan_feature_base_maps_with_validity (
+  const uint8_t *frame,
+  size_t         rows,
+  size_t         columns,
+  uint8_t       *high_bitmap,
+  uint8_t       *low_bitmap,
+  uint8_t       *feature_mask,
+  uint8_t       *inline_mask,
+  uint8_t       *validity_mask);
+void goodix_milan_feature_pack_inline_mask (const uint8_t *validity_mask,
+                                            size_t         rows,
+                                            size_t         columns,
+                                            uint8_t       *inline_mask);
+int goodix_milan_feature_extract_records_mode_masked (
+  const uint8_t            *frame,
+  size_t                    rows,
+  size_t                    columns,
+  GoodixMilanFeatureRecord *records,
+  size_t                    capacity,
+  size_t                   *record_count,
+  size_t                   *zero_flag_count,
+  int                       expand_records,
+  const uint8_t            *broken_mask,
+  uint8_t                  *validity_mask,
+  int                       high_class);
 void milan_compose_transform (const int32_t first[6],
                               const int32_t second[6],
                               int32_t       output[6]);
