@@ -132,8 +132,38 @@ evaluate later candidates to maximize score. If every candidate is nonpositive,
 the published index remains `UINT32_MAX` and the published score is the final
 candidate's score.
 
-The native helper `goodix_milan_index0_select_first_positive()` models this
-contract and the native Milan runtime invokes equivalent first-positive behavior.
+The adapter validates all top-level output pointers at
+`0x180001b3b..0x180001b62`, then initializes published score to zero and index to
+`UINT32_MAX` at `0x180001b68..0x180001b6c`. Candidate count is an unsigned
+32-bit value. Count zero returns `GF_NO_Candidate` (`0x81`) before entering the
+loop and leaves those initialized outputs at `0/UINT32_MAX`; it is not an
+empty-list invocation of the selection loop. The first candidate and its
+template pointer are checked before preprocessing, and each later null candidate
+returns `0x81` when reached.
+
+For each successful matcher call, `0x180001e87..0x180001ea3` tests the signed
+score with `JG`. Negative and zero scores continue; a positive score publishes
+that exact dword and the current zero-based index at
+`0x180001ec8..0x180001ed3`. On loop exhaustion,
+`0x180001ea9..0x180001ec3` publishes the final matcher-written score and resets
+the index to `UINT32_MAX`. A matcher error aborts with `0x83` rather than
+participating as a score.
+
+The loop counter and count cannot wrap during a valid traversal: after index
+`count-1`, increment produces `count` and the unsigned-below branch stops.
+Native trusts that the caller's candidate pointer array has `count` entries;
+an overstated count is a malformed out-of-bounds/crash surface, not a score
+policy. The public clean-room helper rejects a null score array, zero count, or
+null outputs with `-1` and leaves outputs untouched, so its empty-list behavior
+is intentionally safer than the adapter's pre-loop `0x81` plus initialized
+outputs.
+
+The native helper `goodix_milan_match_select_first_positive()` models this
+contract for valid nonempty score arrays, and the native Milan runtime invokes
+equivalent first-positive behavior. Publication order and signed-positive
+selection already match and require no production change; only the helper's
+explicit fail-closed API validation differs from the adapter's fault/status
+surface.
 Every native live probe reaches this loop after complete anti-fake construction
 with semantic zero at the documented one-past source. Zero/nonzero differential
 construction is offline diagnostics only and cannot stop verification,
