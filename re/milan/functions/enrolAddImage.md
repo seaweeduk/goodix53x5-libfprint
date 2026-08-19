@@ -1,12 +1,15 @@
 # enrolAddImage
 
-## Audit Scope
+## Identity
 
-Exported enrollment update at `0x180001450`, reached from the production adapter
-wrapper `FUN_18002d4b0`. This note was created before new Ghidra inspection for
-the production anti-fake metadata audit.
+- Binary: `GoodixEngineAdapter.dll` 2.0.310.900, SHA-256
+  `6673db3874fea66a58e2da29e371d797b890c767ba0491134d4a372c5b27e3b4`.
+- Export entry: `0x180001450`.
+- Production caller: adapter wrapper `FUN_18002d4b0`.
+- Role: process one enrollment scan, update the live template, and apply
+  session-level acceptance or rollback policy.
 
-## Known Production ABI
+## Production ABI
 
 ```c
 int32_t enrolAddImage(
@@ -29,28 +32,10 @@ int32_t enrolAddImage(
 - `FUN_18001f610` proves the metadata values originate in the sample trailer and
   are retained independently as `tCode`, `dacHigh`, and `dacLow`.
 - Production profile-9 enrollment supplies `0x79`, `0x7d`, and `0xc6`.
-- Historical oracle runs supplied zero metadata and remain synthetic. The
-  current corrected oracle supplies the production tuple and nonnull auxiliary,
-  but still initializes a controlled calibration generation rather than
-  reproducing unknown persisted Windows state.
+- Zero-metadata oracle inputs are synthetic. The production tuple and nonnull
+  auxiliary still do not reproduce unknown persisted calibration state.
 
-## Questions
-
-- Where does the export retain or forward each of `t_code`, `dac_high`, and
-  `dac_low`?
-- Which anti-fake stage combines those values with the retained calibration
-  workspace and raw frame?
-- Is the current residual expression's single `t_code` subtraction actually a
-  packed or derived scalar involving all three metadata values?
-- Why do production and zero-metadata anti-fake feature records first diverge at
-  feature offset 1049 while preprocessing, primary records, and relations remain
-  exact?
-- Which anti-fake lifecycle/security fields and pair scores depend on the
-  production metadata tuple?
-- Can native code reproduce the generic arithmetic directly, without a
-  profile-9 tuple special case or matcher-threshold changes?
-
-## Audit Findings
+## Behavior
 
 - `enrolAddImage` computes a signed residual offset using 32-bit arithmetic:
 
@@ -71,36 +56,45 @@ int32_t enrolAddImage(
 - `FUN_18003a150` computes each interior residual as
   `calibration - raw - offset - 0x1bb7`; chip types `0x0c` and `0x11` then copy
   adjacent interior values to the border.
-- The native API now accepts all three metadata values and derives the offset
-  generically. No production tuple or matcher threshold is embedded in the
-  implementation.
-- The remaining instrumented/uninstrumented difference is the undefined
-  one-past feature-mask byte documented in `FUN_1800392f0.md`. Independent
-  corrected TX-on runs observed both active and inactive allocator residue.
-  Neither observation is a byte authority. Native always supplies semantic zero
-  under `canonical-zero-v1` before complete anti-fake construction. Paired
-  zero/nonzero output remains diagnostic only and cannot request an enrollment
+- After successful `FUN_180042c30`, mode 0 increments session used count `+0x0a`
+  at `0x1800017ae` and derives progress from used/requested at
+  `0x180001887..0x18000189d`. It also forces progress to 100 if the live
+  template itself reaches physical maximum at `0x1800018a0..0x1800018aa`, but
+  these are distinct predicates: normal profile-9 adapter completion at 12 can
+  pack a live template whose physical maximum is 40 and whose capacity
+  finalizers have not run.
+- A `FUN_180042c30` failure branches to cleanup at
+  `0x180001741..0x180001781` before the `+0x0a` increment, so a rejected stage
+  does not count as accepted. The adapter maps other nonzero returns to `0x8010`
+  at `0x18002d6bd..0x18002d6cc`, also without changing used count. Its later
+  bad-capture gate is a provisional-acceptance rollback: it calls
+  `enrolDeleteImage` at `0x18002d818`, which decrements `+0x0a` at
+  `0x1800019a0..0x1800019b0` and recomputes progress before the adapter reports
+  `0x8008` at `0x18002d825`. Rejected or rolled-back scans therefore require
+  another scan; they do not reduce the default Glass requirement of 12 accepted
+  stages. Physical touches can therefore exceed 12.
+- The stage helper accepts insertion 40, then runs graph closure followed by
+  type-12 feature normalization before returning success. A subsequent insertion
+  41 returns `0x80000005` before feature, relation, graph, order, pair-score, or
+  finalizer mutation; progress is zero and the existing 40-feature template is
+  unchanged. The exported wrapper's later mode policy cannot turn that rejected
+  insertion into an accepted stage.
+- Relation construction and anti-fake pair updates are already committed when
+  post-insertion policy runs. Mode-0 bad-capture rollback and mode-1 status-4
+  rollback remove the last feature structurally through `FUN_180037a30`; they
+  do not restore pair scores changed on prior features during that accepted
+  stage.
+- The undefined one-past feature-mask read is owned by `FUN_1800392f0.md`.
+  Allocator residue at that byte is not semantic evidence and cannot request a
   retry or prevent stage advancement.
 
-## Authoritative Artifacts
+Requested-8 oracle evidence exercises a legacy/nondefault session control. It
+does not change the normal Glass requirement of 12 accepted stages and does not
+exercise the physical-capacity finalizers at 40.
 
-- Corrected uninstrumented packed template:
-  `re/milan/private/profile9-txon-corrected-20260723/enroll8-minimal-repeat/artifacts`
-- Instrumented preprocessing and internal anti-fake stages:
-  `re/milan/private/profile9-txon-corrected-20260723/enroll8-detail/artifacts`
-- Superseded TX-off fixtures remain under
-  `re/milan/private/real-learning-profile9-production-20260723/`.
+## Confidence And Unresolved
 
-## Validation
-
-- Native preprocessing, feature records, and relations remain exact for all
-  eight captures.
-- Each native anti-fake payload equals the corresponding uninstrumented
-  production feature payload.
-- Native anti-fake lifecycle/security fields and all 28 pair scores equal the
-  uninstrumented production template behavior.
-- No matcher threshold is changed.
-- The production eight-capture gate reports exact preprocessing, all feature
-  records and relations, all eight anti-fake payloads, lifecycle scores and
-  flags, all 28 pair scores, and `enrollment_template_byte_exact=1,mismatches:0`
-  for all 99,684 bytes.
+- Confidence: high for the production ABI, metadata-derived offset, accepted
+  count boundary, rollback timing, and 40/41 wrapper behavior.
+- The persisted calibration generation used by production remains unresolved;
+  it does not change enrollment count or rollback ownership.

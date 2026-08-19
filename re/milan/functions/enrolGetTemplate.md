@@ -25,6 +25,17 @@ relation, reference, graph-established, or completion validation. Consequently
 `FUN_18002d8b0` can retrieve a graphless template once its separate count gate
 declares enrollment complete.
 
+That caller's gate is session used count versus requested count, not live
+template count versus physical maximum. For profile 9/type 12, the default
+adapter carries Glass configuration count 12 through context `+0x8a` and writes
+it to session required count `+0x08` before enrollment begins. The resulting
+12-feature handle is therefore borrowed and packed before the 40-feature
+`FUN_180042c30` capacity finalizers. A session explicitly configured for 8 uses
+the same accessor behavior, but that is a legacy/nondefault control rather than
+the production count. Graph establishment on the last requested stage is visible
+immediately because the stage update writes `f2/f5` before returning; it is not
+deferred to this accessor or to packing.
+
 ## Evidence
 
 - Session validation and handle copy: `0x180001a0c..0x180001a1f`.
