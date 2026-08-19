@@ -113,23 +113,63 @@ milan_affine_is_valid (const int32_t affine[6])
 }
 
 static int32_t
-milan_triangle_distance (int32_t first_x,
-                         int32_t first_y,
-                         int32_t second_x,
-                         int32_t second_y)
+milan_reinterpret_uint32_as_int32 (uint32_t value)
 {
-  int32_t dx = first_x - second_x;
-  int32_t dy = first_y - second_y;
+  int32_t result;
 
-  return (dx * dx >> 2) + (dy * dy >> 2);
+  memcpy (&result, &value, sizeof(result));
+  return result;
+}
+
+static int32_t
+milan_triangle_shift_right_two (uint32_t value)
+{
+  uint32_t shifted = value >> 2;
+
+  if (value & UINT32_C (0x80000000))
+    shifted |= UINT32_C (0xc0000000);
+  return milan_reinterpret_uint32_as_int32 (shifted);
+}
+
+static int32_t
+milan_triangle_distance_shift_then_add (int32_t first_x,
+                                         int32_t first_y,
+                                         int32_t second_x,
+                                         int32_t second_y)
+{
+  uint32_t dx = (uint32_t) first_x - (uint32_t) second_x;
+  uint32_t dy = (uint32_t) first_y - (uint32_t) second_y;
+  uint32_t distance =
+    (uint32_t) milan_triangle_shift_right_two (dx * dx) +
+    (uint32_t) milan_triangle_shift_right_two (dy * dy);
+
+  return milan_reinterpret_uint32_as_int32 (distance);
+}
+
+static int32_t
+milan_triangle_distance_add_then_shift (int32_t first_x,
+                                         int32_t first_y,
+                                         int32_t second_x,
+                                         int32_t second_y)
+{
+  uint32_t dx = (uint32_t) first_x - (uint32_t) second_x;
+  uint32_t dy = (uint32_t) first_y - (uint32_t) second_y;
+
+  return milan_triangle_shift_right_two (dx * dx + dy * dy);
 }
 
 static int
 milan_triangle_edge_is_consistent (int32_t source_distance,
                                    int32_t target_distance)
 {
-  return source_distance * 5 <= target_distance * 6 &&
-         target_distance * 5 <= source_distance * 6 &&
+  return milan_reinterpret_uint32_as_int32 (
+           (uint32_t) source_distance * UINT32_C (5)) <=
+           milan_reinterpret_uint32_as_int32 (
+             (uint32_t) target_distance * UINT32_C (6)) &&
+         milan_reinterpret_uint32_as_int32 (
+           (uint32_t) target_distance * UINT32_C (5)) <=
+           milan_reinterpret_uint32_as_int32 (
+             (uint32_t) source_distance * UINT32_C (6)) &&
          source_distance > 0x2ffff && target_distance > 0x2ffff;
 }
 
@@ -498,20 +538,20 @@ goodix_milan_filter_recognition_pairs_internal (
                     0x1922, 0x3244);
               }
             if (!milan_triangle_edge_is_consistent (
-                  milan_triangle_distance (source[0], source[1], source[2],
-                                           source[3]),
-                  milan_triangle_distance (target[0], target[1], target[2],
-                                           target[3])) ||
+                  milan_triangle_distance_shift_then_add (
+                    source[0], source[1], source[2], source[3]),
+                  milan_triangle_distance_shift_then_add (
+                    target[0], target[1], target[2], target[3])) ||
                 !milan_triangle_edge_is_consistent (
-                  milan_triangle_distance (source[0], source[1], source[4],
-                                           source[5]),
-                  milan_triangle_distance (target[0], target[1], target[4],
-                                           target[5])) ||
+                  milan_triangle_distance_shift_then_add (
+                    source[0], source[1], source[4], source[5]),
+                  milan_triangle_distance_shift_then_add (
+                    target[0], target[1], target[4], target[5])) ||
                 !milan_triangle_edge_is_consistent (
-                  milan_triangle_distance (source[2], source[3], source[4],
-                                           source[5]),
-                  milan_triangle_distance (target[2], target[3], target[4],
-                                           target[5])) ||
+                  milan_triangle_distance_add_then_shift (
+                    source[2], source[3], source[4], source[5]),
+                  milan_triangle_distance_add_then_shift (
+                    target[2], target[3], target[4], target[5])) ||
                 !milan_triangle_orientations_are_consistent (
                   orientation_differences))
               continue;
