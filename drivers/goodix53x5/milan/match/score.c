@@ -57,6 +57,14 @@ goodix_milan_match_overlap_result (
         result -= ((15 - match_fraction) >> 1) + 3;
       *detail = result;
     }
+  if (mode != 0)
+    {
+      if (!context_confidence)
+        return -1;
+      if (*context_confidence < 0)
+        *context_confidence = classes[3] * 0x100 /
+                              (classes[1] + classes[2] + classes[3] + 1);
+    }
   if (valid_count == 0)
     {
       *score = 128;
@@ -77,11 +85,6 @@ goodix_milan_match_overlap_result (
                  : 128;
       return 0;
     }
-  if (!context_confidence)
-    return -1;
-  if (*context_confidence < 0)
-    *context_confidence = classes[3] * 0x100 /
-                          (classes[1] + classes[2] + classes[3] + 1);
   *score = quality > 23 ||
              (quality > 18 && *context_confidence > 62) ||
              (quality > 19 && *context_confidence > 50) ||
