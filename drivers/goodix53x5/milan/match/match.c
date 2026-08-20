@@ -772,6 +772,8 @@ milan_match_prepared_probe (
   size_t rescue_order_count = 0;
   GoodixMilanMatchRescueResult rescue_result;
   GoodixMilanMatchFallback match_fallback;
+  GoodixMilanMatchFallbackWorkspace
+    *fallback_by_feature[GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT] = { 0 };
   int rescue_applied = 0;
   int retention_gate = 0;
   int retention_gate_latched = 0;
@@ -962,6 +964,7 @@ milan_match_prepared_probe (
             goto out;
           fallback_workspace =
             &match_fallback.workspaces[match_fallback.workspace_count - 1];
+          fallback_by_feature[feature_index] = fallback_workspace;
         }
       if (enrolled->metadata.sensor_type == 12)
         {
@@ -1738,10 +1741,11 @@ milan_match_prepared_probe (
     }
   if (enrolled->metadata.sensor_type == 12)
     {
-      for (size_t i = 0; i < match_fallback.workspace_count; i++)
+      for (size_t feature_index = 0; feature_index < enrolled->feature_count;
+           feature_index++)
         {
           const GoodixMilanMatchFallbackWorkspace *workspace =
-            &match_fallback.workspaces[i];
+            fallback_by_feature[feature_index];
           GoodixMilanFeatureView feature;
           int32_t fallback_candidate_transform[6];
           size_t filtered_count;
@@ -1754,7 +1758,7 @@ milan_match_prepared_probe (
           int32_t absolute_dot_q16;
           int32_t transform_classifier;
 
-          if (!workspace->enabled || workspace->pair_count < 3 ||
+          if (!workspace || !workspace->enabled || workspace->pair_count < 3 ||
               workspace->feature < 0 ||
               (size_t) workspace->feature >= enrolled->feature_count ||
                goodix_milan_template_parse_feature_element (
