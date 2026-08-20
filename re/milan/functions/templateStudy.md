@@ -232,10 +232,11 @@ after-study/next-persistent SHA-256
 identically in two fresh processes.
 
 Queue entries do not persist across packing or adapter transactions. The
-reachable producer is inside the same matcher call before fallback/rescue
-finalizes evidence, so an achievable native implementation needs only a
-per-match deep-owned queue, not Windows service state or a durable format
-extension.
+reachable producer is inside the same matcher call after aggregate rescue and
+before normal aggregate/fallback publication. An achievable native
+implementation therefore needs only a per-match deep-owned queue, not Windows
+service state or a durable format extension. The producer sees rescue-owned
+rejection evidence after the matcher's conditional `0x180056cba` clear.
 
 ## Native Action-5 Verification
 

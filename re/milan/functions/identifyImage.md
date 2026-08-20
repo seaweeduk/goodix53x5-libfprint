@@ -178,6 +178,12 @@ evaluate later candidates to maximize score. If every candidate is nonpositive,
 the published index remains `UINT32_MAX` and the published score is the final
 candidate's score.
 
+The public matched index is only the zero-based position in the supplied handle
+array. The DLL has no caller gallery-index field and does not translate the
+position through external metadata. Duplicate caller-side indexes therefore
+cannot affect this export; that distinction belongs to the native runtime
+wrapper.
+
 The adapter validates all top-level output pointers at
 `0x180001b3b..0x180001b62`, then initializes published score to zero and index to
 `UINT32_MAX` at `0x180001b68..0x180001b6c`. Candidate count is an unsigned
@@ -194,6 +200,14 @@ that exact dword and the current zero-based index at
 `0x180001ea9..0x180001ec3` publishes the final matcher-written score and resets
 the index to `UINT32_MAX`. A matcher error aborts with `0x83` rather than
 participating as a score.
+
+Each successful matcher call operates on the candidate object reached at that
+position. Its normal match-time mutation is not rolled back when the score is
+nonpositive. On a positive score, `0x180001ed3` retains exactly that mutated
+candidate in global `0x18024e548`; later candidates are untouched. The live
+probe at `0x18024ebe8` is shared by the ordered loop. `templateStudy` receives
+the retained winner and probe, then consumes the probe. Entry clears the retained
+winner, so an all-nonpositive call leaves no candidate eligible for study.
 
 The loop counter and count cannot wrap during a valid traversal: after index
 `count-1`, increment produces `count` and the unsigned-below branch stops.
@@ -214,3 +228,7 @@ Every native live probe reaches this loop after complete anti-fake construction
 with semantic zero at the documented one-past source. Zero/nonzero differential
 construction is offline diagnostics only and cannot stop verification,
 identification, matching, or study.
+
+The clean-room runtime's index/position mapping, invalid-row handling,
+per-candidate queue ownership, study handoff, and parity aggregation contract are
+documented in `re/milan/RUNTIME-IDENTIFY-ARBITRATION.md`.

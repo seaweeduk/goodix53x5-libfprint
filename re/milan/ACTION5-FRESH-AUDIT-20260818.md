@@ -71,10 +71,15 @@ strict:
 7. the live probe's primary auxiliary/histogram class is `<3`;
 8. template queue state `+0x8e00 == 0`.
 
-The enqueue precedes fallback/rescue, which can later produce a primary selected
-index in the same operation. Current `milan_match_prepared_probe()` computes the
-same predicate at `match/match.c:1560..1568`; `match/lifecycle.c:155..167`
-deep-enqueues before returning the final match result.
+The aggregate-rescue call at `0x180056c75..0x180056caf` precedes this producer.
+At `0x180056cb4..0x180056cc1`, the matcher then clears `+0x688` when stack local
+`[rbp-0x50]` is zero. The producer precedes normal aggregate publication and
+fallback and consumes rejection evidence after that clear. Strong rescue
+suppresses the producer only when its rejection evidence survives. Current
+`milan_match_prepared_probe()` computes the predicate before rescue at
+`match/match.c:1560..1608`, and `match/lifecycle.c:155..167` deep-enqueues after
+the final result. The exact distinguishing conjunction is documented in
+`re/milan/MATCH-CONTRIBUTION-CONTRACT.md`.
 
 The separate late producer is
 `FUN_180044fc0:0x180045150..0x18004519b`. It requires enabled mode, no primary
