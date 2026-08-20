@@ -767,11 +767,15 @@ milan_match_prepared_probe (
   int32_t sibling_tail_hamming_limit = MILAN_MATCH_DESCRIPTOR_DISTANCE_LIMIT;
   GoodixMilanMatchSelection match_selection = { 0 };
   int32_t rescue_records[GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT]
-                        [GOODIX_MILAN_MATCH_RESCUE_METRICS] = { { 0 } };
+                         [GOODIX_MILAN_MATCH_RESCUE_METRICS] = { { 0 } };
   int32_t rescue_order[GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT] = { 0 };
+  size_t rescue_order_count = 0;
   GoodixMilanMatchRescueResult rescue_result;
   GoodixMilanMatchFallback match_fallback;
   int rescue_applied = 0;
+  int retention_gate = 0;
+  int retention_gate_latched = 0;
+  int effective_rejection = 0;
   int result = -1;
 
   if (!probe_feature || !probe_feature->low_bitmap || !probe_rescue_mask ||
@@ -844,6 +848,9 @@ milan_match_prepared_probe (
       goodix_milan_matcher_late_context_init (
         &late_policy_context, probe_feature->fields.optional_c7,
         probe_primary_histogram_class);
+      retention_gate = matcher_policy.configuration[4] != 0 &&
+                       (((uint32_t) probe_feature->fields.optional_c7 >> 8) &
+                        7) != 5;
       sibling_tail_hamming_limit =
         matcher_policy.configuration[GOODIX_MILAN_MATCHER_CONFIGURATION_OFFSET +
                               GOODIX_MILAN_MATCHER_TAIL_HAMMING_LIMIT_INDEX];
@@ -875,6 +882,7 @@ milan_match_prepared_probe (
           feature_index >= GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT)
         goto out;
       rescue_order[order_index] = (int32_t) feature_index;
+      rescue_order_count = order_index + 1;
 
       GoodixMilanFeatureView feature;
       int32_t transform[6];
@@ -960,6 +968,14 @@ milan_match_prepared_probe (
           goodix_milan_matcher_late_context_derive (
             &late_policy_context, feature.fields.optional_c7,
             late_policy_state);
+          if (late_policy_status_counter > 5 &&
+              late_policy_context.accumulated_high_class < 5 &&
+              !retention_gate_latched)
+            {
+              late_policy_context.accumulated_high_class++;
+              retention_gate_latched = 1;
+              retention_gate = 0;
+            }
           if (goodix_milan_match_candidate_skip_pre_primary (
                 matcher_policy.configuration[13], matcher_policy.configuration[14],
                 feature_index, enrolled->feature_count,
@@ -1301,6 +1317,9 @@ milan_match_prepared_probe (
           policy_index = feature_index;
         }
 #endif
+      if (enrolled->metadata.sensor_type == 12 &&
+          contribution_event.direct_published && !retention_gate)
+        break;
       if (enrolled->metadata.sensor_type != 12 &&
           direct_metrics[1] > 4 &&
           direct_metrics[10] > 30 &&
@@ -1557,28 +1576,6 @@ milan_match_prepared_probe (
         goodix_milan_match_selection_direct_mask (&match_selection);
     }
 
-  if (enrolled->metadata.sensor_type == 12)
-    {
-      *queue_candidate_eligible =
-        match_selection.rejection_evidence == 0 &&
-        matcher_policy.configuration[13] == 1 &&
-        late_policy_context.probe_low_class == 0 && image_coverage > 65 &&
-        image_quality > 15 && late_policy_context.accumulated_high_class < 4 &&
-        late_policy_context.probe_primary_histogram_class < 3 &&
-        enrolled->metadata.queue_state == 0;
-#ifdef GOODIX53X5_DEBUG
-      if (diagnostics)
-        {
-          diagnostics->queue_study_evidence = 0;
-          diagnostics->queue_configuration_enabled = matcher_policy.configuration[13];
-          diagnostics->queue_probe_low_class = late_policy_context.probe_low_class;
-          diagnostics->queue_accumulated_high_class =
-            late_policy_context.accumulated_high_class;
-          diagnostics->queue_status_count = late_policy_status_counter;
-        }
-#endif
-    }
-
   if (goodix_milan_match_rescue_caller_eligible (
         match_selection.q8_contributor_count,
         match_selection.postloop_blocking_count,
@@ -1596,7 +1593,7 @@ milan_match_prepared_probe (
         .records = &rescue_records[0][0],
         .record_count = enrolled->feature_count,
         .ordered_features = rescue_order,
-        .ordered_count = enrolled->feature_count,
+        .ordered_count = rescue_order_count,
         .incoming_score = match_selection.score_latched
                             ? match_selection.latched_score : 0,
       };
@@ -1605,6 +1602,32 @@ milan_match_prepared_probe (
             &rescue_input, &rescue_result) != 0)
         goto out;
       rescue_applied = rescue_result.set_acceptance;
+    }
+
+  effective_rejection = match_selection.rejection_evidence != 0 ||
+                        (rescue_applied && rescue_result.set_rejection);
+  if (enrolled->metadata.sensor_type == 12 && !retention_gate)
+    effective_rejection = 0;
+
+  if (enrolled->metadata.sensor_type == 12)
+    {
+      *queue_candidate_eligible =
+        effective_rejection == 0 && matcher_policy.configuration[13] == 1 &&
+        late_policy_context.probe_low_class == 0 && image_coverage > 65 &&
+        image_quality > 15 && late_policy_context.accumulated_high_class < 4 &&
+        late_policy_context.probe_primary_histogram_class < 3 &&
+        enrolled->metadata.queue_state == 0;
+#ifdef GOODIX53X5_DEBUG
+      if (diagnostics)
+        {
+          diagnostics->queue_study_evidence = effective_rejection;
+          diagnostics->queue_configuration_enabled = matcher_policy.configuration[13];
+          diagnostics->queue_probe_low_class = late_policy_context.probe_low_class;
+          diagnostics->queue_accumulated_high_class =
+            late_policy_context.accumulated_high_class;
+          diagnostics->queue_status_count = late_policy_status_counter;
+        }
+#endif
     }
 
 #ifdef GOODIX53X5_DEBUG
@@ -1904,8 +1927,10 @@ out:
   *retained_evidence_flag = match_selection.retained_active_evidence;
   *study_finalization_gate = match_selection.acceptance_evidence != 0 ||
                              (rescue_applied && rescue_result.set_acceptance);
-  *study_action_gate = match_selection.rejection_evidence != 0 ||
-                       (rescue_applied && rescue_result.set_rejection);
+  *study_action_gate = matcher_policy.configuration[15] == 12
+                         ? effective_rejection
+                         : match_selection.rejection_evidence != 0 ||
+                             (rescue_applied && rescue_result.set_rejection);
   free (enrolled_records_storage);
   free (enrolled);
   return result;
