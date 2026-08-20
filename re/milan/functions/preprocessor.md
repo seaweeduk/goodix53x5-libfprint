@@ -50,6 +50,28 @@
   returns `0x29aa` with zero quality/coverage before gain, classification,
   rendering, and extraction.
 
+## Sibling Export Lifecycle
+
+- `preprocessor_init` clears calibrated flag `DAT_180249afc` before invoking the
+  setup path. A rejected profile-9 setup therefore returns `0x29bb` with the
+  flag still clear; success sets it to 1. The production adapter may retry this
+  export once with the same setup frame.
+- `preprocessor` refuses a live call unless `DAT_180249afc == 1`. Its output
+  descriptor copy is independent of status: a late `0xc351` still has selected
+  processed bytes, while checker-visible `0x29aa` and `0x7531` retry artifacts
+  remain nullable according to the runtime lifecycle contract.
+- `preprocessor_exit` clears `DAT_180249afc` and exactly `0x3048c` bytes at
+  calibration workspace `DAT_180219670`. It does not clear gain-ready global
+  `DAT_1801efbfc`; `preprocessor_init` also has no xref to that global. Setup
+  refresh replaces the workspace from saved calibration and adapter teardown
+  resets it; neither path owns the profile-9 gain-ready state.
+- The adapter wrapper loads its sensor-keyed calibration blob before
+  `preprocessor_init` and saves it immediately after setup succeeds. The blob
+  carries workspace sample count `DAT_180219670` but not auxiliary count
+  `DAT_1801efbf4`, initialization global `DAT_1801efbf8`, or ready global
+  `DAT_1801efbfc`. With a zero loaded sample count, the first live call reaches
+  `FUN_1800672e0`, which resets the auxiliary count before the ready test.
+
 ## Linux Auxiliary Mapping
 
 Current source implements these values from the following planes:
@@ -96,6 +118,17 @@ interior in `(100, 0x0ed8)` before setting ready and returns `0x29bb` otherwise;
 current generation publication checks only frame size and TX-on/TX-off MAD.
 Exact instructions, boundary controls, and reachability are recorded in
 `FUN_1800695e0.md` and `FUN_180069820.md`.
+
+Fresh retained-frame controls on 2026-08-20 are exact at this boundary. The
+approved DLL and production-head current source both return status/quality/
+coverage `0/90/99` and processed SHA-256
+`fdb3459aa40d85a71377ea9fed60f485298b0c4f9be61844f040a5627e9f1c03`
+for the successful control. Both return `0x29aa/0/0`, expose no processed image,
+and leave extraction unattempted for the raw-admission control. Committing that
+`0x29aa` as a prelude does not perturb the successful target on either backend:
+the target status, metrics, processed image, and extracted probe remain exact.
+This validates the checker replay rule for the early retry without generalizing
+to the later stateful `0x7531` path.
 
 ## Evidence
 
