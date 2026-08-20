@@ -113,6 +113,52 @@ should remain limited to the allocator-compatible matrix shadow; invoking the
 template packer there would encode an absent anti-fake block and add complex
 DLL work while execution is interrupted.
 
+## Canonical One-Feature Probe Projection
+
+The extraction call receives `&0x18024ebe8` as its output owner at
+`0x180001c65`, and later anti-fake and matcher calls read the resulting pointer
+at `0x180001dbd` and `0x180001e20`. `identifyImage` does not destroy it on a
+normal return. `templateStudy` consumes and clears it through `FUN_180037b10`,
+so post-return/pre-study is the complete ownership window for exact probe
+serialization.
+
+The reduced profile-9 oracle reads the pointer through module RVA `0x24ebe8` and
+serializes the live feature independently of the DLL's outer template packer.
+The one-feature projection has a fixed 1,433-byte contribution around the
+feature element:
+
+```text
+10-byte 87/CRC/86/payload envelope
+13 tagged header dwords (65 bytes)
+one 95 feature element
+93 graph block (25 bytes): f2=f3=f4=UINT32_MAX, f5=0
+94 tail block (1333 bytes including tag/length; payload length 0x530)
+```
+
+There are no relation elements. The 13 header tag/value pairs are:
+
+```text
+81=0x11f248ea 98=12 9a=88 9b=104 91=1 97=1 92=1
+9e=150 9f=150 9c=1 9d=1 fa=0 fb=0
+```
+
+The fresh tail is deterministic: the first 200 bytes are `ff` except dword zero
+is zero, dword `+0xc8` is `UINT32_MAX`, `+0xcc` starts with the NUL-terminated
+string `Milan_v_3.01.09.10.50`, and the remaining reserved/counter bytes are
+zero. The envelope payload length and CRC are backfilled after serialization;
+their wider template semantics are outside this feature audit.
+
+Combining the fixed outer bytes with the type-12 feature contract gives exact
+probe size:
+
+```text
+9378 + 32 * record_count + (c7 != 0 ? 5 : 0)
+```
+
+Current extraction owns the same immutable boundary: it builds the feature and
+one-feature template before publishing `GoodixMatchInfo`, and
+`goodix_match_serialize_template()` only returns a reference to those bytes.
+
 ## Sequence-2 Builder Boundary
 
 A focused passive breakpoint at `0x180001dd8`, immediately after the untouched

@@ -21,6 +21,11 @@ The export rejects a null handle, null output, or null internal pointer, then
 serializes the complete internal object into the output buffer. It does not
 allocate or free either public argument.
 
+The exact return values are `0` on success, `0x81` for any of those null
+arguments, and `0x80` when `FUN_18003eaf0` fails. The export has no capacity
+argument and obtains its expected size from `FUN_18003f510`; the object must not
+change between the caller's size query and this write.
+
 This matches `milan-manifest.c`: `pack_template` obtains the size using the same
 public handle and passes that handle unchanged to `templatePack`.
 
@@ -45,6 +50,10 @@ Zero-leading identity and nonidentity records both serialize. The output order
 follows feature indices around the reference, and packed `e3` contains the
 matrix slot. Neither wrapper receives recognition evidence.
 
+For canonical type-12 row bases, that feature-index traversal yields strictly
+increasing `e3` slots. The complete fixed header, relation, graph, tail, size,
+and CRC contract is maintained in `../OUTER-TEMPLATE-CODEC.md`.
+
 Native study now performs this projection once after relation mutation and order
 finalization, then calls the existing flat codec once. Its focused controls cap
 the output at 49 and include every star slot with nonnegative leading value.
@@ -57,9 +66,21 @@ the output at 49 and include every star slot with nonnegative leading value.
 - The export has no output-capacity argument; safety depends on the preceding
   `templateGetPackedSize` result remaining valid until the call.
 
+Whole-template first-pack identity after `templateUnPack` is conditional on the
+decoded feature state already representing the decoder's post-processing.
+`FUN_18003e3a0` may normalize feature-owned scalars; when it does, the first pack
+changes those feature bytes and the dependent CRC, while a second unpack/pack is
+exact. Header, relation, graph, and tail layout do not have an alternate
+round-trip form.
+
 Cache state `+0x8e00/+0x8e04` is serialized as fixed header tags `fa/fb`, but
 the 20 feature bodies and ranks at `+0x8d10/+0x8db0` are omitted. Direct
 pack/unpack controls prove occupied entries disappear while state 0 survives.
+Consequently a match-time enqueue can change live occupancy from zero to one
+without changing the packed template through any queue field. An after-match
+pack still includes matcher-owned gallery mutations such as feature `be`
+increments, but the queue count must be observed from the live ranks rather than
+recovered from those bytes.
 
 `fa/fb` are queue enabled/disabled state and queue transaction counter, not
 capacity and reference index. Configured maximum/current count are tags `97/91`;

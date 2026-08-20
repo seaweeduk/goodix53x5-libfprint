@@ -21,6 +21,12 @@ length, allocates an eight-byte public handle, and delegates all decoding to
 `FUN_18003e3a0`. On success the handle owns the decoded live-template pointer;
 on failure it frees the handle and propagates the decoder status.
 
+Null input, null output, or zero length returns `0x81`; public-handle allocation
+failure returns `0x82`. The output is assigned only after successful decoding.
+The context may be null, as it is in the natural parity caller. In that case
+`FUN_180040700` supplies the type-12 defaults of 40 feature owners and two
+150-record capacities before retaining larger serialized requirements.
+
 Production callers store these public handles directly in candidate arrays.
 `identifyImage` dereferences each candidate-array element once to obtain the
 internal live-template pointer. The oracle's `candidate_data`/`candidate`
@@ -66,11 +72,20 @@ slot to the unset identity before applying study mutations.
 ## Confidence And Open Questions
 
 - Confidence: high for wrapper ownership and error flow.
-- The semantic type of the third argument remains unresolved.
+- Confidence: high that the nullable third argument points to an optional
+  unsigned feature-allocation cap. Its behavior outside the null parity boundary
+  is not needed here.
 
 For the type-12 cache queue, unpack restores only scalar state/counter tags
 `fa/fb`. State 0 allocates 20 empty cache feature owners and resets every rank to
 `-1`; state 1 allocates none. Packed cache entries never cross this boundary.
+
+Therefore every valid raw template starts a new identify transaction with queue
+occupancy zero. A partially occupied or full 20-entry queue is valid only inside
+one live template object after enqueue; it cannot be reconstructed from packed
+bytes. Current feature count and configured maximum do not change that rule:
+they select capacity policy independently, while `fa` selects only whether the
+empty queue owners are allocated.
 
 Unit-6 direct controls prove nonzero `fb` is valid and survives independently:
 7 and `UINT32_MAX` both round-trip for state 0, and 7 round-trips for state 1.

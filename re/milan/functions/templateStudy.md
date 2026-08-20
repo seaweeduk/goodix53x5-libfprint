@@ -259,6 +259,21 @@ gate-positive no-direct can instead perform capacity shutdown or late enqueue
 before the diagnostic-only transient finalizer. Action 5 is exact for handoff,
 lifecycle, order, tail, and packed payload.
 
+## Call Completion And Publication
+
+A successful positive `identifyImage` result retains the probe and matched
+gallery needed for this export. Calling the export is a study attempt, and its
+ordinary status-zero return is a completed study even when the returned update
+is zero. This includes the shared-gate-zero path, which skips the dispatcher but
+still writes update zero and destroys the retained probe. No-match transactions
+do not call this export.
+
+Completion is independent of publication. Update zero exposes no candidate and
+does not advance persistence, even when the live queue or lifecycle state changed
+transiently. Updates `1..5` leave the same matched gallery handle available for
+the adapter's one positive pack; the returned action and that complete packed
+object advance together.
+
 Production commits `f6e97782`, `1a858825`, `89dd6c43`, and `a29d5d5f` close the
 selector sentinel, exact retained-action predicate, wrapped policy arithmetic,
 and replacement scalar lifecycle respectively. Direct witnesses are action/index

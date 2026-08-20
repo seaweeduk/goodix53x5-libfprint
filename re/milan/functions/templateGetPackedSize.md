@@ -19,6 +19,12 @@ Otherwise it dereferences the handle once and returns the exact encoded size of
 the internal template. The oracle's positive-size and 16 MiB sanity checks are
 stricter caller-side bounds; they do not change the DLL ABI.
 
+For type 12 the returned signed 32-bit result is
+`1433 + sum(packed_feature_sizes) + 45*emitted_relation_count`. The fixed term
+is the complete envelope/header, graph block, and tail. Queue occupancy, queue
+feature bodies, and ranks add no bytes. The complete format is maintained in
+`../OUTER-TEMPLATE-CODEC.md`.
+
 For type 12, delegated `FUN_18003f510` counts exactly the live reference-star
 slots with `leading>=0`, adding 45 bytes per record. This includes zero-leading
 identity and nonidentity records and excludes `leading=-1`; it does not receive
