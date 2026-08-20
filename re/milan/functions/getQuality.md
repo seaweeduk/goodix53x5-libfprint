@@ -30,8 +30,9 @@ coverage-`<=5` quality-zero gate. Evidence is the call setup at
 `0x1800024bc..0x1800024cb`.
 
 Direct byte-image controls make the distinction concrete: quality/coverage is
-`94/5` and `95/6`. This proves generic direct-export behavior, not live raw-frame
-reachability. Complete profile-9 setup/live controls at coverage 5 and 6 have
-producer quality already zero, and no successful raw call with positive
-producer quality at coverage `<=5` is established. Confidence is high for the
-direct export and caller ownership; live reachability remains unproven.
+`94/5` and `95/6`. The distinction is also reachable from complete profile-9
+setup/live input: a status-zero raw transaction produces a byte-exact image with
+direct quality/coverage `100/4`, while live `preprocessor` publishes `0/4` for
+that image. Its coverage-6 sibling produces `100/6` through both interfaces.
+The complete raw construction is defined in `FUN_180044300.md`. Confidence is
+high for direct export behavior, live caller ownership, and raw reachability.
