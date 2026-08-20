@@ -52,7 +52,10 @@ restores feature scalar `b6` row bases, and writes each packed tag-`96` record t
 absolute slot `e3`. Tail tags `f2` and `f5` restore the live reference and
 graph-established state. Packed relations are therefore sufficient to rebuild
 the serializer-visible reference star, while omitted non-star/unset slots remain
-sentinel identity.
+sentinel identity. The delegated decoder's closure call is restricted to live
+types `9/10/17/18`; live type 12 skips it. A profile-9/type-12 gallery therefore
+enters matching and study with exactly the packed reference-star slots plus unset
+identity everywhere else.
 
 Feature scalar decoding is also permissive for `b5`: `FUN_18003d6c0` copies the
 packed dword directly to live `+0x110` at `0x18003ded1..0x18003dedd`, without a

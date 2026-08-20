@@ -66,7 +66,8 @@ index order. Their own length dwords delimit them. No separate top-level feature
 list wrapper or relation count is present.
 
 Relations follow as zero or more fixed 45-byte records. Tag `93` terminates the
-relation sequence. One record is:
+relation sequence, so relation count is the number of consecutive tag-`96`
+records and has no separate wire field. One record is:
 
 | Record offset | Field |
 | --- | --- |
@@ -89,8 +90,19 @@ ascending order, skips reference `f2`, computes pair slot
 `feature[max(i,f2)].b6 + min(i,f2)`, and emits each slot whose leading value is
 nonnegative. When `f5` is not positive it emits no relations. Natural row bases
 are canonical, so this feature traversal also produces strictly increasing
-`e3` slots. At most `feature_count - 1`, and therefore at most 49, relations are
-serialized.
+`e3` slots. The generic 50-feature type-12 layout serializes at most 49
+relations. A production profile-9 print fixes maximum and current feature count
+at no more than 40, so its reachable bound is 39.
+
+The decoder restores records by absolute `e3` slot in encounter order; it does
+not sort, deduplicate, or derive endpoints. Natural writers emit a unique
+ascending reference star. Production persisted-print validation rejects
+duplicates, negative-leading records, nonstar indices, noncanonical row bases,
+and inconsistent registration count before use. It accepts reordered unique
+star records because the source codec preserves the supplied relation order;
+study and enrollment projection restore native ascending order. The complete
+matrix, admission, and exact-byte contract is maintained in
+`RELATION-MATRIX-AND-PROJECTION.md`.
 
 ## Graph Block
 

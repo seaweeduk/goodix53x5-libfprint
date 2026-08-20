@@ -15,6 +15,11 @@
 - Recognition evidence: global `0x18024e550`, size `0x698`.
 - Study is dispatched through `FUN_180044fc0(..., mode=1)` only when the matched
   template and gate at `0x18024ebd8` are nonzero.
+- The call at `0x180001ff7..0x180002006` passes that evidence base unchanged.
+  Native study consumes relation affine `+0x66c` but not strict matcher count
+  `+0x668`. Current source represents the handoff as a seven-word adapter whose
+  word zero is a required zero sentinel and whose remaining six words are the
+  affine; its separate `relation_count` corresponds to native `+0x668`.
 - The returned update code is written to the caller. The retained probe is then
   destroyed and the owning global cleared through `FUN_180037b10` on every
   normal or error exit; the probe is single-use.
@@ -36,11 +41,12 @@ while excluding `FUN_1800392f0`'s undefined live feature-matrix read.
 ## Confidence And Unresolved
 
 - Confidence is high from decompile, assembly, and global xrefs.
-- The corrected campaign naturally emits only `0/1/4`; code 2 and code 3 remain
-  naturally unobserved. Static assembly and direct controls now establish their
-  complete mutation, export, packing, and positive-persistence behavior. This
-  proves semantics, not natural frequency, empirical security, or real-hardware
-  reachability.
+- The earlier 798-row chronology emitted only `0/1/4`. The current strict
+  643-operation authority emits `56` action-1, `5` action-2, and `442` action-4
+  candidates. Code 3 remains naturally unobserved. Static assembly and direct
+  controls establish its complete mutation, export, packing, and positive-
+  persistence behavior; this proves semantics, not natural frequency or real-
+  hardware reachability.
 
 ## Native Verification
 
@@ -141,7 +147,11 @@ retained-refresh plus append materialization. All 286 code-4 replacements
 preserve packed relation cardinality and change exactly one star slot. Evidence
 relation count ranges independently and is never an append or packing predicate.
 Accepted update-0 controls in both lanes leave the complete star unchanged;
-update code 2 remains unobserved and no relation behavior is inferred for it.
+that earlier chronology did not exercise update code 2. The current strict
+643-operation authority contains five natural action-2 candidates. A
+nonreference witness clears every incident target slot and writes target `b5=0`
+without reinstalling a reference edge; exact hashes and changed slots are in
+`../PROFILE9-TYPE12-STUDY-RELATIONS.md`.
 
 Native implementation reconstructs the 1,225-slot matrix from packed `e3` and
 validated `b6`, carries retained transforms, applies refresh/append/code-4
@@ -364,7 +374,7 @@ capacity boundary. The primary stale discriminator selects normalized feature
 34 rather than stale feature 13; staged and dispatcher packed bytes are exact at
 SHA-256
 `5dc15026cc41963fb9342441757608d531ca0c2a488a7664ab6ced7a4faf4ec3`.
-No natural row in the current 798-row authority is predicted to change because
+No natural row in the earlier 798-row chronology is predicted to change because
 all three observed retained-refresh rows are below-capacity appends.
 
 ## Unit-5 Export, Ownership, And No-Publication Closure
@@ -433,23 +443,15 @@ existing 1 MiB profile limit, preserving checked packing while accommodating
 the maximum valid retained-relation growth. Independent 450- and 643-operation
 campaigns pass 1,093/1,093 selected operations after this correction.
 
-## Established-Graph Append `b5` Predicate Audit (2026-08-18)
+## Established-Graph Append `b5` Predicate
 
-Fresh assembly re-derivation found one synthetic-valid action-1 difference.
 After ordinary append, `FUN_1800469f0:0x180046c37..0x180046c4c` calls the
-relation installer only for exact matched `b5/+0x110 == 1`. Current
-`goodix_milan_study_append()` uses nonzero at
-`drivers/goodix53x5/milan/study/study.c:555..558`. The current packed validator
-does not constrain `b5` to Boolean, so established-graph matched `b5=2` is a
-valid generic discriminator: the new feature inherits two on both sides, while
-current source alone materializes its reference-star edge. All known natural
-producers write zero or one. This finding is independent of the earlier
-full-capacity action-2 three-zero-residual exact-one predicate.
+relation installer only for exact matched `b5/+0x110 == 1`. The appended feature
+still inherits the matched dword unchanged. Packed `b5=2` is therefore a valid
+generic discriminator: append preserves two but does not create its reference
+edge. Known natural producers write only zero or one.
 
-A same-input direct DLL/current witness closes the export-side uncertainty. The
-two-feature established gallery starts with one relation and matched `b5=2`;
-both sides append index 2 with action 1 and preserve appended `b5=2`. The
-approved DLL packs three features with one relation, while current source packs
-three features with two relations. The DLL output remains canonically decodable,
-so this is an observable synthetic-valid persistence difference rather than an
-unreachable instruction pattern or malformed-input crash.
+Production `c182b140` uses the exact-one edge predicate. A direct two-feature
+`b5=2` control preserves the appended dword without creating a reference edge;
+its output is byte-identical to the DLL at 39,723 bytes and SHA-256
+`a37131112c97939b40d2e228a677c9cc861fa0f9205546e15e84c1d78b215aa4`.
