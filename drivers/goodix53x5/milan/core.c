@@ -272,6 +272,8 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
         output, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
         quality, coverage) != 0)
     goto out;
+  if (*coverage <= 5)
+    *quality = 0;
   memcpy (state->setup_map, setup_map, count * sizeof(*setup_map));
   memcpy (state->primary_contrast, contrast, count);
   state->primary_contrast_valid = 1;
