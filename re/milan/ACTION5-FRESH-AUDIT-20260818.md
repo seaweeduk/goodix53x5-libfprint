@@ -12,10 +12,41 @@ supporting evidence; fresh Ghidra disassembly is the static authority.
 ## Verdict
 
 No action-5-specific queue, handoff, finalization, publication, or cleanup defect
-is confirmed. Current source matches the DLL for producer admission, queue
-ownership, physical traversal, remove/rerank, continuation, selector timing,
-action override, capacity shutdown, final ordering/tail generation, candidate
-publication, and cancellation.
+is confirmed. The consumer matches the DLL for queue ownership, physical
+traversal, remove/rerank, selector timing, action override, capacity shutdown,
+final ordering/tail generation, candidate publication, and cancellation. Base
+commit `c182b140` had the producer-timing defect below; the working-tree
+production correction restores the driver-reachable producer and continuation
+contract.
+
+2026-08-20 correction: the action-5 consumer remains exact, but producer timing
+is now a confirmed generic defect. A native-codec state-zero form of natural
+identify 376 preserves every rescue input while making the queue gate live. The
+DLL evaluates post-rescue rejection and remains action 4 with occupancy `0/0/0`;
+current commit `c182b140` consumes stale pre-rescue eligibility, transitions
+occupancy `0/1/0`, and reports action 5. Final candidate SHA-256 is respectively
+`e868db161c012c00088bb686e90d4032c5fc29f0c3a646b2bf570cf96f05c350`
+and `2a8be296bd58df5d5cf7ef2e8335d5506603f44b93334b81548a0cfb748bbcd5`.
+The adjacent state-one control remains DLL/current exact at action 4. Full
+state-zero is controlled-valid and ordinarily produced by the clean-room
+40-input enrollment-combine path; the witness is not a raw packed-byte patch.
+
+The working-tree correction on production head `aa5ad6c6` computes the shared
+post-rescue rejection value, uses it for queue admission and the study action
+gate, and applies the same retention owner to direct-positive continuation. It
+also implements the native mode-9 and late one-shot clears. Its matcher entry
+does not transport live probe `c0`; `GoodixMilanFeatureView` is zero-initialized
+and ordinary extraction therefore supplies `c0=0`. The production correction is
+intentionally exact for that driver-reachable boundary and does not implement
+the DLL's general nonzero-`c0` `FUN_18005e480` term.
+
+A controlled-valid native replay changing only live probe `c0` to 2 remains the
+proof of that broader DLL term: it returns score/action `28/0`, occupancy
+`0/1/1`, and no candidate. Packed `c7=0x500` is independently
+driver-representable and selects native mode 9. The focused current-runner result
+is `28/0`, occupancy `0/0/0`, no candidate, and after-match SHA-256
+`b7de86fff2c1404bfcabd899dcc9d7480949f419509fbbcb653d9d59f9a7fb83`;
+no paired DLL artifact is available for an exact dynamic comparison.
 
 One inherited synthetic-valid defect could affect a final action-5 candidate:
 the pre-fix shared ordinary append implementation materialized an
@@ -33,10 +64,12 @@ Invalid queue structures and allocation/packing failures are handled more safely
 by current source; the DLL assumes valid live owners and has no transactional
 rollback.
 
-Natural frequency remains unestablished. Neither current-schema standing set
-contains a preoccupied queue, a match-time enqueue, or action 5. The older V5
-capture's 13/14 Linux action-5 rows are explicitly enqueued consumer controls,
-not natural DLL producer observations. A later no-injection DLL replay returned
+Unmodified-natural frequency remains unestablished. Neither current-schema
+standing set contains a preoccupied queue, a match-time enqueue, or action 5.
+The focused controlled-valid identify-376 transaction now proves a producer
+difference for an ordinary state-zero gallery shape. The older V5 capture's
+13/14 Linux action-5 rows remain explicitly enqueued consumer controls, not
+natural DLL producer observations. A later no-injection DLL replay returned
 occupancy zero and action 1 for those rows.
 
 ## Export And Primary Boundary
@@ -75,11 +108,13 @@ The aggregate-rescue call at `0x180056c75..0x180056caf` precedes this producer.
 At `0x180056cb4..0x180056cc1`, the matcher then clears `+0x688` when stack local
 `[rbp-0x50]` is zero. The producer precedes normal aggregate publication and
 fallback and consumes rejection evidence after that clear. Strong rescue
-suppresses the producer only when its rejection evidence survives. Current
-`milan_match_prepared_probe()` computes the predicate before rescue at
-`match/match.c:1560..1608`, and `match/lifecycle.c:155..167` deep-enqueues after
-the final result. The exact distinguishing conjunction is documented in
-`re/milan/MATCH-CONTRIBUTION-CONTRACT.md`.
+suppresses the producer only when its rejection evidence survives. Base commit
+`c182b140` computes the predicate before rescue and deep-enqueues after the final
+result. The working-tree correction computes effective rejection after rescue,
+then evaluates this producer and the action gate from that value. Its
+continuation gate also owns the direct-positive break and late one-shot clear.
+The exact distinguishing conjunction and native gate-zero control are documented
+in `re/milan/MATCH-CONTRIBUTION-CONTRACT.md`.
 
 The separate late producer is
 `FUN_180044fc0:0x180045150..0x18004519b`. It requires enabled mode, no primary
@@ -155,13 +190,15 @@ every match, no-match, error, cancellation, and publication exit.
   continuation, external action 5, and exact adapter packing. Sequence 3 proves
   live Q/unfinalized G handoff and final SHA-256
   `c971239885adccdcaece80b31dc9e5e3abea6b0cc428b1b82307cb05fe12b181`.
-- Synthetic-valid evidence: full/state-zero actions 2/3/4 can generically be
-  superseded by 5, although canonically evolved full galleries persist state
-  one. Gate-zero with a full allocated queue leaves it untouched in both DLL and
-  current source; the suspected divergence is refuted. Established-graph
-  `b5=2` append is the one confirmed inherited defect: current source creates an
-  appended reference edge that the DLL omits, including when that append is the
-  primary or queued inner mutation of an externally reported action 5.
+- Controlled-valid producer evidence: native-codec state-zero identify 376
+  keeps DLL occupancy `0/0/0` and action 4, while current transitions `0/1/0`
+  and returns 5. The 40/40 state-zero shape is produced by ordinary clean-room
+  enrollment combine. This confirms stale pre-rescue queue eligibility; it does
+  not change the separately exact queue consumer. Gate-zero with a full allocated
+  queue still leaves it untouched in both authorities. Established-graph `b5=2`
+  append remains a separate inherited defect: current source creates an appended
+  reference edge that the DLL omits, including when that append is the primary
+  or queued inner mutation of an externally reported action 5.
 - Malformed/unsafe evidence: noncontiguous ranks, null queue owners, invalid
   order indices, and invalid packed templates are rejected by current source.
   DLL helpers assume those invariants and may assign malformed ranks, retain a
@@ -176,7 +213,11 @@ every match, no-match, error, cancellation, and publication exit.
 ## Validation
 
 The existing `goodix53x5-milan-synthetic`, `goodix53x5-milan-state`, and
-`goodix53x5-milan-runtime` suites pass `3/3` on current source. No standing
-campaign was rerun because production was not edited, the inherited append
-finding is synthetic-only under known Boolean producers, and both current sets
-contain zero action-5 operations.
+`goodix53x5-milan-runtime` suites previously passed `3/3` on current source. No
+standing campaign was rerun under the focused-control constraint. The
+working-tree runner is exact to the approved DLL for both identify-376 state
+controls and for natural identify 305 (`26/4`, queue `0/0/0`, candidate
+`e1094cc9a9a08af3185bb8f41d4c86300eefd831cf9652600e4e84e6e1208f0a`).
+Identify 19 remains rejected at score 0 with no study, and the PR-66 blocker
+control identify 315 remains rejected at `-65536` with no study. The mode-9
+current-runner result is recorded above without a paired DLL claim.

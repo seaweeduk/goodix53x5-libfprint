@@ -238,6 +238,35 @@ implementation therefore needs only a per-match deep-owned queue, not Windows
 service state or a durable format extension. The producer sees rescue-owned
 rejection evidence after the matcher's conditional `0x180056cba` clear.
 
+The focused 2026-08-20 identify-376 state-zero witness distinguishes this
+handoff without injecting a queue body. The approved DLL's strong rescue leaves
+the empty queue at occupancy `0/0/0`, so primary action 4 remains externally 4
+and the final candidate is
+`e868db161c012c00088bb686e90d4032c5fc29f0c3a646b2bf570cf96f05c350`.
+Base commit `c182b140` freezes queue eligibility before rescue, enqueues the
+retained probe after match (`0/1`), and this export's otherwise-correct consumer
+drains it to zero, overrides 4 with 5, and publishes
+`2a8be296bd58df5d5cf7ef2e8335d5506603f44b93334b81548a0cfb748bbcd5`.
+The DLL/current state-1 control remains exact at action 4 and occupancy `0/0/0`.
+Thus the action-5 consumer contract remains correct; the divergence is the
+generic matcher producer's pre-rescue snapshot.
+
+The adjacent retention-gate-zero control distinguishes producer evidence from
+queue occupancy. With live probe `c0=2`, the DLL clears rescue rejection,
+enqueues one entry during matching, and publishes action evidence zero. This
+export therefore skips `FUN_180044fc0`, returns update 0, and leaves occupancy
+`0/1/1`; after-match and after-study are both
+`b7de86fff2c1404bfcabd899dcc9d7480949f419509fbbcb653d9d59f9a7fb83`,
+with no candidate. The discarded raw rescue-suppression patch instead removes
+the entry while retaining action evidence, producing action 4 and candidate
+`e868db161c012c00088bb686e90d4032c5fc29f0c3a646b2bf570cf96f05c350`.
+This is a matcher evidence defect, not a queue-consumer defect. Nonzero `c0` is
+a DLL-generality discriminator only: the current matcher entry does not
+transport it and ordinary extraction supplies zero. The working-tree production
+correction therefore implements the shared evidence and continuation ownership
+for the driver-reachable `c0=0` boundary without claiming the DLL's general
+`FUN_18005e480` behavior.
+
 ## Native Action-5 Verification
 
 The opt-in native queued study wrapper carries one caller-owned queue from the

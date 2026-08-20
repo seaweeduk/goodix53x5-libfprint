@@ -215,13 +215,40 @@ The DLL post-loop order is:
     count makes rescue caller-ineligible. The blocker override does not rewrite
     selected feature, transform, relation, evidence, or lifecycle events.
 
-The stack-local continuation gate is initialized at `0x180055bba..0x180055c1b`.
-It is nonzero only when configuration word 4 and probe-derived `+0x68c` are both
-nonzero and decoded configuration word 18 is not class 9. The late one-shot
-branch at `0x180055e12..0x180055e34` also clears it when the status local is
-greater than 5, accumulated high class is below 5, and the one-shot flag was
-still zero. This local is not itself a queue predicate; it defines which rescue
-rejection value reaches the first queue comparison at `0x180056cee`.
+The stack local `[rbp-0x50]` is the matcher continuation and rescue-rejection
+retention gate. Its other consumer at `0x180056f88` decides whether traversal
+continues after a direct-positive publication. At
+`0x180055b7d..0x180055b9c`, evidence `+0x68c` starts at one and is replaced by
+`FUN_18005e480(probe, enrolled)` only when live probe `c0/+0x14c` is nonzero.
+The gate is initialized at `0x180055bba..0x180055c1b` as:
+
+```text
+configuration[4] != 0
+and (probe.c0 == 0 ? 1 : FUN_18005e480(probe, enrolled)) != 0
+and decoded configuration[18] high mode != 9
+```
+
+Configuration word 18 is ordinary probe `c7/+0x150`. The late one-shot branch
+at `0x180055e12..0x180055e34` also clears the gate when the match-level
+`FUN_180058700` status counter is greater than 5, accumulated decoded high class
+is below 5, and the one-shot flag is still zero; that branch increments the high
+class and latches the one-shot flag at the same time. Current-source inputs are
+not general enough to reproduce the conditional `FUN_18005e480` term:
+`milan_match_probe_result_internal()` zero-initializes `GoodixMilanFeatureView`
+and transports partition plus `optional_c7`, but not `tagged_values[10]`.
+Ordinary extraction therefore reaches this matcher boundary with `c0=0`. The
+working-tree production correction intentionally implements that
+driver-reachable specialization as configuration word 4 nonzero and raw
+`optional_c7` high class not equal to 5, plus the recovered late one-shot clear.
+It does not claim to implement the DLL's general nonzero-`c0`
+`FUN_18005e480` behavior.
+
+Evidence `+0x688` is rejection evidence. It is zeroed with the evidence block at
+`0x180055b34`, accumulates per-feature rejection at
+`0x180056e8e..0x180056ea3`, is written to one by strong rescue at
+`FUN_18005d9e0:0x18005dd4e`, may be cleared at `0x180056cba`, and is the first
+queue comparison at `0x180056cee`. The retention gate is not itself a queue
+predicate; it decides whether rescue rejection reaches that comparison.
 
 Final ownership by route is:
 
@@ -296,9 +323,10 @@ are repacked without matcher-owned changes.
 
 ## Clean-Room Boundary Predicates
 
-The two queue/lifecycle conjunctions below would distinguish commit `c182b140`
-from the DLL. The strict natural population contains no occurrence of either
-complete conjunction, so neither is an established runtime difference.
+The two queue/lifecycle conjunctions below distinguish or can distinguish commit
+`c182b140` from the DLL. The first now has a focused controlled-valid witness
+derived from one natural transaction. The strict unmodified population contains
+no occurrence of either complete conjunction; the second remains unwitnessed.
 
 The first is post-rescue queue suppression:
 
@@ -316,17 +344,130 @@ and queue state == 0
 
 The DLL rescue runs first. A zero continuation local clears `+0x688` at
 `0x180056cba`; otherwise strong-rescue rejection survives and suppresses
-`FUN_1800462a0`. Current source computes `queue_candidate_eligible` before
-rescue and later enqueues from that value. Separately, `match.c:1907..1908`
+`FUN_1800462a0`. Base current source computes `queue_candidate_eligible` before
+rescue and later enqueues from that value. Separately, `match.c:1907..1910`
 combines traversal and rescue rejection without the native continuation-local
-clear; the retained natural population has no final action-gate difference.
+clear. The retained natural population has no final action-gate difference, but
+the controlled gate-zero result below does.
 
 Natural identify operations 305 and 376 both reach strong rescue with final
-rejection evidence nonzero, but both have template queue state `+0x8e00 == 1`;
-the producer is therefore false independently of rescue ordering. No retained
-natural operation reaches strong rescue with all producer conditions true, and
-no recovered native invariant makes rescue strength imply nonzero queue state.
-The complete conjunction remains unwitnessed rather than proven unreachable.
+rejection evidence nonzero, but their captured templates have queue state
+`+0x8e00 == 1`; the producer is therefore false independently of rescue ordering.
+The focused identify-376 control changes only that state through the native
+object/codec contract: unpack the original state-1 object, write live scalar
+`+0x8e00 = 0`, pack, unpack again so the DLL allocates 20 owners with ranks `-1`,
+then pack again. The second pack is exact. Relative to original SHA-256
+`a0cd752af6f40970d8ef3f04b3cece20cd4d06ebc252541f651a6f28cbb72f29`,
+state-0 SHA-256
+`a12cd89ea3f96bda0e219581cdbc4f8308d4b54b44950738064b540ded77749f`
+differs only at outer CRC bytes `1..4` and tag `fa` byte `0x42`. Feature count and
+maximum are both 40, the queue counter remains zero, all 20 owners are allocated,
+and occupancy is zero. Queue state is not a `FUN_18005d9e0` rescue input; static
+inspection finds no `+0x8e00` access in that helper, and the serialized equality
+outside CRC/`fa` preserves every rescue feature, order, mask, metric, and affine
+input.
+
+This full/state-zero shape is controlled-valid rather than malformed or merely
+raw-patched. Production enrollment combine accepts up to 40 one-feature inputs,
+zero-initializes `GoodixMilanTemplateMetadata` at
+`enrollment/template.c:170`, sets maximum features to 40 at line 224, and packs
+the complete metadata at lines 412..416 before full-gallery normalization. It
+therefore produces queue state zero at ordinary enrollment capacity. The DLL
+round trip independently proves that the corresponding native object owns the
+required empty queue allocation.
+
+The target and its untouched state-1 control use the same setup, live frame,
+probe, gallery feature payload, and identify/study transaction. Results are:
+
+| Authority/input | Queue before/after match/after study | Score/action | After-match SHA-256 | Final candidate SHA-256 |
+|---|---|---|---|---|
+| DLL state-1 control | `0/0/0` | `28/4` | `0bb0e23cc4b120aa8af1561ce98ee9888b1897c3770012b518e0492571bd5c43` | `e868db161c012c00088bb686e90d4032c5fc29f0c3a646b2bf570cf96f05c350` |
+| Base commit `c182b140` state-1 control | `0/0/0` | `28/4` | `0bb0e23cc4b120aa8af1561ce98ee9888b1897c3770012b518e0492571bd5c43` | `e868db161c012c00088bb686e90d4032c5fc29f0c3a646b2bf570cf96f05c350` |
+| DLL state-0 target | `0/0/0` | `28/4` | `b7de86fff2c1404bfcabd899dcc9d7480949f419509fbbcb653d9d59f9a7fb83` | `e868db161c012c00088bb686e90d4032c5fc29f0c3a646b2bf570cf96f05c350` |
+| Base commit `c182b140` state-0 target | `0/1/0` | `28/5` | `b7de86fff2c1404bfcabd899dcc9d7480949f419509fbbcb653d9d59f9a7fb83` | `2a8be296bd58df5d5cf7ef2e8335d5506603f44b93334b81548a0cfb748bbcd5` |
+| Working-tree correction, state 1 | `0/0/0` | `28/4` | `0bb0e23cc4b120aa8af1561ce98ee9888b1897c3770012b518e0492571bd5c43` | `e868db161c012c00088bb686e90d4032c5fc29f0c3a646b2bf570cf96f05c350` |
+| Working-tree correction, state 0 | `0/0/0` | `28/4` | `b7de86fff2c1404bfcabd899dcc9d7480949f419509fbbcb653d9d59f9a7fb83` | `e868db161c012c00088bb686e90d4032c5fc29f0c3a646b2bf570cf96f05c350` |
+
+All state-zero runs preserve accepted score 28 and the exact packed after-match
+object because queue bodies/ranks are not serialized. The DLL sees post-rescue
+rejection and does not enqueue. Base commit `c182b140` consumes its stale
+pre-rescue eligibility, deep-enqueues one entry, consumes it during the same
+study transaction, overrides primary action 4 with action 5, and publishes a
+different final candidate. The working-tree correction is exact to the DLL for
+both state controls. This confirms the generic correction boundary, but
+raw rescue `set_rejection` is not the native suppression predicate. The
+working-tree correction on production head `aa5ad6c6` instead computes the
+shared effective rejection after rescue, uses it for queue admission and the
+study action gate, and applies the same retention owner to direct-positive
+continuation.
+
+The native correction boundary is one effective post-rescue rejection value:
+
+```text
+effective_rejection = traversal_rejection or rescue_rejection
+if not rescue_rejection_retention_gate:
+    effective_rejection = false
+
+queue_candidate_eligible = queue_predicate(effective_rejection, ...)
+study_action_gate = effective_rejection
+```
+
+Recomputing the complete queue predicate is required: a zero gate clears all
+`+0x688` evidence, not only the most recent rescue write, so toggling a stale
+pre-rescue Boolean cannot model every route. The gate's `0x180056f88` consumer
+also exits traversal after a direct-positive publication. The working-tree
+driver correction applies both consumers, while intentionally specializing the
+initial gate to the only `c0` value its matcher entry can receive.
+
+When the retention gate is zero, `0x180056cba` clears rescue rejection. Both
+focused production-shaped strong-rescue controls retain rejection: state-zero
+identify 376 remains native
+score/action `28/4`, queue `0/0/0`, and state-zero
+`da0f8d98-6e9e-4cee-99d5-f7109e402baf/identify/305` remains `26/4`, queue
+`0/0/0`. Raw `set_rejection` does not always survive by contract. A
+controlled-valid identify-376 matcher input with only live probe `c0=2` makes
+`FUN_18005e480` return zero, initializes the retention gate to zero, and clears
+the rescue write before the otherwise-true queue checks. Ordinary image
+extraction supplies `c0=0`, so this initial-gate control is not a naturally
+extracted probe and is not a production-support claim. It records the DLL's
+broader contract and proves why raw rescue rejection alone was not a valid
+replacement for the shared native state.
+
+The other initial clear is driver-representable without `c0`: packed probe
+`c7=0x500` makes `FUN_180073060` decode high mode 9. Current extraction can
+produce high class 5 at `match/info.c:214..243`, and then stores that class in
+`optional_c7` at lines 535 and 620. No retained natural operation has this value,
+so frequency is unassigned. Its accumulated high class also makes the `<4` queue
+predicate false independently, but the gate still controls final action evidence
+and direct-positive continuation. A focused current-runner control with
+`optional_c7=0x500` returns score/action `28/0`, queue `0/0/0`, no candidate,
+and after-match SHA-256
+`b7de86fff2c1404bfcabd899dcc9d7480949f419509fbbcb653d9d59f9a7fb83`.
+This agrees with the recovered mode-9 ownership; no reliable paired DLL artifact
+exists for an exact dynamic comparison.
+
+The approved DLL replay of that `c0=2` control returns score 28, update 0, queue
+occupancy `0/1/1`, after-match and after-study SHA-256
+`b7de86fff2c1404bfcabd899dcc9d7480949f419509fbbcb653d9d59f9a7fb83`,
+and no persistent candidate. Gate zero clears rescue rejection, permits the
+enqueue, publishes action evidence zero, and therefore prevents `templateStudy`
+from entering the queue consumer. The discarded raw patch instead returns
+score/action `28/4`, occupancy `0/0/0`, and candidate
+`e868db161c012c00088bb686e90d4032c5fc29f0c3a646b2bf570cf96f05c350`.
+It suppresses the queue and leaves the independently computed action gate set,
+which proves the patch too broad even before considering direct continuation.
+
+No focused production image control reaches the separate late one-shot clear,
+but it is statically reachable. Six valid processed features can each make
+`FUN_180058700` return nonzero, incrementing `[rbp-0x54]` and continuing the
+loop. On the next valid feature, status count 6, accumulated high class below 5,
+and zero `[rbp-0x48]` satisfy `0x180055e12..0x180055e2e`: native increments the
+high class, latches the one-shot, and clears `[rbp-0x50]`. Starting from high
+class zero leaves the resulting class one compatible with the later `<4` queue
+condition. Status-producing rows are skipped before rescue-row publication, so
+the recovered control flow contains no structural exclusion between this clear
+and a later strong rescue. This establishes reachability of the branch, not a
+natural-frequency claim.
 
 The second is a direct result followed by terminal blocker override:
 

@@ -46,7 +46,7 @@ re-seal or reconstruct a missing report.
 | Quality and coverage | Quality `18..98`; coverage `14..100`, including 75 | Strict threshold controls exist where documented | Good scalar range, but not branch-pair coverage |
 | Gallery evaluation | 476 rows, all valid/evaluated: 268 accepted and 208 rejected | Accepted lifecycle masks and selected features are concrete on all accepted rows | Strong ordinary candidate evidence |
 | Study action | Action 0: 16; action 1: 56; action 4: 196; null on 31 no-matches | Actions 2, 3, and 5 have focused DLL/native controls | Natural frequency is known only for 0/1/4 |
-| Queue | Match-time occupancy before study is always zero; 135 gallery evaluations enqueue one item; accepted study drains to zero | Preoccupied, multi-entry, no-match follow-up, and action-5 success have focused controls | No natural preoccupied queue or queued action 5 in the 299 |
+| Queue | Frozen Linux records report 135 match-time enqueues, but later no-injection DLL replay supersedes those records as native producer evidence; current-schema standing sets have zero match-time occupancy | Preoccupied, multi-entry, no-match follow-up, and action-5 success have focused consumer controls | No natural preoccupied queue or queued action 5; native producer frequency remains unestablished |
 
 ## Native-Branch Coverage
 
@@ -63,7 +63,7 @@ re-seal or reconstruct a missing report.
 | `FUN_18003a9b0` impulse replacement | Identify 59 proves physical last-column/next-row flat adjacency and exact downstream probe closure | In-allocation flat offsets and safe out-of-allocation fallback are static | No qualifying first/allocation-end impulse naturally distinguishes the safety fallback |
 | `FUN_180058700` late policy | Natural authorities cover ordinary/status-zero, mode-4 status, area, and geometry examples | Focused unit 16 covers all 55 reachable profile-9/type-12 semantic branches and 404 DLL calls | No semantic implementation gap; most branch frequency is control-only |
 | `FUN_18005d5f0` fallback | Real rejected rows cover all negative reason components and 36 fallback events | Positive, zero, negative, and publication controls cover final behavior | No natural positive fallback in the maintained authorities |
-| Matcher queue/follow-up | No natural preoccupied queue or successful queued follow-up in this set | Deep-owned one/two-entry and action-5 controls are exact | Natural reachability/frequency remains unknown |
+| Matcher queue/follow-up | No native natural preoccupied queue or successful queued follow-up is established; older Linux queue metadata is not producer authority | Deep-owned one/two-entry and action-5 consumer controls are exact | Natural reachability/frequency remains unknown |
 | `templateStudy` actions | Natural actions are 0/1/4 only | Actions 2/3/5, packing, persistence-positive handling, and queue handoff are controlled | Natural action-2/3/5 examples remain absent |
 
 ## Raw-Admission Correction To The Frozen Projection
