@@ -123,8 +123,7 @@ goodix_match_serialized_feature_result_internal (
 
   if (updated_feature)
     {
-      if (match_result->score > 0 &&
-          match_result->lifecycle_update_feature_mask != 0)
+      if (match_result->lifecycle_update_feature_mask != 0)
         {
           updated_milan = g_malloc (normalized_milan_len);
           if (goodix_milan_template_update_match_lifecycle (

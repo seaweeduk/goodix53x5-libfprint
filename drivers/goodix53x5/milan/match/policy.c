@@ -721,6 +721,11 @@ post_veto (const int32_t metrics[77],
   if (metrics[14] == 1 && primary < 12 &&
       (combined < 385 || (combined < 395 && coverage < 100)))
     flags[0] = flags[1] = 0;
+  if (flags[1] != 0 && policy->configuration[18] != 0 && coverage > 200 &&
+      combined < 405 &&
+      ((metrics[10] < 45 && geometry < 15 && metrics[70] > 16) ||
+       metrics[4] == 128))
+    flags[0] = flags[1] = 0;
   if (flags[1] != 0 &&
       ((filtered < 22 && combined < 371) ||
        (filtered < 16 && combined < 381) ||
@@ -849,7 +854,7 @@ late_eligibility (const int32_t metrics[77],
           break;
         }
     }
-  output[0] = strict;
+  output[0] = strict && image_quality > 15 && image_coverage > 64;
   output[1] = strict || broad;
 }
 
