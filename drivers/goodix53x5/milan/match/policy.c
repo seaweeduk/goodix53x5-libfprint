@@ -854,7 +854,7 @@ late_eligibility (const int32_t metrics[77],
           break;
         }
     }
-  output[0] = strict;
+  output[0] = strict && image_quality > 15 && image_coverage > 64;
   output[1] = strict || broad;
 }
 
