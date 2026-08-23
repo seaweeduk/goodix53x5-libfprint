@@ -759,7 +759,8 @@ goodix_enrollment_transaction_recompute_live_fields (
   int active[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY];
   guint reference = transaction->matrix.reference_feature_index;
 
-  if (reference >= transaction->feature_count)
+  if (transaction->matrix.graph_established &&
+      reference >= transaction->feature_count)
     return FALSE;
 
   goodix_enrollment_transaction_views (transaction, views, active);
