@@ -20,8 +20,7 @@
 #include "device/scan.h"
 #include "device/session.h"
 
-typedef enum
-{
+typedef enum {
   GOODIX_ENROLL_REINIT = 0,
   GOODIX_ENROLL_REINIT_DONE,
   GOODIX_ENROLL_SCAN,
@@ -35,19 +34,20 @@ typedef struct
   guint64                  action_epoch;
   guint64                  generation_id;
   guint                    stage;
-  GOODIX53X5_DEBUG_ONLY (GoodixDebugRuntimeMetadata debug_metadata;)
+  GOODIX53X5_DEBUG_ONLY (GoodixDebugRuntimeMetadata debug_metadata;
+                        )
 } GoodixEnrollTaskData;
 
 #ifdef GOODIX53X5_DEBUG
 static void
-goodix_enroll_log_runtime_result (FpDevice                         *dev,
-                                  GoodixEnrollTaskData              *data,
-                                  const GoodixMilanRuntimeOutput   *output,
-                                  gboolean driver_cancellation_observed)
+goodix_enroll_log_runtime_result (FpDevice                       *dev,
+                                  GoodixEnrollTaskData           *data,
+                                  const GoodixMilanRuntimeOutput *output,
+                                  gboolean                        driver_cancellation_observed)
 {
   goodix_debug_log_runtime_result (dev, data->stage + 1,
-                                    &data->debug_metadata, output,
-                                    driver_cancellation_observed);
+                                   &data->debug_metadata, output,
+                                   driver_cancellation_observed);
 }
 #else
 #define goodix_enroll_log_runtime_result(...) G_STMT_START { } G_STMT_END
@@ -60,7 +60,8 @@ goodix_enroll_task_data_free (GoodixEnrollTaskData *data)
     return;
   goodix_milan_runtime_input_free (data->runtime_input);
   GOODIX53X5_DEBUG_ONLY (
-    goodix_debug_clear_runtime_metadata (&data->debug_metadata);)
+    goodix_debug_clear_runtime_metadata (&data->debug_metadata);
+                        )
   g_free (data);
 }
 
@@ -91,15 +92,15 @@ goodix_enroll_worker (GTask        *task,
 
 #ifdef GOODIX53X5_DEBUG
 static void
-goodix_enroll_set_processed_image (FpiDeviceGoodix53x5     *self,
+goodix_enroll_set_processed_image (FpiDeviceGoodix53x5      *self,
                                    GoodixMilanRuntimeOutput *output)
 {
   const guint8 *image;
   gsize size;
 
   g_clear_pointer (&self->captured_image, g_free);
-  image = output->processed_image
-            ? g_bytes_get_data (output->processed_image, &size) : NULL;
+  image = output->processed_image ?
+          g_bytes_get_data (output->processed_image, &size) : NULL;
   if (image && size == GOODIX_SENSOR_PIXELS)
     self->captured_image = g_memdup2 (image, size);
 }
@@ -113,6 +114,7 @@ goodix_enroll_task_done (GObject      *source_object,
   FpDevice *dev = FP_DEVICE (source_object);
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   GoodixEnrollTaskData *data = g_task_get_task_data (G_TASK (result));
+
   g_autoptr(GError) task_error = NULL;
   GoodixMilanRuntimeOutput *output = g_task_propagate_pointer (
     G_TASK (result), &task_error);
@@ -122,7 +124,9 @@ goodix_enroll_task_done (GObject      *source_object,
   gboolean generation_current;
   gboolean cancelled;
   gboolean enrollment_admitted;
-  gboolean relation_combine_failed = FALSE;
+  GoodixMilanEnrollmentAttemptStatus enrollment_status =
+    GOODIX_MILAN_ENROLLMENT_RETRY_REMOVE;
+  GoodixMilanEnrollmentResult enrollment_result = { 0 };
 
   (void) user_data;
   task_owned = self->milan_task == G_TASK (result);
@@ -134,12 +138,12 @@ goodix_enroll_task_done (GObject      *source_object,
                !self->cancel || g_cancellable_is_cancelled (self->cancel) ||
                (output && output->status == GOODIX_MILAN_RUNTIME_CANCELLED) ||
                (task_error && g_error_matches (task_error, G_IO_ERROR,
-                                                G_IO_ERROR_CANCELLED)));
+                                               G_IO_ERROR_CANCELLED)));
   action_owned = same_action &&
                  (self->action_epoch == data->action_epoch || cancelled);
   generation_current = action_owned && self->milan_generation &&
                        self->milan_generation->generation_id ==
-                         data->generation_id;
+                       data->generation_id;
   if (task_owned)
     g_clear_object (&self->milan_task);
 
@@ -183,66 +187,78 @@ goodix_enroll_task_done (GObject      *source_object,
       g_clear_pointer (&self->captured_raw_image, g_free);
       goodix_scan_set_disposition (
         dev, GOODIX_SCAN_DISPOSITION_FATAL,
-        task_error ? g_steal_pointer (&task_error)
-                   : fpi_device_error_new_msg (
-                       FP_DEVICE_ERROR_GENERAL,
-                       "Native Milan enrollment task returned invalid output"));
+        task_error ? g_steal_pointer (&task_error) :
+        fpi_device_error_new_msg (
+          FP_DEVICE_ERROR_GENERAL,
+          "Native Milan enrollment task returned invalid output"));
       return;
     }
 
-  GOODIX53X5_DEBUG_ONLY (goodix_enroll_set_processed_image (self, output);)
+  GOODIX53X5_DEBUG_ONLY (goodix_enroll_set_processed_image (self, output);
+                        )
   enrollment_admitted = goodix_milan_runtime_enrollment_admitted (output);
 
   if (enrollment_admitted)
     {
-      g_autoptr(GPtrArray) tentative = g_ptr_array_new_with_free_func (
-        (GDestroyNotify) g_bytes_unref);
-      g_autoptr(GBytes) combined = NULL;
-
-      for (guint i = 0; i < self->enroll_features->len; i++)
-        g_ptr_array_add (tentative, g_bytes_ref (
-                           g_ptr_array_index (self->enroll_features, i)));
-      g_ptr_array_add (tentative, g_bytes_ref (output->probe_template));
-      combined = goodix_match_combine_templates (tentative);
-      relation_combine_failed = combined == NULL;
-      if (relation_combine_failed)
+      enrollment_status = goodix_milan_enrollment_transaction_attempt (
+        &self->enroll_transaction, output->probe_template,
+        &self->enroll_bad_record_count, &self->enroll_bad_continue_count,
+        &enrollment_result);
+      if (enrollment_status == GOODIX_MILAN_ENROLLMENT_RETRY_REMOVE)
         fp_dbg ("Native Milan enrollment retry stage %u: relation/combine "
                 "failed",
                 data->stage + 1);
     }
 
-  if (enrollment_admitted && !relation_combine_failed)
+  if (enrollment_admitted &&
+      enrollment_status == GOODIX_MILAN_ENROLLMENT_ACCEPTED)
     {
       GOODIX53X5_DEBUG_ONLY (
-      g_autofree gchar *prefix = g_strdup_printf (
-        "enroll-stage-%u", data->stage + 1);
+        g_autofree gchar * prefix = g_strdup_printf (
+          "enroll-stage-%u", data->stage + 1);
 
-      goodix_debug_dump_pair (prefix, self->captured_raw_image,
-                              self->captured_image);
-      )
-      g_ptr_array_add (self->enroll_features,
-                       g_bytes_ref (output->probe_template));
-      self->enroll_stage++;
+        goodix_debug_dump_pair (prefix, self->captured_raw_image,
+                                self->captured_image);
+                            )
+      self->enroll_stage = (gint) goodix_milan_enrollment_transaction_count (
+        self->enroll_transaction);
       GOODIX53X5_DEBUG_ONLY (
         fp_dbg ("Native Milan enrollment stage %d/%d quality=%d coverage=%d "
                 "records=%u partitions=%u/%u",
                 self->enroll_stage, GOODIX_ENROLL_SAMPLES, output->quality,
                 output->coverage, output->probe_record_count,
                 output->probe_partition0_count,
-                output->probe_partition1_count);)
+                output->probe_partition1_count);
+                            )
       self->pending_enroll_progress = TRUE;
       self->pending_enroll_stage = self->enroll_stage;
       g_clear_error (&self->pending_enroll_error);
     }
-  else if (relation_combine_failed)
+  else if (enrollment_admitted &&
+           enrollment_status == GOODIX_MILAN_ENROLLMENT_RETRY_CENTER)
     {
       GOODIX53X5_DEBUG_ONLY (
-      g_autofree gchar *prefix = g_strdup_printf (
-        "enroll-retry-stage-%u-relation-combine", data->stage + 1);
+        fp_dbg ("Native Milan enrollment rollback stage %u: overlap=%d/%d "
+                "detail=%u",
+                data->stage + 1, enrollment_result.previous_overlap,
+                enrollment_result.overlap, enrollment_result.reject_detail);
+                            )
+      self->pending_enroll_progress = TRUE;
+      self->pending_enroll_stage = self->enroll_stage;
+      g_clear_error (&self->pending_enroll_error);
+      self->pending_enroll_error =
+        fpi_device_retry_new (FP_DEVICE_RETRY_CENTER_FINGER);
+    }
+  else if (enrollment_admitted &&
+           enrollment_status == GOODIX_MILAN_ENROLLMENT_RETRY_REMOVE)
+    {
+      GOODIX53X5_DEBUG_ONLY (
+        g_autofree gchar * prefix = g_strdup_printf (
+          "enroll-retry-stage-%u-relation-combine", data->stage + 1);
 
-      goodix_debug_dump_pair (prefix, self->captured_raw_image,
-                              self->captured_image);
-      )
+        goodix_debug_dump_pair (prefix, self->captured_raw_image,
+                                self->captured_image);
+                            )
       self->pending_enroll_progress = TRUE;
       self->pending_enroll_stage = self->enroll_stage;
       g_clear_error (&self->pending_enroll_error);
@@ -253,20 +269,20 @@ goodix_enroll_task_done (GObject      *source_object,
            output->preprocess_state_valid)
     {
       GOODIX53X5_DEBUG_ONLY (
-      const gchar *reason = output->status == GOODIX_MILAN_RUNTIME_RETRY
-                              ? "extract" : "quality";
-      g_autofree gchar *prefix = g_strdup_printf (
-        "enroll-retry-stage-%u-%s", data->stage + 1, reason);
+        const gchar * reason = output->status == GOODIX_MILAN_RUNTIME_RETRY ?
+                               "extract" : "quality";
+        g_autofree gchar *prefix = g_strdup_printf (
+          "enroll-retry-stage-%u-%s", data->stage + 1, reason);
 
-      goodix_debug_dump_pair (prefix, self->captured_raw_image,
-                              self->captured_image);
-      )
+        goodix_debug_dump_pair (prefix, self->captured_raw_image,
+                                self->captured_image);
+                            )
       self->pending_enroll_progress = TRUE;
       self->pending_enroll_stage = self->enroll_stage;
       g_clear_error (&self->pending_enroll_error);
       self->pending_enroll_error = fpi_device_retry_new (
-        output->coverage <= GOODIX_MILAN_ENROLL_MIN_COVERAGE
-          ? FP_DEVICE_RETRY_CENTER_FINGER : FP_DEVICE_RETRY_REMOVE_FINGER);
+        output->coverage <= GOODIX_MILAN_ENROLL_MIN_COVERAGE ?
+        FP_DEVICE_RETRY_CENTER_FINGER : FP_DEVICE_RETRY_REMOVE_FINGER);
     }
   else
     {
@@ -291,9 +307,9 @@ goodix_enroll_task_done (GObject      *source_object,
   g_clear_pointer (&self->captured_raw_image, g_free);
   goodix_scan_set_disposition (
     dev,
-    self->enroll_stage >= GOODIX_ENROLL_SAMPLES
-      ? GOODIX_SCAN_DISPOSITION_ENROLL_FINAL_AFTER_UP
-      : GOODIX_SCAN_DISPOSITION_ENROLL_CONTINUE_AFTER_UP,
+    self->enroll_stage >= GOODIX_ENROLL_SAMPLES ?
+    GOODIX_SCAN_DISPOSITION_ENROLL_FINAL_AFTER_UP :
+    GOODIX_SCAN_DISPOSITION_ENROLL_CONTINUE_AFTER_UP,
     NULL);
 }
 
@@ -302,6 +318,7 @@ goodix_enroll_start_task (FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   GoodixEnrollTaskData *data = g_new0 (GoodixEnrollTaskData, 1);
+
   g_autoptr(GTask) task = NULL;
 
   if (!self->milan_generation || !self->captured_raw_image || self->milan_task)
@@ -321,7 +338,8 @@ goodix_enroll_start_task (FpDevice *dev)
     goodix_debug_capture_runtime_metadata (
       &data->debug_metadata, FPI_DEVICE_ACTION_ENROLL,
       self->milan_generation->setup_tx_on, self->captured_raw_image,
-      self->milan_generation->use_count);)
+      self->milan_generation->use_count);
+                        )
   data->runtime_input = goodix_milan_runtime_input_new (
     data->action_epoch, data->generation_id, GOODIX_MILAN_PURPOSE_ENROLL,
     &self->milan_generation->state,
@@ -384,19 +402,23 @@ goodix_enroll_ssm_handler (FpiSsm   *ssm,
       if (!goodix_maybe_start_reinit_subsm (ssm, dev))
         fpi_ssm_next_state (ssm);
       break;
+
     case GOODIX_ENROLL_REINIT_DONE:
       goodix_debug_timing_open_done (self, dev, "reinit");
       self->needs_reinit = FALSE;
       fpi_ssm_next_state (ssm);
       break;
+
     case GOODIX_ENROLL_SCAN:
       goodix_scan_start_coordinator_subsm (
         ssm, dev, goodix_enroll_capture_ready,
         goodix_enroll_cycle_settled, NULL);
       break;
+
     case GOODIX_ENROLL_FINISH:
       fpi_ssm_mark_completed (ssm);
       break;
+
     case GOODIX_ENROLL_NUM_STATES:
       g_assert_not_reached ();
     }
@@ -409,6 +431,7 @@ goodix_enroll_ssm_done (FpiSsm   *ssm,
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpPrint *print = NULL;
+
   g_autoptr(GBytes) combined = NULL;
   g_autoptr(GVariant) data = NULL;
 
@@ -424,31 +447,36 @@ goodix_enroll_ssm_done (FpiSsm   *ssm,
         self->needs_reinit = TRUE;
       self->pending_enroll_progress = FALSE;
       g_clear_error (&self->pending_enroll_error);
-      g_clear_pointer (&self->enroll_features, g_ptr_array_unref);
+      g_clear_pointer (&self->enroll_transaction,
+                       goodix_milan_enrollment_transaction_free);
       goodix_debug_timing_action_done (self, dev, error->message);
       fpi_device_enroll_complete (dev, NULL, error);
       return;
     }
 
   if (self->enroll_stage != GOODIX_ENROLL_SAMPLES ||
-      !self->enroll_features ||
-      self->enroll_features->len != GOODIX_ENROLL_SAMPLES)
+      !self->enroll_transaction ||
+      goodix_milan_enrollment_transaction_count (
+        self->enroll_transaction) != GOODIX_ENROLL_SAMPLES)
     {
       GError *chronology_error = fpi_device_error_new_msg (
         FP_DEVICE_ERROR_GENERAL,
         "Native Milan enrollment action state is incomplete");
 
-      g_clear_pointer (&self->enroll_features, g_ptr_array_unref);
+      g_clear_pointer (&self->enroll_transaction,
+                       goodix_milan_enrollment_transaction_free);
       fpi_device_enroll_complete (dev, NULL, chronology_error);
       return;
     }
 
-  combined = goodix_match_combine_templates (self->enroll_features);
+  combined = goodix_milan_enrollment_transaction_publish (
+    self->enroll_transaction);
   if (combined)
     data = goodix_milan_print_build_data (combined, &error);
   if (!combined || !data)
     {
-      g_clear_pointer (&self->enroll_features, g_ptr_array_unref);
+      g_clear_pointer (&self->enroll_transaction,
+                       goodix_milan_enrollment_transaction_free);
       if (!error)
         error = fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
                                           "Failed to build native Milan template");
@@ -459,7 +487,8 @@ goodix_enroll_ssm_done (FpiSsm   *ssm,
   fpi_device_get_enroll_data (dev, &print);
   fpi_print_set_type (print, FPI_PRINT_RAW);
   g_object_set (print, "fpi-data", data, NULL);
-  g_clear_pointer (&self->enroll_features, g_ptr_array_unref);
+  g_clear_pointer (&self->enroll_transaction,
+                   goodix_milan_enrollment_transaction_free);
   fp_info ("Native Milan enrollment complete with %d stages",
            GOODIX_ENROLL_SAMPLES);
   goodix_debug_timing_action_done (self, dev, NULL);
@@ -478,6 +507,11 @@ goodix_enroll_start (FpDevice *dev)
   if (self->action_epoch == 0)
     self->action_epoch++;
   self->enroll_stage = 0;
+  g_clear_pointer (&self->enroll_transaction,
+                   goodix_milan_enrollment_transaction_free);
+  self->enroll_transaction = goodix_milan_enrollment_transaction_new ();
+  self->enroll_bad_record_count = 0;
+  self->enroll_bad_continue_count = 0;
   self->pending_enroll_progress = FALSE;
   self->pending_enroll_stage = 0;
   g_clear_error (&self->pending_enroll_error);
@@ -485,9 +519,12 @@ goodix_enroll_start (FpDevice *dev)
   g_clear_pointer (&self->captured_image, g_free);
 #endif
   g_clear_pointer (&self->captured_raw_image, g_free);
-  g_clear_pointer (&self->enroll_features, g_ptr_array_unref);
-  self->enroll_features = g_ptr_array_new_with_free_func (
-    (GDestroyNotify) g_bytes_unref);
+  if (!self->enroll_transaction)
+    {
+      fpi_device_enroll_complete (
+        dev, NULL, fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
+      return;
+    }
   goodix_debug_timing_action_start (self, dev, NULL);
 
   ssm = fpi_ssm_new (dev, goodix_enroll_ssm_handler,
