@@ -20,9 +20,18 @@ state, decrements session used count `+0x0a` when positive, and recomputes
 progress as `min(used * 100 / requested, 100)`. Invalid pointers return `0x81`.
 The helper return is ignored.
 
+Deletion does not clear session overlap dwords `+0x10/+0x14` or preprocessing
+state. The overlap dwords therefore continue to describe the rejected
+insertion after used count and progress have been rewound. The synchronized
+adapter count `DAT_1801ce1a8` is a separate pre-insertion value and is not
+written by this export. Before the session rewind, `FUN_180037a30` has already
+recomputed retained type-12 `bb/+0x128` and overlap/neighbor `+0x148` state.
+Template-level deletion and normalization ownership is documented in
+`FUN_180037a30.md`, `FUN_180047550.md`, and `FUN_180047120.md`.
+
 When global enrollment mode equals 1, the export immediately returns without
 setting `RAX`; mode-1 deletion instead calls `FUN_180037a30` directly from
-`FUN_180041570`. The production adapter caller reaches this export from its
+`FUN_180041570`. The native adapter caller reaches this export from its
 mode-0 bad-capture rollback gate.
 
 ## Evidence
