@@ -145,7 +145,7 @@ static gint32
 goodix_match_update_extraction_classification (
   GoodixMilanExtractionClassificationState *state,
   const guint8 classification_source[GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS],
-  const guint8 cropped_primary_contrast[GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS],
+  const guint8 classification_validity[GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS],
   const guint8 auxiliary[3],
   gint         coverage,
   gint32       entry_low_class,
@@ -178,7 +178,7 @@ goodix_match_update_extraction_classification (
 
   for (guint i = 0; i < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS; i++)
     component_mask[i] = classification_source[i] >= 0x80 &&
-                         cropped_primary_contrast[i] != 0 ? UINT8_MAX : 0;
+                         classification_validity[i] != 0 ? UINT8_MAX : 0;
   goodix_match_retain_class_components (
     component_mask, 71, 500, labels, queue);
   for (guint i = 0; i < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS; i++)
@@ -460,7 +460,6 @@ goodix_match_extract_planes (const guint8  *image,
   g_autofree GoodixMilanAntifakeBlob *diagnostic_antifake = NULL;
 #endif
   guint8 *cropped = NULL;
-  guint8 *cropped_primary_contrast = NULL;
   guint8 *high = NULL;
   guint8 *low = NULL;
   guint8 *feature_mask = NULL;
@@ -498,8 +497,6 @@ goodix_match_extract_planes (const guint8  *image,
   auxiliary[2] = auxiliary_state->promoted_secondary_histogram_state;
   info = g_new0 (GoodixMatchInfo, 1);
   cropped = g_malloc (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS);
-  cropped_primary_contrast = g_malloc (
-    GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS);
   high = g_malloc0 (286);
   low = g_malloc0 (286);
   feature_mask = g_malloc0 (52 * 44);
@@ -520,11 +517,6 @@ goodix_match_extract_planes (const guint8  *image,
       memcpy (cropped +
                 row * GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS,
               image + row * GOODIX_MILAN_SENSOR_COLUMNS + 2,
-              GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS);
-      memcpy (cropped_primary_contrast +
-                row * GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS,
-              primary_contrast_plane +
-                row * GOODIX_MILAN_SENSOR_COLUMNS + 2,
               GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS);
     }
   if (sensor_subtype == 12)
@@ -653,7 +645,6 @@ out:
   g_free (feature_mask);
   g_free (low);
   g_free (high);
-  g_free (cropped_primary_contrast);
   g_free (cropped);
   if (!info->template)
     g_clear_pointer (&info, g_free);
