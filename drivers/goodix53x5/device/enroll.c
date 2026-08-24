@@ -221,6 +221,10 @@ goodix_enroll_task_done (GObject      *source_object,
         goodix_debug_dump_pair (prefix, self->captured_raw_image,
                                 self->captured_image);
                             )
+      g_clear_pointer (&self->pending_persistence_state, g_free);
+      if (output->preprocess_state_valid)
+        self->pending_persistence_state = g_memdup2 (
+          &output->preprocess_state, sizeof (output->preprocess_state));
       self->enroll_stage = (gint) goodix_milan_enrollment_transaction_count (
         self->enroll_transaction);
       GOODIX53X5_DEBUG_ONLY (
@@ -450,6 +454,7 @@ goodix_enroll_ssm_done (FpiSsm   *ssm,
       g_clear_error (&self->pending_enroll_error);
       g_clear_pointer (&self->enroll_transaction,
                        goodix_milan_enrollment_transaction_free);
+      g_clear_pointer (&self->pending_persistence_state, g_free);
       goodix_debug_timing_action_done (self, dev, error->message);
       fpi_device_enroll_complete (dev, NULL, error);
       return;
@@ -458,7 +463,8 @@ goodix_enroll_ssm_done (FpiSsm   *ssm,
   if (self->enroll_stage != GOODIX_ENROLL_SAMPLES ||
       !self->enroll_transaction ||
       goodix_milan_enrollment_transaction_count (
-        self->enroll_transaction) != GOODIX_ENROLL_SAMPLES)
+        self->enroll_transaction) != GOODIX_ENROLL_SAMPLES ||
+      !self->pending_persistence_state)
     {
       GError *chronology_error = fpi_device_error_new_msg (
         FP_DEVICE_ERROR_GENERAL,
@@ -466,6 +472,7 @@ goodix_enroll_ssm_done (FpiSsm   *ssm,
 
       g_clear_pointer (&self->enroll_transaction,
                        goodix_milan_enrollment_transaction_free);
+      g_clear_pointer (&self->pending_persistence_state, g_free);
       fpi_device_enroll_complete (dev, NULL, chronology_error);
       return;
     }
@@ -478,6 +485,7 @@ goodix_enroll_ssm_done (FpiSsm   *ssm,
     {
       g_clear_pointer (&self->enroll_transaction,
                        goodix_milan_enrollment_transaction_free);
+      g_clear_pointer (&self->pending_persistence_state, g_free);
       if (!error)
         error = fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
                                           "Failed to build native Milan template");
@@ -492,7 +500,8 @@ goodix_enroll_ssm_done (FpiSsm   *ssm,
                    goodix_milan_enrollment_transaction_free);
   fp_info ("Native Milan enrollment complete with %d stages",
            GOODIX_ENROLL_SAMPLES);
-  goodix_milan_persistence_save (dev, self->milan_generation);
+  goodix_milan_persistence_save (dev, self->pending_persistence_state);
+  g_clear_pointer (&self->pending_persistence_state, g_free);
   goodix_debug_timing_action_done (self, dev, NULL);
   fpi_device_enroll_complete (dev, g_object_ref (print), NULL);
 }
@@ -521,6 +530,7 @@ goodix_enroll_start (FpDevice *dev)
   g_clear_pointer (&self->captured_image, g_free);
 #endif
   g_clear_pointer (&self->captured_raw_image, g_free);
+  g_clear_pointer (&self->pending_persistence_state, g_free);
   if (!self->enroll_transaction)
     {
       fpi_device_enroll_complete (

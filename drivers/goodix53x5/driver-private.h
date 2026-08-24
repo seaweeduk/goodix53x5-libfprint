@@ -120,6 +120,9 @@ struct _FpiDeviceGoodix53x5
   GoodixMilanGeneration *milan_generation;
   guint64                last_milan_generation_id;
 
+  /* Action-owned state to commit after post-scan hardware cleanup. */
+  GoodixMilanPreprocessState *pending_persistence_state;
+
   /* TRUE while verifying a PSK write during open. */
   gboolean psk_write_verify_pending;
 

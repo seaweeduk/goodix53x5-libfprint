@@ -248,7 +248,7 @@ goodix_milan_state_directory_secure (GError **error)
       return FALSE;
     }
   if (!S_ISDIR (stat_buffer.st_mode) || stat_buffer.st_uid != geteuid () ||
-      (stat_buffer.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+      (stat_buffer.st_mode & 0777) != 0700)
     {
       g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_ACCES,
                    "Milan state directory %s has unsafe ownership or permissions",
@@ -279,7 +279,7 @@ goodix_milan_state_read (const gchar *path,
     }
   if (fstat (descriptor, &stat_buffer) != 0 ||
       !S_ISREG (stat_buffer.st_mode) || stat_buffer.st_uid != geteuid () ||
-      (stat_buffer.st_mode & (S_IWGRP | S_IWOTH)) != 0 ||
+      (stat_buffer.st_mode & 0777) != 0600 ||
       stat_buffer.st_size != GOODIX_MILAN_STATE_FILE_SIZE)
     {
       g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_INVAL,
@@ -312,6 +312,56 @@ goodix_milan_state_read (const gchar *path,
     }
   close (descriptor);
   *contents = g_steal_pointer (&buffer);
+  return TRUE;
+}
+
+static gboolean
+goodix_milan_state_make_private (const gchar *path,
+                                 GError     **error)
+{
+  GStatBuf stat_buffer;
+  int descriptor;
+
+  descriptor = g_open (path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW, 0);
+  if (descriptor < 0)
+    {
+      int saved_errno = errno;
+
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                   "Failed to secure %s: %s", path,
+                   g_strerror (saved_errno));
+      return FALSE;
+    }
+  if (fstat (descriptor, &stat_buffer) != 0 ||
+      !S_ISREG (stat_buffer.st_mode) || stat_buffer.st_uid != geteuid () ||
+      stat_buffer.st_size != GOODIX_MILAN_STATE_FILE_SIZE)
+    {
+      g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_INVAL,
+                   "Milan preprocessing state %s has invalid size or ownership",
+                   path);
+      close (descriptor);
+      return FALSE;
+    }
+  if (fchmod (descriptor, 0600) != 0 || fsync (descriptor) != 0)
+    {
+      int saved_errno = errno;
+
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                   "Failed to secure %s: %s", path,
+                   g_strerror (saved_errno));
+      close (descriptor);
+      return FALSE;
+    }
+  if (fstat (descriptor, &stat_buffer) != 0 ||
+      (stat_buffer.st_mode & 0777) != 0600)
+    {
+      g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_ACCES,
+                   "Milan preprocessing state %s did not retain private permissions",
+                   path);
+      close (descriptor);
+      return FALSE;
+    }
+  close (descriptor);
   return TRUE;
 }
 
@@ -483,8 +533,8 @@ goodix_milan_persistence_restore (FpDevice              *dev,
 }
 
 void
-goodix_milan_persistence_save (FpDevice                    *dev,
-                               const GoodixMilanGeneration *generation)
+goodix_milan_persistence_save (FpDevice                         *dev,
+                               const GoodixMilanPreprocessState *state)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   g_autofree guint8 *contents = NULL;
@@ -493,20 +543,19 @@ goodix_milan_persistence_save (FpDevice                    *dev,
 
   g_autoptr(GError) error = NULL;
 
-  if (!generation || !generation->admitted ||
-      !self->milan_persistence_identity_valid)
+  if (!state || !self->milan_persistence_identity_valid)
     return;
   retained_planes = (const guint8 *)
-    generation->state.extraction_persistence.retained_class_planes;
-  if (generation->state.sample_count > GOODIX_MILAN_STATE_MAX_SAMPLE_COUNT)
+    state->extraction_persistence.retained_class_planes;
+  if (state->sample_count > GOODIX_MILAN_STATE_MAX_SAMPLE_COUNT)
     {
       fp_warn ("Refusing to save invalid Milan sample count %u",
-               generation->state.sample_count);
+               state->sample_count);
       return;
     }
-  if (generation->state.extraction_persistence.retained_count > 3u ||
-      generation->state.profile9_history_update_count > 5u ||
-      generation->state.profile9_history_count > 50u)
+  if (state->extraction_persistence.retained_count > 3u ||
+      state->profile9_history_update_count > 5u ||
+      state->profile9_history_count > 50u)
     {
       fp_warn ("Refusing to save invalid Milan retained-state counters");
       return;
@@ -518,8 +567,8 @@ goodix_milan_persistence_save (FpDevice                    *dev,
         return;
       }
   for (gsize i = 0; i < GOODIX_MILAN_STATE_AGE_PLANE_SIZE; i++)
-    if (generation->state.profile9_component_age[i] > 5u ||
-        generation->state.profile9_reference_age[i] > 50u)
+    if (state->profile9_component_age[i] > 5u ||
+        state->profile9_reference_age[i] > 50u)
       {
         fp_warn ("Refusing to save invalid Milan retained age plane");
         return;
@@ -541,7 +590,7 @@ goodix_milan_persistence_save (FpDevice                    *dev,
   goodix_milan_write_u16 (contents + GOODIX_MILAN_STATE_SAMPLE_FORMAT_OFFSET,
                           GOODIX_MILAN_STATE_SAMPLE_FORMAT);
   goodix_milan_write_u32 (contents + GOODIX_MILAN_STATE_SAMPLE_COUNT_OFFSET,
-                          generation->state.sample_count);
+                          state->sample_count);
   goodix_milan_write_u32 (contents + GOODIX_MILAN_STATE_PAYLOAD_SIZE_OFFSET,
                           GOODIX_MILAN_STATE_PAYLOAD_SIZE);
   memcpy (contents + GOODIX_MILAN_STATE_IDENTITY_OFFSET,
@@ -551,24 +600,24 @@ goodix_milan_persistence_save (FpDevice                    *dev,
     goodix_milan_write_u16 (
       contents + GOODIX_MILAN_STATE_CALIBRATION_OFFSET +
         i * sizeof (guint16),
-      generation->state.calibration_map[i]);
+      state->calibration_map[i]);
   contents[GOODIX_MILAN_STATE_RING_COUNT_OFFSET] =
-    (guint8) generation->state.extraction_persistence.retained_count;
+    (guint8) state->extraction_persistence.retained_count;
   contents[GOODIX_MILAN_STATE_COMPONENT_COUNT_OFFSET] =
-    (guint8) generation->state.profile9_history_update_count;
+    (guint8) state->profile9_history_update_count;
   contents[GOODIX_MILAN_STATE_REFERENCE_COUNT_OFFSET] =
-    (guint8) generation->state.profile9_history_count;
+    (guint8) state->profile9_history_count;
   memcpy (contents + GOODIX_MILAN_STATE_RING_PLANES_OFFSET,
           retained_planes,
           GOODIX_MILAN_STATE_RING_PLANES_SIZE);
   memcpy (contents + GOODIX_MILAN_STATE_COMPONENT_AGES_OFFSET,
-          generation->state.profile9_component_age,
+          state->profile9_component_age,
           GOODIX_MILAN_STATE_AGE_PLANE_SIZE);
   memcpy (contents + GOODIX_MILAN_STATE_SUPPORT_AGES_OFFSET,
-          generation->state.profile9_reference_age,
+          state->profile9_reference_age,
           GOODIX_MILAN_STATE_AGE_PLANE_SIZE);
   goodix_milan_store_reference (
-    generation->state.profile9_history_reference,
+    state->profile9_history_reference,
     contents + GOODIX_MILAN_STATE_REFERENCE_OFFSET);
   goodix_milan_sha256 (contents, GOODIX_MILAN_STATE_DIGEST_OFFSET,
                        contents + GOODIX_MILAN_STATE_DIGEST_OFFSET);
@@ -595,6 +644,13 @@ goodix_milan_persistence_save (FpDevice                    *dev,
                path, error->message);
       return;
     }
+  g_clear_error (&error);
+  if (!goodix_milan_state_make_private (path, &error))
+    {
+      fp_warn ("Failed to secure Milan preprocessing state %s: %s",
+               path, error->message);
+      return;
+    }
   fp_info ("Saved Milan preprocessing state with %u samples",
-           generation->state.sample_count);
+           state->sample_count);
 }

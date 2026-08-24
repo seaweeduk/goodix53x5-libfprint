@@ -16,5 +16,5 @@ void goodix_milan_persistence_prepare (FpDevice *dev);
 void goodix_milan_persistence_clear (FpDevice *dev);
 void goodix_milan_persistence_restore (FpDevice              *dev,
                                        GoodixMilanGeneration *generation);
-void goodix_milan_persistence_save (FpDevice                    *dev,
-                                    const GoodixMilanGeneration *generation);
+void goodix_milan_persistence_save (FpDevice                         *dev,
+                                    const GoodixMilanPreprocessState *state);
