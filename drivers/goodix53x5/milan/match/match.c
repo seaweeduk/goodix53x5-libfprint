@@ -1179,6 +1179,8 @@ milan_match_prepared_probe (
           memcpy (direct_metrics + 15, direct_candidate.words + 15,
                   6 * sizeof(*direct_metrics));
         }
+      memcpy (rescue_records[feature_index], direct_metrics,
+              sizeof(rescue_records[feature_index]));
       if (enrolled->metadata.sensor_type == 12)
         {
           int status;
@@ -1202,8 +1204,6 @@ milan_match_prepared_probe (
             late_policy_context.accumulated_high_class,
             late_policy_state[1], 0, &match_flag, &candidate_flag);
         }
-      memcpy (rescue_records[feature_index], direct_metrics,
-              sizeof(rescue_records[feature_index]));
       memset (&contribution_event, 0, sizeof(contribution_event));
       int contributes = 0;
       int retained = 0;
