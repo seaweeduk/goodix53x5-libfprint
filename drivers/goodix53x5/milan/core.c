@@ -198,6 +198,11 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
         GOODIX_MILAN_SENSOR_COLUMNS, contrast_mask, &admitted_pixels) != 0)
     goto out;
 
+  /* Native refills retained low-count application gain before processing. */
+  if (state->sample_count > 0 && state->sample_count <= 3)
+    for (size_t i = 0; i < count; i++)
+      state->application_gain_map[i] = MILAN_FIXED_ONE;
+
   milan_profile9_make_reciprocal_plane (
     state->application_gain_map, count, reciprocal_plane);
   goodix_milan_profile9_update_gain_ready (
