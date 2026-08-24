@@ -126,9 +126,11 @@ After a physical feature survives the loop-top gate, orchestration is:
 
 1. Build or refresh the feature's candidate and fallback workspace through the
    separately documented leaf helpers.
-2. Run mutable policy. A nonzero late-status return continues directly to the
-   next traversal occurrence before contribution, retained evidence, relation,
-   direct publication, lifecycle state, or fallback enablement.
+2. Publish the completed 77-word candidate to its physical rescue row, then run
+   mutable policy. A nonzero late-status return continues directly to the next
+   traversal occurrence before contribution, retained evidence, relation,
+   direct publication, lifecycle state, or fallback enablement, but it does not
+   discard the rescue row.
 3. Contribute when final `flag64 == 1`, or when metric 4 is strictly greater
    than `configuration[0] + 207` and metric 5 is strictly greater than 195.
 4. Add the wrapped Q8 term to the prefix, increment contributor count, mark the
@@ -186,9 +188,9 @@ The DLL post-loop order is:
 1. Preserve physical contributor/direct slots and strict active-relation
    evidence produced during traversal.
 2. Optionally run aggregate rescue at `0x180056c75..0x180056caf`. Rescue sees the
-   traversal score, contributor rows, physical `a1` order, and current rejection
-   evidence. A successful rescue writes score/selection evidence before any
-   queue decision.
+   traversal score, completed candidate rows including late-status
+   continuations, physical `a1` order, and current rejection evidence. A
+   successful rescue writes score/selection evidence before any queue decision.
 3. At `0x180056cb4..0x180056cc1`, clear rejection evidence `+0x688` when the
    stack-local continuation gate `[rbp-0x50]` is zero. Nonzero rescue rejection
    survives only when that local remains nonzero.
@@ -464,10 +466,11 @@ loop. On the next valid feature, status count 6, accumulated high class below 5,
 and zero `[rbp-0x48]` satisfy `0x180055e12..0x180055e2e`: native increments the
 high class, latches the one-shot, and clears `[rbp-0x50]`. Starting from high
 class zero leaves the resulting class one compatible with the later `<4` queue
-condition. Status-producing rows are skipped before rescue-row publication, so
-the recovered control flow contains no structural exclusion between this clear
-and a later strong rescue. This establishes reachability of the branch, not a
-natural-frequency claim.
+condition. Status-producing rows retain their completed rescue rows even though
+they skip contribution and direct publication. The recovered control flow
+therefore contains no structural exclusion between this clear and a later strong
+rescue. This establishes reachability of the branch, not a natural-frequency
+claim.
 
 The second is a direct result followed by terminal blocker override:
 
