@@ -550,7 +550,7 @@ goodix_match_extract_planes (const guint8  *image,
       /* Native commits history before record extraction, anti-fake, or packing
        * failures. */
       fields.optional_c7 = goodix_match_update_extraction_classification (
-        classification_state, cropped, cropped_primary_contrast, auxiliary,
+        classification_state, enhanced, validity_mask, auxiliary,
         coverage, entry_low_class, entry_high_class);
     }
   if (goodix_milan_feature_extract_records_mode_masked (
