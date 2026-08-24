@@ -308,6 +308,7 @@ goodix_milan_replace_raw_frame (guint16 **owner,
 #include "device/calibration.h"
 #include "device/commands.h"
 #include "device/image.h"
+#include "device/persistence.h"
 #include "device/transport.h"
 
 typedef enum
@@ -725,6 +726,7 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
             return;
           }
 
+        goodix_milan_persistence_restore (dev, generation);
         goodix_milan_generation_invalidate (&self->milan_generation);
         self->milan_generation = generation;
         memcpy (self->profile9_fdt.base_down, data->candidate_base_down,

@@ -303,6 +303,7 @@ typedef struct
    * extraction/matcher policy. */
   GoodixMilanExtractionClassificationState extraction_classification;
   GoodixMilanExtractionAuxiliaryState extraction_auxiliary;
+  uint8_t application_gain_initialized;
 } GoodixMilanPreprocessState;
 
 _Static_assert (sizeof (GoodixMilanProfile9ClassCounts) == 12,
@@ -422,6 +423,9 @@ _Static_assert (sizeof (GoodixMilanExtractionAuxiliaryState) == 3,
 _Static_assert (offsetof (GoodixMilanPreprocessState,
                           extraction_auxiliary) == 174868,
                 "Milan extraction auxiliary state moved");
+_Static_assert (offsetof (GoodixMilanPreprocessState,
+                          application_gain_initialized) == 174871,
+                "Milan application gain initialization state moved");
 _Static_assert (sizeof (GoodixMilanPreprocessState) == 174872,
                 "Milan preprocess state size changed");
 _Static_assert (_Alignof (GoodixMilanPreprocessState) == 4,

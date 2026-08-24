@@ -21,6 +21,7 @@ goodix53x5_sources = files(
     'milan/feature/materialization.c',
     'milan/feature/record.c',
     'device/image.c',
+    'device/persistence.c',
     'milan/match/admission.c',
     'milan/match/candidate.c',
     'milan/match/correspondence.c',

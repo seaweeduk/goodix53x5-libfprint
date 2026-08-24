@@ -16,6 +16,7 @@
 #include "milan/print.h"
 #include "driver-private.h"
 #include "milan/runtime.h"
+#include "device/persistence.h"
 #include "device/scan.h"
 #include "device/session.h"
 
@@ -612,6 +613,7 @@ goodix_verify_ssm_done (FpiSsm   *ssm,
               fpi_print_set_raw_data (self->pending_update_target,
                                       self->pending_update_data);
               updated = TRUE;
+              goodix_milan_persistence_save (dev, self->milan_generation);
             }
           goodix_flush_pending_result_report (dev);
         }

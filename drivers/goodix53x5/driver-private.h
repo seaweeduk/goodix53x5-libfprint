@@ -112,6 +112,10 @@ struct _FpiDeviceGoodix53x5
   guint32 chip_id;
   guint16 milan_sensor_subtype;
 
+  /* Device-keyed identity for the persisted preprocessing subset. */
+  guint8   milan_persistence_identity[32];
+  gboolean milan_persistence_identity_valid;
+
   /* One admitted TX-on setup generation per valid hardware session. */
   GoodixMilanGeneration *milan_generation;
   guint64                last_milan_generation_id;

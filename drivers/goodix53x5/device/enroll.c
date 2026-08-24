@@ -17,6 +17,7 @@
 #include "milan/print.h"
 #include "driver-private.h"
 #include "milan/runtime.h"
+#include "device/persistence.h"
 #include "device/scan.h"
 #include "device/session.h"
 
@@ -491,6 +492,7 @@ goodix_enroll_ssm_done (FpiSsm   *ssm,
                    goodix_milan_enrollment_transaction_free);
   fp_info ("Native Milan enrollment complete with %d stages",
            GOODIX_ENROLL_SAMPLES);
+  goodix_milan_persistence_save (dev, self->milan_generation);
   goodix_debug_timing_action_done (self, dev, NULL);
   fpi_device_enroll_complete (dev, g_object_ref (print), NULL);
 }

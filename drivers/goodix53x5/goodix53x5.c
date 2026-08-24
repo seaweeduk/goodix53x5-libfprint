@@ -24,6 +24,7 @@
 #include "device/session.h"
 #include "device/enroll.h"
 #include "device/auth.h"
+#include "device/persistence.h"
 
 #include <string.h>
 #include <openssl/crypto.h>
@@ -67,6 +68,7 @@ goodix_close (FpDevice *dev)
   goodix_milan_generation_invalidate (&self->milan_generation);
   g_clear_pointer (&self->enroll_transaction,
                    goodix_milan_enrollment_transaction_free);
+  goodix_milan_persistence_clear (dev);
   g_clear_error (&self->pending_enroll_error);
   OPENSSL_cleanse (self->psk, sizeof (self->psk));
   OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
