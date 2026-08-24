@@ -269,6 +269,13 @@ typedef struct
 
 typedef struct
 {
+  uint8_t  retained_class_planes[3]
+                                [GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS];
+  uint32_t retained_count;
+} GoodixMilanExtractionPersistenceState;
+
+typedef struct
+{
   uint8_t primary_histogram_state;
   uint8_t prior_selected_plane;
   uint8_t promoted_secondary_histogram_state;
@@ -302,6 +309,9 @@ typedef struct
    * Auxiliary bytes describe the latest completed preprocessing call and feed
    * extraction/matcher policy. */
   GoodixMilanExtractionClassificationState extraction_classification;
+  /* Native serializes the retained ring before extraction appends the current
+   * sample, so persistence needs the corresponding entry snapshot. */
+  GoodixMilanExtractionPersistenceState extraction_persistence;
   GoodixMilanExtractionAuxiliaryState extraction_auxiliary;
   uint8_t application_gain_initialized;
 } GoodixMilanPreprocessState;
@@ -418,15 +428,25 @@ _Static_assert (offsetof (GoodixMilanExtractionClassificationState,
 _Static_assert (offsetof (GoodixMilanExtractionClassificationState,
                           prior_merged_high_class) == 27468,
                 "Milan extraction prior high class moved");
+_Static_assert (sizeof (GoodixMilanExtractionPersistenceState) == 27460,
+                "Milan extraction persistence state size changed");
+_Static_assert (_Alignof (GoodixMilanExtractionPersistenceState) == 4,
+                "Milan extraction persistence state alignment changed");
+_Static_assert (offsetof (GoodixMilanExtractionPersistenceState,
+                          retained_count) == 27456,
+                "Milan persisted extraction retained count moved");
+_Static_assert (offsetof (GoodixMilanPreprocessState,
+                          extraction_persistence) == 174868,
+                "Milan extraction persistence state moved");
 _Static_assert (sizeof (GoodixMilanExtractionAuxiliaryState) == 3,
                 "Milan extraction auxiliary state size changed");
 _Static_assert (offsetof (GoodixMilanPreprocessState,
-                          extraction_auxiliary) == 174868,
+                          extraction_auxiliary) == 202328,
                 "Milan extraction auxiliary state moved");
 _Static_assert (offsetof (GoodixMilanPreprocessState,
-                          application_gain_initialized) == 174871,
+                          application_gain_initialized) == 202331,
                 "Milan application gain initialization state moved");
-_Static_assert (sizeof (GoodixMilanPreprocessState) == 174872,
+_Static_assert (sizeof (GoodixMilanPreprocessState) == 202332,
                 "Milan preprocess state size changed");
 _Static_assert (_Alignof (GoodixMilanPreprocessState) == 4,
                 "Milan preprocess state alignment changed");
