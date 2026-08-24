@@ -1046,11 +1046,11 @@ milan_match_prepared_probe (
         {
           direct_metrics[0] = (int32_t) primary_filtered_count;
           direct_metrics[1] = (int32_t) filtered_count;
+          memcpy (direct_metrics + 6, low_bitmap_metrics,
+                  sizeof(low_bitmap_metrics));
         }
       direct_metrics[4] = overlap_score;
       direct_metrics[5] = overlap_detail;
-      memcpy (direct_metrics + 6, low_bitmap_metrics,
-              sizeof(low_bitmap_metrics));
       direct_metrics[9] = overlap_coverage * 246 >> 8;
       direct_metrics[10] = topology_percent;
       direct_metrics[11] = geometric_percent;
@@ -1135,8 +1135,12 @@ milan_match_prepared_probe (
                       sizeof(refined_transform));
               direct_metrics[4] = refined_overlap_score;
               direct_metrics[5] = refined_overlap_detail;
-              memcpy (direct_metrics + 6, refined_low_metrics,
-                      sizeof(refined_low_metrics));
+              if (enrolled->metadata.sensor_type == 12)
+                memcpy (low_bitmap_metrics, refined_low_metrics,
+                        sizeof(low_bitmap_metrics));
+              else
+                memcpy (direct_metrics + 6, refined_low_metrics,
+                        sizeof(refined_low_metrics));
               direct_metrics[9] = refined_overlap_coverage * 246 >> 8;
               goodix_milan_match_record_metrics_internal (
                 enrolled_records, feature.record_count, probe_records,
@@ -1178,6 +1182,10 @@ milan_match_prepared_probe (
           goodix_milan_match_candidate_materialize_dispatch (&direct_candidate);
           memcpy (direct_metrics + 15, direct_candidate.words + 15,
                   6 * sizeof(*direct_metrics));
+          if (match_flag != 2 ||
+              late_policy_context.accumulated_high_class > 1)
+            memcpy (direct_metrics + 6, low_bitmap_metrics,
+                    sizeof(low_bitmap_metrics));
         }
       memcpy (rescue_records[feature_index], direct_metrics,
               sizeof(rescue_records[feature_index]));
