@@ -25,43 +25,55 @@
 void milan_runtime_test_auth_start (FpDevice *dev);
 void milan_runtime_test_enroll_start (FpDevice *dev);
 void milan_runtime_test_clear_pending_result_report (FpiDeviceGoodix53x5 *self);
-GoodixSigfmTemplateStatus milan_runtime_harness_match (
-  GoodixMatchInfo *probe, const guint8 *feature, gsize feature_len,
-  GoodixMilanMatchResult *match_result, GBytes **after_match,
-  GoodixStudyQueue *queue);
-GoodixSigfmTemplateStatus milan_runtime_harness_study (
-  GoodixMatchInfo *probe, const guint8 *feature, gsize feature_len,
-  const GoodixMilanMatchResult *match_result, gboolean study_eligible,
-  GoodixStudyQueue *queue, GBytes **after_study,
-  GoodixMilanStudyAction *action);
-GBytes *milan_runtime_harness_combine (GPtrArray *templates);
-void milan_runtime_harness_scan_start (
-  FpiSsm *parent_ssm, FpDevice *dev,
-  GoodixScanCaptureReadyCallback capture_ready,
-  GoodixScanCycleSettledCallback cycle_settled, gpointer user_data);
-void milan_runtime_harness_scan_set_disposition (
-  FpDevice *dev, GoodixScanDisposition disposition, GError *error);
-gboolean milan_runtime_harness_reinit (FpiSsm *ssm, FpDevice *dev);
+GoodixSigfmTemplateStatus milan_runtime_harness_match (GoodixMatchInfo        *probe,
+                                                       const guint8           *feature,
+                                                       gsize                   feature_len,
+                                                       GoodixMilanMatchResult *match_result,
+                                                       GBytes                **after_match,
+                                                       GoodixStudyQueue       *queue);
+GoodixSigfmTemplateStatus milan_runtime_harness_study (GoodixMatchInfo              *probe,
+                                                       const guint8                 *feature,
+                                                       gsize                         feature_len,
+                                                       const GoodixMilanMatchResult *match_result,
+                                                       gboolean                      study_eligible,
+                                                       GoodixStudyQueue             *queue,
+                                                       GBytes                      **after_study,
+                                                       GoodixMilanStudyAction       *action);
+GoodixMilanEnrollmentAttemptStatus milan_runtime_harness_enrollment_attempt (GoodixMilanEnrollmentTransaction **transaction,
+                                                                             GBytes                            *probe_template,
+                                                                             guint                             *bad_record_count,
+                                                                             guint                             *bad_continue_count,
+                                                                             GoodixMilanEnrollmentResult       *enrollment_result);
+void milan_runtime_harness_scan_start (FpiSsm                        *parent_ssm,
+                                       FpDevice                      *dev,
+                                       GoodixScanCaptureReadyCallback capture_ready,
+                                       GoodixScanCycleSettledCallback cycle_settled,
+                                       gpointer                       user_data);
+void milan_runtime_harness_scan_set_disposition (FpDevice             *dev,
+                                                 GoodixScanDisposition disposition,
+                                                 GError               *error);
+gboolean milan_runtime_harness_reinit (FpiSsm   *ssm,
+                                       FpDevice *dev);
 gboolean milan_runtime_harness_stale_error (const GError *error);
 
 typedef struct
 {
-  const gint32 *scores;
-  GBytes *const *expected_gallery;
-  gsize score_count;
-  gsize match_calls;
-  GBytes *study_candidate;
-  gboolean study_failure;
-  gboolean block_study;
-  gboolean study_entered;
-  gboolean release_study;
-  gboolean cancel_called;
-  gsize study_calls;
+  const gint32          *scores;
+  GBytes *const         *expected_gallery;
+  gsize                  score_count;
+  gsize                  match_calls;
+  GBytes                *study_candidate;
+  gboolean               study_failure;
+  gboolean               block_study;
+  gboolean               study_entered;
+  gboolean               release_study;
+  gboolean               cancel_called;
+  gsize                  study_calls;
   GoodixMilanStudyAction study_action;
-  gboolean fail_next_combine;
-  gsize combine_calls;
-  GMutex mutex;
-  GCond condition;
+  gboolean               fail_next_combine;
+  gsize                  combine_calls;
+  GMutex                 mutex;
+  GCond                  condition;
 } HarnessPlan;
 
 typedef struct
@@ -69,34 +81,34 @@ typedef struct
   gboolean done;
   gboolean success;
   gboolean matched;
-  guint completions;
-  guint reports;
+  guint    completions;
+  guint    reports;
   FpPrint *match;
   FpPrint *reported_match;
   FpPrint *reported_print;
-  GError *reported_error;
+  GError  *reported_error;
   gboolean updated;
   FpPrint *enrolled;
-  GError *error;
+  GError  *error;
 } AsyncResult;
 
 typedef struct
 {
   AsyncResult *result;
-  guint calls;
-  gint stage;
-  gint retry_code;
-  gint stages[GOODIX_ENROLL_SAMPLES + 1];
-  gint retry_codes[GOODIX_ENROLL_SAMPLES + 1];
-  gboolean early_publication;
+  guint        calls;
+  gint         stage;
+  gint         retry_code;
+  gint         stages[GOODIX_ENROLL_SAMPLES + 1];
+  gint         retry_codes[GOODIX_ENROLL_SAMPLES + 1];
+  gboolean     early_publication;
 } EnrollProgress;
 
 typedef struct
 {
-  FpiSsm                       *parent_ssm;
+  FpiSsm                        *parent_ssm;
   GoodixScanCaptureReadyCallback capture_ready;
   GoodixScanCycleSettledCallback cycle_settled;
-  gpointer                      user_data;
+  gpointer                       user_data;
 } HarnessScanCoordinator;
 
 static HarnessPlan plan;
@@ -134,12 +146,16 @@ generate_frames (guint16 setup[PIXELS],
         /* Avoid an all-sharp synthetic score distribution. */
         if (ABS ((gint) row - 44) <= ramp_radius &&
             ABS ((gint) column - ramp_column) <= ramp_radius)
-          setup[index] = (guint16) (
-            baseline - delta + 800 +
-            (ramp_radius - MAX (ABS ((gint) row - 44),
-                               ABS ((gint) column - ramp_column))) * 80);
+          {
+            setup[index] = (guint16) (
+              baseline - delta + 800 +
+              (ramp_radius - MAX (ABS ((gint) row - 44),
+                                  ABS ((gint) column - ramp_column))) * 80);
+          }
         else
-          setup[index] = baseline;
+          {
+            setup[index] = baseline;
+          }
         live[index] = (guint16) (baseline - delta);
       }
 }
@@ -153,6 +169,7 @@ generate_template (guint pattern)
   g_autofree guint16 *setup = g_new (guint16, PIXELS);
   g_autofree guint16 *live = g_new (guint16, PIXELS);
   g_autofree guint8 *processed = g_new (guint8, PIXELS);
+
   g_autoptr(GPtrArray) features = g_ptr_array_new_with_free_func (
     (GDestroyNotify) g_bytes_unref);
   GoodixMatchInfo *info = NULL;
@@ -181,10 +198,10 @@ generate_template (guint pattern)
 }
 
 static void
-reset_plan (const gint32 *scores,
+reset_plan (const gint32  *scores,
             GBytes *const *expected_gallery,
-            gsize score_count,
-            GBytes *study_candidate)
+            gsize          score_count,
+            GBytes        *study_candidate)
 {
   g_mutex_lock (&plan.mutex);
   plan.scores = scores;
@@ -205,12 +222,12 @@ reset_plan (const gint32 *scores,
 }
 
 GoodixSigfmTemplateStatus
-milan_runtime_harness_match (GoodixMatchInfo             *probe,
-                             const guint8                *feature,
-                              gsize                        feature_len,
-                              GoodixMilanMatchResult      *match_result,
-                              GBytes                     **after_match,
-                              GoodixStudyQueue            *queue)
+milan_runtime_harness_match (GoodixMatchInfo        *probe,
+                             const guint8           *feature,
+                             gsize                   feature_len,
+                             GoodixMilanMatchResult *match_result,
+                             GBytes                **after_match,
+                             GoodixStudyQueue       *queue)
 {
   GBytes *expected;
   const guint8 *expected_data;
@@ -229,7 +246,7 @@ milan_runtime_harness_match (GoodixMatchInfo             *probe,
 
   expected_data = g_bytes_get_data (expected, &expected_size);
   g_assert_cmpmem (feature, feature_len, expected_data, expected_size);
-  memset (match_result, 0, sizeof(*match_result));
+  memset (match_result, 0, sizeof (*match_result));
   match_result->score = score;
   *after_match = g_bytes_new (feature, feature_len);
   return GOODIX_SIGFM_TEMPLATE_OK;
@@ -277,8 +294,13 @@ milan_runtime_harness_study (GoodixMatchInfo              *probe,
   return GOODIX_SIGFM_TEMPLATE_OK;
 }
 
-GBytes *
-milan_runtime_harness_combine (GPtrArray *templates)
+GoodixMilanEnrollmentAttemptStatus
+milan_runtime_harness_enrollment_attempt (
+  GoodixMilanEnrollmentTransaction **transaction,
+  GBytes                            *probe_template,
+  guint                             *bad_record_count,
+  guint                             *bad_continue_count,
+  GoodixMilanEnrollmentResult       *enrollment_result)
 {
   gboolean fail;
 
@@ -287,15 +309,28 @@ milan_runtime_harness_combine (GPtrArray *templates)
   fail = plan.fail_next_combine;
   plan.fail_next_combine = FALSE;
   g_mutex_unlock (&plan.mutex);
-  return fail ? NULL : goodix_match_combine_templates (templates);
+  if (fail)
+    {
+      memset (enrollment_result, 0, sizeof (*enrollment_result));
+      if (*bad_continue_count < 3)
+        *bad_continue_count = 0;
+      return GOODIX_MILAN_ENROLLMENT_RETRY_REMOVE;
+    }
+  return goodix_milan_enrollment_transaction_attempt (
+    transaction, probe_template, bad_record_count, bad_continue_count,
+    enrollment_result);
 }
 
 static void
-milan_runtime_harness_scan_capture (FpDevice                  *dev,
-                                    HarnessScanCoordinator     *coordinator)
+milan_runtime_harness_scan_capture (FpDevice               *dev,
+                                    HarnessScanCoordinator *coordinator)
 {
+  static const guint enrollment_patterns[GOODIX_ENROLL_SAMPLES] = {
+    0, 12, 4, 16, 20, 8, 2, 14, 6, 18, 10, 22
+  };
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  guint pattern = capture_enroll_stage_pattern ? self->enroll_stage : 0;
+  guint pattern = capture_enroll_stage_pattern ?
+                  enrollment_patterns[self->enroll_stage] : 0;
 
   g_assert_nonnull (self->milan_generation);
   g_clear_pointer (&self->captured_raw_image, g_free);
@@ -337,11 +372,11 @@ milan_runtime_harness_scan_done (FpiSsm   *ssm,
 
 void
 milan_runtime_harness_scan_start (
-  FpiSsm                       *parent_ssm,
-  FpDevice                     *dev,
+  FpiSsm                        *parent_ssm,
+  FpDevice                      *dev,
   GoodixScanCaptureReadyCallback capture_ready,
   GoodixScanCycleSettledCallback cycle_settled,
-  gpointer                      user_data)
+  gpointer                       user_data)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   HarnessScanCoordinator *coordinator = g_new0 (HarnessScanCoordinator, 1);
@@ -409,7 +444,7 @@ milan_runtime_harness_scan_set_disposition (
 }
 
 gboolean
-milan_runtime_harness_reinit (FpiSsm *ssm,
+milan_runtime_harness_reinit (FpiSsm   *ssm,
                               FpDevice *dev)
 {
   (void) ssm;
@@ -443,7 +478,8 @@ harness_close (FpDevice *device)
 #endif
   g_clear_pointer (&self->captured_raw_image, g_free);
   goodix_milan_generation_invalidate (&self->milan_generation);
-  g_clear_pointer (&self->enroll_features, g_ptr_array_unref);
+  g_clear_pointer (&self->enroll_transaction,
+                   goodix_milan_enrollment_transaction_free);
   fpi_device_close_complete (device, NULL);
 }
 
@@ -516,7 +552,7 @@ replace_generation (FpiDeviceGoodix53x5 *self)
 
 static FpPrint *
 make_print (FpDevice *device,
-            GBytes *template_bytes)
+            GBytes   *template_bytes)
 {
   g_autoptr(GError) error = NULL;
   g_autoptr(GVariant) data = goodix_milan_print_build_data (template_bytes,
@@ -536,9 +572,10 @@ make_malformed_current_print (FpDevice *device)
 {
   static const guint8 malformed[] = "bad";
   GVariant *payload = g_variant_new_fixed_array (
-    G_VARIANT_TYPE_BYTE, malformed, sizeof(malformed) - 1, 1);
+    G_VARIANT_TYPE_BYTE, malformed, sizeof (malformed) - 1, 1);
+
   g_autoptr(GVariant) data = g_variant_ref_sink (g_variant_new (
-    "(uuuus@ay)", 4U, 9U, 12U, 1U, "canonical-zero-v1", payload));
+                                                   "(uuuus@ay)", 4U, 9U, 12U, 1U, "canonical-zero-v1", payload));
   FpPrint *print = fp_print_new (device);
 
   fpi_print_set_type (print, FPI_PRINT_RAW);
@@ -561,10 +598,10 @@ get_print_template (FpPrint *print)
 
 static void
 match_report (FpDevice *device,
-              FpPrint *match,
-              FpPrint *print,
-              gpointer user_data,
-              GError *error)
+              FpPrint  *match,
+              FpPrint  *print,
+              gpointer  user_data,
+              GError   *error)
 {
   AsyncResult *result = user_data;
 
@@ -578,9 +615,9 @@ match_report (FpDevice *device,
 }
 
 static void
-verify_done (GObject *source,
+verify_done (GObject      *source,
              GAsyncResult *async,
-             gpointer user_data)
+             gpointer      user_data)
 {
   AsyncResult *result = user_data;
 
@@ -592,9 +629,9 @@ verify_done (GObject *source,
 }
 
 static void
-identify_done (GObject *source,
+identify_done (GObject      *source,
                GAsyncResult *async,
-               gpointer user_data)
+               gpointer      user_data)
 {
   AsyncResult *result = user_data;
 
@@ -606,9 +643,9 @@ identify_done (GObject *source,
 }
 
 static void
-enroll_done (GObject *source,
+enroll_done (GObject      *source,
              GAsyncResult *async,
-             gpointer user_data)
+             gpointer      user_data)
 {
   AsyncResult *result = user_data;
 
@@ -621,10 +658,10 @@ enroll_done (GObject *source,
 
 static void
 enroll_progress (FpDevice *device,
-                 gint completed_stages,
-                 FpPrint *print,
-                 gpointer user_data,
-                 GError *error)
+                 gint      completed_stages,
+                 FpPrint  *print,
+                 gpointer  user_data,
+                 GError   *error)
 {
   EnrollProgress *progress = user_data;
   guint index = progress->calls;
@@ -695,7 +732,7 @@ clear_result (AsyncResult *result)
   g_clear_object (&result->enrolled);
   g_clear_error (&result->reported_error);
   g_clear_error (&result->error);
-  memset (result, 0, sizeof(*result));
+  memset (result, 0, sizeof (*result));
 }
 
 static void
@@ -710,6 +747,7 @@ test_auth_gallery_outcomes (void)
   static const gint32 first_positive[] = { -4, 37, 999 };
   static const gint32 all_negative[] = { -4, 0, -7 };
   static const gint32 positive[] = { 37 };
+
   g_autoptr(FpDevice) device = new_device ();
   g_autoptr(GBytes) stored0 = generate_template (0);
   g_autoptr(GBytes) stored1 = generate_template (1);
@@ -788,8 +826,7 @@ test_auth_gallery_outcomes (void)
   close_device (device);
 }
 
-typedef enum
-{
+typedef enum {
   AUTH_PRINT_INVALID,
   AUTH_PRINT_VALID_0,
   AUTH_PRINT_VALID_1,
@@ -798,16 +835,16 @@ typedef enum
 
 typedef struct
 {
-  const gchar *name;
-  gboolean identify;
+  const gchar         *name;
+  gboolean             identify;
   const AuthPrintKind *prints;
-  gsize print_count;
-  const gint32 *scores;
-  gsize score_count;
-  gint expected_match_index;
-  guint expected_reports;
-  guint expected_study_calls;
-  gint expected_error_code;
+  gsize                print_count;
+  const gint32        *scores;
+  gsize                score_count;
+  gint                 expected_match_index;
+  guint                expected_reports;
+  guint                expected_study_calls;
+  gint                 expected_error_code;
 } AuthPublicationCase;
 
 static void
@@ -844,6 +881,7 @@ test_auth_publication_contracts (void)
       no_match_score, G_N_ELEMENTS (no_match_score), -1, 1, 0, -1,
     },
   };
+
   g_autoptr(GBytes) stored0 = generate_template (0);
   g_autoptr(GBytes) stored1 = generate_template (1);
   g_autoptr(GBytes) stored2 = generate_template (2);
@@ -959,6 +997,7 @@ static void
 test_cancellation_no_publication (void)
 {
   static const gint32 positive[] = { 37 };
+
   g_autoptr(FpDevice) device = new_device ();
   g_autoptr(GBytes) stored = generate_template (0);
   g_autoptr(GBytes) update = generate_template (1);
@@ -977,7 +1016,7 @@ test_cancellation_no_publication (void)
   wait_paused ();
   g_cancellable_cancel (cancel);
   fpi_ssm_mark_failed (paused_ssm, g_error_new_literal (
-    G_IO_ERROR, G_IO_ERROR_CANCELLED, "early cancellation"));
+                         G_IO_ERROR, G_IO_ERROR_CANCELLED, "early cancellation"));
   paused_ssm = NULL;
   pause_before_capture = FALSE;
   wait_done (&result);
@@ -1022,7 +1061,7 @@ test_cancellation_no_publication (void)
   g_cancellable_cancel (cancel);
   wait_cancelled ();
   fpi_ssm_mark_failed (paused_ssm, g_error_new_literal (
-    G_IO_ERROR, G_IO_ERROR_CANCELLED, "late cancellation"));
+                         G_IO_ERROR, G_IO_ERROR_CANCELLED, "late cancellation"));
   paused_ssm = NULL;
   pause_cycle_settled = FALSE;
   wait_done (&result);
@@ -1057,10 +1096,14 @@ test_enrollment_combine_retry (void)
   g_assert_cmpint (progress.stage, ==, 0);
   g_assert_cmpint (progress.retry_code, ==, FP_DEVICE_RETRY_REMOVE_FINGER);
   g_assert_cmpint (self->enroll_stage, ==, 0);
-  g_assert_cmpuint (self->enroll_features->len, ==, 0);
+  g_assert_nonnull (self->enroll_transaction);
+  g_assert_cmpuint (goodix_milan_enrollment_transaction_count (
+                      self->enroll_transaction), ==, 0);
+  g_assert_cmpuint (self->enroll_bad_record_count, ==, 0);
+  g_assert_cmpuint (self->enroll_bad_continue_count, ==, 0);
 
   fpi_ssm_mark_failed (paused_ssm, g_error_new_literal (
-    G_IO_ERROR, G_IO_ERROR_CANCELLED, "combine retry observed"));
+                         G_IO_ERROR, G_IO_ERROR_CANCELLED, "combine retry observed"));
   paused_ssm = NULL;
   pause_cycle_settled = FALSE;
   wait_done (&result);
@@ -1074,6 +1117,7 @@ static void
 test_complete_enrollment_after_combine_retry (void)
 {
   static const gint32 no_match[] = { 0 };
+
   g_autoptr(FpDevice) device = new_device ();
   g_autoptr(FpPrint) print = g_object_ref_sink (fp_print_new (device));
   g_autoptr(GBytes) stored = generate_template (0);
@@ -1130,21 +1174,21 @@ test_complete_enrollment_after_combine_retry (void)
       g_assert_cmpint (progress.stages[i], ==, i);
       g_assert_cmpint (progress.retry_codes[i], ==, -1);
     }
-  g_assert_cmpuint (plan.combine_calls, ==, GOODIX_ENROLL_SAMPLES + 2);
+  g_assert_cmpuint (plan.combine_calls, ==, GOODIX_ENROLL_SAMPLES + 1);
   g_assert_cmpint (self->enroll_stage, ==, GOODIX_ENROLL_SAMPLES);
-  g_assert_null (self->enroll_features);
+  g_assert_null (self->enroll_transaction);
   g_assert_true (result.enrolled == print);
   g_object_get (result.enrolled, "fpi-type", &print_type, NULL);
   g_assert_cmpint (print_type, ==, FPI_PRINT_RAW);
   g_autoptr(GBytes) enrolled_template = get_print_template (result.enrolled);
   g_assert_true (goodix_milan_print_validate_template (
-    enrolled_template, &info, NULL));
+                   enrolled_template, &info, NULL));
   g_assert_cmpuint (info.byte_size, ==, g_bytes_get_size (enrolled_template));
   g_assert_cmpuint (info.feature_count, ==, GOODIX_ENROLL_SAMPLES);
   g_assert_cmpuint (info.registration_count, ==, 67);
-  g_assert_cmpuint (info.relation_count, ==, 11);
+  g_assert_cmpuint (info.relation_count, ==, 9);
   g_assert_cmpuint (info.graph_established, ==, 1);
-  g_assert_cmpint (info.graph_reference_index, ==, 3);
+  g_assert_cmpint (info.graph_reference_index, ==, 0);
   g_assert_cmpuint (info.maximum_features, ==,
                     GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT);
   g_assert_cmpuint (info.maximum_records, ==, 150);
@@ -1155,8 +1199,7 @@ test_complete_enrollment_after_combine_retry (void)
   close_device (device);
 }
 
-typedef enum
-{
+typedef enum {
   STALE_ACTION_EPOCH,
   STALE_GENERATION,
   STALE_TASK_AND_SSM,
@@ -1195,7 +1238,9 @@ test_stale_result_guards (void)
       wait_study ();
       original_ssm = self->profile9_fdt.owner;
       if (rows[row] == STALE_ACTION_EPOCH)
-        self->action_epoch++;
+        {
+          self->action_epoch++;
+        }
       else if (rows[row] == STALE_GENERATION)
         {
           replace_generation (self);
@@ -1206,7 +1251,7 @@ test_stale_result_guards (void)
       else
         {
           replacement_ssm = fpi_ssm_new (device,
-                                          milan_runtime_harness_scan_handler, 1);
+                                         milan_runtime_harness_scan_handler, 1);
           replacement_task = g_task_new (device, NULL, NULL, NULL);
           g_clear_object (&self->milan_task);
           self->milan_task = g_object_ref (replacement_task);
@@ -1224,7 +1269,7 @@ test_stale_result_guards (void)
           self->profile9_fdt.owner = original_ssm;
           fpi_ssm_free (replacement_ssm);
           fpi_ssm_mark_failed (original_ssm, g_error_new_literal (
-            G_IO_ERROR, G_IO_ERROR_CANCELLED, "task/SSM owner replaced"));
+                                 G_IO_ERROR, G_IO_ERROR_CANCELLED, "task/SSM owner replaced"));
         }
       wait_done (&result);
       g_test_message ("stale row=%u", (guint) rows[row]);
@@ -1255,7 +1300,7 @@ test_stale_result_guards (void)
 }
 
 int
-main (int argc,
+main (int    argc,
       char **argv)
 {
   gint status;

@@ -80,6 +80,7 @@ typedef struct
   gboolean                      stop_requested;
   gboolean                      cpu_done;
   gboolean                      cpu_outstanding;
+  gboolean                      refresh_deferred;
   gboolean                      cycle_active;
   gboolean                      recovering_generation;
   gboolean                      release_settled;
@@ -207,6 +208,13 @@ goodix_scan_maybe_finish_requested (GoodixScanCoordinatorData *data)
         fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_WAIT_CPU);
       return;
     }
+  if (data->refresh_deferred)
+    {
+      data->refresh_deferred = FALSE;
+      data->dispatching = TRUE;
+      fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_REFRESH);
+      return;
+    }
   goodix_scan_finish_requested (data);
 }
 
@@ -312,7 +320,16 @@ goodix_scan_prepare_refresh (FpiSsm                        *ssm,
 {
   data->refresh_reason = reason;
   self->profile9_fdt.base_valid = FALSE;
-  fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_REFRESH);
+  if (data->cpu_outstanding)
+    {
+      data->refresh_deferred = TRUE;
+      data->dispatching = FALSE;
+      /* The matching release was consumed; no FDT arm remains to drain. */
+      self->profile9_fdt.wait_mode = GOODIX_PROFILE9_FDT_WAIT_NONE;
+      fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_CPU);
+    }
+  else
+    fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_REFRESH);
 }
 
 static void
@@ -652,7 +669,8 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_CYCLE_SETTLED:
-      if (data->disposition == GOODIX_SCAN_DISPOSITION_AUTH_RETRY_AFTER_UP ||
+      if (data->disposition == GOODIX_SCAN_DISPOSITION_AUTH_SUCCESS ||
+          data->disposition == GOODIX_SCAN_DISPOSITION_AUTH_RETRY_AFTER_UP ||
           data->disposition == GOODIX_SCAN_DISPOSITION_ENROLL_FINAL_AFTER_UP)
         data->cleanup_drain_mode = fdt->wait_mode;
       if (data->cycle_settled)
@@ -834,7 +852,13 @@ goodix_scan_set_disposition (FpDevice             *dev,
   else
     {
       g_clear_error (&error);
-      if (!goodix_scan_disposition_waits_for_up (disposition))
+      if (data->refresh_deferred)
+        {
+          data->refresh_deferred = FALSE;
+          data->dispatching = TRUE;
+          fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_REFRESH);
+        }
+      else if (!goodix_scan_disposition_waits_for_up (disposition))
         goodix_scan_request_stop (data, NULL);
       else if (data->release_settled && !data->dispatching &&
                !data->receive_active && !self->cmd_owner)

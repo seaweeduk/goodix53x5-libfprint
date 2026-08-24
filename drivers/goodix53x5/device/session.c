@@ -25,6 +25,7 @@
 #include "device/commands.h"
 #include "device/calibration.h"
 #include "device/base.h"
+#include "device/persistence.h"
 #include "device/scan.h"
 #include "device/session.h"
 
@@ -353,6 +354,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
             return;
           }
 
+        goodix_milan_persistence_prepare (dev);
         goodix_device_parse_otp (pl, pl_len, &self->calib);
         if (!goodix_load_psk (self, &error))
           {
@@ -689,6 +691,7 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
     {
       self->open_ref_powered = FALSE;
       goodix_milan_generation_invalidate (&self->milan_generation);
+      goodix_milan_persistence_clear (dev);
       OPENSSL_cleanse (self->psk, sizeof (self->psk));
       OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
       self->psk_imported = FALSE;

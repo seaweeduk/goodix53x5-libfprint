@@ -16,6 +16,7 @@
 #include "milan/print.h"
 #include "driver-private.h"
 #include "milan/runtime.h"
+#include "device/persistence.h"
 #include "device/scan.h"
 #include "device/session.h"
 
@@ -92,6 +93,7 @@ goodix_clear_pending_result_report (FpiDeviceGoodix53x5 *self)
   g_clear_object (&self->pending_identify_match);
   g_clear_object (&self->pending_update_target);
   g_clear_pointer (&self->pending_update_data, g_variant_unref);
+  g_clear_pointer (&self->pending_persistence_state, g_free);
   g_clear_error (&self->pending_result_error);
   g_clear_error (&self->pending_learning_error);
 }
@@ -148,6 +150,7 @@ goodix_flush_pending_result_report (FpDevice *dev)
   g_clear_object (&self->pending_identify_match);
   g_clear_object (&self->pending_update_target);
   g_clear_pointer (&self->pending_update_data, g_variant_unref);
+  g_clear_pointer (&self->pending_persistence_state, g_free);
   g_clear_error (&self->pending_learning_error);
 }
 
@@ -355,6 +358,9 @@ goodix_auth_task_done (GObject      *source_object,
           {
             self->pending_update_target = g_object_ref (original);
             self->pending_update_data = g_steal_pointer (&update_data);
+            if (output->preprocess_state_valid)
+              self->pending_persistence_state = g_memdup2 (
+                &output->preprocess_state, sizeof (output->preprocess_state));
           }
         if (output->learning_error)
           self->pending_learning_error = g_error_copy (output->learning_error);
@@ -612,6 +618,8 @@ goodix_verify_ssm_done (FpiSsm   *ssm,
               fpi_print_set_raw_data (self->pending_update_target,
                                       self->pending_update_data);
               updated = TRUE;
+              goodix_milan_persistence_save (
+                dev, self->pending_persistence_state);
             }
           goodix_flush_pending_result_report (dev);
         }

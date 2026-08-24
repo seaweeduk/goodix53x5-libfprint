@@ -1736,8 +1736,12 @@ goodix_milan_profile9_build_broken_mask (
         state->profile9_history_reference, history_qualified, rows, columns);
       if (secondary_histogram_state == 0 && secondary_count_state == 0 &&
           !history_initialized)
-        secondary_histogram_state = milan_profile9_histogram_state (
-          state->calibration_map, history_qualified, count, 0);
+        {
+          secondary_histogram_state = milan_profile9_histogram_state (
+            state->calibration_map, history_qualified, count, 0);
+          secondary_count_state = milan_profile9_secondary_count_state (
+            state->calibration_map, history_qualified, rows, columns);
+        }
       milan_profile9_temporal_class3 (
         state, history_qualified, rows, columns, broken_mask);
     }
@@ -1753,8 +1757,6 @@ goodix_milan_profile9_build_broken_mask (
 
   directional_state = milan_profile9_directional_state (
     normalized_live, valid, rows, columns, active_count);
-  if (primary_histogram_state == 2 || directional_state == 2)
-    secondary_histogram_state++;
 
   size_t class1_count = 0;
   size_t class2_count = 0;
@@ -1777,8 +1779,6 @@ goodix_milan_profile9_build_broken_mask (
   state->extraction_auxiliary.primary_histogram_state =
     primary_histogram_state;
   state->extraction_auxiliary.prior_selected_plane = prior_selected_plane;
-  state->extraction_auxiliary.promoted_secondary_histogram_state =
-    secondary_histogram_state;
   *mode = 0;
   *apply_mask = 0;
   if (class3_count * 100 > mask_count * 15)
@@ -1816,6 +1816,17 @@ goodix_milan_profile9_build_broken_mask (
       *mode = 9;
       result = GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION;
     }
+  if (*mode < 8 && directional_state == 2)
+    *mode = 8;
+  else if (*mode < 6 &&
+           (directional_state == 1 || secondary_histogram_state >= 1))
+    *mode = 6;
+  if (primary_histogram_state == 2 || directional_state == 2)
+    secondary_histogram_state++;
+  if (*mode == 0 && secondary_count_state > 0)
+    *mode = 5;
+  state->extraction_auxiliary.promoted_secondary_histogram_state =
+    secondary_histogram_state;
 
 out:
   free (class2_scores);

@@ -198,6 +198,50 @@ goodix_milan_generation_reset_preprocess (GoodixMilanGeneration *generation)
   memset (&generation->profile_state, 0, sizeof (generation->profile_state));
 }
 
+static void
+goodix_milan_generation_transfer_process_state (
+  GoodixMilanGeneration       *destination,
+  const GoodixMilanGeneration *source)
+{
+  destination->state.stable_count = source->state.stable_count;
+  destination->state.auxiliary_sample_count =
+    source->state.auxiliary_sample_count;
+  destination->state.application_gain_initialized =
+    source->state.application_gain_initialized;
+  memcpy (destination->state.coarse_reference, source->state.coarse_reference,
+          sizeof (destination->state.coarse_reference));
+  memcpy (destination->state.auxiliary_gain_map,
+          source->state.auxiliary_gain_map,
+          sizeof (destination->state.auxiliary_gain_map));
+  memcpy (destination->state.secondary_auxiliary_gain_map,
+          source->state.secondary_auxiliary_gain_map,
+          sizeof (destination->state.secondary_auxiliary_gain_map));
+  memcpy (destination->state.application_gain_map,
+          source->state.application_gain_map,
+          sizeof (destination->state.application_gain_map));
+  destination->state.profile9_history_count =
+    source->state.profile9_history_count;
+  destination->state.profile9_history_update_count =
+    source->state.profile9_history_update_count;
+  destination->state.profile9_history_mask_threshold =
+    source->state.profile9_history_mask_threshold;
+  destination->state.profile9_history_mask_average =
+    source->state.profile9_history_mask_average;
+  memcpy (destination->state.profile9_history_reference,
+          source->state.profile9_history_reference,
+          sizeof (destination->state.profile9_history_reference));
+  memcpy (destination->state.profile9_reference_age,
+          source->state.profile9_reference_age,
+          sizeof (destination->state.profile9_reference_age));
+  memcpy (destination->state.profile9_component_age,
+          source->state.profile9_component_age,
+          sizeof (destination->state.profile9_component_age));
+  destination->state.extraction_classification =
+    source->state.extraction_classification;
+  destination->profile_state.calibration_ready =
+    source->profile_state.calibration_ready;
+}
+
 gboolean
 goodix_milan_base_attempt_publish (GoodixMilanBaseAttempt  *attempt,
                                    guint64                  generation_id,
@@ -308,6 +352,7 @@ goodix_milan_replace_raw_frame (guint16 **owner,
 #include "device/calibration.h"
 #include "device/commands.h"
 #include "device/image.h"
+#include "device/persistence.h"
 #include "device/transport.h"
 
 typedef enum
@@ -725,6 +770,10 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
             return;
           }
 
+        goodix_milan_persistence_restore (dev, generation);
+        if (data->forced_refresh && self->milan_generation)
+          goodix_milan_generation_transfer_process_state (
+            generation, self->milan_generation);
         goodix_milan_generation_invalidate (&self->milan_generation);
         self->milan_generation = generation;
         memcpy (self->profile9_fdt.base_down, data->candidate_base_down,

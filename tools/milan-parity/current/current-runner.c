@@ -59,18 +59,18 @@ load_frame (const gchar *path,
 
   if (!g_file_get_contents (path, &contents, &size, error))
     return FALSE;
-  if (size != GOODIX_MILAN_SENSOR_PIXELS * sizeof(guint16))
+  if (size != GOODIX_MILAN_SENSOR_PIXELS * sizeof (guint16))
     {
       g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_INVAL,
                    "frame %s has %" G_GSIZE_FORMAT " bytes, expected %zu",
-                   path, size, GOODIX_MILAN_SENSOR_PIXELS * sizeof(guint16));
+                   path, size, GOODIX_MILAN_SENSOR_PIXELS * sizeof (guint16));
       return FALSE;
     }
   for (gsize i = 0; i < GOODIX_MILAN_SENSOR_PIXELS; i++)
     {
       guint16 encoded;
 
-      memcpy (&encoded, contents + i * sizeof(encoded), sizeof(encoded));
+      memcpy (&encoded, contents + i * sizeof (encoded), sizeof (encoded));
       values[i] = GUINT16_FROM_LE (encoded);
     }
   return TRUE;
@@ -131,9 +131,9 @@ parse_purpose (const gchar                  *value,
 }
 
 static gboolean
-parse_gallery (GPtrArray  *owned_bytes,
-               GPtrArray  *owned_inputs,
-               GError    **error)
+parse_gallery (GPtrArray *owned_bytes,
+               GPtrArray *owned_inputs,
+               GError   **error)
 {
   for (gsize i = 0; gallery_values && gallery_values[i]; i++)
     {
@@ -179,8 +179,8 @@ main (int argc, char **argv)
     (GDestroyNotify) g_bytes_unref);
   g_autoptr(GPtrArray) gallery_inputs = g_ptr_array_new_with_free_func (
     (GDestroyNotify) goodix_milan_runtime_gallery_input_free);
-  g_autoptr(GPtrArray) enrollment_features = g_ptr_array_new_with_free_func (
-    (GDestroyNotify) g_bytes_unref);
+  g_autoptr(GoodixMilanEnrollmentTransaction) enrollment_transaction =
+    goodix_milan_enrollment_transaction_new ();
   g_autoptr(GString) phases = g_string_new ("[");
   GoodixMilanPreprocessState state;
   GoodixMilanProfileState profile = { 0 };
@@ -189,6 +189,8 @@ main (int argc, char **argv)
   gboolean first_phase = TRUE;
   guint accepted_stages = 0;
   guint enrollment_stage = 0;
+  guint enrollment_bad_record_count = 0;
+  guint enrollment_bad_continue_count = 0;
   GoodixMilanRuntimeStatus final_status = GOODIX_MILAN_RUNTIME_INVALID_DATA;
   gint32 final_score = 0;
   guint final_winner = G_MAXUINT;
@@ -211,6 +213,7 @@ main (int argc, char **argv)
   if (!g_option_context_parse (context, &argc, &argv, &error))
     goto fail;
   if (!case_id || !purpose_name || !setup_path || !live_paths || !live_paths[0] ||
+      !enrollment_transaction ||
       tcode < 0 || tcode > G_MAXUINT16 || dac_high < 0 || dac_high > G_MAXUINT16 ||
       dac_low < 0 || dac_low > G_MAXUINT16 ||
       profile_number < 0 || profile_number > G_MAXUINT16 ||
@@ -281,17 +284,17 @@ main (int argc, char **argv)
           if (!parse_purpose (live_purpose_values[stage], &stage_purpose))
             {
               g_set_error_literal (&error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
-                                    "live purpose must be 0/identify or 1/enroll");
+                                   "live purpose must be 0/identify or 1/enroll");
               goto fail;
             }
         }
       if (!prelude_stage && stage_purpose == GOODIX_MILAN_PURPOSE_ENROLL)
         enrollment_stage++;
-      emit_stage = purpose == GOODIX_MILAN_PURPOSE_ENROLL
-                     ? !prelude_stage
-                     : target_stage;
-      phase_number = purpose == GOODIX_MILAN_PURPOSE_IDENTIFY
-                       ? 1 : enrollment_stage;
+      emit_stage = purpose == GOODIX_MILAN_PURPOSE_ENROLL ?
+                   !prelude_stage :
+                   target_stage;
+      phase_number = purpose == GOODIX_MILAN_PURPOSE_IDENTIFY ?
+                     1 : enrollment_stage;
 
       if (!load_frame (live_paths[stage], live, &error))
         goto fail;
@@ -346,7 +349,7 @@ main (int argc, char **argv)
           (memcmp (&output->preprocess_state, &phase_state,
                    G_STRUCT_OFFSET (GoodixMilanPreprocessState,
                                     extraction_classification)) != 0 ||
-           memcmp (&output->profile_state, &phase_profile, sizeof(phase_profile)) != 0 ||
+           memcmp (&output->profile_state, &phase_profile, sizeof (phase_profile)) != 0 ||
            output->quality != quality || output->coverage != coverage))
         {
           goodix_milan_runtime_output_free (output);
@@ -365,49 +368,69 @@ main (int argc, char **argv)
           g_free (phase_name);
           g_free (phase_outputs);
           phase_name = g_strdup_printf (
-              stage_purpose == GOODIX_MILAN_PURPOSE_ENROLL
-                ? "stage-%02" G_GSIZE_FORMAT "-extract"
-                : "stage-%02" G_GSIZE_FORMAT "-extract-antifake",
+            stage_purpose == GOODIX_MILAN_PURPOSE_ENROLL ?
+            "stage-%02" G_GSIZE_FORMAT "-extract" :
+            "stage-%02" G_GSIZE_FORMAT "-extract-antifake",
             phase_number);
           if (stage_purpose == GOODIX_MILAN_PURPOSE_ENROLL)
-            phase_outputs = g_strdup_printf (
-              "{\"partition0_count_u32\":%u,\"partition1_count_u32\":%u,"
-              "\"probe_record_count_u32\":%u,\"probe_template_sha256\":\"%s\"}",
-              output->probe_partition0_count, output->probe_partition1_count,
-              output->probe_record_count, probe_hash);
+            {
+              phase_outputs = g_strdup_printf (
+                "{\"partition0_count_u32\":%u,\"partition1_count_u32\":%u,"
+                "\"probe_record_count_u32\":%u,\"probe_template_sha256\":\"%s\"}",
+                output->probe_partition0_count, output->probe_partition1_count,
+                output->probe_record_count, probe_hash);
+            }
           else
-            phase_outputs = g_strdup_printf (
-              "{\"active_record_count_u32\":%u,\"partition0_count_u32\":%u,"
-              "\"partition1_count_u32\":%u,\"probe_record_count_u32\":%u,"
-              "\"probe_template_sha256\":\"%s\"}",
-              output->probe_record_count, output->probe_partition0_count,
-              output->probe_partition1_count, output->probe_record_count,
-              probe_hash);
+            {
+              phase_outputs = g_strdup_printf (
+                "{\"active_record_count_u32\":%u,\"partition0_count_u32\":%u,"
+                "\"partition1_count_u32\":%u,\"probe_record_count_u32\":%u,"
+                "\"probe_template_sha256\":\"%s\"}",
+                output->probe_record_count, output->probe_partition0_count,
+                output->probe_partition1_count, output->probe_record_count,
+                probe_hash);
+            }
           append_phase (phases, &first_phase, phase_name, phase_outputs);
         }
       if (!prelude_stage && stage_purpose == GOODIX_MILAN_PURPOSE_ENROLL &&
           goodix_milan_runtime_enrollment_admitted (output))
         {
           g_autofree gchar *combined_hash = NULL;
+          GoodixMilanEnrollmentResult enrollment_result = { 0 };
+          GoodixMilanEnrollmentAttemptStatus enrollment_status;
 
-          g_ptr_array_add (enrollment_features, g_bytes_ref (output->probe_template));
+          enrollment_status = goodix_milan_enrollment_transaction_attempt (
+            &enrollment_transaction, output->probe_template,
+            &enrollment_bad_record_count, &enrollment_bad_continue_count,
+            &enrollment_result);
+          accepted_stages = goodix_milan_enrollment_transaction_count (
+            enrollment_transaction);
           g_clear_pointer (&final_enrollment, g_bytes_unref);
-          final_enrollment = goodix_match_combine_templates (enrollment_features);
-          if (!final_enrollment ||
-              !goodix_milan_print_validate_template (final_enrollment, NULL, &error))
+          if (accepted_stages != 0)
+            final_enrollment = goodix_milan_enrollment_transaction_publish (
+              enrollment_transaction);
+          if (accepted_stages != 0 &&
+              (!final_enrollment ||
+               !goodix_milan_print_validate_template (
+                 final_enrollment, NULL, &error)))
             {
               goodix_milan_runtime_output_free (output);
               goto fail;
             }
-          accepted_stages++;
-          combined_hash = hash_bytes (final_enrollment);
+          if (final_enrollment)
+            combined_hash = hash_bytes (final_enrollment);
           g_free (phase_name);
           g_free (phase_outputs);
           phase_name = g_strdup_printf ("stage-%02" G_GSIZE_FORMAT "-template",
                                         phase_number);
           phase_outputs = g_strdup_printf (
-            "{\"accepted_stage_u32\":%u,\"template_sha256\":\"%s\"}",
-            accepted_stages, combined_hash);
+            "{\"accepted_stage_u32\":%u,\"attempt_status_u32\":%u,"
+            "\"reject_detail_u32\":%u,\"template_sha256\":%s%s%s}",
+            accepted_stages, enrollment_status,
+            enrollment_result.reject_detail,
+            combined_hash ? "\"" : "null",
+            combined_hash ? combined_hash : "",
+            combined_hash ? "\"" : "");
           if (emit_stage)
             append_phase (phases, &first_phase, phase_name, phase_outputs);
         }
@@ -415,13 +438,15 @@ main (int argc, char **argv)
           purpose == GOODIX_MILAN_PURPOSE_IDENTIFY)
         {
           if (!output->probe_template)
-            append_phase (
-              phases, &first_phase, "stage-01-extract-antifake",
-              "{\"active_record_count_u32\":null,"
-              "\"partition0_count_u32\":null,"
-              "\"partition1_count_u32\":null,"
-              "\"probe_record_count_u32\":null,"
-              "\"probe_template_sha256\":null}");
+            {
+              append_phase (
+                phases, &first_phase, "stage-01-extract-antifake",
+                "{\"active_record_count_u32\":null,"
+                "\"partition0_count_u32\":null,"
+                "\"partition1_count_u32\":null,"
+                "\"probe_record_count_u32\":null,"
+                "\"probe_template_sha256\":null}");
+            }
           for (gsize position = 0; position < output->gallery_results->len; position++)
             {
               GoodixMilanRuntimeGalleryResult *result =
@@ -467,8 +492,8 @@ main (int argc, char **argv)
             }
           final_score = output->score;
           final_winner = output->winner_index;
-          final_winner_position = output->winner_position > G_MAXUINT
-                                     ? G_MAXUINT : (guint) output->winner_position;
+          final_winner_position = output->winner_position > G_MAXUINT ?
+                                  G_MAXUINT : (guint) output->winner_position;
           final_study_action = output->study_action;
           final_preprocess_attempted = output->preprocess_attempted;
           final_preprocess_completed = output->preprocess_completed;
@@ -482,12 +507,15 @@ main (int argc, char **argv)
       goodix_milan_runtime_output_free (output);
       if (purpose == GOODIX_MILAN_PURPOSE_IDENTIFY && target_stage)
         break;
+      if (purpose == GOODIX_MILAN_PURPOSE_ENROLL &&
+          accepted_stages == 12)
+        break;
     }
   if (purpose == GOODIX_MILAN_PURPOSE_IDENTIFY)
     {
-      final_study_action_value = final_study_attempted
-                                   ? g_strdup_printf ("%u", final_study_action)
-                                   : g_strdup ("null");
+      final_study_action_value = final_study_attempted ?
+                                 g_strdup_printf ("%u", final_study_action) :
+                                 g_strdup ("null");
       study_outputs = g_strdup_printf (
         "{\"final_candidate_sha256\":%s%s%s,\"study_action_u32\":%s}",
         final_candidate_hash ? "\"" : "null",

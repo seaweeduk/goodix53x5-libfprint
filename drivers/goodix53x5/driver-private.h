@@ -28,6 +28,7 @@
 #include "device/crypto.h"
 #include "device/debug.h"
 #include "device/base.h"
+#include "milan/match/match.h"
 
 /* USB interface claimed at open and released at close — interface 1,
  * CDC Data class. Endpoint and chunking details live in the transport
@@ -35,7 +36,7 @@
 #define GOODIX_USB_INTERFACE 1
 
 /* Sensor dimensions */
-#define GOODIX_SENSOR_WIDTH  108
+#define GOODIX_SENSOR_WIDTH 108
 #define GOODIX_SENSOR_HEIGHT 88
 #define GOODIX_SENSOR_PIXELS (GOODIX_SENSOR_WIDTH * GOODIX_SENSOR_HEIGHT)
 #define GOODIX_SENSOR_RAW12_BYTES (((GOODIX_SENSOR_PIXELS + 3) / 4) * 6)
@@ -63,17 +64,17 @@ typedef struct
 /* --- Command descriptor for sub-SSM --- */
 typedef struct
 {
-  guint8  category;
-  guint8  command;
-  guint8 *payload;
-  gsize   payload_len;
+  guint8   category;
+  guint8   command;
+  guint8  *payload;
+  gsize    payload_len;
   gboolean use_checksum;
 } GoodixCmd;
 
 /* --- Device struct --- */
 struct _FpiDeviceGoodix53x5
 {
-  FpDevice parent;
+  FpDevice      parent;
 
   GCancellable *cancel;
 
@@ -90,15 +91,15 @@ struct _FpiDeviceGoodix53x5
   gboolean         rx_active;
 
   /* Exactly one command may own TX and its command-local receives. */
-  FpiSsm          *cmd_owner;
-  FpiSsm          *cmd_ssm;
+  FpiSsm *cmd_owner;
+  FpiSsm *cmd_ssm;
 
   /* Profile-9 FDT state persists across actions and hardware reinitialization. */
   GoodixProfile9FdtState profile9_fdt;
 
-  gboolean open_ref_powered;
-  gboolean open_usb_reset_required;
-  gboolean open_recovery_attempted;
+  gboolean               open_ref_powered;
+  gboolean               open_usb_reset_required;
+  gboolean               open_recovery_attempted;
 
   /* OTP raw data */
   guint8 *otp_data;
@@ -111,9 +112,16 @@ struct _FpiDeviceGoodix53x5
   guint32 chip_id;
   guint16 milan_sensor_subtype;
 
+  /* Device-keyed identity for the persisted preprocessing subset. */
+  guint8   milan_persistence_identity[32];
+  gboolean milan_persistence_identity_valid;
+
   /* One admitted TX-on setup generation per valid hardware session. */
   GoodixMilanGeneration *milan_generation;
   guint64                last_milan_generation_id;
+
+  /* Action-owned state to commit after post-scan hardware cleanup. */
+  GoodixMilanPreprocessState *pending_persistence_state;
 
   /* TRUE while verifying a PSK write during open. */
   gboolean psk_write_verify_pending;
@@ -146,11 +154,11 @@ struct _FpiDeviceGoodix53x5
 
   /* Native CPU work is isolated in one cancellable task. Only its callback on
    * the action's main context may commit generation state or publish results. */
-  GTask   *milan_task;
-  guint64  action_epoch;
+  GTask  *milan_task;
+  guint64 action_epoch;
 
 #ifdef GOODIX53X5_DEBUG
-  guint8  *captured_image;  /* native profile-9 diagnostic presentation */
+  guint8 *captured_image;   /* native profile-9 diagnostic presentation */
 #endif
 
   /* Canonical raw 12-bit live frame. Production owns this independently of
@@ -164,9 +172,11 @@ struct _FpiDeviceGoodix53x5
 #endif
 
   /* Enrollment tracking */
-  GPtrArray *enroll_features; /* array of GBytes* native Milan templates */
-  gint       enroll_stage;
-  gboolean   pending_enroll_progress;
-  gint       pending_enroll_stage;
-  GError    *pending_enroll_error;
+  GoodixMilanEnrollmentTransaction *enroll_transaction;
+  gint                              enroll_stage;
+  guint                             enroll_bad_record_count;
+  guint                             enroll_bad_continue_count;
+  gboolean                          pending_enroll_progress;
+  gint                              pending_enroll_stage;
+  GError                           *pending_enroll_error;
 };
