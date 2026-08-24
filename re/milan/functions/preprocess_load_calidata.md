@@ -47,7 +47,7 @@ On success the function performs these writes in order:
 | `+0x13248` | `0x0800` | `DAT_180218e70` | auxiliary calibration block |
 | `+0x13a48` | `0x4a40` | `DAT_180249b00` | external full-frame block |
 | `+0x18488` | `4` | workspace `DAT_180219670 + 0x00` | unsigned sample count |
-| `+0x1848c` | `0xa000` | `DAT_18023faf8` | external retained block |
+| `+0x1848c` | `0xa000` | `DAT_18023faf8`, workspace `+0x26488` | retained broken-level packet and trailing workspace state |
 | `+0x2248c` | `4` | `DAT_180249af8` | external retained scalar |
 | `+0x22490` | `0x20` maximum | none | version string used only for validation |
 
@@ -77,11 +77,17 @@ processes the current setup frame. For profile-9 type 12,
   identify-template update paths call `FUN_180030b40`, which reaches the same
   serializer after live preprocessing has been able to evolve the workspace.
 
-At the profile-9 live preprocessing boundary, only the loaded sample count and
-retained calibration plane survive as consumed state. The setup plane is
-replaced before live use, and the external retained blocks have no production
-read consumers in this binary. The native calibration file nevertheless keeps
-the complete validated payload described above.
+At the profile-9 live preprocessing boundary, the loaded sample count,
+calibration plane, and the prefix of the `0xa000` workspace block survive as
+consumed state. `DAT_18023faf8` aliases workspace `DAT_180219670 + 0x26488`.
+`FUN_1800501d0` reads its signature, version, scalar counts, packed per-pixel
+history/component/support ages, and downsampled reference plane on the first
+type-12 classifier call. `FUN_18004ff40` updates that packet after classification
+for the next save. The defined packet occupies `0x5ce8` bytes; the remaining
+`0x4318` bytes of the transported block have no packet read or write. The setup
+plane is replaced before live use. No production
+read consumer is established for `DAT_180218e70`, `DAT_180249b00`, or the final
+scalar `DAT_180249af8`.
 
 The workspace survives operation clear within one engine attachment.
 `EngineAdapterDetach` reaches `preprocessor_exit`, which clears the complete
@@ -120,5 +126,5 @@ state.
 ## Confidence
 
 High for the complete validation, mutation order, field aliases, return values,
-caller fallback, and profile-9 attachment lifetime. Vendor names for the two
-external retained blocks are not recovered.
+caller fallback, and profile-9 attachment lifetime. Vendor names for the
+remaining auxiliary blocks and scalar are not recovered.

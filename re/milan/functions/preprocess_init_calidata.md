@@ -25,8 +25,13 @@ After the loops it performs these writes in order:
 It does not write the `0x0800` block at `DAT_180218e70`, the full-frame block
 at `DAT_180249b00`, or profile-9 gain globals outside the workspace. The first
 two blocks have no production caller beyond their otherwise unreferenced
-copy-in/copy-out helpers. The `0xa000` block and final scalar have no read xrefs
-in the analyzed binary; they are carried only by calibration save/load.
+copy-in/copy-out helpers. The `0xa000` clear starts at workspace `+0x26488` and
+therefore invalidates the retained broken-level packet consumed by
+`FUN_1800501d0`. On a fresh DLL, fallback classification consequently starts
+without imported history, component ages, or support state. This function does
+not clear the corresponding process globals or their import latch, so that
+qualification does not apply to fallback within an already loaded DLL. The
+final scalar has no established live read.
 
 Profile 9 fixes the loop bounds at `88x108`. Row, column, and flattened index
 arithmetic is unsigned 32-bit, so no multiplication or index overflow is
