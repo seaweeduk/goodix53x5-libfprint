@@ -80,6 +80,55 @@ static int milan_profile9_post_render (
   GoodixMilanPreprocessPurpose purpose,
   uint32_t                     calibration_ready);
 
+static void
+profile9_initialize_gain_state (GoodixMilanPreprocessState *state)
+{
+  const size_t count = GOODIX_MILAN_SENSOR_PIXELS;
+  uint32_t sum = 0;
+  uint32_t mean;
+
+  if (state->sample_count == 0)
+    {
+      for (size_t i = 0; i < count; i++)
+        {
+          state->calibration_map[i] = 0;
+          state->auxiliary_gain_map[i] = MILAN_FIXED_ONE;
+          state->secondary_auxiliary_gain_map[i] = MILAN_FIXED_ONE;
+          state->application_gain_map[i] = MILAN_FIXED_ONE;
+        }
+      state->auxiliary_sample_count = 0;
+      state->application_gain_initialized = 1;
+      return;
+    }
+
+  if (state->sample_count <= 3)
+    {
+      for (size_t i = 0; i < count; i++)
+        state->application_gain_map[i] = MILAN_FIXED_ONE;
+      return;
+    }
+
+  if (state->application_gain_initialized)
+    return;
+
+  for (size_t i = 0; i < count; i++)
+    sum += state->calibration_map[i];
+  mean = (sum + count / 2) / count;
+  if (mean == 0)
+    {
+      state->sample_count = 0;
+      state->application_gain_initialized = 1;
+      return;
+    }
+
+  for (size_t i = 0; i < count; i++)
+    state->application_gain_map[i] =
+      (uint16_t) (((uint32_t) state->calibration_map[i] * MILAN_FIXED_ONE +
+                   mean / 2) /
+                  mean);
+  state->application_gain_initialized = 1;
+}
+
 void
 goodix_milan_preprocess_reset (GoodixMilanPreprocessState *state)
 {
@@ -198,15 +247,11 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
         GOODIX_MILAN_SENSOR_COLUMNS, contrast_mask, &admitted_pixels) != 0)
     goto out;
 
-  /* Native refills retained low-count application gain before processing. */
-  if (state->sample_count > 0 && state->sample_count <= 3)
-    for (size_t i = 0; i < count; i++)
-      state->application_gain_map[i] = MILAN_FIXED_ONE;
-
+  profile9_initialize_gain_state (state);
   milan_profile9_make_reciprocal_plane (
     state->application_gain_map, count, reciprocal_plane);
   goodix_milan_profile9_update_gain_ready (
-    state->sample_count, state->stable_count,
+    state->auxiliary_sample_count, state->sample_count,
     &profile_state->calibration_ready);
 
   if (admitted_pixels * 10 > count * 9)
