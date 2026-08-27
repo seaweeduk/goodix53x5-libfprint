@@ -344,7 +344,7 @@ goodix_device_is_fdt_base_valid (const guint8 *first_base,
  *
  * Generate FDT base from FDT event data.
  * For each 16-bit LE pair:
- *   fdt_base_val = (val & 0xFFFE) * 0x80 | (val >> 1)
+ *   fdt_base_val = (val & 0xFFFE) * 0x80 + (val >> 1)
  */
 void
 goodix_device_generate_fdt_base (const guint8 *fdt_data,
@@ -354,7 +354,7 @@ goodix_device_generate_fdt_base (const guint8 *fdt_data,
   for (gsize i = 0; i < len; i += 2)
     {
       guint16 fdt_sample = fdt_data[i] | ((guint16) fdt_data[i + 1] << 8);
-      guint16 fdt_base_word = (guint16) (((fdt_sample & 0xFFFE) * 0x80) | (fdt_sample >> 1));
+      guint16 fdt_base_word = (guint16) (((fdt_sample & 0xFFFE) * 0x80) + (fdt_sample >> 1));
 
       fdt_base[i] = fdt_base_word & 0xFF;
       fdt_base[i + 1] = (fdt_base_word >> 8) & 0xFF;
