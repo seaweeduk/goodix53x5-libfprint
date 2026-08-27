@@ -95,7 +95,9 @@ The resulting state transitions are:
 3. A false/drift down event synchronously attempts full-base acquisition and
    rearms down; no live image is captured. Admission replaces the retained image,
    while pair rejection updates only the FDT stores.
-4. A real down event captures the live image and switches to FDT-up detection.
+4. A real down event whose live read succeeds completes the sample and switches
+   to FDT-up detection. A live read returning `-1` leaves the request and
+   callback pending, rearms FDT-down, and returns the worker to its event wait.
 5. An up IRQ runs the lift comparison, may attempt full-base acquisition, and
    then rearms FDT-down detection.
 6. A reverse IRQ runs its comparison/acquisition path and rearms FDT-down

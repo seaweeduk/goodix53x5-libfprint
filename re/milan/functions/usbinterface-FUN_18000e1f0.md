@@ -23,6 +23,11 @@ The call is at `0x18000e652`. It then clears refresh byte `+0x236`, frees the
 live frame, and clears the callback. The retained image base is not freed or
 modified.
 
+This device-action-`0x15` handoff is an alternate completed-image event route.
+On the ordinary standard profile-9 down path, `FUN_1800150e0`
+(`MilanHV_ReadImg`) invokes the same registered callback directly after all
+requested live reads succeed. A live read returning `-1` reaches neither route.
+
 ## Consequences
 
 - Every completed operation packet can carry the same retained image base.

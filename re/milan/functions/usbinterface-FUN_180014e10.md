@@ -62,6 +62,37 @@ valid image base and active capture callback, `FUN_1800150e0` reads the TX-on,
 HV-enabled live frame using high DAC `+0x312` and dispatches it through the
 registered completion callback.
 
+`FUN_1800150e0` (`MilanHV_ReadImg`) derives one frame length as the low 16 bits
+of `rows_u8_1f0 * columns_u8_1f1 * 2`; profile 9 uses `88 * 108 * 2 ==
+0x4a40`. Capture count byte `+0x280` is one for identify/verify and two for
+enrollment. Each callback `+0x158` call receives output, TX one, HV one,
+`&context[0x312]`, adjust-DAC one, finger-image one, and capture mode four.
+
+On each callback success, `FUN_1800150e0` increments the completed-frame count
+and decrements `+0x280`. After all requested frames succeed, it calls the
+registered `CaptureFramedone` callback at `+0x240` directly with device handle
+`+0x00`, retained image base `+0x248`, temporary live buffer, total live byte
+length, and one-shot byte `+0x236`. It then clears a nonzero marker, clears the
+callback, frees the temporary live buffer, and returns zero. This direct call
+is the ordinary standard-capture completion edge; device action `0x15` is a
+separate completion route.
+
+If callback `+0x158` returns `-1`, the function stops at that frame, frees the
+entire temporary buffer, returns `-1`, and does not call or clear the completed-
+frame callback. It does not clear the one-shot marker, retained image/reference
+validity, retained image base, or the remaining capture count. A first-frame
+failure therefore leaves the original count; a later-frame failure leaves the
+unread remainder.
+
+The down handler propagates this `-1`, skips sensor-mode callback `+0x110`, and
+calls arm callback `+0xb0(1)`. The registered callback and pending standard
+request remain available to a later real-down event. On success, the handler
+calls `+0x110(1)` and then `+0xb0(0)` to arm FDT-up.
+
 Callback `+0xb0` is profile-9 `FUN_180005a60`. The false/drift branch invokes
 it with one to rearm FDT-down detection. The real-finger branch invokes it with
 zero after capture to switch the sensor to FDT-up detection.
+
+The blocking controller worker `FUN_18000df20` treats handler return `-1` as a
+logged event error only. It does not terminate the request or worker; after the
+handler rearms down, the worker returns to its indefinite event wait.
