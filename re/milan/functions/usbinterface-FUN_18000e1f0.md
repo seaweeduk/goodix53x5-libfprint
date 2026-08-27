@@ -48,6 +48,10 @@ modified.
 - Device action `3` selects slot `+0x1a0`. Profile 9 installs `FUN_180015710`,
   which requests mode `4` and arms FDT-down detection through callback `+0xb0`
   with argument one; it does not require `+0x232` or `+0x237` to be valid.
+- Device action `0x10` selects retry slot `+0x1c0` only when both that callback
+  and its output argument are non-null. It invokes profile-9
+  `FUN_180015760` but discards the callback return, leaving the dispatcher's
+  initial zero result unchanged.
 - A later false-down action `0` dispatches `MilanHV_Down_procedure`; its
   temperature-event branch can rerun `MilanHV_update_allbase` and establish the
   first valid image reference after an initial rejection.
