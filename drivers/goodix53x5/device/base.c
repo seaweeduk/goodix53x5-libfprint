@@ -711,6 +711,25 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
           {
             if (error)
               fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+            else if (data->attempt.mad >= GOODIX_MILAN_BASE_MAD_LIMIT)
+              {
+                goodix_device_generate_fdt_base (
+                  data->fdt_tx_on_before, GOODIX_FDT_BASE_LEN,
+                  self->profile9_fdt.base_down);
+                memcpy (self->profile9_fdt.base_up,
+                        self->profile9_fdt.base_down, GOODIX_FDT_BASE_LEN);
+                memcpy (self->profile9_fdt.base_manual,
+                        self->profile9_fdt.base_down, GOODIX_FDT_BASE_LEN);
+                if (data->forced_refresh)
+                  goodix_base_complete_recovery (
+                    ssm, dev, data, data->fdt_tx_on_before, 0, "tx-on/tx-off");
+                else
+                  {
+                    goodix_milan_base_attempt_reset (&data->attempt);
+                    fpi_ssm_jump_to_state (
+                      ssm, GOODIX_BASE_RECOVERY_FDT_TX_ON);
+                  }
+              }
             else
               {
                 goodix_milan_base_attempt_reset (&data->attempt);
