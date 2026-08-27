@@ -502,8 +502,12 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
 
           goodix_scan_normalize_event (&fdt->event, current);
           if (data->event_type == GOODIX_FDT_EVENT_REVERSE)
-            for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
-              data->prior_down[i] = fdt->base_down[i * 2 + 1];
+            {
+              for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+                data->prior_down[i] = fdt->base_down[i * 2 + 1];
+              memcpy (fdt->base_manual, fdt->base_down,
+                      sizeof (fdt->base_manual));
+            }
 
           goodix_device_generate_fdt_base (fdt->event.raw,
                                            GOODIX_FDT_BASE_LEN,
