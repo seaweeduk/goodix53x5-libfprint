@@ -21,6 +21,9 @@
 - `FUN_18000e1f0` action `0x0c` invokes HAL slot `+0x180`; for profile 9 this
   is `FUN_180015c60` (`MilanHV_update_allbase`).
 - The worker does not inspect the action-`0x0c` return before continuing.
+  A pair rejection whose common postlude succeeds returns zero in any case, so
+  initialization continues without a valid image reference or an externally
+  reported initialization error.
 
 ## Resume Branch
 
@@ -38,9 +41,8 @@
 - The distinction between first initialization and resume is the persistent
   device-context initialized byte, not the biometric operation type.
 
-## Unresolved
+## Initialization Predicate Boundary
 
-- The exact WDF event that sets device-context `+0x110` to one is outside this
-  function; observed control flow treats it as the completed-initialization
-  predicate.
-- Whether failed action `0x0c` is surfaced by a later framework status path.
+This function consumes device-context byte `+0x110` as the full-initialization
+versus resume predicate. The producer that sets the byte is outside this
+function.

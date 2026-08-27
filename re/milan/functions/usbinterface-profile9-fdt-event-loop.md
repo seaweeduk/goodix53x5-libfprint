@@ -3,8 +3,8 @@
 ## Scope
 
 This note covers sensor type 12, which selects profile 9. It documents the
-scheduling and dispatch path around the already recovered
-`MilanHV_Down_procedure`, `UP_Occure`, and `Reverse_Occure` threshold checks.
+scheduling and dispatch path around `MilanHV_Down_procedure`, `UP_Occure`, and
+`Reverse_Occure` threshold checks.
 
 ## Worker Lifetime
 
@@ -34,6 +34,22 @@ After storing the event type at profile context `+0x08`, the parser calls
 `SetEvent(profile_context->event_10)`. A manual-FDT response uses a separate
 completion event and does not enter this state-machine dispatch.
 
+For each down, up, or reverse event, the parser copies the 24 FDT sample bytes
+after the IRQ/touch header as 12 little-endian words without masking or
+rejecting a sample value. Only the up and reverse event routes call
+`FUN_180005538`; it transforms a private copy and replaces the down-arm base.
+See `usbinterface-FUN_1800048d0.md` for the equivalent transform contract.
+
+The raw event copy remains at `0x180060760` after that transform.
+`FUN_1800053f0`, installed at callback slot `+0x70`, returns those exact 24 raw
+bytes to the reverse and up handlers. On a reverse IRQ the parser first copies
+the prior down-arm base to `0x180060778`; callback `+0x170`
+(`FUN_1800053b0`) later returns its 12 high bytes as the prior normalized arm
+values. Thus parser ordering preserves both operands while installing the new
+hardware down base before worker dispatch. The reverse snapshot also remains
+the manual-FDT base until another owner replaces it; see
+`usbinterface-FUN_180005420.md`.
+
 ## Dispatch
 
 `FUN_18000df20` maps the profile-9 event types through `FUN_18000e1f0`:
@@ -47,19 +63,21 @@ completion event and does not enter this state-machine dispatch.
 `FUN_1800162ac` installs those three profile-9 callbacks. The up and reverse
 wrappers call `UP_Occure` and `Reverse_Occure` respectively before rearming.
 
-The worker executes the selected handler synchronously. If a handler calls
-`MilanHV_temperature_event`, the complete `MilanHV_update_allbase` acquisition
-and validation therefore finish on this worker before the handler rearms
-detection and before the worker returns to its wait.
+The worker executes the selected handler synchronously. Any
+`MilanHV_temperature_event` / `MilanHV_update_allbase` call therefore completes
+before control returns to the handler or wrapper. On reverse/up no-refresh paths
+the handler calls profile callback `+0x110` with zero before its wrapper calls
+arm callback `+0xb0` with one. Refresh branches may return before that handler
+postlude, but the up/reverse wrapper still performs the down rearm. The down
+handler owns its rearm directly. Refresh state and failure effects are owned by
+`usbinterface-FUN_180013da4.md` and `usbinterface-FUN_180015c60.md`.
 
-The down, up-wrapper, and reverse-wrapper paths rearm detection even when a
-refresh attempt fails. Failed refresh leaves FDT base-valid byte `+0x232`
-cleared and does not set one-shot byte `+0x236`; the prior image-base-valid byte
-and retained image storage are not cleared before the attempt. Later event paths
-can retry because `Milan_checkbase_isok` and invalid-base branches call
-`MilanHV_update_allbase` again. This validity split is part of the native
-failure contract and differs from treating one Linux generation as wholly valid
-or absent.
+Each refresh branch attempts full-base acquisition. Complete admission replaces
+the retained image and image-valid state. Image-pair rejection still runs the
+common FDT postlude, replacing retained FDT-calibration storage and programmed
+FDT bases while leaving retained image state unchanged. On a temperature-event
+rejection, `+0x232` remains clear and `+0x236` is not written; any earlier
+unconsumed marker value is unchanged.
 
 ## Hardware Arming And Rearming
 
@@ -74,15 +92,17 @@ The resulting state transitions are:
 
 1. A capture request arms FDT-down detection and leaves the worker asleep.
 2. A down IRQ wakes the worker and runs `MilanHV_Down_procedure`.
-3. A false/drift down event synchronously refreshes all bases and rearms down;
-   no live image is captured.
+3. A false/drift down event synchronously attempts full-base acquisition and
+   rearms down; no live image is captured. Admission replaces the retained image,
+   while pair rejection updates only the FDT stores.
 4. A real down event captures the live image and switches to FDT-up detection.
-5. An up IRQ runs the lift comparison, optionally refreshes all bases, and then
-   rearms FDT-down detection.
-6. A reverse IRQ runs its comparison/refresh path and rearms FDT-down detection.
+5. An up IRQ runs the lift comparison, may attempt full-base acquisition, and
+   then rearms FDT-down detection.
+6. A reverse IRQ runs its comparison/acquisition path and rearms FDT-down
+   detection.
 
-Thus native has an asynchronous hardware-event loop but no periodic software
-polling. Environmental drift can be noticed while Windows Hello waits because
+The profile has an asynchronous hardware-event loop but no periodic software
+polling. Environmental drift can be noticed while an operation waits because
 the sensor remains armed against its programmed FDT base. The software only
 evaluates the 12-area thresholds after the sensor emits an FDT event.
 
@@ -99,9 +119,3 @@ Profile-9 `FUN_180014270` (`OnTimerFunc`) is not the environmental-refresh
 mechanism. It clears a cached live frame and may rearm FDT-down detection in the
 power-button timing path. It does not compare FDT areas or call
 `MilanHV_temperature_event`.
-
-## Confidence
-
-High from the profile-9 callback assignments, MCU IRQ parser, blocking worker,
-device-action switch, handler bodies, and explicit down/up arm commands. No
-behavior from the unrelated Milan F-series event path is used here.

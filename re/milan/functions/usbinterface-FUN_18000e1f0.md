@@ -42,5 +42,14 @@ modified.
   `0x1800163a7..0x1800163ae`.
 - Full `deviceInit` invokes action `0x0c` from `0x180020d04`, after action
   `0x0a` and before the final sleep action.
+- Action `0x0c` returns the callback's status unchanged. Image-pair rejection
+  can therefore return zero while base-valid `+0x232` and image-valid `+0x237`
+  remain clear.
+- Device action `3` selects slot `+0x1a0`. Profile 9 installs `FUN_180015710`,
+  which requests mode `4` and arms FDT-down detection through callback `+0xb0`
+  with argument one; it does not require `+0x232` or `+0x237` to be valid.
+- A later false-down action `0` dispatches `MilanHV_Down_procedure`; its
+  temperature-event branch can rerun `MilanHV_update_allbase` and establish the
+  first valid image reference after an initial rejection.
 - Screen-off/on actions `0x17`, `0x11`, `0x15`, `0x16`, D0 power callbacks,
   and normal capture completion do not select slot `+0x180`.

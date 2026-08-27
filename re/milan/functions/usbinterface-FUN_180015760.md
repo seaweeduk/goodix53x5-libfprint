@@ -16,8 +16,9 @@
   sensor mode through callback `+0xb0`.
 - It neither clears base validity bytes `+0x232/+0x237` nor calls
   `MilanHV_update_allbase`.
-- The function is installed as HAL retry callback slot `+0x1b0` by
-  `FUN_1800162ac`; it has no static direct caller because dispatch is indirect.
+- `FUN_1800162ac` installs the function as HAL retry callback slot `+0x1c0` at
+  `0x1800163fb..0x180016402`; it has no static direct caller because dispatch is
+  indirect.
 
 ## Error-Recovery Consequence
 

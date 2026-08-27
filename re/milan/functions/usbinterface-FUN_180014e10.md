@@ -30,8 +30,7 @@ In the normal image-mode branch the function:
    `+0x31c`.
 
 `FUN_180014c98` halves both 16-bit values and returns one only when every area's
-absolute difference is at most the threshold. This is the native false-event
-shape mirrored by Linux's `goodix_device_is_fdt_base_valid` check.
+absolute difference is at most the threshold.
 
 Threshold word `+0x31c` is `delta_fdt`, derived by profile-9 sensor check
 `FUN_180004a40` from OTP `diff = (otp[17] >> 1) & 0x1f`:
@@ -42,14 +41,21 @@ diff != 0: scaled = ((diff + 5) * 0x32) >> 4
            delta_fdt = scaled / 5
 ```
 
-The comparison is inclusive: an area is accepted when `abs(a >> 1 - b >> 1)
-<= delta_fdt`; one area above the threshold makes the event a real finger.
+The comparison is inclusive: an area is accepted when
+`abs((a >> 1) - (b >> 1)) <= delta_fdt`; one area above the threshold makes the
+event a real finger.
 
 If the comparison returns one, the handler calls
 `MilanHV_temperature_event` at `0x180014ffe`. That synchronously reacquires the
-profile-9 FDT/TX-on/TX-off base set, marks the next completed sample on success,
-reports the event as non-capturing through callback `+0xb0`, and returns without
-reading a live image.
+profile-9 FDT/TX-on/TX-off base set and marks the next completed sample on
+success. After it returns, this down handler calls `+0xb0` with one and returns
+without reading a live image.
+
+The false/drift branch passes one to callback `+0xb0` regardless of whether
+`MilanHV_temperature_event` restored `+0x232`. In particular, image-pair
+validation failure can return zero from the refresh postlude while leaving
+`+0x232` clear; the handler then returns zero and rearms FDT-down detection once.
+It does not publish a live frame or invoke the live-frame completion callback.
 
 If the comparison returns zero, the event is treated as a real finger. With a
 valid image base and active capture callback, `FUN_1800150e0` reads the TX-on,
@@ -59,14 +65,3 @@ registered completion callback.
 Callback `+0xb0` is profile-9 `FUN_180005a60`. The false/drift branch invokes
 it with one to rearm FDT-down detection. The real-finger branch invokes it with
 zero after capture to switch the sensor to FDT-up detection.
-
-## Long-Wait Consequence
-
-Windows does not refresh merely because an operation has waited for a long
-time. It refreshes before the first real probe only if idle drift/noise first
-produces this false-event comparison. Linux recognizes and rearms the false
-event but currently retains its open-time TX-on reference, which is a static
-parity divergence for long-lived claims.
-
-Confidence: high from the profile-9 callback assignment, decompiled branch
-ordering, helper arithmetic, and the separate live-image call.

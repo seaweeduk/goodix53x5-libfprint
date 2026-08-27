@@ -7,50 +7,47 @@
 - Role: HV reverse/FDT event handler that validates retained FDT state and may
   trigger image-base refresh.
 
-## Image-Base Behavior
+## Dispatch And Inputs
 
-- If base-valid byte `+0x232` is not one at entry, directly calls
-  `MilanHV_update_allbase` at `0x1800144cd`.
-- With a valid base, compares live FDT values against the retained down base.
-- Drift branches clear `+0x232` and call `MilanHV_temperature_event` at
-  `0x180014698` or `0x18001480d`.
-- Successful temperature refresh eventually sets one-shot byte `+0x236`; this
-  function itself does not set or consume that marker.
+For profile 9, parser `FUN_180005b80` classifies IRQ `0x80` and `0x82` as
+reverse events. `FUN_1800162ac` installs wrapper `FUN_180015a60`, which calls
+this function. See `usbinterface-profile9-fdt-event-loop.md` for parser, worker,
+and wrapper order.
 
-## Reverse-Event Drift State
+Callback `+0x70` (`FUN_1800053f0`) returns the current 12 raw event words;
+this function normalizes each as unsigned `value >> 1`. Callback `+0x170`
+(`FUN_1800053b0`) returns the high byte of each prior down-arm word as an
+unsigned 16-bit value. The parser preserves that prior base before installing
+the transformed current event; see `usbinterface-FUN_180005420.md` for the
+retained manual-store relationship.
 
-For profile 9, MCU parser `FUN_180005b80` classifies IRQ `0x80` or `0x82` as a
-reverse event. Before waking the controller worker it snapshots the prior
-hardware FDT-down arm base, transforms the current raw event into the next
-hardware down-arm base, and selects this reverse callback.
+## Anchor Decision
 
-This function normalizes the current 12 raw areas with `value >> 1`. Callback
-`+0x170` (`FUN_1800053b0`) supplies the prior hardware arm base as its 12
-high-byte normalized values. It first calls `FUN_1800140e4` to count areas whose
-absolute difference is greater than `delta_down` (`+0x318`):
+If base-valid byte `+0x232` is not one, the function calls
+`MilanHV_update_allbase` directly at `0x1800144cd`. Otherwise it applies these
+predicates using `delta_down` at `+0x318`:
 
-- More than six changed areas triggers full temperature/base refresh.
-- Otherwise, if drift-anchor-empty byte `+0x338` is one, the current normalized
-  vector is saved at `+0x320` and `+0x338` is cleared.
-- With an active anchor, a second majority comparison between the anchor and
-  current vector catches cumulative drift and triggers full refresh.
-- If no majority fires and every anchor difference is strictly less than
-  `delta_down / 3`, the anchor is cleared and `+0x338` is set to one.
-- Intermediate differences retain the anchor for a later reverse or up event.
+1. `FUN_1800140e4` counts areas where the current normalized value differs from
+   the prior down-arm value by strictly more than `delta_down`. More than six
+   areas triggers refresh.
+2. If that comparison does not trigger and anchor-empty byte `+0x338` is one,
+   the current vector is copied to anchor `+0x320` and `+0x338` is cleared.
+3. With an active anchor, the same strict majority comparison between the
+   anchor and current vector triggers refresh on more than six changed areas.
+4. Otherwise `FUN_180014030` clears the anchor only when every difference is
+   strictly less than unsigned integer `delta_down / 3`. Equality retains it,
+   as do other intermediate differences.
 
-A successful full refresh zeroes the anchor and sets `+0x338` to one. The
-reverse wrapper then rearms FDT-down detection.
+`FUN_180004a40` owns `delta_down` derivation.
 
-`delta_down` is derived by `FUN_180004a40` from the same OTP difference used by
-`delta_fdt`: it is `0x0d` when OTP difference is zero, otherwise
-`(((diff + 5) * 0x32) >> 4) / 3`.
+## Refresh And Rearm
 
-## Consequence
+The two drift branches clear `+0x232` and synchronously call
+`MilanHV_temperature_event` at `0x180014698` or `0x18001480d`. Successful
+refresh zeroes the anchor, sets `+0x338`, and arranges the one-shot sample marker
+through the refresh owner. Failed refresh leaves the anchor and `+0x338`
+unchanged. See `usbinterface-FUN_180013da4.md` and
+`usbinterface-FUN_180015c60.md` for refresh ownership and failure effects.
 
-This is event-driven recalibration within one attached hardware context. It is
-not tied to an enrollment or identify operation boundary.
-
-Profile-9 initialization in `FUN_1800162ac` installs `FUN_180015a60` as the
-reverse-event callback; that wrapper calls this function and then reports the
-event through callback slot `+0xb0`. This establishes the route for sensor type
-12 without relying on branches for other profiles.
+On a no-refresh path this function calls callback `+0x110` with zero before
+returning to `FUN_180015a60`; the wrapper then rearms FDT-down through `+0xb0`.
