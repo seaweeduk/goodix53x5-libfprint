@@ -902,6 +902,14 @@ typedef enum {
   GOODIX_CAPTURE_STORE,
   GOODIX_CAPTURE_NUM_STATES,
 } GoodixCaptureState;
+
+typedef struct
+{
+  FpiSsm  *parent_ssm;
+  gboolean command_started;
+  gboolean needs_reinit_before_read;
+} GoodixCaptureData;
+
 static void goodix_capture_ssm_handler (FpiSsm *ssm, FpDevice *dev);
 
 /* ========================================================================
@@ -918,16 +926,22 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
   switch (fpi_ssm_get_cur_state (ssm))
     {
     case GOODIX_CAPTURE_GET_IMAGE:
+      {
+        GoodixCaptureData *data = fpi_ssm_get_data (ssm);
+
 #ifdef GOODIX53X5_DEBUG
-      g_clear_pointer (&self->captured_image, g_free);
+        g_clear_pointer (&self->captured_image, g_free);
 #endif
-      g_clear_pointer (&self->captured_raw_image, g_free);
-      GOODIX53X5_DEBUG_ONLY (
-        self->debug_timing.capture_started_us = now_us;
-        self->debug_timing.capture_phase_started_us = now_us;)
-      /* Live TX-on finger frame */
-      goodix_cmd_request_image (ssm, dev, TRUE, TRUE, TRUE,
-                                self->calib.dac_h);
+        g_clear_pointer (&self->captured_raw_image, g_free);
+        GOODIX53X5_DEBUG_ONLY (
+          self->debug_timing.capture_started_us = now_us;
+          self->debug_timing.capture_phase_started_us = now_us;)
+        data->needs_reinit_before_read = self->needs_reinit;
+        data->command_started = self->cmd_owner == NULL && !self->rx_active;
+        /* Live TX-on finger frame */
+        goodix_cmd_request_image (ssm, dev, TRUE, TRUE, TRUE,
+                                  self->calib.dac_h);
+      }
       break;
 
     case GOODIX_CAPTURE_DECRYPT:
@@ -1031,7 +1045,58 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
     }
 }
 
-/* capture is used as a sub-SSM — no standalone run/done needed */
+static void
+goodix_capture_ssm_done (FpiSsm   *ssm,
+                         FpDevice *dev,
+                         GError   *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixCaptureData *capture = fpi_ssm_get_data (ssm);
+  GoodixScanCoordinatorData *coordinator = fpi_ssm_get_data (
+    capture->parent_ssm);
+  gboolean read_failed;
+
+  read_failed = error && capture->command_started &&
+                 fpi_ssm_get_cur_state (ssm) == GOODIX_CAPTURE_GET_IMAGE &&
+                 !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+  if (!read_failed)
+    {
+      if (error)
+        fpi_ssm_mark_failed (capture->parent_ssm, error);
+      else
+        fpi_ssm_next_state (capture->parent_ssm);
+      return;
+    }
+
+  g_assert (self->profile9_fdt.owner == capture->parent_ssm);
+  g_assert (fpi_ssm_get_cur_state (capture->parent_ssm) ==
+            GOODIX_SCAN_COORD_CAPTURE);
+#ifdef GOODIX53X5_DEBUG
+  self->debug_timing.capture_started_us = 0;
+  self->debug_timing.capture_phase_started_us = 0;
+#endif
+  g_clear_error (&error);
+
+  if (coordinator->stop_requested ||
+      (coordinator->action_cancel &&
+       g_cancellable_is_cancelled (coordinator->action_cancel)))
+    {
+      coordinator->dispatching = FALSE;
+      if (coordinator->stop_requested)
+        goodix_scan_maybe_finish_requested (coordinator);
+      else
+        goodix_scan_request_stop (
+          coordinator,
+          g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                               "Profile-9 scan action cancelled"));
+    }
+  else
+    {
+      self->needs_reinit = capture->needs_reinit_before_read;
+      fpi_ssm_jump_to_state (capture->parent_ssm,
+                             GOODIX_SCAN_COORD_REARM_DOWN);
+    }
+}
 
 /* ========================================================================
  * Sub-SSM start wrappers
@@ -1040,8 +1105,11 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
 static void
 goodix_scan_start_capture_subsm (FpiSsm *parent_ssm, FpDevice *dev)
 {
+  GoodixCaptureData *data = g_new0 (GoodixCaptureData, 1);
   FpiSsm *sub = fpi_ssm_new (dev, goodix_capture_ssm_handler,
                              GOODIX_CAPTURE_NUM_STATES);
 
-  fpi_ssm_start_subsm (parent_ssm, sub);
+  data->parent_ssm = parent_ssm;
+  fpi_ssm_set_data (sub, data, g_free);
+  fpi_ssm_start (sub, goodix_capture_ssm_done);
 }
