@@ -1067,13 +1067,10 @@ goodix_capture_ssm_done (FpiSsm   *ssm,
   g_assert (self->profile9_fdt.owner == capture->parent_ssm);
   g_assert (fpi_ssm_get_cur_state (capture->parent_ssm) ==
             GOODIX_SCAN_COORD_CAPTURE);
-  self->needs_reinit = capture->needs_reinit_before_read;
 #ifdef GOODIX53X5_DEBUG
-  g_clear_pointer (&self->captured_image, g_free);
   self->debug_timing.capture_started_us = 0;
   self->debug_timing.capture_phase_started_us = 0;
 #endif
-  g_clear_pointer (&self->captured_raw_image, g_free);
   g_clear_error (&error);
 
   if (coordinator->stop_requested ||
@@ -1090,8 +1087,11 @@ goodix_capture_ssm_done (FpiSsm   *ssm,
                                "Profile-9 scan action cancelled"));
     }
   else
-    fpi_ssm_jump_to_state (capture->parent_ssm,
-                           GOODIX_SCAN_COORD_REARM_DOWN);
+    {
+      self->needs_reinit = capture->needs_reinit_before_read;
+      fpi_ssm_jump_to_state (capture->parent_ssm,
+                             GOODIX_SCAN_COORD_REARM_DOWN);
+    }
 }
 
 /* ========================================================================
