@@ -373,16 +373,9 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
         }
 
       data->recovering_generation = TRUE;
-      goodix_device_generate_fdt_base (fdt->event.raw, GOODIX_FDT_BASE_LEN,
-                                       fdt->base_down);
       if ((fdt->event.touch_flag & 0x0fff) != 0)
-        {
-          goodix_device_generate_fdt_up_base (fdt->event.raw,
-                                              fdt->event.touch_flag,
-                                              &self->calib, fdt->base_up);
-          fpi_device_report_finger_status_changes (
-            dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
-        }
+        fpi_device_report_finger_status_changes (
+          dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
       else
         fpi_device_report_finger_status_changes (
           dev, FP_FINGER_STATUS_NEEDED, FP_FINGER_STATUS_PRESENT);
@@ -404,11 +397,7 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
                                            "Scan EC power-on failed"));
           return;
         }
-      if (data->recovering_generation &&
-          (fdt->event.touch_flag & 0x0fff) != 0)
-        fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_RECOVERY_ARM_UP);
-      else
-        fpi_ssm_next_state (ssm);
+      fpi_ssm_next_state (ssm);
       break;
 
     case GOODIX_SCAN_COORD_ARM_DOWN:
@@ -485,13 +474,6 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
             goodix_device_generate_fdt_up_base (fdt->event.raw,
                                                 fdt->event.touch_flag,
                                                 &self->calib, fdt->base_up);
-            if (data->recovering_generation || !self->milan_generation)
-              {
-                data->recovering_generation = TRUE;
-                fpi_ssm_jump_to_state (
-                  ssm, GOODIX_SCAN_COORD_RECOVERY_ARM_UP);
-                return;
-              }
             fpi_ssm_next_state (ssm);
             return;
           }
@@ -588,6 +570,12 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
 
         fpi_device_report_finger_status_changes (dev, FP_FINGER_STATUS_PRESENT,
                                                   FP_FINGER_STATUS_NEEDED);
+        if (data->recovering_generation || !self->milan_generation)
+          {
+            data->recovering_generation = TRUE;
+            fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_RECOVERY_ARM_UP);
+            return;
+          }
         fpi_ssm_next_state (ssm);
       }
       break;
