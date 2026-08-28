@@ -278,6 +278,84 @@ finalization replaces an empty mask with contributor bits; fallback and ordinary
 rejection add none. A blocker-overridden direct result retains its earned direct
 events even though its terminal score is negative.
 
+### Raw detail and blocker-sum adjustment
+
+`FUN_18003a3e0` output word 4 is the raw anti-fake pair-detail statistic. The
+blocking predicate at `0x180056794..0x180056c1c` compares that raw signed dword;
+the boundary-derived adjustment does not participate in predicate admission.
+The only predicate terms that inspect pair detail are:
+
+| Term | Native raw-detail predicate |
+|---:|---|
+| 7 | `raw_detail > 77` |
+| 8 | `raw_detail <= 78` |
+| 9 | `raw_detail <= 78` |
+| 10 | `raw_detail <= 75` |
+| 16 | `raw_detail >= 70` |
+| 17 | `raw_detail >= 70` |
+| 18, second alternative | `raw_detail >= 69` |
+| 24 | `raw_detail > 76` |
+
+All these comparisons are signed. Term 18's first alternative and every other
+blocking term are independent of pair detail.
+
+The caller separately derives an adjustment for blocker evidence:
+
+```text
+adjustment = -20
+if boundary_score != -1:
+  if boundary_score < 70:
+    adjustment = -10
+  if boundary_score < 60
+     or (boundary_delta > 100 and boundary_score < 75):
+    adjustment = 0
+
+blocker_metric = wrap32(raw_detail + adjustment)
+```
+
+For valid profile-9 objects, persisted boundary score is the sentinel `-1` or a
+running average of producer detail values in `0..224`. The adjustment bands are
+therefore:
+
+| Boundary-score state | Boundary delta | Adjustment |
+|---|---:|---:|
+| sentinel `-1` | any | `-20` |
+| `0..59` | any | `0` |
+| `60..69` | `<=100` | `-10` |
+| `60..74` | `>100` | `0` |
+| `70..74` | `<=100` | `-20` |
+| `75..224` | any | `-20` |
+
+The add is a wrapping dword operation. Valid raw detail `0..224` and these three
+adjustments cannot overflow, so valid adjusted evidence lies in `-20..224`.
+
+Only a successful blocking term adds `blocker_metric` to the wrapping
+match-local blocker sum at `0x180056c22..0x180056c26`. A nonblocking occurrence
+does not publish the adjusted value. The current clean-room owner is
+`goodix_milan_match_selection_block_candidate()` in `match/selection.c`; its
+predicate input and its blocker-sum input are therefore distinct native values.
+
+No later owner treats adjusted detail as a candidate metric. Contribution,
+direct score publication, retained-candidate ranking, fallback/rescue rows,
+lifecycle mutation, and study gates consume the ordinary 77-word match metrics
+or the accumulated blocker count/sum. The anti-fake five-word vector itself
+expires after the current gallery occurrence. Its adjusted word 4 is observable
+only if that occurrence blocks, through blocker-sum accumulation and the
+terminal blocker-ratio override.
+
+The ordinary authentication path reaches this owner through
+`goodix_auth_worker()` -> `goodix_milan_runtime_run()` ->
+`goodix_milan_runtime_match()` ->
+`goodix_match_serialized_feature_result_queued()` ->
+`goodix_match_serialized_feature_result_internal()` ->
+`goodix_milan_match_info_result()`. The last wrapper supplies the probe
+anti-fake object and enables caller blocking when `live_records == NULL`.
+Enrollment uses the same runtime entry but supplies no gallery, so its extraction
+path does not call the matcher. Inside ordinary matching, a feature must first
+contribute, both anti-fake objects must exist, image coverage and enrolled
+feature coverage must each be strictly greater than 40, and then
+`FUN_18003a3e0`/`goodix_milan_antifake_pair_metrics()` produces the raw detail.
+
 ## Result And Mutation Boundary
 
 `FUN_180055a40` returns zero for every valid terminal match computation. Score
