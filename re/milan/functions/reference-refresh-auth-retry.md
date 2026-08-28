@@ -17,20 +17,33 @@ retains the TX-on image only if all of these predicates admit the acquisition:
 - The second TX-on FDT sample passes `FUN_180014c98` against the TX-off sample.
 
 Complete admission sets `+0x232/+0x233/+0x237` and makes the retained TX-on
-image at `+0x248` available to later samples. Pair rejection does not create a
-valid image reference: initial profile setup has cleared `+0x237`, and the
-common postlude leaves `+0x248/+0x237` unchanged.
+image at `+0x248` available to later samples. Image-pair rejection or final
+TX-on FDT rejection does not create a valid image reference: initial profile
+setup has cleared `+0x237`, and the common postlude leaves `+0x248/+0x237`
+unchanged. The final manual response's touch flag is not retained.
 
-Pair rejection still transforms the first TX-on FDT sample and programs the
+Either rejection still transforms the first TX-on FDT sample and programs the
 primary, down-arm, up-arm, and manual-FDT bases. Action `0x0c` can return zero
 through the common postlude even though the image reference remains invalid;
-`deviceInit` does not branch on that action return.
+it does not arm detection, and `deviceInit` does not branch on that action
+return.
 
 ## Operation Start And Retry
 
 Device action `3` invokes `FUN_180015710`, which requests mode `4` and arms
 FDT-down detection. This operation-start path does not require `+0x232` or
 `+0x237` to be set.
+
+The ordinary `OnCaptureData` path also selects FDT-down for its first activation
+and retains the WBF request while image validity remains clear. A real down
+event cannot publish an image in that state; the down handler switches to
+FDT-up and retains the request. On the corresponding up event, a fresh zero
+anchor state reaches `MilanHV_temperature_event` through the majority-change
+predicate; other anchor states can reach the final `Milan_checkbase_isok` call.
+Both routes rerun `MilanHV_update_allbase` while `+0x232` is clear. Admission
+establishes the first valid reference, the up wrapper rearms down, and a later
+real down can complete the same retained WBF request. Only the temperature-event
+route writes one-shot byte `+0x236`.
 
 If a later false-down event reaches `MilanHV_Down_procedure`, the handler calls
 `MilanHV_temperature_event`. That function clears `+0x232` and reruns
@@ -40,7 +53,7 @@ sets one-shot byte `+0x236`. The down handler then rearms FDT-down detection.
 
 If the refresh is rejected, the common FDT postlude still runs, but the prior
 `+0x248/+0x237` state remains unchanged. Neither `MilanHV_update_allbase` nor
-`MilanHV_temperature_event` writes `+0x236` on pair rejection; an earlier
+`MilanHV_temperature_event` writes `+0x236` on validation rejection; an earlier
 unconsumed marker value is unchanged. The down handler still rearms detection.
 A later qualifying FDT event can reach another base-validity check and retry
 acquisition.
@@ -70,7 +83,8 @@ there is no valid retained image reference to hand off.
 
 ## Authorities
 
-- Base acquisition and failed-pair postlude: `usbinterface-FUN_180015c60.md`
+- Base acquisition and validation-failure postlude:
+  `usbinterface-FUN_180015c60.md`
 - Initial callback and validity setup: `usbinterface-FUN_1800162ac.md`
 - Device action dispatch: `usbinterface-FUN_18000e1f0.md`
 - FDT scheduler and wrapper rearm ownership:

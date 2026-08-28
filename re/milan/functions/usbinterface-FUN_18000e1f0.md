@@ -50,6 +50,10 @@ requested live reads succeed. A live read returning `-1` reaches neither route.
 - Action `0x0c` returns the callback's status unchanged. Image-pair rejection
   can therefore return zero while base-valid `+0x232` and image-valid `+0x237`
   remain clear.
+- Rejection of the final post-image TX-on FDT comparison has the same dispatcher
+  result and validity state. Action `0x0c` does not arm either FDT mode; the
+  profile callback has already installed all FDT stores from the first TX-on
+  sample before it returns.
 - Device action `3` selects slot `+0x1a0`. Profile 9 installs `FUN_180015710`,
   which requests mode `4` and arms FDT-down detection through callback `+0xb0`
   with argument one; it does not require `+0x232` or `+0x237` to be valid.

@@ -21,9 +21,9 @@
 - `FUN_18000e1f0` action `0x0c` invokes HAL slot `+0x180`; for profile 9 this
   is `FUN_180015c60` (`MilanHV_update_allbase`).
 - The worker does not inspect the action-`0x0c` return before continuing.
-  A pair rejection whose common postlude succeeds returns zero in any case, so
-  initialization continues without a valid image reference or an externally
-  reported initialization error.
+  An image-pair or final TX-on FDT rejection whose common postlude succeeds
+  returns zero in any case, so initialization continues without a valid image
+  reference or an externally reported initialization error.
 
 ## Resume Branch
 

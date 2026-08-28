@@ -19,8 +19,8 @@
   `0x180014ffe`.
 - Returns the `MilanHV_update_allbase` status unchanged. Success of the refresh
   itself is owned separately by the post-call `+0x232 == 1` test; an image-pair
-  rejection can therefore return zero while leaving `+0x232` clear and without
-  writing `+0x236`.
+  or final TX-on FDT rejection can therefore return zero while leaving `+0x232`
+  clear and without writing `+0x236`.
 
 ## Handoff
 
@@ -29,13 +29,13 @@ The next completed sample carries `+0x236` to `CaptureFramedone` and then to
 `0x18000e661` after callback dispatch, making preprocessing reinitialization a
 one-sample notification rather than a per-probe operation.
 
-On image-pair rejection, `+0x232` remains clear and this function does not write
-`+0x236`; an earlier unconsumed marker value is unchanged. The caller's down
-handler or up/reverse wrapper owns the subsequent rearm; this function does not
-invoke the arm callback. Later base-valid checks can retry. Image-valid byte
-`+0x237` and retained image storage `+0x248` remain unchanged, whether they
-previously represented a valid image or no valid image. The common postlude
-still updates retained and programmed FDT bases.
+On image-pair or final TX-on FDT rejection, `+0x232` remains clear and this
+function does not write `+0x236`; an earlier unconsumed marker value is
+unchanged. The caller's down handler or up/reverse wrapper owns the subsequent
+rearm; this function does not invoke the arm callback. Later base-valid checks
+can retry. Image-valid byte `+0x237` and retained image storage `+0x248` remain
+unchanged, whether they previously represented a valid image or no valid image.
+The common postlude still updates retained and programmed FDT bases.
 
 ## Interpretation
 

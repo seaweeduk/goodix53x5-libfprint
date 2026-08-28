@@ -32,6 +32,12 @@ image buffers and performs:
 9. On complete admission, retain only the first TX-on image at `+0x248`, set
    base-valid bytes `+0x232/+0x233`, and set image-valid byte `+0x237`.
 
+The final TX-on manual response's touch-flag word is not an output of callback
+slot `+0x160` and is not retained by this function. Only its 12 FDT words reach
+the validation at `0x180015efa`. A present-finger vector that fails this final
+comparison therefore selects the common failure postlude without creating a
+software touch snapshot or an FDT-up recovery state.
+
 `FUN_180005094` applies the profile-9 OTP patches before calling
 `thunk_FUN_18001aed8` (`Dlcfg`) with length `0x100` and timeout `500`.
 `FUN_18001aed8` retries one unsuccessful category-9 configuration download, for
@@ -82,11 +88,12 @@ The two image calls use:
 - Both temporary images are freed at `0x18001601f..0x18001602f` on every path.
 - HAL shutdown owns and frees the persistent `+0x248` allocation.
 
-## Common Postlude And Pair Rejection
+## Common Postlude And Validation Rejection
 
-The image-pair predicate controls the second TX-on FDT read and the successful
-image/validity writes. It does not bypass the common postlude at
-`0x180015fce`:
+The image-pair predicate controls whether the second TX-on FDT read occurs. Both
+image-pair rejection and rejection of that final TX-on FDT comparison bypass
+the successful image/validity block at `0x180015f45..0x180015fc9` and enter the
+common postlude at `0x180015fce`:
 
 1. Callback `+0x88` (`FUN_1800048d0`) transforms the first TX-on FDT sample in
    place with `(sample & 0xfffe) * 0x80 + (sample >> 1)`.
@@ -97,16 +104,18 @@ image/validity writes. It does not bypass the common postlude at
    `0x18001600f..0x180016017` and copies it to the profile-9 primary, down-arm,
    up-arm, and manual-FDT base stores.
 
-Pair rejection leaves `+0x248` and `+0x237` unchanged. Their prior state may
-represent an old valid image, or no valid image when the initial acquisition
-started with `+0x237 == 0`. The function does not clear `+0x232` on rejection.
+Either validation rejection leaves `+0x248` and `+0x237` unchanged. Their prior
+state may represent an old valid image, or no valid image when the initial
+acquisition started with `+0x237 == 0`. The function does not clear `+0x232` on
+rejection.
 On the documented profile-9 initial and refresh routes, initialization or the
 caller enters with `+0x232` clear; rejection does not set it, so persistence is
 skipped on those routes. Rejection also does not write one-shot byte `+0x236`.
 
-The image-pair predicate has no direct error status. The common postlude's
-`+0x88` and `+0x68` callbacks own the final return value, so pair rejection can
-return zero when those callbacks succeed.
+The validation predicates have no direct error status. The common postlude's
+`+0x88` and `+0x68` callbacks own the final return value, so either rejection can
+return zero when those callbacks succeed. This function does not arm FDT-down
+or FDT-up detection and invokes no completed-frame callback on either path.
 
 The exact FDT transform and its command consumers are documented in
 `usbinterface-FUN_1800048d0.md`.

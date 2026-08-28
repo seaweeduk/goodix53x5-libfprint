@@ -27,6 +27,15 @@
   other accepted biometric purposes call it with selector `1`.
 - Both routes register the same `CaptureFramedone` callback
   (`FUN_18001fb40`) and use the same HAL context.
+- The request is retained at device-context `+0xf8` before `FUN_18000ebcc` is
+  called. Inside `FUN_18000ebcc`, first-activation byte `+0x154` selects
+  FDT-down; otherwise HAL wait state `+0x1fc == 0xf1` selects FDT-up and every
+  other value selects FDT-down. The selected arm callback completes before
+  `FUN_18000ebcc` stores `CaptureFramedone` at HAL context `+0x240`.
+- Consequently, the first ordinary request after an initial acquisition that
+  returned with no valid image reference arms FDT-down. Neither `OnCaptureData`
+  nor `FUN_18000ebcc` derives an FDT-up base from the rejected acquisition's
+  final manual packet.
 - The function does not clear image-base flags and does not call
   `MilanHV_update_allbase`.
 - `FUN_18000ebcc` changes finger-detection/capture state and installs the live
@@ -47,6 +56,11 @@
 - A live-image callback failure does not call `CaptureFramedone`, write the
   output, or complete the request. The request, output pointer, and registered
   HAL callback remain owned for a later FDT-down attempt.
+- When initial image validity is clear, the first down and following up handlers
+  likewise leave the request at `+0xf8` pending. If the up path admits a fresh
+  reference, the next down completes that same request. Given identical retained
+  and live frames, its `0x1d890`-byte WBF output equals an ordinary successful
+  capture except for the one-shot refresh-marker byte.
 - `gfOnCancel` sets device-context stop bytes `+0x154/+0x152`, completes the
   retained request with `0xc0000120`, and clears request owner `+0xf8`. It does
   not synthesize a completed-frame payload.

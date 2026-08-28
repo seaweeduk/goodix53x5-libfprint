@@ -30,7 +30,7 @@ The remaining initialization contract is:
 ## Initial-Failure Consequence
 
 The first action-`0x0c` acquisition therefore starts with `+0x232 == 0` and
-`+0x237 == 0`. If image-pair validation rejects, `MilanHV_update_allbase` does
-not write `+0x248`; its contents remain unspecified and are not a valid retained
-reference. The common postlude still replaces `+0x268` and programs the
-profile-9 FDT bases.
+`+0x237 == 0`. If image-pair or final TX-on FDT validation rejects,
+`MilanHV_update_allbase` does not write `+0x248`; its contents remain unspecified
+and are not a valid retained reference. The common postlude still replaces
+`+0x268` and programs the profile-9 FDT bases.
