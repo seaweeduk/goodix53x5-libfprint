@@ -380,7 +380,7 @@ goodix_milan_match_selection_block_candidate (
   if (!selection_type12_blocked (
         feature_texture_delta, feature_shape_delta, feature_boundary_delta,
         feature_boundary_score, candidate_coverage, comparison_metrics[1],
-        comparison_metrics[2], comparison_metrics[3], adjusted_detail))
+        comparison_metrics[2], comparison_metrics[3], comparison_metrics[4]))
     return 0;
 
   selection->postloop_blocking_count =
