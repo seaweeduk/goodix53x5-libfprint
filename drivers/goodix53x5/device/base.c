@@ -492,6 +492,13 @@ goodix_base_complete_recovery (FpiSsm              *ssm,
 
   goodix_milan_base_attempt_reset (&data->attempt);
   self->profile9_fdt.base_valid = FALSE;
+  goodix_device_generate_fdt_base (data->fdt_tx_on_before,
+                                   GOODIX_FDT_BASE_LEN,
+                                   self->profile9_fdt.base_down);
+  memcpy (self->profile9_fdt.base_up, self->profile9_fdt.base_down,
+          sizeof (self->profile9_fdt.base_up));
+  memcpy (self->profile9_fdt.base_manual, self->profile9_fdt.base_down,
+          sizeof (self->profile9_fdt.base_manual));
 
   if (data->forced_refresh)
     {
@@ -510,18 +517,11 @@ goodix_base_complete_recovery (FpiSsm              *ssm,
   memcpy (self->profile9_fdt.event.raw, fdt_tx_on, GOODIX_FDT_BASE_LEN);
   self->profile9_fdt.event.pending = TRUE;
   self->profile9_fdt.initial_recovery_pending = TRUE;
-  goodix_device_generate_fdt_up_base (self->profile9_fdt.event.raw,
-                                      self->profile9_fdt.event.touch_flag,
-                                      &self->calib,
-                                      self->profile9_fdt.base_up);
   data->leave_powered = FALSE;
 
-  fp_info ("Milan base acquisition needs %s at %s (touch_flag=0x%03x)",
-           (touch_flag & 0x0fff) != 0 ? "finger removal" : "a later event",
+  fp_info ("Milan base acquisition validation failed at %s (touch_flag=0x%03x)",
            checkpoint, touch_flag & 0x0fff);
-  goodix_base_timing_done (
-    self, dev,
-    (touch_flag & 0x0fff) != 0 ? "remove_finger" : "pending_event");
+  goodix_base_timing_done (self, dev, "validation_failed");
   fpi_ssm_mark_completed (ssm);
 }
 
@@ -533,9 +533,13 @@ goodix_base_timing_done (FpiDeviceGoodix53x5 *self,
 {
   const gint64 now_us = g_get_monotonic_time ();
 
-  goodix_debug_timing_log (dev, "ref_capture", event,
-                           now_us - self->debug_timing.ref_capture_phase_started_us,
-                           NULL);
+  if (self->debug_timing.ref_capture_phase_started_us != 0)
+    {
+      goodix_debug_timing_log (
+        dev, "ref_capture", event,
+        now_us - self->debug_timing.ref_capture_phase_started_us,
+        NULL);
+    }
   if (self->debug_timing.ref_capture_started_us != 0)
     goodix_debug_timing_log (dev, "ref_capture", "total",
                              now_us - self->debug_timing.ref_capture_started_us,
