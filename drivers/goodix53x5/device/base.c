@@ -155,17 +155,6 @@ goodix_milan_base_attempt_admit (GoodixMilanBaseAttempt *attempt,
       return FALSE;
     }
 
-  if (!goodix_milan_preprocess_clamp_and_admit_raw (
-        attempt->tx_on, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
-        GOODIX_MILAN_BASE_BORDER, 85))
-    {
-      attempt->admission_status =
-        GOODIX_MILAN_PREPROCESS_RETRY_SETUP_ADMISSION;
-      goodix_milan_base_attempt_release_frames (attempt);
-      attempt->stage = GOODIX_MILAN_BASE_STAGE_REJECTED;
-      return FALSE;
-    }
-
   attempt->admitted = TRUE;
   return TRUE;
 }
@@ -238,8 +227,9 @@ goodix_milan_generation_transfer_process_state (
           sizeof (destination->state.profile9_component_age));
   destination->state.extraction_classification =
     source->state.extraction_classification;
-  destination->profile_state.calibration_ready =
-    source->profile_state.calibration_ready;
+  destination->profile_state = source->profile_state;
+  destination->profile_state.setup_refresh_pending = 1;
+  destination->profile_state.setup_not_ready = 0;
 }
 
 gboolean

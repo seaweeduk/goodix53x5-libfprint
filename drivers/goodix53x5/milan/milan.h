@@ -27,6 +27,7 @@
    GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS)
 #define GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION 0x29aa
 #define GOODIX_MILAN_PREPROCESS_RETRY_SETUP_ADMISSION 0x29bb
+#define GOODIX_MILAN_PREPROCESS_NOT_READY 0x80
 #define GOODIX_MILAN_PREPROCESS_RETRY 0x7531
 #define GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION 0xc351
 #define GOODIX_MILAN_ANTIFAKE_AMBIGUOUS 1
@@ -220,6 +221,9 @@ typedef enum
 typedef struct
 {
   uint32_t calibration_ready;
+  uint32_t setup_initialized;
+  uint32_t setup_refresh_pending;
+  uint32_t setup_not_ready;
 } GoodixMilanProfileState;
 
 typedef enum
