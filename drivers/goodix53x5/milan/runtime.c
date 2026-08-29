@@ -254,36 +254,6 @@ goodix_milan_runtime_study (const GoodixMilanRuntimeInput *input,
     probe, feature, feature_len, match_result, TRUE, queue, after_study, action);
 }
 
-static gint32
-goodix_milan_runtime_initialize_setup (const GoodixMilanRuntimeInput *input,
-                                       GoodixMilanRuntimeOutput      *output)
-{
-  gboolean setup_required;
-
-  setup_required = !output->profile_state.setup_initialized ||
-                   output->profile_state.setup_refresh_pending;
-  if (!setup_required)
-    return output->profile_state.setup_not_ready ?
-           GOODIX_MILAN_PREPROCESS_NOT_READY : 0;
-
-  output->profile_state.calibration_ready = 0;
-  output->profile_state.setup_refresh_pending = 0;
-  /* Native retries setup once against the same retained frame. */
-  for (guint attempt = 0; attempt < 2; attempt++)
-    if (goodix_milan_preprocess_clamp_and_admit_raw (
-          input->setup_tx_on, GOODIX_MILAN_SENSOR_ROWS,
-          GOODIX_MILAN_SENSOR_COLUMNS, 2, 85))
-      {
-        output->profile_state.setup_initialized = 1;
-        output->profile_state.setup_not_ready = 0;
-        return 0;
-      }
-
-  output->profile_state.setup_not_ready =
-    output->profile_state.setup_initialized;
-  return GOODIX_MILAN_PREPROCESS_RETRY_SETUP_ADMISSION;
-}
-
 GoodixMilanRuntimeOutput *
 goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
 {
@@ -331,7 +301,8 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
 
   output->preprocess_state = input->preprocess_state;
   output->profile_state = input->profile_state;
-  setup_status = goodix_milan_runtime_initialize_setup (input, output);
+  setup_status = goodix_milan_runtime_initialize_setup (
+    &output->profile_state, input->setup_tx_on);
   if (setup_status != 0)
     {
 #ifdef GOODIX53X5_DEBUG

@@ -298,9 +298,12 @@ main (int argc, char **argv)
 
       if (!load_frame (live_paths[stage], live, &error))
         goto fail;
-      preprocess_status = goodix_milan_preprocess (
-        &phase_state, &phase_profile, setup, live, stage_purpose, processed,
-        &quality, &coverage);
+      preprocess_status = goodix_milan_runtime_initialize_setup (
+        &phase_profile, setup);
+      if (preprocess_status == 0)
+        preprocess_status = goodix_milan_preprocess (
+          &phase_state, &phase_profile, setup, live, stage_purpose, processed,
+          &quality, &coverage);
       if (preprocess_status == 0 ||
           preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
         processed_hash = hash_data (processed, GOODIX_MILAN_SENSOR_PIXELS);
@@ -319,7 +322,9 @@ main (int argc, char **argv)
           if (preprocess_status != 0 &&
               preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY &&
               preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION &&
-              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
+              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION &&
+              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_SETUP_ADMISSION &&
+              preprocess_status != GOODIX_MILAN_PREPROCESS_NOT_READY)
             {
               g_set_error_literal (&error, G_OPTION_ERROR,
                                    G_OPTION_ERROR_FAILED,
