@@ -146,7 +146,8 @@ goodix_match_update_extraction_classification (
   GoodixMilanExtractionClassificationState *state,
   const guint8 classification_source[GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS],
   const guint8 classification_validity[GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS],
-  const guint8 auxiliary[3],
+  guint8       primary_histogram_state,
+  guint8       promoted_secondary_histogram_state,
   gint         coverage,
   gint32       entry_low_class,
   gint32       entry_high_class)
@@ -163,7 +164,7 @@ goodix_match_update_extraction_classification (
                                   GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS);
   guint stable_class1_count = 0;
   guint stable_class2_count = 0;
-  gint32 current_class = auxiliary[0];
+  gint32 current_class = primary_histogram_state;
   gint32 high_class;
   gint32 packed;
   gboolean append;
@@ -226,29 +227,21 @@ goodix_match_update_extraction_classification (
     current_class = 2;
 
   high_class = MAX (entry_high_class, current_class);
-  if (high_class < 2 && auxiliary[2] > 0)
+  if (high_class < 2 && promoted_secondary_histogram_state > 0)
     high_class++;
-  if (auxiliary[1] == 2)
-    high_class = MAX (high_class, state->prior_merged_high_class);
-  else if (high_class > 1 || current_class > 1 || auxiliary[2] > 1)
+  if (high_class > 1 || current_class > 1 ||
+      promoted_secondary_histogram_state > 1)
     {
       if (state->high_class_hysteresis < 5)
         state->high_class_hysteresis++;
     }
   else if (state->high_class_hysteresis != 0)
     state->high_class_hysteresis--;
-  state->prior_merged_high_class = high_class;
   if (state->high_class_hysteresis >= 3)
     high_class = MAX (high_class, 1);
   packed = high_class * 0x100 + entry_low_class;
 
-  if (auxiliary[1] == 2)
-    append = state->prior_coverage < 75;
-  else
-    {
-      state->prior_coverage = coverage;
-      append = coverage >= 75;
-    }
+  append = coverage >= 75;
   if (append)
     {
       if (state->retained_count < 3)
@@ -481,7 +474,6 @@ goodix_match_extract_planes (const guint8  *image,
   size_t feature_element_size = 0;
   size_t milan_template_size = 0;
   guint8 enhanced_threshold;
-  guint8 auxiliary[3];
   gint32 entry_low_class = 0;
   gint32 entry_high_class = 0;
   int quality;
@@ -492,9 +484,6 @@ goodix_match_extract_planes (const guint8  *image,
   if (!image || !primary_contrast_plane || !classification_state ||
       !auxiliary_state)
     return status;
-  auxiliary[0] = auxiliary_state->primary_histogram_state;
-  auxiliary[1] = auxiliary_state->prior_selected_plane;
-  auxiliary[2] = auxiliary_state->promoted_secondary_histogram_state;
   info = g_new0 (GoodixMatchInfo, 1);
   cropped = g_malloc (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS);
   high = g_malloc0 (286);
@@ -542,8 +531,10 @@ goodix_match_extract_planes (const guint8  *image,
       /* Native commits history before record extraction, anti-fake, or packing
        * failures. */
       fields.optional_c7 = goodix_match_update_extraction_classification (
-        classification_state, enhanced, validity_mask, auxiliary,
-        coverage, entry_low_class, entry_high_class);
+        classification_state, enhanced, validity_mask,
+        auxiliary_state->primary_histogram_state,
+        auxiliary_state->promoted_secondary_histogram_state, coverage,
+        entry_low_class, entry_high_class);
     }
   if (goodix_milan_feature_extract_records_mode_masked (
         image, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, records,
