@@ -617,13 +617,24 @@ def _profile_seed(runtimes: list[dict[str, Any]],
     generation.sort(key=lambda item: item["runtime"]["generation_use_index_u64"])
     first = generation[0]["runtime"]
     basename = first["artifacts"]["setup_tx_on"]["basename"]
-    marker = re.search(r"-setup-i([01])-r([01])-n([01])-", basename)
+    prefix = (
+        f"runtime-artifact-{first['capture_session_id']}-{first['action']}-"
+        f"{first['action_epoch_u64']}-{first['generation_id_u64']}-"
+        f"{first['stage_u32']}-{first['chronology_u64']}")
+    stamp_crc = r"-?(?:0|[1-9][0-9]*)-[0-9a-f]{8}\.bin"
+    marker = re.fullmatch(
+        re.escape(prefix) +
+        r"-setup-i([01])-r([01])-n([01])-setup_tx_on-" + stamp_crc,
+        basename)
     if marker:
         return {
             "setup_initialized": marker[1] == "1",
             "setup_not_ready": marker[3] == "1",
             "setup_refresh_pending": marker[2] == "1",
         }
+    if not re.fullmatch(
+            re.escape(prefix) + r"-setup_tx_on-" + stamp_crc, basename):
+        raise HarnessError("setup artifact basename differs from producer grammar")
 
     earlier_generation = any(
         item["runtime"]["capture_session_id"] == runtime["capture_session_id"] and
