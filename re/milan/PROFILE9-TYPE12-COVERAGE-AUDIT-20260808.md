@@ -56,12 +56,12 @@ re-seal or reconstruct a missing report.
 | `FUN_180069820` validated border path | Profile-9 live path and non-inversion polarity are real | Validated/nonvalidated border distinction has exact controls | Over-range interaction with border copy remains unexecuted |
 | `FUN_18006b290` mode-9 severe result | No physical row returns `0xc351` | An approved-DLL setup/live boundary control returns `0xc351`, quality/coverage `0/12`, and populated output for both purposes; adapter status handling is exact | Physical prevalence is unknown |
 | `FUN_180048260` packed extraction class | Probe `c7` is only `0`, `0x100`, or `0x200`: 64/68/167 operations. The low class is always zero and high class is only 0/1/2 | `FUN_180070d90` controls all 12 raw decoder values | Nonzero low classes and produced high classes 3/4/5 are absent naturally |
-| `FUN_180048260` mode/output plane | Ordinary v3 probes select mode 0 and expose zero in the three defined summary bytes | Modes 1/2 share the summary-only path; modes 3/4/5 and their projection behavior are statically recovered | No documented focused producer/history control proves a nonzero mode transition or projected output bytes |
+| `FUN_180048260` mode/output plane | Ordinary v3 probes select mode 0 and expose zero in the three defined summary bytes | An ordinary-selector focused chronology proves mode 1 is the first producer-reachable nonzero mode and defines summary `[1,0,0]` | Mode 2 and projected modes 3/4/5 remain without focused producer/output execution |
 | Extraction history selector 2 | Frozen artifacts do not expose a selector-2 transition, prior-high reuse, or the inverted prior-coverage admission predicate | The complete scalar/ring behavior is static; ordinary WBF callers force the selector-producing argument to zero | Direct exported mode only, not an ordinary-operation coverage gap |
 | Serialized feature classes | Across 1,503 probe/gallery/candidate artifacts, all 40,697 feature elements use only `0`, `0x100`, or `0x200`; galleries/candidates contain no `0x200` | Downstream decoder and matcher-state controls cover valid class values | The real artifact manifold is much narrower than the valid packed-class domain |
 | `FUN_1800392f0` anti-fake output | Candidate count `3..100` across 66 values; texture `103..295`; mean `1501..2050`; variation `0..402`; boundary `12..18`; model `-50295..47621`; 167 support-mask hashes | Canonical-zero one-past-byte policy has paired controls | Broad output variation does not cover every upstream impulse or allocation boundary |
 | `FUN_18003a9b0` impulse replacement | Identify 59 proves physical last-column/next-row flat adjacency and exact downstream probe closure | In-allocation flat offsets and safe out-of-allocation fallback are static | No qualifying first/allocation-end impulse naturally distinguishes the safety fallback |
-| `FUN_180058700` late policy | Natural authorities cover ordinary/status-zero, mode-4 status, area, and geometry examples | Focused unit 16 covers all 55 reachable profile-9/type-12 semantic branches and 404 DLL calls | No semantic implementation gap; most branch frequency is control-only |
+| `FUN_180058700` late policy | Natural authorities cover ordinary/status-zero, mode-4 status, area, and geometry examples | Focused unit 16 covers the former 55-branch caller model and 404 DLL calls; ordinary mode 1 makes a 56th state1-one margin arm reachable | No focused complete operation crosses the state1-one margin-13 area thresholds |
 | `FUN_18005d5f0` fallback | Real rejected rows cover all negative reason components and 36 fallback events | Positive, zero, negative, and publication controls cover final behavior | No natural positive fallback in the maintained authorities |
 | Matcher queue/follow-up | No native natural preoccupied queue or successful queued follow-up is established; older Linux queue metadata is not producer authority | Deep-owned one/two-entry and action-5 consumer controls are exact | Natural reachability/frequency remains unknown |
 | `templateStudy` actions | Natural actions are 0/1/4 only | Actions 2/3/5, packing, persistence-positive handling, and queue handoff are controlled | Natural action-2/3/5 examples remain absent |
@@ -93,10 +93,11 @@ boundary remains established by focused 1,310-fail and 1,311-pass controls.
    severe class-3 predicate. The adapter suppresses extraction for both
    purposes. The exact control is valid but no physical row establishes
    prevalence.
-3. **Nonzero extraction modes and class production, medium-high producer risk.**
-   Decoder and downstream policy controls prove how valid classes are consumed,
-   but the corpus does not prove production of nonzero low classes, high classes
-   3/4/5, nonzero modes 1/2, or mode-specific 3/4/5 `+0x158` projections.
+3. **Extraction mode production and class production, medium-high producer
+   risk.** A focused ordinary chronology proves the native mode-1 target and
+   its summary/projection contract. The corpus still does not prove production
+   of nonzero low classes, high classes 3/4/5, mode 2, or mode-specific 3/4/5
+   `+0x158` projections.
 4. **Allocation-end impulse safety distinction, medium safety risk and low
    parity priority.** The DLL can read outside the residual allocation for a
    qualifying endpoint impulse. The native clamped fallback is an intentional
@@ -199,7 +200,8 @@ and study actions 2/3/5.
 
 It is not complete producer or state-machine coverage. Setup `0x29bb` and
 mode-9 rejection remain absent as physical rows even though focused controls
-establish their semantics. Nonzero extraction modes and allocation-end impulse
-behavior remain producer gaps. Those gaps explain how strict parity can be
+establish their semantics. Extraction modes 2..5 and allocation-end impulse
+behavior remain producer gaps. The first nonzero mode 1 now has a focused
+ordinary producer/output case. Those gaps explain how strict parity can be
 correct for every frozen operation while still missing relevant native
 behavior.
