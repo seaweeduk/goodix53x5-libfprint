@@ -319,7 +319,7 @@ milan_profile9_primary_histogram_state (
   int32_t box[256];
   uint8_t state = 0;
 
-  if (clipped->sample_count < 10 || clipped->range <= 0)
+  if (clipped->mode_bin < 10 || clipped->range <= 0)
     return 0;
   milan_profile9_smooth_histogram (
     clipped->histogram, 4, smooth, box);
@@ -330,7 +330,7 @@ milan_profile9_primary_histogram_state (
 
   while (upper < 246 && smooth[upper] >= width_floor)
     upper++;
-  while (lower > 9 && smooth[lower] >= width_floor)
+  while (lower > 10 && smooth[lower] >= width_floor)
     lower--;
   int width = upper - lower;
   if ((width > 180 && clipped->range > 1200) ||
