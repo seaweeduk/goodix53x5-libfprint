@@ -600,7 +600,47 @@ def _chronology(runtimes: list[dict[str, Any]]) -> None:
 
 def _preprocess_state_committed(runtime: dict[str, Any]) -> bool:
     return (not runtime["cancellation"]["runtime_observed"] and
-            runtime["preprocess_status_i32"] in {0, 0x29AA, 0x7531, 0xC351})
+            runtime["preprocess_status_i32"] in {
+                0, 0x80, 0x29AA, 0x29BB, 0x7531, 0xC351})
+
+
+def _profile_seed(runtimes: list[dict[str, Any]],
+                  current: dict[str, Any]) -> dict[str, bool]:
+    runtime = current["runtime"]
+    generation = [
+        item for item in runtimes
+        if item["runtime"]["capture_session_id"] == runtime["capture_session_id"] and
+        item["runtime"]["generation_id_u64"] == runtime["generation_id_u64"] and
+        item["runtime"]["artifacts"]["setup_tx_on"]["sha256"] ==
+        runtime["artifacts"]["setup_tx_on"]["sha256"]
+    ]
+    generation.sort(key=lambda item: item["runtime"]["generation_use_index_u64"])
+    first = generation[0]["runtime"]
+    basename = first["artifacts"]["setup_tx_on"]["basename"]
+    marker = re.search(r"-setup-i([01])-r([01])-n([01])-", basename)
+    if marker:
+        return {
+            "setup_initialized": marker[1] == "1",
+            "setup_not_ready": marker[3] == "1",
+            "setup_refresh_pending": marker[2] == "1",
+        }
+
+    earlier_generation = any(
+        item["runtime"]["capture_session_id"] == runtime["capture_session_id"] and
+        item["runtime"]["chronology_u64"] < first["chronology_u64"] and
+        item["runtime"]["generation_id_u64"] != runtime["generation_id_u64"]
+        for item in runtimes)
+    failed_setup = any(
+        item["runtime"]["preprocess_status_i32"] in {0x80, 0x29BB}
+        for item in generation)
+    if earlier_generation and failed_setup:
+        raise HarnessError(
+            "captured refresh setup state predates the exact setup-state marker")
+    return {
+        "setup_initialized": False,
+        "setup_not_ready": False,
+        "setup_refresh_pending": False,
+    }
 
 
 def _prelude(runtimes: list[dict[str, Any]], current: dict[str, Any]) -> list[tuple[Path, int]]:
@@ -883,7 +923,8 @@ def run_validate_dump(args: argparse.Namespace) -> None:
                 prelude = _prelude(runtimes, item)
                 case = create_case(state, dump, item["path"], runtime,
                                    artifacts["setup_tx_on"][0], artifacts["live_raw"][0],
-                                   prelude, gallery_inputs, dll_sha, prefix)
+                                   prelude, gallery_inputs, dll_sha, prefix,
+                                   _profile_seed(runtimes, item))
                 operation["structural_replay_admissibility"].update({
                     "admissible": True, "status": "pass"})
                 pending.append({"case": case, "expected": _capture_projection(runtime),

@@ -713,7 +713,10 @@ goodix_debug_capture_runtime_metadata (GoodixDebugRuntimeMetadata *metadata,
                                         FpiDeviceAction             action,
                                         const guint16              *setup_tx_on,
                                         const guint16              *live_raw,
-                                        guint64 generation_use_index)
+                                        guint64 generation_use_index,
+                                        gboolean setup_initialized,
+                                        gboolean setup_refresh_pending,
+                                        gboolean setup_not_ready)
 {
   g_return_if_fail (metadata != NULL);
   g_return_if_fail (setup_tx_on != NULL);
@@ -722,6 +725,9 @@ goodix_debug_capture_runtime_metadata (GoodixDebugRuntimeMetadata *metadata,
   goodix_debug_clear_runtime_metadata (metadata);
   metadata->action = action;
   metadata->generation_use_index = generation_use_index;
+  metadata->setup_initialized = setup_initialized;
+  metadata->setup_refresh_pending = setup_refresh_pending;
+  metadata->setup_not_ready = setup_not_ready;
   if (!goodix_debug_env_enabled ("GOODIX53X5_DUMP_TEMPLATES") ||
       !goodix_debug_dump_enabled ())
     return;
@@ -834,9 +840,11 @@ goodix_debug_log_runtime_result (FpDevice                         *dev,
   chronology = self->debug_chronology + 1;
   common_prefix = g_strdup_printf (
     "runtime-artifact-%s-%s-%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT
-    "-%u-%" G_GUINT64_FORMAT,
+    "-%u-%" G_GUINT64_FORMAT "-setup-i%u-r%u-n%u",
     self->debug_capture_session_id, action_name, output->action_epoch,
-    output->generation_id, stage, chronology);
+    output->generation_id, stage, chronology,
+    metadata->setup_initialized, metadata->setup_refresh_pending,
+    metadata->setup_not_ready);
   operation_id = g_strdup_printf ("%s/%s/%" G_GUINT64_FORMAT,
                                   self->debug_capture_session_id, action_name,
                                   output->action_epoch);

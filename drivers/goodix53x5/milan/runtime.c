@@ -306,8 +306,7 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
   if (setup_status != 0)
     {
 #ifdef GOODIX53X5_DEBUG
-      output->preprocess_attempted =
-        setup_status == GOODIX_MILAN_PREPROCESS_NOT_READY;
+      output->preprocess_attempted = TRUE;
       output->preprocess_status = setup_status;
       output->preprocess_status_available = TRUE;
 #endif

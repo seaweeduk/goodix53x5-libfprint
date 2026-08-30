@@ -468,7 +468,10 @@ goodix_auth_start_task (FpDevice *dev)
     goodix_debug_capture_runtime_metadata (
       &task_data->debug_metadata, action,
       self->milan_generation->setup_tx_on, self->captured_raw_image,
-      self->milan_generation->use_count);)
+      self->milan_generation->use_count,
+      self->milan_generation->profile_state.setup_initialized,
+      self->milan_generation->profile_state.setup_refresh_pending,
+      self->milan_generation->profile_state.setup_not_ready);)
 
   if (action == FPI_DEVICE_ACTION_VERIFY)
     {
