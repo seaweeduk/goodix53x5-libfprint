@@ -61,7 +61,7 @@ re-seal or reconstruct a missing report.
 | Serialized feature classes | Across 1,503 probe/gallery/candidate artifacts, all 40,697 feature elements use only `0`, `0x100`, or `0x200`; galleries/candidates contain no `0x200` | Downstream decoder and matcher-state controls cover valid class values | The real artifact manifold is much narrower than the valid packed-class domain |
 | `FUN_1800392f0` anti-fake output | Candidate count `3..100` across 66 values; texture `103..295`; mean `1501..2050`; variation `0..402`; boundary `12..18`; model `-50295..47621`; 167 support-mask hashes | Canonical-zero one-past-byte policy has paired controls | Broad output variation does not cover every upstream impulse or allocation boundary |
 | `FUN_18003a9b0` impulse replacement | Identify 59 proves physical last-column/next-row flat adjacency and exact downstream probe closure | In-allocation flat offsets and safe out-of-allocation fallback are static | No qualifying first/allocation-end impulse naturally distinguishes the safety fallback |
-| `FUN_180058700` late policy | Natural authorities cover ordinary/status-zero, mode-4 status, area, and geometry examples | Focused unit 16 covers the former 55-branch caller model and 404 DLL calls; ordinary mode 1 makes a 56th state1-one margin arm reachable | No focused complete operation crosses the state1-one margin-13 area thresholds |
+| `FUN_180058700` late policy | Natural authorities cover ordinary/status-zero, mode-4 status, area, and geometry examples; a valid captured gallery combined with an ordinary mode-1 probe crosses the state1-one status band | Focused unit 16 covers the former 55-branch caller model and 404 DLL calls; ordinary mode 1 makes a 56th state1-one margin arm reachable | The native state1-one margin-13 arm now has a complete operation witness |
 | `FUN_18005d5f0` fallback | Real rejected rows cover all negative reason components and 36 fallback events | Positive, zero, negative, and publication controls cover final behavior | No natural positive fallback in the maintained authorities |
 | Matcher queue/follow-up | No native natural preoccupied queue or successful queued follow-up is established; older Linux queue metadata is not producer authority | Deep-owned one/two-entry and action-5 consumer controls are exact | Natural reachability/frequency remains unknown |
 | `templateStudy` actions | Natural actions are 0/1/4 only | Actions 2/3/5, packing, persistence-positive handling, and queue handoff are controlled | Natural action-2/3/5 examples remain absent |
@@ -202,6 +202,6 @@ It is not complete producer or state-machine coverage. Setup `0x29bb` and
 mode-9 rejection remain absent as physical rows even though focused controls
 establish their semantics. Extraction modes 2..5 and allocation-end impulse
 behavior remain producer gaps. The first nonzero mode 1 now has a focused
-ordinary producer/output case. Those gaps explain how strict parity can be
-correct for every frozen operation while still missing relevant native
-behavior.
+ordinary producer/output case, and the native state1-one overlap margin has a
+complete operation witness. Those gaps explain how strict parity can be correct
+for every frozen operation while still missing relevant native behavior.
