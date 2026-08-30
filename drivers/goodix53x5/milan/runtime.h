@@ -187,6 +187,38 @@ void goodix_milan_runtime_input_set_cancel_check (
   GoodixMilanRuntimeCancelFunc cancel_func,
   gpointer                     user_data,
   GDestroyNotify               destroy);
+static inline gint32
+goodix_milan_runtime_initialize_setup (GoodixMilanProfileState *profile_state,
+                                       guint16                 *setup_tx_on)
+{
+  gboolean setup_required;
+
+  g_return_val_if_fail (profile_state != NULL,
+                        GOODIX_MILAN_PREPROCESS_RETRY_SETUP_ADMISSION);
+  g_return_val_if_fail (setup_tx_on != NULL,
+                        GOODIX_MILAN_PREPROCESS_RETRY_SETUP_ADMISSION);
+  setup_required = !profile_state->setup_initialized ||
+                   profile_state->setup_refresh_pending;
+  if (!setup_required)
+    return profile_state->setup_not_ready ?
+           GOODIX_MILAN_PREPROCESS_NOT_READY : 0;
+
+  profile_state->calibration_ready = 0;
+  profile_state->setup_refresh_pending = 0;
+  /* Native retries setup once against the same retained frame. */
+  for (guint attempt = 0; attempt < 2; attempt++)
+    if (goodix_milan_preprocess_clamp_and_admit_raw (
+          setup_tx_on, GOODIX_MILAN_SENSOR_ROWS,
+          GOODIX_MILAN_SENSOR_COLUMNS, 2, 85))
+      {
+        profile_state->setup_initialized = 1;
+        profile_state->setup_not_ready = 0;
+        return 0;
+      }
+
+  profile_state->setup_not_ready = profile_state->setup_initialized;
+  return GOODIX_MILAN_PREPROCESS_RETRY_SETUP_ADMISSION;
+}
 void goodix_milan_runtime_input_free (GoodixMilanRuntimeInput *input);
 
 GoodixMilanRuntimeOutput *goodix_milan_runtime_run (

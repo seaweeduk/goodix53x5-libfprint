@@ -266,6 +266,7 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
   GoodixMilanRuntimeOutput *output;
   GoodixMilanPrintTemplateInfo probe_info;
   gsize winner_position = G_MAXSIZE;
+  gint32 setup_status;
   gint32 preprocess_status;
 
   g_return_val_if_fail (input != NULL, NULL);
@@ -300,6 +301,23 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
 
   output->preprocess_state = input->preprocess_state;
   output->profile_state = input->profile_state;
+  setup_status = goodix_milan_runtime_initialize_setup (
+    &output->profile_state, input->setup_tx_on);
+  if (setup_status != 0)
+    {
+#ifdef GOODIX53X5_DEBUG
+      output->preprocess_attempted = TRUE;
+      output->preprocess_status = setup_status;
+      output->preprocess_status_available = TRUE;
+#endif
+      output->preprocess_state_valid = TRUE;
+      output->status = GOODIX_MILAN_RUNTIME_RETRY;
+      g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
+                           GOODIX_MILAN_PRINT_ERROR_INVALID,
+                           "Native Milan setup initialization failed");
+      return output;
+    }
+
   processed = g_malloc (GOODIX_MILAN_SENSOR_PIXELS);
 #ifdef GOODIX53X5_DEBUG
   output->preprocess_attempted = TRUE;
