@@ -319,7 +319,7 @@ milan_profile9_primary_histogram_state (
   int32_t box[256];
   uint8_t state = 0;
 
-  if (clipped->sample_count < 10 || clipped->range <= 0)
+  if (clipped->mode_bin < 10 || clipped->range <= 0)
     return 0;
   milan_profile9_smooth_histogram (
     clipped->histogram, 4, smooth, box);
@@ -330,7 +330,7 @@ milan_profile9_primary_histogram_state (
 
   while (upper < 246 && smooth[upper] >= width_floor)
     upper++;
-  while (lower > 9 && smooth[lower] >= width_floor)
+  while (lower > 10 && smooth[lower] >= width_floor)
     lower--;
   int width = upper - lower;
   if ((width > 180 && clipped->range > 1200) ||
@@ -1129,11 +1129,8 @@ static int
 milan_profile9_prepare_history (GoodixMilanPreprocessState *state,
                                 const uint16_t             *prepared,
                                 const uint8_t              *contrast_mask,
-                                size_t                      count,
-                                uint8_t                     prior_selected_plane)
+                                size_t                      count)
 {
-  if (prior_selected_plane == 2)
-    return 0;
   if (state->profile9_history_count == 0 && state->sample_count > 1)
     {
       uint32_t retained_count = state->sample_count < 21
@@ -1497,7 +1494,6 @@ goodix_milan_profile9_build_broken_mask (
   int low;
   int high;
   size_t active_count = 0;
-  uint8_t prior_selected_plane;
   uint8_t primary_histogram_state;
   uint8_t secondary_histogram_state = 0;
   uint8_t secondary_count_state = 0;
@@ -1510,7 +1506,6 @@ goodix_milan_profile9_build_broken_mask (
       columns > SIZE_MAX / rows || rows * columns > GOODIX_MILAN_SENSOR_PIXELS)
     return -1;
   count = rows * columns;
-  prior_selected_plane = (uint8_t) state->selected_refined;
   for (size_t i = 0; i < count; i++)
     active_count += contrast_mask[i] != 0;
   prepared = malloc (count * sizeof(*prepared));
@@ -1540,7 +1535,7 @@ goodix_milan_profile9_build_broken_mask (
     memcpy (prepared, difference, count * sizeof(*prepared));
   milan_profile9_erode_valid (contrast_mask, valid, rows, columns, 8);
   history_initialized = milan_profile9_prepare_history (
-    state, prepared, contrast_mask, count, prior_selected_plane);
+    state, prepared, contrast_mask, count);
   milan_profile9_filter_q16 (
     prepared, rows, columns, primary_kernel, 3, blurred);
   primary_histogram_state = milan_profile9_histogram_state (
@@ -1778,7 +1773,6 @@ goodix_milan_profile9_build_broken_mask (
   state->profile9_class_counts.profile9_class3_count = (uint32_t) class3_count;
   state->extraction_auxiliary.primary_histogram_state =
     primary_histogram_state;
-  state->extraction_auxiliary.prior_selected_plane = prior_selected_plane;
   *mode = 0;
   *apply_mask = 0;
   if (class3_count * 100 > mask_count * 15)

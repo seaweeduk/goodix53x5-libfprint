@@ -29,6 +29,9 @@ static gint dac_low;
 static gint profile_number = GOODIX_MILAN_PRINT_PROFILE;
 static gint subtype = GOODIX_MILAN_PRINT_SENSOR_TYPE;
 static gint prelude_count;
+static gboolean profile_setup_initialized;
+static gboolean profile_setup_refresh_pending;
+static gboolean profile_setup_not_ready;
 
 static GOptionEntry options[] = {
   { "case-id", 0, 0, G_OPTION_ARG_STRING, &case_id, "Opaque case ID", "ID" },
@@ -46,6 +49,12 @@ static GOptionEntry options[] = {
   { "subtype", 0, 0, G_OPTION_ARG_INT, &subtype, "sensor subtype", "U16" },
   { "prelude-count", 0, 0, G_OPTION_ARG_INT, &prelude_count,
     "number of preprocessing-only live frames", "COUNT" },
+  { "profile-setup-initialized", 0, 0, G_OPTION_ARG_NONE,
+    &profile_setup_initialized, "seed initialized setup state", NULL },
+  { "profile-setup-refresh-pending", 0, 0, G_OPTION_ARG_NONE,
+    &profile_setup_refresh_pending, "seed pending refresh setup state", NULL },
+  { "profile-setup-not-ready", 0, 0, G_OPTION_ARG_NONE,
+    &profile_setup_not_ready, "seed not-ready setup state", NULL },
   { NULL }
 };
 
@@ -259,6 +268,9 @@ main (int argc, char **argv)
       goto fail;
     }
   goodix_milan_preprocess_reset (&state);
+  profile.setup_initialized = profile_setup_initialized;
+  profile.setup_refresh_pending = profile_setup_refresh_pending;
+  profile.setup_not_ready = profile_setup_not_ready;
 
   for (gsize stage = 0; live_paths[stage]; stage++)
     {
@@ -298,9 +310,12 @@ main (int argc, char **argv)
 
       if (!load_frame (live_paths[stage], live, &error))
         goto fail;
-      preprocess_status = goodix_milan_preprocess (
-        &phase_state, &phase_profile, setup, live, stage_purpose, processed,
-        &quality, &coverage);
+      preprocess_status = goodix_milan_runtime_initialize_setup (
+        &phase_profile, setup);
+      if (preprocess_status == 0)
+        preprocess_status = goodix_milan_preprocess (
+          &phase_state, &phase_profile, setup, live, stage_purpose, processed,
+          &quality, &coverage);
       if (preprocess_status == 0 ||
           preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
         processed_hash = hash_data (processed, GOODIX_MILAN_SENSOR_PIXELS);
@@ -319,7 +334,9 @@ main (int argc, char **argv)
           if (preprocess_status != 0 &&
               preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY &&
               preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION &&
-              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
+              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION &&
+              preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_SETUP_ADMISSION &&
+              preprocess_status != GOODIX_MILAN_PREPROCESS_NOT_READY)
             {
               g_set_error_literal (&error, G_OPTION_ERROR,
                                    G_OPTION_ERROR_FAILED,

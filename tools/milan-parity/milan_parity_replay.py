@@ -61,7 +61,7 @@ def _admit(root: Path, source: Path) -> dict[str, Any]:
 def create_case(state: Path, dump: Path, runtime_path: Path, runtime: dict[str, Any],
                 setup: Path, live: Path, prelude: list[tuple[Path, int]],
                 gallery_inputs: list[Path], dll_sha256: str,
-                wine_prefix: Path) -> dict[str, Any]:
+                wine_prefix: Path, profile_seed: dict[str, bool]) -> dict[str, Any]:
     operation = (runtime["capture_session_id"], runtime["action"],
                  runtime["action_epoch_u64"])
     digest = sha256_file(runtime_path)
@@ -122,7 +122,7 @@ def create_case(state: Path, dump: Path, runtime_path: Path, runtime: dict[str, 
               "modes": {"full": [case_id], "quick": [case_id]},
               "policy": RUNNER_POLICY, "schema": CORPUS_SCHEMA}
     write_atomic(root / "corpus.json", canonical(corpus))
-    return {"case_id": case_id, "root": root}
+    return {"case_id": case_id, "profile_seed": profile_seed, "root": root}
 
 
 def _validate_record(value: Any, case_id: str, label: str) -> dict[str, Any]:
@@ -182,12 +182,16 @@ def current_runner_identity(runner: Path, repo: Path) -> dict[str, str]:
 
 def execute_current(runner: Path, repo: Path, case: dict[str, Any],
                     identity: dict[str, str]) -> dict[str, Any]:
-    process = run((str(runner), "--repo", str(repo), "--corpus", str(case["root"]),
-                   "--case", case["case_id"],
-                   "--expected-source-digest", identity["source_digest"],
-                   "--expected-backend-sha256", identity["backend_sha256"]),
-                  "current runner",
-                  stdout=-1, stderr=-1)
+    command = [str(runner), "--repo", str(repo), "--corpus", str(case["root"]),
+               "--case", case["case_id"],
+               "--expected-source-digest", identity["source_digest"],
+               "--expected-backend-sha256", identity["backend_sha256"]]
+    for field, enabled in case["profile_seed"].items():
+        if enabled:
+            command.append(f"--profile-{field.replace('_', '-')}")
+    process = run(tuple(command),
+                   "current runner",
+                   stdout=-1, stderr=-1)
     return _load_stdout(process, case["case_id"], "current runner")
 
 

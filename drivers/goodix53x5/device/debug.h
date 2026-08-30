@@ -26,6 +26,9 @@ typedef struct
 {
   FpiDeviceAction action;
   guint64         generation_use_index;
+  gboolean        setup_initialized;
+  gboolean        setup_refresh_pending;
+  gboolean        setup_not_ready;
   GBytes         *setup_tx_on;
   GBytes         *live_raw;
 } GoodixDebugRuntimeMetadata;
@@ -94,7 +97,10 @@ void goodix_debug_capture_runtime_metadata (
   FpiDeviceAction             action,
   const guint16              *setup_tx_on,
   const guint16              *live_raw,
-  guint64                     generation_use_index);
+  guint64                     generation_use_index,
+  gboolean                    setup_initialized,
+  gboolean                    setup_refresh_pending,
+  gboolean                    setup_not_ready);
 void goodix_debug_clear_runtime_metadata (
   GoodixDebugRuntimeMetadata *metadata);
 void goodix_debug_log_runtime_result (

@@ -100,13 +100,19 @@ def main():
     parser.add_argument("--case")
     parser.add_argument("--expected-source-digest")
     parser.add_argument("--expected-backend-sha256")
+    parser.add_argument("--profile-setup-initialized", action="store_true")
+    parser.add_argument("--profile-setup-refresh-pending", action="store_true")
+    parser.add_argument("--profile-setup-not-ready", action="store_true")
     args = parser.parse_args()
     repo = Path(args.repo).resolve()
     tool = Path(__file__).resolve().parent
     if args.identity:
         if (args.corpus is not None or args.case is not None or
                 args.expected_source_digest is not None or
-                args.expected_backend_sha256 is not None):
+                args.expected_backend_sha256 is not None or
+                args.profile_setup_initialized or
+                args.profile_setup_refresh_pending or
+                args.profile_setup_not_ready):
             parser.error("--identity accepts only --repo")
         sys.stdout.buffer.write(canonical(resolve_backend(repo, tool, build=True)))
         return
@@ -146,6 +152,12 @@ def main():
                "--tcode", str(replay["tcode"]), "--dac-high", str(replay["dac_high"]),
                "--dac-low", str(replay["dac_low"]), "--profile", "9", "--subtype", "12"]
     command.extend(("--prelude-count", str(len(prelude))))
+    if args.profile_setup_initialized:
+        command.append("--profile-setup-initialized")
+    if args.profile_setup_refresh_pending:
+        command.append("--profile-setup-refresh-pending")
+    if args.profile_setup_not_ready:
+        command.append("--profile-setup-not-ready")
     for name, frame_purpose in zip(prelude, prelude_purposes):
         command.extend(("--live", str(artifact_path(root, case, name)),
                         "--live-purpose", str(frame_purpose)))
