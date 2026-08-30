@@ -1084,7 +1084,7 @@ goodix_milan_matcher_late_context_derive (
 
 static int32_t
 overlap_margin_type12 (int32_t       accumulated_high_class,
-                       int32_t       probe_low_class,
+                       int32_t       primary_histogram_class,
                        const int32_t metrics[77],
                        int32_t       context_record_count,
                        int32_t       image_quality)
@@ -1097,11 +1097,11 @@ overlap_margin_type12 (int32_t       accumulated_high_class,
     {
       if (metrics[5] < 197 && metrics[8] < 195)
         margin = 20;
-      else if (probe_low_class > 1)
+      else if (primary_histogram_class > 1)
         margin = 15;
+      else if (primary_histogram_class == 1)
+        margin = 13;
       else
-        /* Profile 9 decodes probe_low_class as 0, 2, or 3, so class 1 is
-         * excluded by the caller contract. */
         margin = 10;
     }
   else
