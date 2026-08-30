@@ -170,8 +170,9 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   uint32_t rounded_mean;
   uint16_t threshold;
   uint16_t valid_percent;
-  uint16_t admitted_percent;
+  uint16_t refined_percent;
   size_t admitted_pixels = 0;
+  size_t refined_pixels = 0;
   uint32_t auxiliary_samples;
   int selected_refined;
   int metadata_mode;
@@ -285,7 +286,9 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
                                         combined_gain);
         }
     }
-  admitted_percent = (uint16_t) (admitted_pixels * 100 / count);
+  for (size_t i = 0; i < count; i++)
+    refined_pixels += contrast_mask[i] != 0;
+  refined_percent = (uint16_t) (refined_pixels * 100 / count);
 
   classification_status = goodix_milan_profile9_build_broken_mask (
     state, difference, setup_map, normalized_live, contrast_mask,
@@ -302,7 +305,7 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
         contrast, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
         selection_mask) != 0 ||
       goodix_milan_preprocess_refine (
-        working, contrast_mask, admitted_percent, GOODIX_MILAN_SENSOR_ROWS,
+        working, contrast_mask, refined_percent, GOODIX_MILAN_SENSOR_ROWS,
         GOODIX_MILAN_SENSOR_COLUMNS, refined) != 0 ||
       goodix_milan_preprocess_select_output (
         contrast, refined, selection_mask, GOODIX_MILAN_SENSOR_ROWS,
