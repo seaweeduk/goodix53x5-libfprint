@@ -48,8 +48,9 @@ static int first_update_frame_core (const uint16_t *normalized_live,
                                     uint32_t        calibration_ready,
                                     size_t          rows,
                                     size_t          columns,
-                                     uint16_t       *gain_map,
-                                     uint16_t       *output);
+                                    uint16_t       *gain_map,
+                                    uint16_t       *output,
+                                    uint16_t       *optional_plane0);
 static void profile9_update_source (const uint16_t *normalized_live,
                                     const uint16_t *setup_map,
                                     size_t          count,
@@ -67,18 +68,30 @@ static void milan_profile9_make_reciprocal_plane (
   const uint16_t *application_gain,
   size_t          count,
   uint16_t       *output);
+static int preprocess_refine_core (const uint16_t *source,
+                                   const uint8_t  *mask,
+                                   uint16_t        valid_percent,
+                                   size_t          rows,
+                                   size_t          columns,
+                                   uint16_t       *centered,
+                                   uint8_t        *output);
 static int milan_profile9_post_render (
   GoodixMilanPreprocessState *state,
   const uint16_t             *normalized_live,
   const uint16_t             *setup_map,
   const uint8_t              *render_mask,
   const uint16_t             *working,
+  const uint16_t             *optional_plane0,
   const uint16_t             *reciprocal_plane,
   const uint8_t              *selected,
   const uint8_t              *selection_mask,
   int                         selected_refined,
   GoodixMilanPreprocessPurpose purpose,
-  uint32_t                     calibration_ready);
+  uint32_t                     calibration_ready,
+  const uint8_t              **first_metadata_mask,
+  uint8_t                    **first_metadata_owned_mask,
+  int                         *first_metadata_mode,
+  int                         *first_metadata_apply);
 
 static void
 profile9_initialize_gain_state (GoodixMilanPreprocessState *state)
@@ -160,6 +173,8 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   uint16_t *difference = NULL;
   uint16_t *gain = NULL;
   uint16_t *working = NULL;
+  uint16_t *refined_source = NULL;
+  uint16_t *optional_plane0 = NULL;
   uint16_t *reciprocal_plane = NULL;
   uint8_t *mask = NULL;
   uint8_t *contrast = NULL;
@@ -174,7 +189,11 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   size_t admitted_pixels = 0;
   size_t refined_pixels = 0;
   uint32_t auxiliary_samples;
+  const uint8_t *first_metadata_mask;
+  uint8_t *first_metadata_owned_mask = NULL;
   int selected_refined;
+  int first_metadata_mode;
+  int first_metadata_apply;
   int metadata_mode;
   int apply_metadata_mask;
   int classification_status;
@@ -205,6 +224,8 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   difference = malloc (count * sizeof(*difference));
   gain = malloc (count * sizeof(*gain));
   working = malloc (count * sizeof(*working));
+  refined_source = malloc (count * sizeof(*refined_source));
+  optional_plane0 = malloc (count * sizeof(*optional_plane0));
   reciprocal_plane = malloc (count * sizeof(*reciprocal_plane));
   mask = malloc (count);
   contrast = malloc (count);
@@ -213,8 +234,9 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   contrast_mask = malloc (count);
   selection_mask = malloc (count);
   if (!setup_map || !normalized_live || !difference || !gain || !working ||
-      !reciprocal_plane || !mask || !contrast || !refined || !broken_mask ||
-      !contrast_mask || !selection_mask)
+      !refined_source || !optional_plane0 || !reciprocal_plane || !mask ||
+      !contrast || !refined || !broken_mask || !contrast_mask ||
+      !selection_mask)
     goto out;
 
   memcpy (setup_map, setup_frame, count * sizeof(*setup_map));
@@ -263,7 +285,7 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
             state->application_gain_map, state->auxiliary_gain_map,
             auxiliary_samples, state, profile_state->calibration_ready,
             GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, gain,
-            working) != 0)
+            working, optional_plane0) != 0)
         goto out;
     }
   else
@@ -275,28 +297,34 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
           uint32_t combined_gain = goodix_milan_profile9_combine_gain (
             MILAN_FIXED_ONE, state->application_gain_map[i],
             state->auxiliary_gain_map[i], profile_state->calibration_ready);
+          uint32_t secondary_divisor =
+            state->sample_count <= 3 || profile_state->calibration_ready != 0
+              ? MILAN_FIXED_ONE
+              : state->secondary_auxiliary_gain_map[i];
 
           gain[i] = (uint16_t) combined_gain;
           if (state->calibration_map[i] != 0)
-            working[i] = combined_gain == 0
-                           ? (uint16_t) ((uint32_t) working[i] << 14)
-                           : (uint16_t) (((uint32_t) working[i] *
-                                           (MILAN_FIXED_ONE * 2) +
-                                         combined_gain / 2) /
-                                        combined_gain);
+            {
+              optional_plane0[i] = secondary_divisor == 0
+                                     ? (uint16_t) ((uint32_t) working[i] << 14)
+                                     : (uint16_t) (((uint32_t) working[i] *
+                                                     (MILAN_FIXED_ONE * 2) +
+                                                   secondary_divisor / 2) /
+                                                  secondary_divisor);
+              working[i] = combined_gain == 0
+                             ? (uint16_t) ((uint32_t) working[i] << 14)
+                             : (uint16_t) (((uint32_t) working[i] *
+                                             (MILAN_FIXED_ONE * 2) +
+                                           combined_gain / 2) /
+                                          combined_gain);
+            }
+          else
+            optional_plane0[i] = working[i];
         }
     }
   for (size_t i = 0; i < count; i++)
     refined_pixels += contrast_mask[i] != 0;
   refined_percent = (uint16_t) (refined_pixels * 100 / count);
-
-  classification_status = goodix_milan_profile9_build_broken_mask (
-    state, difference, setup_map, normalized_live, contrast_mask,
-    GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, broken_mask,
-    NULL, &metadata_mode, &apply_metadata_mask);
-  if (classification_status != 0 &&
-      classification_status != GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
-    goto out;
 
   if (goodix_milan_preprocess_contrast (
         working, contrast_mask, GOODIX_MILAN_SENSOR_ROWS,
@@ -304,18 +332,33 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
       goodix_milan_preprocess_selection_mask (
         contrast, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
         selection_mask) != 0 ||
-      goodix_milan_preprocess_refine (
+      preprocess_refine_core (
         working, contrast_mask, refined_percent, GOODIX_MILAN_SENSOR_ROWS,
-        GOODIX_MILAN_SENSOR_COLUMNS, refined) != 0 ||
+        GOODIX_MILAN_SENSOR_COLUMNS, refined_source, refined) != 0 ||
       goodix_milan_preprocess_select_output (
         contrast, refined, selection_mask, GOODIX_MILAN_SENSOR_ROWS,
         GOODIX_MILAN_SENSOR_COLUMNS, 800, output, &selected_refined) != 0)
     goto out;
   post_status = milan_profile9_post_render (
     state, normalized_live, setup_map, contrast_mask, working,
-    reciprocal_plane, output, selection_mask, selected_refined, purpose,
-    profile_state->calibration_ready);
+    optional_plane0, reciprocal_plane, output, selection_mask,
+    selected_refined, purpose,
+    profile_state->calibration_ready, &first_metadata_mask,
+    &first_metadata_owned_mask,
+    &first_metadata_mode, &first_metadata_apply);
   if (post_status < 0)
+    goto out;
+  milan_profile9_encode_metadata (
+    output, first_metadata_mask, GOODIX_MILAN_SENSOR_ROWS,
+    GOODIX_MILAN_SENSOR_COLUMNS, first_metadata_mode, first_metadata_apply);
+  free (first_metadata_owned_mask);
+  first_metadata_owned_mask = NULL;
+  classification_status = goodix_milan_profile9_build_broken_mask (
+    state, difference, setup_map, normalized_live, contrast_mask,
+    GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, broken_mask,
+    NULL, &metadata_mode, &apply_metadata_mask);
+  if (classification_status != 0 &&
+      classification_status != GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
     goto out;
   milan_profile9_encode_metadata (
     output, broken_mask, GOODIX_MILAN_SENSOR_ROWS,
@@ -335,6 +378,7 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
              ? classification_status : post_status;
 
 out:
+  free (first_metadata_owned_mask);
   free (selection_mask);
   free (contrast_mask);
   free (broken_mask);
@@ -342,6 +386,8 @@ out:
   free (contrast);
   free (mask);
   free (reciprocal_plane);
+  free (optional_plane0);
+  free (refined_source);
   free (working);
   free (gain);
   free (difference);
@@ -839,7 +885,8 @@ first_update_frame_core (const uint16_t *normalized_live,
                           size_t          rows,
                           size_t          columns,
                           uint16_t       *gain_map,
-                          uint16_t       *output)
+                          uint16_t       *output,
+                          uint16_t       *optional_plane0)
 {
   size_t count;
   uint32_t *ratio = NULL;
@@ -852,7 +899,8 @@ first_update_frame_core (const uint16_t *normalized_live,
   int calibration_admitted = 0;
 
   if (!normalized_live || !setup_map || !gain_map || !output ||
-      gain_map == output || rows < 2 || columns < 2 ||
+      gain_map == output || optional_plane0 == gain_map ||
+      optional_plane0 == output || rows < 2 || columns < 2 ||
       rows > PTRDIFF_MAX || columns > PTRDIFF_MAX ||
       columns > SIZE_MAX / rows)
     return -1;
@@ -938,6 +986,15 @@ first_update_frame_core (const uint16_t *normalized_live,
             state->auxiliary_sample_count++;
           state->update_state = 1;
         }
+      if (optional_plane0)
+        for (size_t i = 0; i < count; i++)
+          optional_plane0[i] =
+            state->sample_count <= 3 || calibration_ready != 0
+              ? gain_map[i]
+              : (uint16_t) (((uint32_t) gain_map[i] *
+                              state->secondary_auxiliary_gain_map[i] +
+                              MILAN_FIXED_ONE / 2) >>
+                             13);
       for (size_t i = 0; i < count; i++)
         {
           gain_map[i] = goodix_milan_profile9_combine_gain (
@@ -976,18 +1033,39 @@ first_update_frame_core (const uint16_t *normalized_live,
           gain_map[i] =
             (uint16_t) (((uint32_t) gain_map[i] * auxiliary_gain + 0x1000) >>
                         13);
+          if (optional_plane0)
+            optional_plane0[i] = gain_map[i];
         }
     }
 
   for (size_t i = 0; i < count; i++)
-    output[i] = application_map && application_map[i] == 0
-                  ? difference[i]
-                  : gain_map[i] == 0
-                      ? (uint16_t) ((uint32_t) difference[i] << 14)
-                      : (uint16_t) (((uint32_t) difference[i] *
+    {
+      uint16_t secondary_divisor = optional_plane0 ? optional_plane0[i] : 0;
+
+      if (application_map && application_map[i] == 0)
+        {
+          output[i] = difference[i];
+          if (optional_plane0)
+            optional_plane0[i] = difference[i];
+        }
+      else
+        {
+          output[i] = gain_map[i] == 0
+                        ? (uint16_t) ((uint32_t) difference[i] << 14)
+                        : (uint16_t) (((uint32_t) difference[i] *
                                         (MILAN_FIXED_ONE * 2) +
                                       gain_map[i] / 2) /
                                      gain_map[i]);
+          if (optional_plane0)
+            optional_plane0[i] =
+              secondary_divisor == 0
+                ? (uint16_t) ((uint32_t) difference[i] << 14)
+                : (uint16_t) (((uint32_t) difference[i] *
+                                (MILAN_FIXED_ONE * 2) +
+                              secondary_divisor / 2) /
+                             secondary_divisor);
+        }
+    }
 
   free (median);
   free (application_gaussian);
@@ -1009,27 +1087,17 @@ allocation_failed:
   return -1;
 }
 
-int
-goodix_milan_preprocess_refine (const uint16_t *source,
-                            const uint8_t  *mask,
-                            uint16_t        valid_percent,
-                            size_t          rows,
-                            size_t          columns,
-                            uint8_t         *output)
+static int
+preprocess_refine_core (const uint16_t *source,
+                        const uint8_t  *mask,
+                        uint16_t        valid_percent,
+                        size_t          rows,
+                        size_t          columns,
+                        uint16_t       *centered,
+                        uint8_t        *output)
 {
-  size_t count;
-  uint16_t *centered;
-  int result;
-
-  if (!source || !mask || !output || rows == 0 || columns == 0 ||
+  if (!source || !mask || !centered || !output || rows == 0 || columns == 0 ||
       columns > SIZE_MAX / rows)
-    return -1;
-
-  count = rows * columns;
-  if (count > SIZE_MAX / sizeof(*centered))
-    return -1;
-  centered = malloc (count * sizeof(*centered));
-  if (!centered)
     return -1;
 
   for (size_t row = 0; row < rows; row++)
@@ -1063,8 +1131,33 @@ goodix_milan_preprocess_refine (const uint16_t *source,
         }
     }
 
-  result = goodix_milan_preprocess_contrast (centered, mask, rows, columns,
-                                          output);
+  return goodix_milan_preprocess_contrast (
+    centered, mask, rows, columns, output);
+}
+
+int
+goodix_milan_preprocess_refine (const uint16_t *source,
+                                const uint8_t  *mask,
+                                uint16_t        valid_percent,
+                                size_t          rows,
+                                size_t          columns,
+                                uint8_t         *output)
+{
+  size_t count;
+  uint16_t *centered;
+  int result;
+
+  if (!source || !mask || !output || rows == 0 || columns == 0 ||
+      columns > SIZE_MAX / rows)
+    return -1;
+  count = rows * columns;
+  if (count > SIZE_MAX / sizeof(*centered))
+    return -1;
+  centered = malloc (count * sizeof(*centered));
+  if (!centered)
+    return -1;
+  result = preprocess_refine_core (
+    source, mask, valid_percent, rows, columns, centered, output);
   free (centered);
   return result;
 }
@@ -1959,7 +2052,8 @@ milan_contrast_core (const uint16_t *source,
                       const uint8_t  *mask,
                       size_t          rows,
                       size_t          columns,
-                      uint8_t         *output)
+                      uint8_t         *output,
+                      int              refine_diagonals)
 {
   size_t count;
   uint16_t *horizontal_min;
@@ -2047,34 +2141,35 @@ milan_contrast_core (const uint16_t *source,
           uint16_t lower = horizontal_min[index];
           uint16_t upper = horizontal_max[index];
 
-          for (int row_delta = -1; row_delta <= 1; row_delta += 2)
-            {
-              size_t neighbor_row;
+          if (refine_diagonals)
+            for (int row_delta = -1; row_delta <= 1; row_delta += 2)
+              {
+                size_t neighbor_row;
 
-              if ((row_delta < 0 && row == 0) ||
-                  (row_delta > 0 && row + 1 == rows))
-                continue;
-              neighbor_row = row_delta < 0 ? row - 1 : row + 1;
+                if ((row_delta < 0 && row == 0) ||
+                    (row_delta > 0 && row + 1 == rows))
+                  continue;
+                neighbor_row = row_delta < 0 ? row - 1 : row + 1;
 
-              for (int column_delta = -1; column_delta <= 1;
-                   column_delta += 2)
-                {
-                  size_t neighbor_column;
-                  size_t neighbor;
+                for (int column_delta = -1; column_delta <= 1;
+                     column_delta += 2)
+                  {
+                    size_t neighbor_column;
+                    size_t neighbor;
 
-                  if ((column_delta < 0 && column == 0) ||
-                      (column_delta > 0 && column + 1 == columns))
-                    continue;
-                  neighbor_column =
-                    column_delta < 0 ? column - 1 : column + 1;
-                  neighbor = neighbor_row * columns + neighbor_column;
+                    if ((column_delta < 0 && column == 0) ||
+                        (column_delta > 0 && column + 1 == columns))
+                      continue;
+                    neighbor_column =
+                      column_delta < 0 ? column - 1 : column + 1;
+                    neighbor = neighbor_row * columns + neighbor_column;
 
-                  if (horizontal_min[neighbor] > lower)
-                    lower = horizontal_min[neighbor];
-                  if (horizontal_max[neighbor] < upper)
-                    upper = horizontal_max[neighbor];
-                }
-            }
+                    if (horizontal_min[neighbor] > lower)
+                      lower = horizontal_min[neighbor];
+                    if (horizontal_max[neighbor] < upper)
+                      upper = horizontal_max[neighbor];
+                  }
+              }
 
           if (mask[index] == 0)
             output[index] = UINT8_MAX;
@@ -2133,7 +2228,7 @@ goodix_milan_preprocess_contrast (const uint16_t *source,
     source, mask, rows, columns, profile_source);
   if (result == 0)
     result = milan_contrast_core (
-      profile_source, mask, rows, columns, output);
+      profile_source, mask, rows, columns, output, 1);
   free (profile_source);
   return result;
 }
@@ -2250,65 +2345,6 @@ milan_profile9_make_reciprocal_plane (const uint16_t *application_gain,
                   : (uint16_t) ((UINT32_C(8000) * MILAN_FIXED_ONE +
                                  application_gain[i] / 2) /
                                 application_gain[i]);
-}
-
-static int
-milan_profile9_secondary_working (
-  const uint16_t             *normalized_live,
-  const uint16_t             *setup_map,
-  const uint8_t              *render_mask,
-  const GoodixMilanPreprocessState *state,
-  size_t                      rows,
-  size_t                      columns,
-  uint16_t                   *output)
-{
-  size_t count = rows * columns;
-  uint16_t *difference = NULL;
-  uint16_t *median = NULL;
-  int result = -1;
-
-  difference = malloc (count * sizeof(*difference));
-  median = malloc (count * sizeof(*median));
-  if (!difference || !median)
-    goto out;
-
-  profile9_update_source (normalized_live, setup_map, count, difference);
-  median3x3_core (difference, rows, columns, median);
-  for (size_t i = 0; i < count; i++)
-    {
-      uint32_t gain = MILAN_FIXED_ONE;
-      uint32_t secondary_gain;
-
-      if (difference[i] != 0 && median[i] != 0)
-        {
-          int32_t deviation = (int32_t) difference[i] - (int32_t) median[i];
-
-          if (deviation < 0)
-            deviation = -deviation;
-          if (deviation > 1800)
-            gain = ((uint32_t) difference[i] * MILAN_FIXED_ONE +
-                    median[i] / 2) /
-                   median[i];
-          if (gain > INT16_MAX)
-            gain = INT16_MAX;
-        }
-      secondary_gain =
-        (gain * state->secondary_auxiliary_gain_map[i] + 0x1000) >> 13;
-      output[i] = render_mask[i] == 0
-                    ? difference[i]
-                    : secondary_gain == 0
-                        ? (uint16_t) ((uint32_t) difference[i] << 14)
-                        : (uint16_t) (((uint32_t) difference[i] *
-                                        (MILAN_FIXED_ONE * 2) +
-                                      secondary_gain / 2) /
-                                     secondary_gain);
-    }
-  result = 0;
-
-out:
-  free (median);
-  free (difference);
-  return result;
 }
 
 static int
@@ -2430,16 +2466,67 @@ milan_profile9_component_score (const uint8_t *frame,
 }
 
 static int
+milan_profile9_center_rows (const uint16_t *source,
+                            const uint8_t  *render_mask,
+                            size_t          rows,
+                            size_t          columns,
+                            uint16_t       *centered)
+{
+  size_t count = rows * columns;
+  size_t mask_count = 0;
+
+  if (!source || !render_mask || !centered)
+    return -1;
+  for (size_t i = 0; i < count; i++)
+    mask_count += render_mask[i] != 0;
+  int mask_percent = (int) (mask_count * 100 / count);
+
+  for (size_t row = 0; row < rows; row++)
+    {
+      uint32_t sum = 0;
+      size_t contributors = 0;
+
+      for (size_t column = 0; column < columns; column++)
+        {
+          size_t index = row * columns + column;
+
+          if (mask_percent >= 96 || render_mask[index] != 0)
+            {
+              sum += source[index];
+              contributors++;
+            }
+        }
+      uint16_t mean = contributors != 0 ? (uint16_t) (sum / contributors) : 0;
+
+      for (size_t column = 0; column < columns; column++)
+        {
+          size_t index = row * columns + column;
+          int value;
+
+          if (mask_percent < 96 && render_mask[index] == 0)
+            value = 5000;
+          else
+            value = (int) source[index] - mean + 5000;
+          centered[index] = (uint16_t) (value > 0 ? value : 0);
+        }
+    }
+  return 0;
+}
+
+static int
 milan_profile9_disagreement (const uint16_t *working,
                              const uint8_t  *render_mask,
                              size_t          rows,
                              size_t          columns,
+                             int             selected_refined,
                              uint8_t        *component_mask,
                              int            *component_score,
                              int            *component_flag,
                              int            *disagreement)
 {
   size_t count = rows * columns;
+  uint16_t *centered = NULL;
+  const uint16_t *diagnostic_source = working;
   uint8_t *diagnostic = NULL;
   uint8_t *gradient_mask = NULL;
   size_t source_count = 0;
@@ -2449,10 +2536,18 @@ milan_profile9_disagreement (const uint16_t *working,
 
   diagnostic = malloc (count);
   gradient_mask = malloc (count);
-  if (!diagnostic || !gradient_mask)
+  centered = selected_refined ? malloc (count * sizeof(*centered)) : NULL;
+  if (!diagnostic || !gradient_mask || (selected_refined && !centered))
     goto out;
+  if (selected_refined)
+    {
+      if (milan_profile9_center_rows (
+            working, render_mask, rows, columns, centered) != 0)
+        goto out;
+      diagnostic_source = centered;
+    }
   if (milan_profile9_diagnostic_contrast (
-        working, render_mask, rows, columns, diagnostic) != 0 ||
+        diagnostic_source, render_mask, rows, columns, diagnostic) != 0 ||
       quality_coverage_mask_core (
         diagnostic, rows, columns, 80, UINT8_MAX, gradient_mask,
         &ignored_coverage) != 0)
@@ -2460,7 +2555,7 @@ milan_profile9_disagreement (const uint16_t *working,
 
   for (size_t i = 0; i < count; i++)
     {
-      component_mask[i] = render_mask[i] != 0 ? UINT8_MAX : 0;
+      component_mask[i] = render_mask[i];
       if (render_mask[i] != 0)
         {
           source_count++;
@@ -2487,6 +2582,7 @@ milan_profile9_disagreement (const uint16_t *working,
   result = 0;
 
 out:
+  free (centered);
   free (gradient_mask);
   free (diagnostic);
   return result;
@@ -2507,7 +2603,7 @@ milan_profile9_rerender (const uint16_t *source,
 
   if (!refined)
     return milan_contrast_core (
-      source, render_mask, rows, columns, output);
+      source, render_mask, rows, columns, output, 0);
 
   centered = malloc (count * sizeof(*centered));
   if (!centered)
@@ -2546,7 +2642,7 @@ milan_profile9_rerender (const uint16_t *source,
         }
     }
   result = milan_contrast_core (
-    centered, render_mask, rows, columns, output);
+    centered, render_mask, rows, columns, output, 0);
   free (centered);
   return result;
 }
@@ -2577,17 +2673,21 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
                             const uint16_t             *setup_map,
                             const uint8_t              *render_mask,
                             const uint16_t             *working,
+                            const uint16_t             *optional_plane0,
                             const uint16_t             *reciprocal_plane,
                             const uint8_t              *selected,
                             const uint8_t              *selection_mask,
                             int                         selected_refined,
                             GoodixMilanPreprocessPurpose purpose,
-                            uint32_t                     calibration_ready)
+                            uint32_t                     calibration_ready,
+                            const uint8_t              **first_metadata_mask,
+                            uint8_t                    **first_metadata_owned_mask,
+                            int                         *first_metadata_mode,
+                            int                         *first_metadata_apply)
 {
   const size_t rows = GOODIX_MILAN_SENSOR_ROWS;
   const size_t columns = GOODIX_MILAN_SENSOR_COLUMNS;
   const size_t count = GOODIX_MILAN_SENSOR_PIXELS;
-  uint16_t *secondary_working = NULL;
   uint16_t *nested_gain = NULL;
   uint16_t *nested_output = NULL;
   uint8_t *primary_render = NULL;
@@ -2603,26 +2703,22 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
   int primary_metric;
   int fallback_metric = 200;
   int quality_gate;
+  int mode = 0;
   int status = 0;
   int result = -1;
 
   (void) purpose;
-  secondary_working = malloc (count * sizeof(*secondary_working));
   primary_render = malloc (count);
   fallback_render = malloc (count);
   component_mask = malloc (count);
-  if (!secondary_working || !primary_render || !fallback_render ||
-      !component_mask)
+  if (!primary_render || !fallback_render || !component_mask)
     goto out;
 
-  if (milan_profile9_secondary_working (
-        normalized_live, setup_map, render_mask, state, rows, columns,
-        secondary_working) != 0 ||
-      milan_profile9_disagreement (
-        working, render_mask, rows, columns, component_mask,
+  if (milan_profile9_disagreement (
+        working, render_mask, rows, columns, selected_refined, component_mask,
         &component_score, &component_flag, &disagreement) != 0 ||
       milan_profile9_rerender (
-        secondary_working, render_mask, rows, columns, selected_refined,
+        optional_plane0, render_mask, rows, columns, selected_refined,
         primary_render) != 0)
     goto out;
 
@@ -2634,7 +2730,7 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
     {
       if (milan_contrast_core (
             reciprocal_plane, render_mask, rows, columns,
-            fallback_render) != 0)
+            fallback_render, 0) != 0)
         goto out;
       fallback_metric = milan_profile9_mean_absolute_difference (
         selected, fallback_render, quality_mask, count);
@@ -2651,8 +2747,10 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
   if (!quality_gate)
     {
       result = 0;
-      goto out;
+      goto publish;
     }
+
+  mode = 4;
 
   for (size_t i = 0; i < count; i++)
     mask_count += render_mask[i] != 0;
@@ -2661,10 +2759,12 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
                                   ? disagreement * 100 / mask_percent
                                   : disagreement;
 
-  if (disagreement > 40 || normalized_disagreement > 33)
-    status = GOODIX_MILAN_PREPROCESS_RETRY;
-
   saved_sample_count = state->sample_count;
+  if (disagreement > 40 || normalized_disagreement > 33)
+    {
+      status = GOODIX_MILAN_PREPROCESS_RETRY;
+      mode = saved_sample_count < 100 && primary_metric > 85 ? 3 : 2;
+    }
   if (saved_sample_count < 100 && disagreement > 90)
     {
       auxiliary_samples = state->auxiliary_sample_count;
@@ -2677,7 +2777,7 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
             normalized_live, setup_map, state->calibration_map,
             state->application_gain_map, state->auxiliary_gain_map,
             auxiliary_samples, state, calibration_ready, rows, columns,
-            nested_gain, nested_output) != 0)
+            nested_gain, nested_output, NULL) != 0)
         {
           state->sample_count = saved_sample_count;
           goto out;
@@ -2688,12 +2788,26 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
   state->post_render.status = status;
   result = status;
 
+publish:
+  *first_metadata_apply = component_flag;
+  *first_metadata_mode = mode;
+  if (component_flag)
+    {
+      *first_metadata_mask = component_mask;
+      *first_metadata_owned_mask = component_mask;
+      component_mask = NULL;
+    }
+  else
+    {
+      *first_metadata_mask = selection_mask;
+      *first_metadata_owned_mask = NULL;
+    }
+
 out:
   free (component_mask);
   free (fallback_render);
   free (primary_render);
   free (nested_output);
   free (nested_gain);
-  free (secondary_working);
   return result;
 }

@@ -29,7 +29,7 @@
 static const char accepted_preprocess_sha256[] =
   "4882d43dd7208d554362fa832c7f6a5f9b3f79b382099d3d81efc702120c6b5e";
 static const char post_render_retry_sha256[] =
-  "8b9629cb2aa7bf3d44a13c9ab087b961e02adf29644c237032597bf24401d943";
+  "448ecc968b50d65c49667381450c20374a62d9ab3da27bf9e97035826324ed07";
 static const char feature_extraction_sha256[] =
   "5c4a2989778d3ce15ffc7f928544a1fa3a84feb8279e5928b51ca014400ed6a3";
 static const char feature_template_sha256[] =
@@ -214,7 +214,7 @@ test_preprocess_post_render_retry (void)
   g_assert_cmpint (status, ==, GOODIX_MILAN_PREPROCESS_RETRY);
   g_assert_cmpint (quality, ==, 0);
   g_assert_cmpint (coverage, ==, 18);
-  g_assert_cmpint (state->post_render.primary_metric, ==, 110);
+  g_assert_cmpint (state->post_render.primary_metric, ==, 120);
   g_assert_cmpint (state->post_render.fallback_metric, ==, 200);
   g_assert_cmpint (state->post_render.disagreement, ==, 100);
   g_assert_cmpint (state->post_render.component_score, ==, 0);
