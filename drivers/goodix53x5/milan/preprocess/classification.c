@@ -863,6 +863,11 @@ milan_profile9_adaptive_mask (const uint16_t *scores,
         samples++;
       }
   average = samples != 0 ? (int) ((sum + samples / 2) / samples) : 0;
+  if (samples == 0)
+    {
+      memset (output, 0, count);
+      return 0;
+    }
   seed_threshold = seed_scale * average >> 8;
   capped_seed = 5 * average;
   if (capped_seed > base_seed)
