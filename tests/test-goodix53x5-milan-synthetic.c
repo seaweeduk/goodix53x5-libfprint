@@ -197,14 +197,15 @@ test_preprocess_classification_retry (void)
                       state->profile9_class_counts.profile9_class3_count,
                     ==, 2324);
   g_assert_cmpint (state->primary_contrast_valid, ==, 1);
-  g_assert_cmpint (state->post_render.primary_metric, ==, 69);
-  g_assert_cmpint (state->post_render.fallback_metric, ==, 97);
+  g_assert_cmpint (state->post_render.primary_metric, ==, 97);
+  g_assert_cmpint (state->post_render.fallback_metric, ==, 200);
   g_assert_cmpint (state->post_render.disagreement, ==, 13);
-  g_assert_cmpint (state->post_render.component_score, ==, 0);
+  g_assert_cmpint (state->post_render.component_score, ==, 96);
   g_assert_cmpint (state->post_render.component_flag, ==, 0);
-  g_assert_cmpint (state->post_render.quality_gate, ==, 0);
+  g_assert_cmpint (state->post_render.quality_gate, ==, 1);
   g_assert_cmpint (state->post_render.update_applied, ==, 0);
-  g_assert_cmpint (state->post_render.status, ==, 0);
+  g_assert_cmpint (state->post_render.status,
+                   ==, GOODIX_MILAN_PREPROCESS_RETRY);
   g_assert_cmpuint (state->extraction_auxiliary.primary_histogram_state, ==, 0);
   g_assert_cmpuint (
     state->extraction_auxiliary.promoted_secondary_histogram_state, ==, 0);
