@@ -78,7 +78,10 @@ static int milan_profile9_post_render (
   const uint8_t              *selection_mask,
   int                         selected_refined,
   GoodixMilanPreprocessPurpose purpose,
-  uint32_t                     calibration_ready);
+  uint32_t                     calibration_ready,
+  const uint8_t              **first_metadata_mask,
+  int                         *first_metadata_mode,
+  int                         *first_metadata_apply);
 
 static void
 profile9_initialize_gain_state (GoodixMilanPreprocessState *state)
@@ -174,7 +177,10 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   size_t admitted_pixels = 0;
   size_t refined_pixels = 0;
   uint32_t auxiliary_samples;
+  const uint8_t *first_metadata_mask;
   int selected_refined;
+  int first_metadata_mode;
+  int first_metadata_apply;
   int metadata_mode;
   int apply_metadata_mask;
   int classification_status;
@@ -314,9 +320,13 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   post_status = milan_profile9_post_render (
     state, normalized_live, setup_map, contrast_mask, working,
     reciprocal_plane, output, selection_mask, selected_refined, purpose,
-    profile_state->calibration_ready);
+    profile_state->calibration_ready, &first_metadata_mask,
+    &first_metadata_mode, &first_metadata_apply);
   if (post_status < 0)
     goto out;
+  milan_profile9_encode_metadata (
+    output, first_metadata_mask, GOODIX_MILAN_SENSOR_ROWS,
+    GOODIX_MILAN_SENSOR_COLUMNS, first_metadata_mode, first_metadata_apply);
   milan_profile9_encode_metadata (
     output, broken_mask, GOODIX_MILAN_SENSOR_ROWS,
     GOODIX_MILAN_SENSOR_COLUMNS, metadata_mode, apply_metadata_mask);
@@ -2582,7 +2592,10 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
                             const uint8_t              *selection_mask,
                             int                         selected_refined,
                             GoodixMilanPreprocessPurpose purpose,
-                            uint32_t                     calibration_ready)
+                            uint32_t                     calibration_ready,
+                            const uint8_t              **first_metadata_mask,
+                            int                         *first_metadata_mode,
+                            int                         *first_metadata_apply)
 {
   const size_t rows = GOODIX_MILAN_SENSOR_ROWS;
   const size_t columns = GOODIX_MILAN_SENSOR_COLUMNS;
@@ -2640,6 +2653,11 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
         selected, fallback_render, quality_mask, count);
       quality_gate = fallback_metric < 80;
     }
+
+  *first_metadata_mask = component_flag ? render_mask : selection_mask;
+  *first_metadata_mode = !quality_gate && primary_metric > 55 &&
+                         fallback_metric >= 80 ? 3 : 0;
+  *first_metadata_apply = component_flag;
 
   state->post_render.primary_metric = primary_metric;
   state->post_render.fallback_metric = fallback_metric;
