@@ -56,7 +56,7 @@ re-seal or reconstruct a missing report.
 | `FUN_180069820` validated border path | Profile-9 live path and non-inversion polarity are real | Validated/nonvalidated border distinction has exact controls | Over-range interaction with border copy remains unexecuted |
 | `FUN_18006b290` mode-9 severe result | No physical row returns `0xc351` | An approved-DLL setup/live boundary control returns `0xc351`, quality/coverage `0/12`, and populated output for both purposes; adapter status handling is exact | Physical prevalence is unknown |
 | `FUN_180048260` packed extraction class | Probe `c7` is only `0`, `0x100`, or `0x200`: 64/68/167 operations. The low class is always zero and high class is only 0/1/2 | `FUN_180070d90` controls all 12 raw decoder values | Nonzero low classes and produced high classes 3/4/5 are absent naturally |
-| `FUN_180048260` mode/output plane | Ordinary v3 probes select mode 0 and expose zero in the three defined summary bytes | An ordinary-selector focused chronology proves mode 1 is the first producer-reachable nonzero mode and defines summary `[1,0,0]`; the strict native width-230 mode-zero boundary has a complete matching witness | Mode 2 and projected modes 3/4/5 remain without focused producer/output execution |
+| `FUN_180048260` mode/output plane | Ordinary v3 probes select mode 0 and expose zero in the three defined summary bytes | Focused first-call ordinary controls prove direct mode 1 summary `[1,0,0]`, direct mode 2 summary `[2,0,1]`, and the strict native width-230 mode-zero boundary through complete matching | Projected modes 3/4/5 remain without focused producer/output execution |
 | Extraction history selector 2 | Frozen artifacts do not expose a selector-2 transition, prior-high reuse, or the inverted prior-coverage admission predicate | The complete scalar/ring behavior is static; ordinary WBF callers force the selector-producing argument to zero | Direct exported mode only, not an ordinary-operation coverage gap |
 | Serialized feature classes | Across 1,503 probe/gallery/candidate artifacts, all 40,697 feature elements use only `0`, `0x100`, or `0x200`; galleries/candidates contain no `0x200` | Downstream decoder and matcher-state controls cover valid class values | The real artifact manifold is much narrower than the valid packed-class domain |
 | `FUN_1800392f0` anti-fake output | Candidate count `3..100` across 66 values; texture `103..295`; mean `1501..2050`; variation `0..402`; boundary `12..18`; model `-50295..47621`; 167 support-mask hashes | Canonical-zero one-past-byte policy has paired controls | Broad output variation does not cover every upstream impulse or allocation boundary |
@@ -95,9 +95,10 @@ boundary remains established by focused 1,310-fail and 1,311-pass controls.
    prevalence.
 3. **Extraction mode production and class production, medium-high producer
    risk.** A focused ordinary chronology proves the native mode-1 target and
-   its summary/projection contract. The corpus still does not prove production
-   of nonzero low classes, high classes 3/4/5, mode 2, or mode-specific 3/4/5
-   `+0x158` projections.
+   its summary/projection contract, and an adjacent isolated-valley control
+   proves first-call direct mode 2 through complete output. The corpus still
+   does not prove production of nonzero low classes, high classes 3/4/5, or
+   mode-specific 3/4/5 `+0x158` projections.
 4. **Allocation-end impulse safety distinction, medium safety risk and low
    parity priority.** The DLL can read outside the residual allocation for a
    qualifying endpoint impulse. The native clamped fallback is an intentional
@@ -200,9 +201,9 @@ and study actions 2/3/5.
 
 It is not complete producer or state-machine coverage. Setup `0x29bb` and
 mode-9 rejection remain absent as physical rows even though focused controls
-establish their semantics. Extraction modes 2..5 and allocation-end impulse
-behavior remain producer gaps. The first nonzero mode 1 now has a focused
-ordinary producer/output case, and the native state1-one overlap margin has a
+establish their semantics. Extraction modes 3..5 and allocation-end impulse
+behavior remain producer gaps. Direct modes 1 and 2 now have focused ordinary
+producer/output cases, and the native state1-one overlap margin has a
 complete operation witness. The strict native width-230 classifier boundary
 also establishes the complete native mode-zero score,
 gallery, and persistence path. Those gaps explain how strict parity can be
