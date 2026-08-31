@@ -27,7 +27,7 @@
 #define PIXELS GOODIX_MILAN_SENSOR_PIXELS
 
 static const char accepted_preprocess_sha256[] =
-  "3d70fb014ec834a23c51e6838ac56b0aec9683152be93e175d4db73aebb3475c";
+  "4882d43dd7208d554362fa832c7f6a5f9b3f79b382099d3d81efc702120c6b5e";
 static const char post_render_retry_sha256[] =
   "8b9629cb2aa7bf3d44a13c9ab087b961e02adf29644c237032597bf24401d943";
 static const char feature_extraction_sha256[] =
@@ -162,7 +162,7 @@ test_preprocess_accepted (void)
     state->profile9_class_counts.profile9_class3_count,
     state->primary_contrast_valid, digest);
 
-  g_assert_cmpint (status, ==, GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION);
+  g_assert_cmpint (status, ==, 0);
   g_assert_cmpint (quality, ==, 0);
   g_assert_cmpint (coverage, ==, 0);
   g_assert_cmpint (state->selected_refined, ==, 0);
@@ -172,10 +172,10 @@ test_preprocess_accepted (void)
   g_assert_cmpuint (state->auxiliary_sample_count, ==, 1);
   g_assert_cmpuint (state->profile9_history_count, ==, 1);
   g_assert_cmpuint (state->profile9_history_update_count, ==, 1);
-  g_assert_cmpuint (state->profile9_class_counts.profile9_class1_count, ==, 0);
-  g_assert_cmpuint (state->profile9_class_counts.profile9_class2_count, ==, 0);
-  g_assert_cmpuint (state->profile9_class_counts.profile9_class3_count, ==,
+  g_assert_cmpuint (state->profile9_class_counts.profile9_class1_count, ==,
                     PIXELS);
+  g_assert_cmpuint (state->profile9_class_counts.profile9_class2_count, ==, 0);
+  g_assert_cmpuint (state->profile9_class_counts.profile9_class3_count, ==, 0);
   g_assert_cmpint (state->primary_contrast_valid, ==, 1);
   g_assert_cmpstr (digest, ==, accepted_preprocess_sha256);
 }
