@@ -26,8 +26,8 @@
 
 #define PIXELS GOODIX_MILAN_SENSOR_PIXELS
 
-static const char accepted_preprocess_sha256[] =
-  "73aa3708808ee4b9fb9c7f1fe2b24e6bf654494303354eb6605f4080341cd52f";
+static const char classification_retry_sha256[] =
+  "d698e50cd02121c7645d57a9d9de155667ca1d3df42d8cec62abba4cfdf17e85";
 static const char post_render_retry_sha256[] =
   "448ecc968b50d65c49667381450c20374a62d9ab3da27bf9e97035826324ed07";
 static const char feature_extraction_sha256[] =
@@ -57,14 +57,23 @@ assert_chip_subtype_mapping (void)
 }
 
 static void
-generate_constant_frames (uint16_t *setup,
-                          uint16_t *live)
+generate_classification_retry_frames (uint16_t *setup,
+                                      uint16_t *live)
 {
-  for (size_t i = 0; i < PIXELS; i++)
-    {
-      setup[i] = 1000;
-      live[i] = 2000;
-    }
+  size_t interior = 0;
+
+  memset (setup, 0, PIXELS * sizeof(*setup));
+  memset (live, 0, PIXELS * sizeof(*live));
+  for (int row = 2; row < 86; row++)
+    for (int column = 2; column < 106; column++, interior++)
+      {
+        size_t index = (size_t) row * GOODIX_MILAN_SENSOR_COLUMNS + column;
+
+        if (interior < 7426)
+          setup[index] = 1000;
+        if (interior < 1311)
+          live[index] = 1000;
+      }
 }
 
 static void
@@ -129,7 +138,7 @@ generate_match_info (void)
 }
 
 static void
-test_preprocess_accepted (void)
+test_preprocess_classification_retry (void)
 {
   assert_chip_subtype_mapping ();
 
@@ -144,39 +153,63 @@ test_preprocess_accepted (void)
   int coverage = -1;
   int status;
 
-  generate_constant_frames (setup, live);
+  generate_classification_retry_frames (setup, live);
   goodix_milan_preprocess_reset (state);
   status = goodix_milan_preprocess (
     state, &profile, setup, live, GOODIX_MILAN_PURPOSE_IDENTIFY, processed,
     &quality, &coverage);
   digest = sha256 (processed, PIXELS);
   g_test_message (
-    "accepted status=%d quality=%d coverage=%d selected=%d samples=%u "
-    "stable=%u update=%u auxiliary=%u history=%u/%u classes=%u/%u/%u "
+    "classification-retry status=%d quality=%d coverage=%d selected=%d "
+    "samples=%u stable=%u update=%u auxiliary=%u history=%u/%u "
+    "classes=%u/%u/%u/%u "
     "primary-valid=%d hash=%s",
     status, quality, coverage, state->selected_refined, state->sample_count,
     state->stable_count, state->update_state, state->auxiliary_sample_count,
     state->profile9_history_count, state->profile9_history_update_count,
+    PIXELS - state->profile9_class_counts.profile9_class1_count -
+      state->profile9_class_counts.profile9_class2_count -
+      state->profile9_class_counts.profile9_class3_count,
     state->profile9_class_counts.profile9_class1_count,
     state->profile9_class_counts.profile9_class2_count,
     state->profile9_class_counts.profile9_class3_count,
     state->primary_contrast_valid, digest);
 
-  g_assert_cmpint (status, ==, 0);
+  g_assert_cmpint (status, ==, GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION);
   g_assert_cmpint (quality, ==, 0);
-  g_assert_cmpint (coverage, ==, 0);
-  g_assert_cmpint (state->selected_refined, ==, 0);
+  g_assert_cmpint (coverage, ==, 12);
+  g_assert_cmpint (state->selected_refined, ==, 1);
   g_assert_cmpuint (state->sample_count, ==, 1);
   g_assert_cmpuint (state->stable_count, ==, 0);
   g_assert_cmpuint (state->update_state, ==, 1);
   g_assert_cmpuint (state->auxiliary_sample_count, ==, 1);
-  g_assert_cmpuint (state->profile9_history_count, ==, 1);
-  g_assert_cmpuint (state->profile9_history_update_count, ==, 1);
+  g_assert_cmpuint (state->profile9_history_count, ==, 0);
+  g_assert_cmpuint (state->profile9_history_update_count, ==, 0);
+  g_assert_cmpuint (state->profile9_history_mask_threshold, ==, 60);
+  g_assert_cmpuint (state->profile9_history_mask_average, ==, 0);
   g_assert_cmpuint (state->profile9_class_counts.profile9_class1_count, ==, 0);
   g_assert_cmpuint (state->profile9_class_counts.profile9_class2_count, ==, 0);
-  g_assert_cmpuint (state->profile9_class_counts.profile9_class3_count, ==, 0);
+  g_assert_cmpuint (state->profile9_class_counts.profile9_class3_count, ==,
+                    7180);
+  g_assert_cmpuint (PIXELS -
+                      state->profile9_class_counts.profile9_class1_count -
+                      state->profile9_class_counts.profile9_class2_count -
+                      state->profile9_class_counts.profile9_class3_count,
+                    ==, 2324);
   g_assert_cmpint (state->primary_contrast_valid, ==, 1);
-  g_assert_cmpstr (digest, ==, accepted_preprocess_sha256);
+  g_assert_cmpint (state->post_render.primary_metric, ==, 69);
+  g_assert_cmpint (state->post_render.fallback_metric, ==, 97);
+  g_assert_cmpint (state->post_render.disagreement, ==, 13);
+  g_assert_cmpint (state->post_render.component_score, ==, 0);
+  g_assert_cmpint (state->post_render.component_flag, ==, 0);
+  g_assert_cmpint (state->post_render.quality_gate, ==, 0);
+  g_assert_cmpint (state->post_render.update_applied, ==, 0);
+  g_assert_cmpint (state->post_render.status, ==, 0);
+  g_assert_cmpuint (state->extraction_auxiliary.primary_histogram_state, ==, 0);
+  g_assert_cmpuint (
+    state->extraction_auxiliary.promoted_secondary_histogram_state, ==, 0);
+  g_assert_cmpuint (state->application_gain_initialized, ==, 1);
+  g_assert_cmpstr (digest, ==, classification_retry_sha256);
 }
 
 static void
@@ -959,6 +992,8 @@ test_generated_production_replay (void)
 
   g_assert_nonnull (extracted);
   g_assert_nonnull (matched_extracted);
+  /* Keep this matcher fixture on native's queue-ineligible high-class arm. */
+  info->extraction_metadata.optional_c7 = 0x400;
   g_ptr_array_add (features, g_bytes_ref (matched_extracted));
   g_ptr_array_add (features, g_bytes_ref (extracted));
   goodix_match_free_info (matched_info);
@@ -1011,9 +1046,9 @@ test_generated_production_replay (void)
       g_assert_cmpint (result.retained_evidence_flag, ==, 0);
       g_assert_cmpint (result.study_control.study_finalization_gate, ==, 0);
       g_assert_cmpint (result.study_control.study_action_gate, ==, 0);
-      g_assert_cmpint (result.study_control.queue_candidate_eligible, ==, 1);
+      g_assert_cmpint (result.study_control.queue_candidate_eligible, ==, 0);
       g_assert_true (goodix_study_queue_validate (match_queue));
-      g_assert_cmpuint (goodix_study_queue_occupied (match_queue), ==, 1);
+      g_assert_cmpuint (goodix_study_queue_occupied (match_queue), ==, 0);
       g_assert_true (goodix_milan_print_validate_template (
         after_match, &after_match_info, &error));
       g_assert_no_error (error);
@@ -1031,7 +1066,7 @@ test_generated_production_replay (void)
       g_assert_null (negative_update);
       g_assert_cmpint (negative_action, ==, GOODIX_MILAN_STUDY_NONE);
       g_assert_true (goodix_study_queue_validate (match_queue));
-      g_assert_cmpuint (goodix_study_queue_occupied (match_queue), ==, 1);
+      g_assert_cmpuint (goodix_study_queue_occupied (match_queue), ==, 0);
       goodix_study_queue_free (match_queue);
 
       /* Independent generic action-0 transient subcase. With no retained
@@ -1142,8 +1177,8 @@ main (int argc,
       char **argv)
 {
   g_test_init (&argc, &argv, NULL);
-  g_test_add_func ("/goodix53x5/milan/preprocess-accepted",
-                   test_preprocess_accepted);
+  g_test_add_func ("/goodix53x5/milan/preprocess-classification-retry",
+                    test_preprocess_classification_retry);
   g_test_add_func ("/goodix53x5/milan/preprocess-post-render-retry",
                    test_preprocess_post_render_retry);
   g_test_add_func ("/goodix53x5/milan/first-positive", test_first_positive);
