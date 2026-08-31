@@ -54,9 +54,9 @@ static void profile9_update_source (const uint16_t *normalized_live,
                                     const uint16_t *setup_map,
                                     size_t          count,
                                     uint16_t       *output);
-static int profile9_normalize_live (uint16_t *frame,
-                                    size_t    rows,
-                                    size_t    columns);
+static int profile9_normalize_outer_edges (uint16_t *frame,
+                                           size_t    rows,
+                                           size_t    columns);
 static void milan_profile9_encode_metadata (uint8_t       *image,
                                             const uint8_t *mask,
                                             size_t         rows,
@@ -233,7 +233,7 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   if (goodix_milan_preprocess_make_setup_map (
         setup_map, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
         setup_map, &rounded_mean) != 0 ||
-      profile9_normalize_live (
+      profile9_normalize_outer_edges (
         normalized_live, GOODIX_MILAN_SENSOR_ROWS,
         GOODIX_MILAN_SENSOR_COLUMNS) != 0 ||
       goodix_milan_preprocess_build_mask (
@@ -432,9 +432,9 @@ goodix_milan_preprocess_normalize (uint16_t *frame,
 }
 
 static int
-profile9_normalize_live (uint16_t *frame,
-                         size_t    rows,
-                         size_t    columns)
+profile9_normalize_outer_edges (uint16_t *frame,
+                                size_t    rows,
+                                size_t    columns)
 {
   size_t count;
 
@@ -446,7 +446,7 @@ profile9_normalize_live (uint16_t *frame,
     if (frame[i] > MILAN_ADC_MAX)
       frame[i] = MILAN_ADC_MAX;
 
-  /* The validated live path copies outer edges but preserves inner-edge data. */
+  /* Validated profile-9 frames copy outer edges but preserve inner-edge data. */
   memcpy (frame, frame + columns, columns * sizeof(*frame));
   memcpy (frame + (rows - 1) * columns, frame + (rows - 2) * columns,
           columns * sizeof(*frame));
@@ -484,7 +484,7 @@ goodix_milan_preprocess_make_setup_map (const uint16_t *frame,
     return -1;
 
   memmove (setup_map, frame, count * sizeof(*setup_map));
-  if (goodix_milan_preprocess_normalize (setup_map, rows, columns) != 0)
+  if (profile9_normalize_outer_edges (setup_map, rows, columns) != 0)
     return -1;
 
   for (size_t i = 0; i < count; i++)
