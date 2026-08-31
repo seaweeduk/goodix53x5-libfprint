@@ -632,25 +632,15 @@ update_gaussian_core (const uint16_t *source,
 }
 
 static uint16_t
-median9 (const uint16_t *values)
+median3 (uint16_t a,
+         uint16_t b,
+         uint16_t c)
 {
-  uint16_t sorted[9];
+  uint16_t lower = a < b ? a : b;
+  uint16_t upper = a > b ? a : b;
+  uint16_t capped = upper < c ? upper : c;
 
-  memcpy (sorted, values, sizeof(sorted));
-  for (size_t i = 1; i < 9; i++)
-    {
-      uint16_t value = sorted[i];
-      size_t j = i;
-
-      while (j > 0 && sorted[j - 1] > value)
-        {
-          sorted[j] = sorted[j - 1];
-          j--;
-        }
-      sorted[j] = value;
-    }
-
-  return sorted[4];
+  return lower > capped ? lower : capped;
 }
 
 static void
@@ -664,16 +654,18 @@ median3x3_core (const uint16_t *source,
     {
       for (size_t column = 1; column + 1 < columns; column++)
         {
-          uint16_t values[9];
-          size_t index = 0;
+          uint16_t row_medians[3];
 
           for (ptrdiff_t row_offset = -1; row_offset <= 1; row_offset++)
-            for (ptrdiff_t column_offset = -1; column_offset <= 1;
-                 column_offset++)
-              values[index++] =
-                source[(row + row_offset) * columns + column + column_offset];
+            {
+              size_t index = (row + row_offset) * columns + column;
 
-          output[row * columns + column] = median9 (values);
+              row_medians[row_offset + 1] =
+                median3 (source[index - 1], source[index], source[index + 1]);
+            }
+
+          output[row * columns + column] =
+            median3 (row_medians[0], row_medians[1], row_medians[2]);
         }
     }
 }
