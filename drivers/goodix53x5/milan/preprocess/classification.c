@@ -1614,11 +1614,14 @@ goodix_milan_profile9_build_broken_mask (
     grow_threshold = 350;
 
   memset (broken_mask, 0, count);
-  for (size_t i = 0; i < count; i++)
-    broken_mask[i] = scores[i] >= seed_threshold ? UINT8_MAX : 0;
-  milan_profile9_flood (
-    (const int16_t *) scores, (int16_t) grow_threshold,
-    rows, columns, broken_mask);
+  if (score_count != 0)
+    {
+      for (size_t i = 0; i < count; i++)
+        broken_mask[i] = scores[i] >= seed_threshold ? UINT8_MAX : 0;
+      milan_profile9_flood (
+        (const int16_t *) scores, (int16_t) grow_threshold,
+        rows, columns, broken_mask);
+    }
   size_t selected = 0;
   for (size_t i = 0; i < count; i++)
     selected += broken_mask[i] != 0;
