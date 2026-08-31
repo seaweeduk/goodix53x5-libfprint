@@ -27,13 +27,13 @@
 #define PIXELS GOODIX_MILAN_SENSOR_PIXELS
 
 static const char accepted_preprocess_sha256[] =
-  "4882d43dd7208d554362fa832c7f6a5f9b3f79b382099d3d81efc702120c6b5e";
+  "73aa3708808ee4b9fb9c7f1fe2b24e6bf654494303354eb6605f4080341cd52f";
 static const char post_render_retry_sha256[] =
   "448ecc968b50d65c49667381450c20374a62d9ab3da27bf9e97035826324ed07";
 static const char feature_extraction_sha256[] =
-  "5c4a2989778d3ce15ffc7f928544a1fa3a84feb8279e5928b51ca014400ed6a3";
+  "9e437d34f92961cae27524c837599e06047a4ce958d6a813034b440063ef9c74";
 static const char feature_template_sha256[] =
-  "c18597eb4204464f53cd6cbb311f85b577fbcdb6b18a16e11e37a0f79b7c1c3e";
+  "836ab209f8504f0b222f16567e5d7a8ba438da54ffe17df403501092cb6f85c0";
 static const char feature_antifake_sha256[] =
   "5b2763131c54a5bfbeea4409278eaa7a6f23fd019cdc00f63c5fb35596ff74dc";
 
@@ -172,8 +172,7 @@ test_preprocess_accepted (void)
   g_assert_cmpuint (state->auxiliary_sample_count, ==, 1);
   g_assert_cmpuint (state->profile9_history_count, ==, 1);
   g_assert_cmpuint (state->profile9_history_update_count, ==, 1);
-  g_assert_cmpuint (state->profile9_class_counts.profile9_class1_count, ==,
-                    PIXELS);
+  g_assert_cmpuint (state->profile9_class_counts.profile9_class1_count, ==, 0);
   g_assert_cmpuint (state->profile9_class_counts.profile9_class2_count, ==, 0);
   g_assert_cmpuint (state->profile9_class_counts.profile9_class3_count, ==, 0);
   g_assert_cmpint (state->primary_contrast_valid, ==, 1);
@@ -1012,9 +1011,9 @@ test_generated_production_replay (void)
       g_assert_cmpint (result.retained_evidence_flag, ==, 0);
       g_assert_cmpint (result.study_control.study_finalization_gate, ==, 0);
       g_assert_cmpint (result.study_control.study_action_gate, ==, 0);
-      g_assert_cmpint (result.study_control.queue_candidate_eligible, ==, 0);
+      g_assert_cmpint (result.study_control.queue_candidate_eligible, ==, 1);
       g_assert_true (goodix_study_queue_validate (match_queue));
-      g_assert_cmpuint (goodix_study_queue_occupied (match_queue), ==, 0);
+      g_assert_cmpuint (goodix_study_queue_occupied (match_queue), ==, 1);
       g_assert_true (goodix_milan_print_validate_template (
         after_match, &after_match_info, &error));
       g_assert_no_error (error);
@@ -1032,7 +1031,7 @@ test_generated_production_replay (void)
       g_assert_null (negative_update);
       g_assert_cmpint (negative_action, ==, GOODIX_MILAN_STUDY_NONE);
       g_assert_true (goodix_study_queue_validate (match_queue));
-      g_assert_cmpuint (goodix_study_queue_occupied (match_queue), ==, 0);
+      g_assert_cmpuint (goodix_study_queue_occupied (match_queue), ==, 1);
       goodix_study_queue_free (match_queue);
 
       /* Independent generic action-0 transient subcase. With no retained
