@@ -518,17 +518,6 @@ int goodix_milan_preprocess_refine (const uint16_t *source,
                                 size_t          columns,
                                 uint8_t         *output);
 
-int goodix_milan_preprocess_selection_metric (const uint8_t *frame,
-                                           const uint8_t *mask,
-                                           size_t         rows,
-                                           size_t         columns);
-
-int goodix_milan_preprocess_masked_correlation (const uint8_t *first,
-                                             const uint8_t *second,
-                                             const uint8_t *mask,
-                                             size_t         rows,
-                                             size_t         columns);
-
 int goodix_milan_preprocess_select_output (const uint8_t *contrast,
                                        const uint8_t *refined,
                                        const uint8_t *mask,
