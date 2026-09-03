@@ -57,9 +57,11 @@ part of that volume is a direct consequence of how the code was recovered:
 So the answer is: yes, a lot of the volume comes from reproducing native
 structure function-by-function and layout-by-layout, and no, most of it cannot
 simply be deleted. It can be reshaped. A readability refactor in this style
-often makes a file *longer* (the worked example grows from 300 to 547 lines,
-102 of them comments) while making it far cheaper to understand. Line count is
-the wrong metric; the metrics that matter are in section 8.
+usually makes a file *longer*: in the worked example, logic lines grow from
+194 to 254 because four functions became nineteen, and in GNU style each
+helper costs five to eight lines of signature and braces before it does
+anything. That is the accepted price of names. Line count is the wrong metric;
+the metrics that matter are in section 8.
 
 ### 1.2 The concrete pain points
 
@@ -200,7 +202,7 @@ A refactoring PR changes representation, not behaviour. The following are
   order with the same data.
 - Extracting duplicated blocks into one helper, when the two blocks are
   textually identical after renaming.
-- Adding comments, file headers, and documentation.
+- Adding the four kinds of comment allowed by P3, and documentation.
 - Moving declarations between headers; splitting `milan.h`.
 - Replacing hand-rolled idioms with an equivalent helper when the result is
   identical for all inputs, including overflow and signedness (`abs` on an
@@ -248,9 +250,9 @@ algorithm correction with a readability change in one commit.
    and run `--compare-current` on at least the small campaign. If the
    baseline fails, stop; the refactor cannot be judged.
 4. **Refactor.** Prefer the transformations in section 3. Give every stage a
-   name that says what it computes, not where it came from. Write a file
-   header that states what the file produces, lists its stages, and names the
-   native owners so a reader can find the notes.
+   name that says what it computes, not where it came from. Write a short
+   file header that names the native owners, mark quirks, and stop there;
+   section P3 sets the comment budget.
 5. **Format.** `uncrustify -c .build/libfprint/scripts/uncrustify.cfg
    --replace --no-backup FILE`, then check the result is idempotent. The
    pinned libfprint checkout under `.build/` carries the config.
@@ -335,16 +337,35 @@ several outputs and a reviewer must confirm nothing was reordered.
 *Verification:* differential harness on the extracted helpers where they are
 pure; full campaigns for `match.c`.
 
-### P3. Comment intent and quirks
+### P3. Comment only what the names cannot say
 
 *Targets:* every algorithmic file; start with the ones a newcomer hits first
 (`milan/core.c`, `milan/runtime.c`, `milan/match/match.c`).
 
-A file header that says what the file produces and which native functions it
-mirrors. A short comment per stage. A `Native quirk:` comment at every place
-that would fail a naive code review. Comments explain *why* and *what native
-does*, never restate the code. This has no code risk and can ride along with
-P1 and P2 or be its own PR.
+Names do most of the work: once a function is called `zhang_suen_thin` and a
+constant is called `ANTIFAKE_CLASS_EXCLUDED`, a comment that says "thin the
+image" or "excluded pixels" is noise. The code is the primary document and
+comments are for what it cannot express. A comment is justified only when it
+carries one of these:
+
+- **`Native quirk:`** a behaviour a competent reviewer would "fix" (an odd
+  margin, a convergence test on one subpass, a sentinel that participates in
+  arithmetic). One line, stating the observable rule, not the history.
+- **An output-determining property that is not visible in the code**, such as
+  a queue's pop order or the fact that a visit order decides ties.
+- **Arithmetic semantics** that the C source hides: what a fixed-point factor
+  means, where 32-bit wrap is intentional, which shift is arithmetic.
+- **A file header of a few lines** saying what the file produces and naming
+  the native owners so the `re/milan` notes can be found.
+
+Everything else is left out: no per-function docstrings that paraphrase the
+signature, no narration of loops, no restating a constant's value in words.
+As a working budget, a well-named algorithmic file should need roughly one
+comment line per ten lines of logic, most of them the four kinds above. The
+first revision of the worked example carried 91 added comment lines on about
+250 lines of logic and was cut to 28 without losing information. If a comment
+seems necessary to explain what a block does, the fix is usually a better name
+or a smaller function, not the comment.
 
 ### P4. Internalize scratch buffers and tidy signatures
 
@@ -427,12 +448,11 @@ be tempted to fix.
 What the PR did:
 
 - Named the labels (`ANTIFAKE_CLASS_DARK`, `..._EXCLUDED`, `..._CONFLICT`,
-  `..._QUEUED`), thresholds, iteration limit, and score scale, each with a
-  comment about its role in the native contract.
+  `..._QUEUED`), thresholds, iteration limit, and score scale.
 - Named the algorithms. The class map is a threshold classification followed
   by a priority-flood watershed; the thinning is Zhang-Suen; the score is a
-  rounded ratio computed in 32-bit registers. The file header states this and
-  points at the native owners (`FUN_18003d1a0`, `FUN_18003c680`,
+  rounded ratio computed in 32-bit registers. A seven-line file header states
+  this and points at the native owners (`FUN_18003d1a0`, `FUN_18003c680`,
   `FUN_18003b6d0`, `FUN_18003ad10`).
 - Split `goodix_milan_antifake_class_map` into `classify_by_intensity`,
   `exclude_border`, `watershed_seed`, `watershed_inherit_label`, and
@@ -446,6 +466,10 @@ What the PR did:
   `CONFLICT` participate in label inheritance; thinning convergence is tested
   on the second subpass only; the maximum-residual scan uses asymmetric
   margins.
+- Kept comments to 28 added lines in a 481-line file: the header, the three
+  quirks, the queue ordering, the ring orientation, the double counting of
+  pairs, and the ratio arithmetic. Nothing that a function or constant name
+  already says is repeated in prose.
 - Ran libfprint's `uncrustify` configuration over the result.
 
 What the PR deliberately did not do:
