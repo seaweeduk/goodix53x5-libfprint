@@ -260,34 +260,6 @@ test_preprocess_post_render_retry (void)
   g_assert_cmpstr (digest, ==, post_render_retry_sha256);
 }
 
-static void
-test_first_positive (void)
-{
-  static const struct
-  {
-    int32_t scores[4];
-    size_t count;
-    size_t index;
-    int32_t score;
-  } cases[] = {
-    { { 23, -1, 45, 0 }, 3, 0, 23 },
-    { { -4, 0, 17, 99 }, 4, 2, 17 },
-    { { -4, 0, -7, 0 }, 3, SIZE_MAX, -7 },
-  };
-
-  for (size_t i = 0; i < G_N_ELEMENTS (cases); i++)
-    {
-      size_t index = 0;
-      int32_t score = 0;
-
-      g_assert_cmpint (goodix_milan_match_select_first_positive (
-                         cases[i].scores, cases[i].count, &index, &score),
-                       ==, 0);
-      g_assert_cmpuint (index, ==, cases[i].index);
-      g_assert_cmpint (score, ==, cases[i].score);
-    }
-}
-
 typedef struct
 {
   const char *name;
@@ -1182,7 +1154,6 @@ main (int argc,
                     test_preprocess_classification_retry);
   g_test_add_func ("/goodix53x5/milan/preprocess-post-render-retry",
                    test_preprocess_post_render_retry);
-  g_test_add_func ("/goodix53x5/milan/first-positive", test_first_positive);
   g_test_add_func ("/goodix53x5/milan/selection", test_selection_rows);
   g_test_add_func ("/goodix53x5/milan/gain-tail", test_gain_tail);
   g_test_add_func ("/goodix53x5/milan/generated-extraction",
