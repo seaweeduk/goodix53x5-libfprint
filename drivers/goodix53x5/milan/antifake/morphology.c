@@ -131,14 +131,14 @@ classify_by_intensity (const uint8_t *image,
 {
   for (size_t i = 0; i < count; i++)
     {
-      if (mask[i] == 0)
-        classes[i] = ANTIFAKE_CLASS_EXCLUDED;
-      else if (image[i] >= ANTIFAKE_BRIGHT_FROM)
+      if (image[i] >= ANTIFAKE_BRIGHT_FROM)
         classes[i] = ANTIFAKE_CLASS_BRIGHT;
       else if (image[i] < ANTIFAKE_DARK_BELOW)
         classes[i] = ANTIFAKE_CLASS_DARK;
       else
         classes[i] = ANTIFAKE_CLASS_UNASSIGNED;
+      if (mask[i] == 0)
+        classes[i] = ANTIFAKE_CLASS_EXCLUDED;
     }
 }
 
