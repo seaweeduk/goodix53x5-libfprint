@@ -11,6 +11,7 @@
 #include "milan/match/geometry.h"
 #include "milan/match/correspondence.h"
 #include "milan/private.h"
+#include "milan/relations.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -1010,7 +1011,7 @@ goodix_milan_refine_record_similarity (
 
   if (enrolled_partition > enrolled_record_count ||
       probe_partition > probe_record_count || search_radius < 0 ||
-      milan_invert_transform (transform, inverse) != 0)
+      goodix_milan_transform_invert (transform, inverse) != 0)
     return -1;
   for (size_t partition = 0; partition < 2; partition++)
     {

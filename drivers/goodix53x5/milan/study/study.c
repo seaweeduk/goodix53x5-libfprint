@@ -690,7 +690,7 @@ milan_study_policy_derive (
           if (other == i || input->features[other].active == 0 ||
               input->features[other].state == 5)
             continue;
-          milan_compose_transform (
+          goodix_milan_transform_compose (
             reference_to_features[other], relation_transform, footprint);
           footprint[2] >>= 1;
           footprint[5] >>= 1;
@@ -702,7 +702,7 @@ milan_study_policy_derive (
       if (feature->uncovered_probe_residual < 20)
         feature->uncovered_probe_residual = 0;
 
-      milan_compose_transform (
+      goodix_milan_transform_compose (
         reference_to_features[i], relation_transform, candidate_transform);
       candidate_transform[2] >>= 1;
       candidate_transform[5] >>= 1;

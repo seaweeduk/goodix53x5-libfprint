@@ -10,6 +10,7 @@
 
 #include "milan/milan.h"
 #include "milan/private.h"
+#include "milan/relations.h"
 #include "milan/template/codec-private.h"
 #include "milan/template/normalization.h"
 
@@ -252,7 +253,7 @@ goodix_milan_template_normalize_unpacked (
               if (goodix_milan_template_reference_transform (
                     unpacked, other_index, 1, other_transform) != 0)
                 return -1;
-              milan_compose_transform (
+              goodix_milan_transform_compose (
                 other_transform, current_transform, footprint_transform);
               footprint_transform[2] = goodix_milan_template_normalization_sar1 (
                 footprint_transform[2]);
