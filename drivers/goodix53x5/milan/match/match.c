@@ -1414,7 +1414,7 @@ milan_match_prepared_probe (
             {
               diagnostics->descriptor_score = reverse_descriptor_score;
               diagnostics->filtered_count = (int32_t) reverse_filtered_count;
-              if (milan_invert_transform (
+               if (goodix_milan_transform_invert (
                     reverse_transform, reverse_forward_transform) == 0)
                 memcpy (diagnostics->transform, reverse_forward_transform,
                         sizeof(diagnostics->transform));
@@ -1445,7 +1445,7 @@ milan_match_prepared_probe (
                 {
                   memcpy (diagnostics->feature_metrics[feature_index][1],
                           reverse_metrics, 15 * sizeof(*reverse_metrics));
-                  if (milan_invert_transform (
+                   if (goodix_milan_transform_invert (
                         reverse_transform, reverse_forward_transform) == 0)
                     memcpy (diagnostics->feature_transforms[feature_index][1],
                             reverse_forward_transform,
@@ -1456,7 +1456,7 @@ milan_match_prepared_probe (
                     reverse_metrics, feature.fields.tagged_values[3],
                     feature.fields.tagged_values[4], matcher_policy.configuration,
                     &reverse_match_flag, &reverse_candidate_flag, NULL) == 0 &&
-                  milan_invert_transform (
+                   goodix_milan_transform_invert (
                     reverse_transform, reverse_forward_transform) == 0)
                 {
 #ifdef GOODIX53X5_DEBUG

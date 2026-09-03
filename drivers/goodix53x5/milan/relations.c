@@ -58,7 +58,7 @@ goodix_milan_template_reference_transform (
   milan_template_relation_transform (
     unpacked, feature_index, reference, relation);
   if ((feature_index > reference) == reverse_above_reference)
-    return milan_invert_transform (relation, transform);
+    return goodix_milan_transform_invert (relation, transform);
   memcpy (transform, relation, sizeof(relation));
   return 0;
 }
