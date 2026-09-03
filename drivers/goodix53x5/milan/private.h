@@ -69,11 +69,6 @@ int goodix_milan_feature_extract_records_mode_masked (
   const uint8_t            *broken_mask,
   uint8_t                  *validity_mask,
   int                       high_class);
-void milan_compose_transform (const int32_t first[6],
-                              const int32_t second[6],
-                              int32_t       output[6]);
-int milan_invert_transform (const int32_t transform[6],
-                            int32_t       inverse[6]);
 int goodix_milan_template_patch_feature_scalar (uint8_t *feature_element,
                                 size_t   feature_element_size,
                                 uint8_t  tag,

@@ -174,17 +174,3 @@ goodix_milan_transform_route (const int32_t stored[6],
   else
     memmove (routed, direct, 6 * sizeof(*routed));
 }
-
-void
-milan_compose_transform (const int32_t first[6],
-                          const int32_t second[6],
-                          int32_t       output[6])
-{
-  goodix_milan_transform_compose (first, second, output);
-}
-
-int
-milan_invert_transform (const int32_t transform[6], int32_t inverse[6])
-{
-  return goodix_milan_transform_invert (transform, inverse);
-}
