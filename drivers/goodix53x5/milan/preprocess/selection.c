@@ -13,11 +13,11 @@
 #include <limits.h>
 #include <string.h>
 
-int
-goodix_milan_preprocess_selection_metric (const uint8_t *frame,
-                                       const uint8_t *mask,
-                                       size_t         rows,
-                                       size_t         columns)
+static int
+milan_selection_metric (const uint8_t *frame,
+                        const uint8_t *mask,
+                        size_t         rows,
+                        size_t         columns)
 {
   size_t count;
   uint64_t valid_sum = 0;
@@ -27,10 +27,6 @@ goodix_milan_preprocess_selection_metric (const uint8_t *frame,
   int found_first = 0;
   int previous_average = 0;
   uint64_t difference_sum = 0;
-
-  if (!frame || !mask || rows == 0 || columns == 0 ||
-      columns > SIZE_MAX / rows || rows > INT_MAX || columns > INT_MAX)
-    return -1;
 
   count = rows * columns;
   for (size_t i = 0; i < count; i++)
@@ -65,23 +61,23 @@ goodix_milan_preprocess_selection_metric (const uint8_t *frame,
 
       int average = (int) ((row_sum << 8) / columns);
       if (row != first_row)
-        difference_sum += average > previous_average
-                            ? (uint32_t) (average - previous_average)
-                            : (uint32_t) (previous_average - average);
+        difference_sum += average > previous_average ?
+                          (uint32_t) (average - previous_average) :
+                          (uint32_t) (previous_average - average);
       previous_average = average;
     }
 
   if (last_row == first_row)
     return (int) difference_sum;
   return (int) ((((rows - 1) * difference_sum) /
-                  (last_row - first_row)) >> 8);
+                 (last_row - first_row)) >> 8);
 }
 
 static uint32_t
 integer_square_root (uint64_t value)
 {
   uint32_t root = 0;
-  uint32_t bit = UINT32_C(0x80000000);
+  uint32_t bit = UINT32_C (0x80000000);
 
   if (value < 2)
     return (uint32_t) value;
@@ -98,12 +94,12 @@ integer_square_root (uint64_t value)
   return root;
 }
 
-int
-goodix_milan_preprocess_masked_correlation (const uint8_t *first,
-                                         const uint8_t *second,
-                                         const uint8_t *mask,
-                                         size_t         rows,
-                                         size_t         columns)
+static int
+milan_masked_correlation (const uint8_t *first,
+                          const uint8_t *second,
+                          const uint8_t *mask,
+                          size_t         rows,
+                          size_t         columns)
 {
   size_t count;
   uint64_t first_sum = 0;
@@ -111,10 +107,6 @@ goodix_milan_preprocess_masked_correlation (const uint8_t *first,
   int64_t covariance = 0;
   uint64_t first_variance = 0;
   uint64_t second_variance = 0;
-
-  if (!first || !second || !mask || rows == 0 || columns == 0 ||
-      columns > SIZE_MAX / rows)
-    return -1;
 
   count = rows * columns;
   for (size_t i = 0; i < count; i++)
@@ -146,13 +138,13 @@ goodix_milan_preprocess_masked_correlation (const uint8_t *first,
 
 int
 goodix_milan_preprocess_select_output (const uint8_t *contrast,
-                                   const uint8_t *refined,
-                                   const uint8_t *mask,
-                                   size_t         rows,
-                                   size_t         columns,
-                                   int            threshold,
-                                   uint8_t       *output,
-                                   int           *selected_refined)
+                                       const uint8_t *refined,
+                                       const uint8_t *mask,
+                                       size_t         rows,
+                                       size_t         columns,
+                                       int            threshold,
+                                       uint8_t       *output,
+                                       int           *selected_refined)
 {
   size_t count;
   int contrast_metric;
@@ -160,28 +152,17 @@ goodix_milan_preprocess_select_output (const uint8_t *contrast,
   int correlation;
   int required_metric;
 
-  if (!contrast || !refined || !mask || !output || !selected_refined ||
-      threshold < 0 || rows == 0 || columns == 0 ||
-      columns > SIZE_MAX / rows)
-    return -1;
-
   count = rows * columns;
-  contrast_metric = goodix_milan_preprocess_selection_metric (
-    contrast, mask, rows, columns);
-  if (contrast_metric < 0)
-    return -1;
+  contrast_metric = milan_selection_metric (contrast, mask, rows, columns);
 
   memmove (output, contrast, count);
   *selected_refined = 0;
   if (contrast_metric < threshold)
     return 0;
 
-  refined_metric = goodix_milan_preprocess_selection_metric (
-    refined, mask, rows, columns);
-  correlation = goodix_milan_preprocess_masked_correlation (
+  refined_metric = milan_selection_metric (refined, mask, rows, columns);
+  correlation = milan_masked_correlation (
     contrast, refined, mask, rows, columns);
-  if (refined_metric < 0)
-    return -1;
 
   if (contrast_metric < 1800)
     required_metric = threshold * 205 >> 8;
