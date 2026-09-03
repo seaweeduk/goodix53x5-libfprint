@@ -9,33 +9,12 @@
  */
 
 /*
- * Anti-fake boundary morphology.
- *
- * The anti-fake builder derives one scalar, the "boundary score", from the
- * primary contrast image and the impulse-filtered residual of a capture. It
- * does so in three stages, each of which mirrors one native routine:
- *
- *   1. Class map (native FUN_18003d1a0 + FUN_18003c680). Every pixel of the
- *      contrast image is classified as BRIGHT, DARK, or UNASSIGNED by two fixed
- *      intensity thresholds; masked-out and border pixels become EXCLUDED. The
- *      UNASSIGNED pixels are then labelled by a priority-flood watershed that
- *      grows the assigned regions outward in order of increasing intensity
- *      difference. Pixels reached from regions with different labels become a
- *      CONFLICT (watershed line).
- *
- *   2. Thinning (native FUN_18003b6d0). The DARK class is extracted as a binary
- *      image and reduced to a one-pixel-wide skeleton with the Zhang-Suen
- *      two-subpass algorithm.
- *
- *   3. Score (native FUN_18003ad10). Along the skeleton, the residual
- *      differences between 8-adjacent skeleton pixels are summed and
- *      normalised by the maximum residual, producing an integer score in
- *      roughly per-mille units.
- *
- * The native contracts are recorded per function under re/milan/functions/ on
- * the milan-dev branch. All arithmetic below is bit-exact with the native
- * implementation, including its quirks; those quirks are called out inline and
- * must not be "fixed" without re-establishing parity.
+ * Anti-fake boundary score: a threshold class map completed by a
+ * priority-flood watershed (native FUN_18003d1a0, FUN_18003c680), Zhang-Suen
+ * thinning of the DARK class (FUN_18003b6d0), and a rounded ratio of residual
+ * differences along the skeleton (FUN_18003ad10). Contracts are in
+ * re/milan/functions on milan-dev; "Native quirk" comments mark behaviour that
+ * must not be corrected.
  */
 
 #include "milan/milan.h"
@@ -45,10 +24,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Class-map labels. The numeric values are part of the native contract: the
- * boundary score keys on DARK, the maximum-residual scan skips EXCLUDED, and
- * the watershed treats every nonzero label, including EXCLUDED, QUEUED, and
- * CONFLICT, as an assigned neighbour. */
+/* Label values are native; the watershed treats every nonzero label, including
+ * QUEUED, EXCLUDED, and CONFLICT, as an assigned neighbour. */
 #define ANTIFAKE_CLASS_UNASSIGNED 0x00
 #define ANTIFAKE_CLASS_BRIGHT 0x01
 #define ANTIFAKE_CLASS_DARK 0x02
@@ -56,22 +33,16 @@
 #define ANTIFAKE_CLASS_EXCLUDED 0xfe
 #define ANTIFAKE_CLASS_CONFLICT 0xff
 
-/* Contrast-image intensity thresholds for the initial classification. */
 #define ANTIFAKE_DARK_BELOW 0x1a
 #define ANTIFAKE_BRIGHT_FROM 0xe7
 
-/* The watershed orders pending pixels by absolute 8-bit intensity difference,
- * so there are exactly 256 priority levels. */
+/* One level per absolute 8-bit intensity difference. */
 #define WATERSHED_PRIORITY_LEVELS 256
 
-/* Zhang-Suen iteration limit used by the native boundary score. */
 #define THINNING_MAX_ITERATIONS 100
-
-/* Boundary score numerator scale. */
 #define BOUNDARY_SCORE_SCALE 1000
 
-/* Four-connected neighbourhood, visited in this fixed order: left, right, up,
- * down. The order matters for label inheritance and queue insertion. */
+/* Visit order (left, right, up, down) decides label ties and queue order. */
 static const int8_t four_neighbor_dx[4] = {-1, 1, 0, 0};
 static const int8_t four_neighbor_dy[4] = { 0, 0, -1, 1};
 
@@ -94,14 +65,8 @@ absolute_difference (uint8_t first,
   return difference < 0 ? -difference : difference;
 }
 
-/*
- * Bucketed LIFO priority queue over pixel indices.
- *
- * Each priority level holds a singly linked stack threaded through `next`,
- * which is indexed by pixel. Pixels are always popped from the lowest
- * nonempty level, and within a level in reverse insertion order. Both
- * properties determine the final class map and must be preserved.
- */
+/* Pixels pop from the lowest nonempty level, LIFO within a level; both
+ * properties determine the class map. `next` is indexed by pixel. */
 typedef struct
 {
   int32_t  heads[WATERSHED_PRIORITY_LEVELS];
@@ -142,7 +107,6 @@ watershed_queue_push (WatershedQueue *queue,
     queue->current_priority = priority;
 }
 
-/* Returns the next pixel in priority order, or -1 when the queue is empty. */
 static int32_t
 watershed_queue_pop (WatershedQueue *queue)
 {
@@ -192,8 +156,6 @@ exclude_border (uint8_t *classes,
     }
 }
 
-/* Queue every unassigned interior pixel that touches an assigned pixel, keyed
- * by its smallest intensity difference to those assigned neighbours. */
 static void
 watershed_seed (const uint8_t  *image,
                 uint8_t        *classes,
@@ -229,9 +191,8 @@ watershed_seed (const uint8_t  *image,
       }
 }
 
-/* Label a pixel from its four neighbours: a single common label is inherited;
- * disagreeing labels produce CONFLICT. Native quirk: QUEUED, EXCLUDED, and
- * CONFLICT neighbours participate like any other nonzero label. */
+/* Native quirk: QUEUED, EXCLUDED, and CONFLICT neighbours take part in
+ * inheritance like any other nonzero label. */
 static uint8_t
 watershed_inherit_label (const uint8_t *classes,
                          size_t         row,
@@ -255,7 +216,6 @@ watershed_inherit_label (const uint8_t *classes,
   return label;
 }
 
-/* Flood outward from the seeded frontier in ascending priority order. */
 static void
 watershed_propagate (const uint8_t  *image,
                      uint8_t        *classes,
@@ -273,8 +233,6 @@ watershed_propagate (const uint8_t  *image,
 
       if (label != ANTIFAKE_CLASS_UNASSIGNED)
         classes[pixel] = label;
-      /* Watershed lines do not grow; every other label exposes its
-       * unassigned neighbours to the flood. */
       if (label == ANTIFAKE_CLASS_CONFLICT)
         continue;
       for (size_t direction = 0; direction < 4; direction++)
@@ -319,15 +277,7 @@ goodix_milan_antifake_class_map (
   return 0;
 }
 
-/*
- * Zhang-Suen deletion test for one interior pixel.
- *
- * The eight neighbours are visited clockwise from north. A pixel is deleted
- * when 2..6 neighbours are set, the ring contains exactly one 0->1
- * transition, and the subpass-specific cardinal guard holds:
- *   first subpass:  not (N and E and S) and not (E and S and W)
- *   second subpass: not (N and E and W) and not (N and S and W)
- */
+/* Ring is clockwise from north. */
 static int
 zhang_suen_should_delete (const uint8_t *pixels,
                           size_t         columns,
@@ -363,9 +313,6 @@ zhang_suen_should_delete (const uint8_t *pixels,
          !(north && east && south) && !(east && south && west);
 }
 
-/* Applies one directional subpass to `pixels`, reading the deletion tests
- * from the `snapshot` taken before the subpass. Returns whether any pixel was
- * deleted. */
 static int
 zhang_suen_subpass (uint8_t       *pixels,
                     const uint8_t *snapshot,
@@ -391,9 +338,7 @@ zhang_suen_subpass (uint8_t       *pixels,
   return changed;
 }
 
-/* Thins a binary image in place. Native quirk: convergence is tested only on
- * the second subpass, so a round whose first subpass deletes pixels while the
- * second deletes none still terminates the loop. */
+/* Native quirk: convergence is tested on the second subpass only. */
 static int
 zhang_suen_thin (uint8_t *pixels,
                  size_t   rows,
@@ -417,8 +362,7 @@ zhang_suen_thin (uint8_t *pixels,
   return 0;
 }
 
-/* Largest residual over rows 1..rows-2 and columns 2..columns-3, ignoring
- * EXCLUDED pixels. The asymmetric margins are native behaviour. */
+/* Native quirk: the row and column margins differ. */
 static uint32_t
 boundary_maximum_residual (const uint16_t *residual,
                            const uint8_t  *classes,
@@ -439,9 +383,7 @@ boundary_maximum_residual (const uint16_t *residual,
   return maximum;
 }
 
-/* Sums |residual[p] - residual[q]| over every directed 8-adjacent pair of
- * skeleton pixels with a three-pixel margin, counting the pairs. Each
- * undirected pair is visited from both ends and therefore counted twice. */
+/* Pairs are directed, so each undirected pair is counted twice. */
 static void
 boundary_adjacent_differences (const uint16_t *residual,
                                const uint8_t  *skeleton,
@@ -480,15 +422,9 @@ boundary_adjacent_differences (const uint16_t *residual,
       }
 }
 
-/*
- * score = round (difference_sum * 1000 / (adjacent_count * maximum))
- *
- * evaluated exactly as native does in 32-bit registers: both products wrap,
- * the half-divisor is an arithmetic shift of the wrapped divisor, and the
- * division is signed with truncation toward zero. A zero divisor yields the
- * wrapped numerator. The only case rejected is INT32_MIN / -1, where native
- * faults.
- */
+/* round (difference_sum * 1000 / (adjacent_count * maximum)) in 32-bit
+ * registers: products wrap, the half-divisor is an arithmetic shift, division
+ * is signed and truncating. Only INT32_MIN / -1 (a native fault) is rejected. */
 static int
 boundary_rounded_ratio (uint32_t difference_sum,
                         uint32_t adjacent_count,
@@ -532,8 +468,6 @@ goodix_milan_antifake_boundary_score (
       columns < 7 || columns > SIZE_MAX / rows)
     return -1;
 
-  /* Extract the DARK class as a binary image whose set value is the DARK label
-   * itself, so the skeleton can be read back with the same constant. */
   for (size_t i = 0; i < rows * columns; i++)
     thinned[i] = classes[i] == ANTIFAKE_CLASS_DARK ? ANTIFAKE_CLASS_DARK : 0;
 
