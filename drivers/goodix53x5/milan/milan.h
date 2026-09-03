@@ -1031,12 +1031,6 @@ int goodix_milan_match_final_score (
   int           alternate_policy,
   int32_t      *score);
 
-int goodix_milan_match_select_first_positive (
-  const int32_t *scores,
-  size_t         score_count,
-  size_t        *matched_index,
-  int32_t       *selected_score);
-
 typedef struct
 {
   uint32_t sensor_type;
