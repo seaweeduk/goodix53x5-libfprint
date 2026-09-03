@@ -43,9 +43,9 @@ void
 goodix_milan_transform_normalize (int32_t transform[6]);
 
 void
-goodix_milan_transform_compose (const int32_t first[6],
-                                      const int32_t second[6],
-                                      int32_t       output[6]);
+goodix_milan_transform_compose (const int32_t after[6],
+                                const int32_t before[6],
+                                int32_t       output[6]);
 
 int
 goodix_milan_transform_invert (const int32_t transform[6],
