@@ -27,6 +27,17 @@ enum {
   MILAN_ORIENTATION_SPLIT_DEGREES = 135,
   MILAN_ORIENTATION_ROTATION_DEGREES = 45,
   MILAN_ORIENTATION_BYTE_OFFSET = 76,
+  MILAN_ENHANCEMENT_DIRECTION_COUNT = 12,
+  MILAN_ENHANCEMENT_TAP_COUNT = 7,
+  MILAN_ENHANCEMENT_RADIUS = 6,
+  MILAN_ENHANCEMENT_DIRECTION_OFFSET = 8,
+  MILAN_ENHANCEMENT_DIRECTION_WIDTH = 15,
+  MILAN_ENHANCEMENT_DIRECTION_LIMIT = 165,
+  MILAN_BITMAP_HISTOGRAM_BINS = 256,
+  MILAN_BITMAP_SAMPLE_STRIDE = 2,
+  MILAN_BITMAP_QUANTILE_Q8 = 205,
+  MILAN_Q8_HALF = 128,
+  MILAN_Q8_SHIFT = 8,
 };
 
 int16_t
@@ -188,6 +199,8 @@ out:
   return result;
 }
 
+/* Smooth each pixel along the seven-tap line selected by its orientation;
+ * edge taps outside the image are omitted rather than reflected. */
 int
 goodix_milan_feature_enhance (const uint8_t *frame,
                               size_t         rows,
@@ -195,7 +208,8 @@ goodix_milan_feature_enhance (const uint8_t *frame,
                               uint8_t       *orientation,
                               uint8_t       *output)
 {
-  static const int8_t offsets[12][7][2] = {
+  static const int8_t
+    offsets[MILAN_ENHANCEMENT_DIRECTION_COUNT][MILAN_ENHANCEMENT_TAP_COUNT][2] = {
     { {-3, 0}, {-2, 0}, {-1, 0}, {0, 0}, {1, 0}, {2, 0}, {3, 0} },
     { {-3, -1}, {-2, -1}, {-1, 0}, {0, 0}, {1, 0}, {2, 1}, {3, 1} },
     { {-3, -2}, {-2, -1}, {-1, -1}, {0, 0}, {1, 1}, {2, 1}, {3, 2} },
@@ -209,7 +223,9 @@ goodix_milan_feature_enhance (const uint8_t *frame,
     { {-3, 2}, {-2, 1}, {-1, 1}, {0, 0}, {1, -1}, {2, -1}, {3, -2} },
     { {-3, 1}, {-2, 1}, {-1, 0}, {0, 0}, {1, 0}, {2, -1}, {3, -1} },
   };
-  static const uint8_t weights[7] = { 1, 2, 4, 8, 4, 2, 1 };
+  static const uint8_t weights[MILAN_ENHANCEMENT_TAP_COUNT] = {
+    1, 2, 4, 8, 4, 2, 1,
+  };
   size_t count;
   int32_t *first = NULL;
   int32_t *second = NULL;
@@ -272,9 +288,11 @@ goodix_milan_feature_enhance (const uint8_t *frame,
       for (size_t column = 0; column < columns; column++)
         {
           int32_t y = (int32_t) feature_integral_sum (
-            first_integral, columns, row, column, rows, 6);
+            first_integral, columns, row, column, rows,
+            MILAN_ENHANCEMENT_RADIUS);
           int32_t x = (int32_t) feature_integral_sum (
-            second_integral, columns, row, column, rows, 6);
+            second_integral, columns, row, column, rows,
+            MILAN_ENHANCEMENT_RADIUS);
           int32_t angle = feature_atan2 (y, x);
           int32_t degrees;
 
@@ -295,12 +313,15 @@ goodix_milan_feature_enhance (const uint8_t *frame,
       for (size_t column = 0; column < columns; column++)
         {
           size_t i = row * columns + column;
-          uint8_t shifted = (uint8_t) (orientation[i] - 8);
-          size_t direction = shifted < 165 ? shifted / 15 + 1 : 0;
+          uint8_t shifted =
+            (uint8_t) (orientation[i] - MILAN_ENHANCEMENT_DIRECTION_OFFSET);
+          size_t direction = shifted < MILAN_ENHANCEMENT_DIRECTION_LIMIT ?
+                             shifted / MILAN_ENHANCEMENT_DIRECTION_WIDTH + 1 :
+                             0;
           uint32_t sum = 0;
           uint32_t weight_sum = 0;
 
-          for (size_t tap = 0; tap < 7; tap++)
+          for (size_t tap = 0; tap < MILAN_ENHANCEMENT_TAP_COUNT; tap++)
             {
               ptrdiff_t x = (ptrdiff_t) column + offsets[direction][tap][0];
               ptrdiff_t y = (ptrdiff_t) row + offsets[direction][tap][1];
@@ -325,6 +346,8 @@ out:
   return result;
 }
 
+/* Select the masked even/even quantile, then pack every sample strictly above
+ * it; the feature mask affects threshold selection but does not gate bits. */
 int
 goodix_milan_feature_enhanced_bitmap (
   const uint8_t *enhanced,
@@ -334,7 +357,7 @@ goodix_milan_feature_enhanced_bitmap (
   uint8_t       *bitmap,
   uint8_t       *threshold)
 {
-  uint32_t histogram[256] = { 0 };
+  uint32_t histogram[MILAN_BITMAP_HISTOGRAM_BINS] = { 0 };
   size_t map_rows;
   size_t map_columns;
   size_t map_count;
@@ -345,8 +368,8 @@ goodix_milan_feature_enhanced_bitmap (
   if (!enhanced || !feature_mask || !bitmap || !threshold || rows < 2 ||
       columns < 2 || columns > SIZE_MAX / rows)
     return -1;
-  map_rows = rows / 2;
-  map_columns = columns / 2;
+  map_rows = rows / MILAN_BITMAP_SAMPLE_STRIDE;
+  map_columns = columns / MILAN_BITMAP_SAMPLE_STRIDE;
   if (map_columns > SIZE_MAX / map_rows)
     return -1;
   map_count = map_rows * map_columns;
@@ -358,13 +381,15 @@ goodix_milan_feature_enhanced_bitmap (
 
         if (feature_mask[map_index] != 0)
           {
-            histogram[enhanced[row * 2 * columns + column * 2]]++;
+            histogram[enhanced[row * MILAN_BITMAP_SAMPLE_STRIDE * columns +
+                               column * MILAN_BITMAP_SAMPLE_STRIDE]]++;
             active_count++;
           }
       }
 
-  target = (205 * active_count + 128) >> 8;
-  for (size_t value = 1; value < 256; value++)
+  target = (MILAN_BITMAP_QUANTILE_Q8 * active_count + MILAN_Q8_HALF) >>
+           MILAN_Q8_SHIFT;
+  for (size_t value = 1; value < MILAN_BITMAP_HISTOGRAM_BINS; value++)
     {
       histogram[value] += histogram[value - 1];
       if (target <= histogram[value])
@@ -384,7 +409,8 @@ goodix_milan_feature_enhanced_bitmap (
       {
         size_t map_index = row * map_columns + column;
 
-        if (enhanced[row * 2 * columns + column * 2] > selected)
+        if (enhanced[row * MILAN_BITMAP_SAMPLE_STRIDE * columns +
+                     column * MILAN_BITMAP_SAMPLE_STRIDE] > selected)
           bitmap[map_index >> 3] |= (uint8_t) (1U << (map_index & 7));
       }
   return 0;
