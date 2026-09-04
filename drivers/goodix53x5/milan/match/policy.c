@@ -23,6 +23,7 @@ enum
   GOODIX_MILAN_POLICY_METRIC_COMBINED = 8,
   GOODIX_MILAN_POLICY_METRIC_COVERAGE = 9,
   GOODIX_MILAN_POLICY_METRIC_TOPOLOGY = 10,
+  GOODIX_MILAN_POLICY_METRIC_GEOMETRY = 11,
   GOODIX_MILAN_POLICY_METRIC_PENALTY_FIRST = 12,
   GOODIX_MILAN_POLICY_METRIC_PENALTY_SECOND = 13,
   GOODIX_MILAN_POLICY_METRIC_PENALTY_THIRD = 14,
@@ -32,7 +33,10 @@ enum
 {
   GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET = 0,
   GOODIX_MILAN_POLICY_CONFIG_PRIMARY_OFFSET = 1,
+  GOODIX_MILAN_POLICY_CONFIG_SUBTYPE = 15,
   GOODIX_MILAN_POLICY_CONFIG_ALTERNATE_PENALTY = 16,
+  GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE = 18,
+  GOODIX_MILAN_POLICY_CONFIG_RECOGNITION_MODE = 19,
 };
 
 static int32_t
@@ -207,24 +211,27 @@ static int
 first_veto_type12 (const int32_t metrics[77],
                    GoodixMilanMatcherPolicy *policy)
 {
-  int32_t noise = metrics[12] + metrics[13] + metrics[14];
-  int32_t primary = metrics[0];
-  int32_t filtered = metrics[1];
-  int32_t overlap = metrics[4] - noise * 2;
-  int32_t detail = metrics[5] - noise * 2;
-  int32_t low_detail = metrics[8] - noise * 2;
+  int32_t noise = metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_FIRST] +
+                  metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_SECOND] +
+                  metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_THIRD];
+  int32_t primary = metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY];
+  int32_t filtered = metrics[GOODIX_MILAN_POLICY_METRIC_FILTERED];
+  int32_t overlap = metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] - noise * 2;
+  int32_t detail = metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] - noise * 2;
+  int32_t low_detail = metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] - noise * 2;
   int32_t combined = low_detail + detail;
-  int32_t coverage = metrics[9];
-  int32_t topology = metrics[10];
-  int32_t geometry = metrics[11];
-  int32_t mode = policy->configuration[18] >> 8;
+  int32_t coverage = metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE];
+  int32_t topology = metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY];
+  int32_t geometry = metrics[GOODIX_MILAN_POLICY_METRIC_GEOMETRY];
+  int32_t mode =
+    policy->configuration[GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE] >> 8;
   int32_t bucket = clamp (primary, 4, 15);
   int reject = 0;
 
   if (mode > 0 && ((detail < 200 && low_detail < 195) ||
                    (mode > 1 && detail < 213 && low_detail < 210)))
     {
-      policy->configuration[19] = 0;
+      policy->configuration[GOODIX_MILAN_POLICY_CONFIG_RECOGNITION_MODE] = 0;
       return 0;
     }
 
@@ -392,19 +399,22 @@ first_veto (const int32_t metrics[77],
             GoodixMilanMatcherPolicy *policy,
             int32_t      *flag)
 {
-  int32_t noise = metrics[12] + metrics[13] + metrics[14];
-  int32_t primary = metrics[0];
-  int32_t filtered = metrics[1];
-  int32_t coverage = metrics[9];
-  int32_t topology = metrics[10];
-  int32_t geometry = metrics[11];
-  int32_t detail = metrics[5] - noise * 2;
-  int32_t overlap = metrics[4] - noise * 2;
-  int32_t combined = metrics[8] + detail - noise * 2;
+  int32_t noise = metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_FIRST] +
+                  metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_SECOND] +
+                  metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_THIRD];
+  int32_t primary = metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY];
+  int32_t filtered = metrics[GOODIX_MILAN_POLICY_METRIC_FILTERED];
+  int32_t coverage = metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE];
+  int32_t topology = metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY];
+  int32_t geometry = metrics[GOODIX_MILAN_POLICY_METRIC_GEOMETRY];
+  int32_t detail = metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] - noise * 2;
+  int32_t overlap = metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] - noise * 2;
+  int32_t combined =
+    metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] + detail - noise * 2;
   int32_t bucket = clamp (primary, 3, 14);
   int survives = 0;
 
-  if ((filtered < 11 && metrics[8] < 180) ||
+  if ((filtered < 11 && metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 180) ||
       (coverage < 110 && filtered < 8 && combined < 389) ||
       (coverage >= 110 && filtered < 8 && topology < 36 && combined < 389))
     {
@@ -537,16 +547,24 @@ static int
 post_veto_type12 (const int32_t metrics[77],
                    const int32_t config[20])
 {
-  int32_t noise = metrics[12] + metrics[13] + metrics[14];
-  int32_t primary = metrics[0] - config[1];
-  int32_t filtered = metrics[1] - config[1];
-  int32_t coverage = metrics[9];
-  int32_t topology = metrics[10];
-  int32_t geometry = metrics[11];
-  int32_t detail = metrics[5] - config[0] - noise * 2;
-  int32_t overlap = metrics[4] - config[0] - noise * 2;
-  int32_t low_detail = metrics[8] - noise * 2;
-  int32_t combined = metrics[8] + metrics[5] - config[0] - noise * 4;
+  int32_t noise = metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_FIRST] +
+                  metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_SECOND] +
+                  metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_THIRD];
+  int32_t primary = metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] -
+                    config[GOODIX_MILAN_POLICY_CONFIG_PRIMARY_OFFSET];
+  int32_t filtered = metrics[GOODIX_MILAN_POLICY_METRIC_FILTERED] -
+                     config[GOODIX_MILAN_POLICY_CONFIG_PRIMARY_OFFSET];
+  int32_t coverage = metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE];
+  int32_t topology = metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY];
+  int32_t geometry = metrics[GOODIX_MILAN_POLICY_METRIC_GEOMETRY];
+  int32_t detail = metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] -
+                   config[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET] - noise * 2;
+  int32_t overlap = metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] -
+                    config[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET] - noise * 2;
+  int32_t low_detail = metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] - noise * 2;
+  int32_t combined = metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] +
+                     metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] -
+                     config[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET] - noise * 4;
   int32_t bucket = clamp (primary, 4, 11);
   int survives = 0;
 
@@ -728,15 +746,26 @@ post_veto (const int32_t metrics[77],
            GoodixMilanMatcherPolicy *policy,
            int32_t       flags[2])
 {
-  int32_t noise = metrics[12] + metrics[13] + metrics[14];
-  int32_t primary = metrics[0] - policy->configuration[1];
-  int32_t filtered = metrics[1] - policy->configuration[1];
-  int32_t coverage = metrics[9];
-  int32_t geometry = metrics[11];
-  int32_t detail = metrics[5] - policy->configuration[0] - noise * 2;
-  int32_t overlap = metrics[4] - policy->configuration[0] - noise * 2;
-  int32_t low_detail = metrics[8] - noise * 2;
-  int32_t combined = metrics[8] + metrics[5] - policy->configuration[0] - noise * 4;
+  int32_t noise = metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_FIRST] +
+                  metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_SECOND] +
+                  metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_THIRD];
+  int32_t primary = metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] -
+                    policy->configuration[GOODIX_MILAN_POLICY_CONFIG_PRIMARY_OFFSET];
+  int32_t filtered = metrics[GOODIX_MILAN_POLICY_METRIC_FILTERED] -
+                     policy->configuration[GOODIX_MILAN_POLICY_CONFIG_PRIMARY_OFFSET];
+  int32_t coverage = metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE];
+  int32_t geometry = metrics[GOODIX_MILAN_POLICY_METRIC_GEOMETRY];
+  int32_t detail = metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] -
+                   policy->configuration[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET] -
+                   noise * 2;
+  int32_t overlap = metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] -
+                    policy->configuration[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET] -
+                    noise * 2;
+  int32_t low_detail = metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] - noise * 2;
+  int32_t combined = metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] +
+                     metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] -
+                     policy->configuration[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET] -
+                     noise * 4;
 
   if ((policy->configuration[18] >> 8) > 1 &&
       ((detail < 206 && low_detail < 205 && coverage > 100 && geometry < 45) ||
