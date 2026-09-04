@@ -396,7 +396,6 @@ goodix_milan_relation_matrix_reanchor (
     {
       int32_t slot_index;
       GoodixMilanRelationSlot *slot;
-      int32_t feature_to_old_reference[6];
       int32_t feature_to_new_reference[6];
 
       if (feature == matrix->reference_feature_index)
@@ -409,20 +408,15 @@ goodix_milan_relation_matrix_reanchor (
       if (slot->values[0] < 0)
         continue;
       if (feature > matrix->reference_feature_index)
-        memcpy (feature_to_old_reference, slot->values + 1,
-                sizeof(feature_to_old_reference));
-      else if (goodix_milan_transform_invert (
-                 slot->values + 1, feature_to_old_reference) != 0)
-        return -1;
-      goodix_milan_transform_compose (
-        old_reference_to_new_reference, feature_to_old_reference,
-        feature_to_new_reference);
-      if (feature > matrix->reference_feature_index)
-        memcpy (slot->values + 1, feature_to_new_reference,
-                sizeof(feature_to_new_reference));
-      else if (goodix_milan_transform_invert (
-                 feature_to_new_reference, slot->values + 1) != 0)
-        return -1;
+        goodix_milan_transform_compose (
+          old_reference_to_new_reference, slot->values + 1,
+          feature_to_new_reference);
+      else
+        goodix_milan_transform_compose (
+          slot->values + 1, new_reference_to_old_reference,
+          feature_to_new_reference);
+      memcpy (slot->values + 1, feature_to_new_reference,
+              sizeof (feature_to_new_reference));
     }
   return 0;
 }
