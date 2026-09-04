@@ -16,10 +16,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Orientation extraction recovered from FUN_18007ebe0 and FUN_180074290. */
+enum {
+  MILAN_CORDIC_ITERATIONS = 13,
+  MILAN_ORIENTATION_PERIOD = 0x6488,
+  MILAN_ORIENTATION_HALF_PERIOD = 0x3244,
+  MILAN_ORIENTATION_QUARTER_PERIOD = 0x1922,
+  MILAN_ORIENTATION_DEGREE_SCALE = 0x1ca6,
+  MILAN_ORIENTATION_DEGREE_SHIFT = 20,
+  MILAN_ORIENTATION_SPLIT_DEGREES = 135,
+  MILAN_ORIENTATION_ROTATION_DEGREES = 45,
+  MILAN_ORIENTATION_BYTE_OFFSET = 76,
+};
+
 int16_t
 feature_atan2 (int32_t y, int32_t x)
 {
-  static const int16_t angles[13] = {
+  static const int16_t angles[MILAN_CORDIC_ITERATIONS] = {
     3217, 1899, 1003, 509, 256, 128, 64, 32, 16, 8, 4, 2, 1,
   };
   int32_t original_x = x;
@@ -29,11 +42,12 @@ feature_atan2 (int32_t y, int32_t x)
   x = x > 0 ? x : -x;
   y = y > 0 ? y : -y;
   if (x == 0)
-    return original_y > 0 ? 0 : 0x3244;
+    return original_y > 0 ? 0 : MILAN_ORIENTATION_HALF_PERIOD;
   if (y == 0)
-    return original_x > 0 ? 0x1922 : (int16_t) 0xe6de;
+    return original_x > 0 ? MILAN_ORIENTATION_QUARTER_PERIOD :
+           -MILAN_ORIENTATION_QUARTER_PERIOD;
 
-  for (size_t i = 0; i < 13; i++)
+  for (size_t i = 0; i < MILAN_CORDIC_ITERATIONS; i++)
     {
       int32_t shifted_x = x >> i;
       int32_t shifted_y = y >> i;
@@ -55,8 +69,9 @@ feature_atan2 (int32_t y, int32_t x)
     }
 
   if (original_y <= 0)
-    return original_x > 0 ? (int16_t) (0x3244 - angle)
-                          : (int16_t) (angle + 0xcdbc);
+    return original_x > 0 ?
+           (int16_t) (MILAN_ORIENTATION_HALF_PERIOD - angle) :
+           (int16_t) (angle - MILAN_ORIENTATION_HALF_PERIOD);
   if (original_x < 0)
     return (int16_t) -angle;
   return (int16_t) angle;
@@ -71,8 +86,8 @@ feature_integral_sum (const uint32_t *integral,
                       size_t          radius)
 {
   size_t first_column = column > radius ? column - radius : 1;
-  size_t last_column = column + radius < columns ? column + radius
-                                                  : columns - 1;
+  size_t last_column = column + radius < columns ? column + radius :
+                       columns - 1;
   size_t first_row = row > radius ? row - radius : 1;
   size_t last_row = row + radius < rows ? row + radius : rows - 1;
 
@@ -104,12 +119,12 @@ feature_build_dense_orientation (const uint8_t *frame,
       columns > SIZE_MAX / rows)
     return -1;
   count = rows * columns;
-  if (count > SIZE_MAX / sizeof(*first))
+  if (count > SIZE_MAX / sizeof (*first))
     return -1;
-  first = calloc (count, sizeof(*first));
-  second = calloc (count, sizeof(*second));
-  first_integral = calloc (count, sizeof(*first_integral));
-  second_integral = calloc (count, sizeof(*second_integral));
+  first = calloc (count, sizeof (*first));
+  second = calloc (count, sizeof (*second));
+  first_integral = calloc (count, sizeof (*first_integral));
+  second_integral = calloc (count, sizeof (*second_integral));
   if (!first || !second || !first_integral || !second_integral)
     goto out;
 
@@ -154,11 +169,14 @@ feature_build_dense_orientation (const uint8_t *frame,
         int32_t degrees;
 
         if (angle < 0)
-          angle += 0x6488;
-        degrees = angle * 0x1ca6 >> 20;
+          angle += MILAN_ORIENTATION_PERIOD;
+        degrees = angle * MILAN_ORIENTATION_DEGREE_SCALE >>
+                  MILAN_ORIENTATION_DEGREE_SHIFT;
         orientation[row * columns + column] =
-          (uint8_t) (-76 - (degrees <= 135 ? degrees + 45
-                                           : degrees - 135));
+          (uint8_t) (-MILAN_ORIENTATION_BYTE_OFFSET -
+                     (degrees <= MILAN_ORIENTATION_SPLIT_DEGREES ?
+                      degrees + MILAN_ORIENTATION_ROTATION_DEGREES :
+                      degrees - MILAN_ORIENTATION_SPLIT_DEGREES));
       }
   result = 0;
 
@@ -172,24 +190,24 @@ out:
 
 int
 goodix_milan_feature_enhance (const uint8_t *frame,
-                                     size_t         rows,
-                                     size_t         columns,
-                                     uint8_t       *orientation,
-                                     uint8_t       *output)
+                              size_t         rows,
+                              size_t         columns,
+                              uint8_t       *orientation,
+                              uint8_t       *output)
 {
   static const int8_t offsets[12][7][2] = {
     { {-3, 0}, {-2, 0}, {-1, 0}, {0, 0}, {1, 0}, {2, 0}, {3, 0} },
-    { {-3,-1}, {-2,-1}, {-1, 0}, {0, 0}, {1, 0}, {2, 1}, {3, 1} },
-    { {-3,-2}, {-2,-1}, {-1,-1}, {0, 0}, {1, 1}, {2, 1}, {3, 2} },
-    { {-3,-3}, {-2,-2}, {-1,-1}, {0, 0}, {1, 1}, {2, 2}, {3, 3} },
-    { {-2,-3}, {-1,-2}, {-1,-1}, {0, 0}, {1, 1}, {1, 2}, {2, 3} },
-    { {-1,-3}, {-1,-2}, { 0,-1}, {0, 0}, {0, 1}, {1, 2}, {1, 3} },
-    { { 0,-3}, { 0,-2}, { 0,-1}, {0, 0}, {0, 1}, {0, 2}, {0, 3} },
-    { {-1, 3}, {-1, 2}, { 0, 1}, {0, 0}, {0,-1}, {1,-2}, {1,-3} },
-    { {-2, 3}, {-1, 2}, {-1, 1}, {0, 0}, {1,-1}, {1,-2}, {2,-3} },
-    { {-3, 3}, {-2, 2}, {-1, 1}, {0, 0}, {1,-1}, {2,-2}, {3,-3} },
-    { {-3, 2}, {-2, 1}, {-1, 1}, {0, 0}, {1,-1}, {2,-1}, {3,-2} },
-    { {-3, 1}, {-2, 1}, {-1, 0}, {0, 0}, {1, 0}, {2,-1}, {3,-1} },
+    { {-3, -1}, {-2, -1}, {-1, 0}, {0, 0}, {1, 0}, {2, 1}, {3, 1} },
+    { {-3, -2}, {-2, -1}, {-1, -1}, {0, 0}, {1, 1}, {2, 1}, {3, 2} },
+    { {-3, -3}, {-2, -2}, {-1, -1}, {0, 0}, {1, 1}, {2, 2}, {3, 3} },
+    { {-2, -3}, {-1, -2}, {-1, -1}, {0, 0}, {1, 1}, {1, 2}, {2, 3} },
+    { {-1, -3}, {-1, -2}, { 0, -1}, {0, 0}, {0, 1}, {1, 2}, {1, 3} },
+    { { 0, -3}, { 0, -2}, { 0, -1}, {0, 0}, {0, 1}, {0, 2}, {0, 3} },
+    { {-1, 3}, {-1, 2}, { 0, 1}, {0, 0}, {0, -1}, {1, -2}, {1, -3} },
+    { {-2, 3}, {-1, 2}, {-1, 1}, {0, 0}, {1, -1}, {1, -2}, {2, -3} },
+    { {-3, 3}, {-2, 2}, {-1, 1}, {0, 0}, {1, -1}, {2, -2}, {3, -3} },
+    { {-3, 2}, {-2, 1}, {-1, 1}, {0, 0}, {1, -1}, {2, -1}, {3, -2} },
+    { {-3, 1}, {-2, 1}, {-1, 0}, {0, 0}, {1, 0}, {2, -1}, {3, -1} },
   };
   static const uint8_t weights[7] = { 1, 2, 4, 8, 4, 2, 1 };
   size_t count;
@@ -203,13 +221,13 @@ goodix_milan_feature_enhance (const uint8_t *frame,
       columns > SIZE_MAX / rows)
     return -1;
   count = rows * columns;
-  if (count > SIZE_MAX / sizeof(*first))
+  if (count > SIZE_MAX / sizeof (*first))
     return -1;
 
-  first = calloc (count, sizeof(*first));
-  second = calloc (count, sizeof(*second));
-  first_integral = calloc (count, sizeof(*first_integral));
-  second_integral = calloc (count, sizeof(*second_integral));
+  first = calloc (count, sizeof (*first));
+  second = calloc (count, sizeof (*second));
+  first_integral = calloc (count, sizeof (*first_integral));
+  second_integral = calloc (count, sizeof (*second_integral));
   if (!first || !second || !first_integral || !second_integral)
     goto out;
 
@@ -261,11 +279,14 @@ goodix_milan_feature_enhance (const uint8_t *frame,
           int32_t degrees;
 
           if (angle < 0)
-            angle += 0x6488;
-          degrees = angle * 0x1ca6 >> 20;
+            angle += MILAN_ORIENTATION_PERIOD;
+          degrees = angle * MILAN_ORIENTATION_DEGREE_SCALE >>
+                    MILAN_ORIENTATION_DEGREE_SHIFT;
           orientation[row * columns + column] =
-            (uint8_t) (-76 - (degrees <= 135 ? degrees + 45
-                                             : degrees - 135));
+            (uint8_t) (-MILAN_ORIENTATION_BYTE_OFFSET -
+                       (degrees <= MILAN_ORIENTATION_SPLIT_DEGREES ?
+                        degrees + MILAN_ORIENTATION_ROTATION_DEGREES :
+                        degrees - MILAN_ORIENTATION_SPLIT_DEGREES));
         }
     }
 
@@ -349,9 +370,9 @@ goodix_milan_feature_enhanced_bitmap (
       if (target <= histogram[value])
         {
           selected = histogram[value] - target <=
-                         target - histogram[value - 1]
-                       ? (uint8_t) value
-                       : (uint8_t) (value - 1);
+                     target - histogram[value - 1] ?
+                     (uint8_t) value :
+                     (uint8_t) (value - 1);
           break;
         }
     }
