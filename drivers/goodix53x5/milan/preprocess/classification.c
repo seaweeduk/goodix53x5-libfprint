@@ -16,6 +16,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+enum
+{
+  MILAN_HISTOGRAM_BIN_COUNT = 256,
+  MILAN_HISTOGRAM_LAST_BIN = 255,
+  MILAN_HISTOGRAM_MIDPOINT_BIN = 128,
+  MILAN_HISTOGRAM_SMOOTH_RADIUS = 10,
+  MILAN_HISTOGRAM_SMOOTH_WIDTH = 21,
+  MILAN_HISTOGRAM_INTERIOR_LAST_BIN = 245,
+  MILAN_PERCENT_SCALE = 100,
+  MILAN_PERMILLE_SCALE = 1000,
+};
+
 static void
 milan_profile9_filter_q16 (const uint16_t *source,
                            size_t          rows,
@@ -113,7 +125,7 @@ milan_profile9_erode_valid (const uint8_t *source,
 
 typedef struct
 {
-  int32_t histogram[256];
+  int32_t histogram[MILAN_HISTOGRAM_BIN_COUNT];
   int64_t total_weight;
   int     mode_bin;
   int     range;
@@ -150,16 +162,17 @@ milan_profile9_build_histogram (const uint16_t       *image,
   for (size_t i = 0; i < count; i++)
     if (valid[i] != 0)
       {
-        int scaled = ((int16_t) image[i] - minimum) * 255;
+        int scaled = ((int16_t) image[i] - minimum) *
+                     MILAN_HISTOGRAM_LAST_BIN;
         int bin = scaled / state->range;
         int remainder = scaled - bin * state->range;
 
         state->histogram[bin] += state->range - remainder;
-        if (bin < 255)
+        if (bin < MILAN_HISTOGRAM_LAST_BIN)
           state->histogram[bin + 1] += remainder;
       }
   int32_t mode_weight = 0;
-  for (int bin = 0; bin < 256; bin++)
+  for (int bin = 0; bin < MILAN_HISTOGRAM_BIN_COUNT; bin++)
     {
       if (state->histogram[bin] > mode_weight)
         {
@@ -177,8 +190,8 @@ milan_profile9_clip_histogram (const uint16_t             *image,
                                const MilanProfile9Histogram *input,
                                MilanProfile9Histogram       *output)
 {
-  int64_t low_target = input->total_weight * 5 / 1000;
-  int64_t high_target = input->total_weight * 995 / 1000;
+  int64_t low_target = input->total_weight * 5 / MILAN_PERMILLE_SCALE;
+  int64_t high_target = input->total_weight * 995 / MILAN_PERMILLE_SCALE;
   int64_t cumulative = 0;
   int low_bin = 0;
   int high_bin = 0;
@@ -186,7 +199,7 @@ milan_profile9_clip_histogram (const uint16_t             *image,
 
   memset (output, 0, sizeof(*output));
   output->sample_count = input->sample_count;
-  for (int bin = 0; bin < 256; bin++)
+  for (int bin = 0; bin < MILAN_HISTOGRAM_BIN_COUNT; bin++)
     {
       cumulative += input->histogram[bin];
       if (low_found == 0 && cumulative >= low_target)
@@ -200,8 +213,10 @@ milan_profile9_clip_histogram (const uint16_t             *image,
           break;
         }
     }
-  int low = input->minimum + input->range * low_bin / 255;
-  int high = input->minimum + input->range * high_bin / 255;
+  int low = input->minimum + input->range * low_bin /
+            MILAN_HISTOGRAM_LAST_BIN;
+  int high = input->minimum + input->range * high_bin /
+             MILAN_HISTOGRAM_LAST_BIN;
 
   output->minimum = low;
   output->range = (int16_t) (high - low);
@@ -213,17 +228,17 @@ milan_profile9_clip_histogram (const uint16_t             *image,
 
       if (valid[i] != 0 && sample > low && sample < high)
         {
-          int scaled = (sample - low) * 255;
+          int scaled = (sample - low) * MILAN_HISTOGRAM_LAST_BIN;
           int bin = scaled / output->range;
           int remainder = scaled - bin * output->range;
 
           output->histogram[bin] += output->range - remainder;
-          if (bin < 255)
+          if (bin < MILAN_HISTOGRAM_LAST_BIN)
             output->histogram[bin + 1] += remainder;
         }
     }
   int32_t mode_weight = 0;
-  for (int bin = 0; bin < 256; bin++)
+  for (int bin = 0; bin < MILAN_HISTOGRAM_BIN_COUNT; bin++)
     {
       if (output->histogram[bin] > mode_weight)
         {
@@ -235,27 +250,30 @@ milan_profile9_clip_histogram (const uint16_t             *image,
 }
 
 static void
-milan_profile9_smooth_histogram (const int32_t input[256],
+milan_profile9_smooth_histogram (const int32_t input[MILAN_HISTOGRAM_BIN_COUNT],
                                  unsigned      shift,
-                                 int32_t       smooth[256],
-                                 int32_t       box[256])
+                                 int32_t       smooth[MILAN_HISTOGRAM_BIN_COUNT],
+                                 int32_t       box[MILAN_HISTOGRAM_BIN_COUNT])
 {
-  int32_t current[256];
-  int32_t next[256];
+  int32_t current[MILAN_HISTOGRAM_BIN_COUNT];
+  int32_t next[MILAN_HISTOGRAM_BIN_COUNT];
 
-  for (int bin = 0; bin < 256; bin++)
+  for (int bin = 0; bin < MILAN_HISTOGRAM_BIN_COUNT; bin++)
     current[bin] = input[bin] >> shift;
-  memset (box, 0, 256 * sizeof(*box));
+  memset (box, 0, MILAN_HISTOGRAM_BIN_COUNT * sizeof(*box));
   for (int pass = 0; pass < 2; pass++)
     {
-      for (int bin = 0; bin < 256; bin++)
-        if (bin >= 10 && bin <= 245)
+      for (int bin = 0; bin < MILAN_HISTOGRAM_BIN_COUNT; bin++)
+        if (bin >= MILAN_HISTOGRAM_SMOOTH_RADIUS &&
+            bin <= MILAN_HISTOGRAM_INTERIOR_LAST_BIN)
           {
             int32_t sum = 0;
 
-            for (int offset = -10; offset <= 10; offset++)
+            for (int offset = -MILAN_HISTOGRAM_SMOOTH_RADIUS;
+                 offset <= MILAN_HISTOGRAM_SMOOTH_RADIUS; offset++)
               sum += current[bin + offset];
-            next[bin] = (sum + 10) / 21;
+            next[bin] = (sum + MILAN_HISTOGRAM_SMOOTH_RADIUS) /
+                        MILAN_HISTOGRAM_SMOOTH_WIDTH;
             if (pass == 1)
               box[bin] = sum;
           }
@@ -263,20 +281,22 @@ milan_profile9_smooth_histogram (const int32_t input[256],
           next[bin] = current[bin];
       memcpy (current, next, sizeof(current));
     }
-  for (int bin = 0; bin < 10; bin++)
-    current[bin] = current[10];
-  for (int bin = 246; bin < 256; bin++)
-    current[bin] = current[245];
+  for (int bin = 0; bin < MILAN_HISTOGRAM_SMOOTH_RADIUS; bin++)
+    current[bin] = current[MILAN_HISTOGRAM_SMOOTH_RADIUS];
+  for (int bin = MILAN_HISTOGRAM_INTERIOR_LAST_BIN + 1;
+       bin < MILAN_HISTOGRAM_BIN_COUNT; bin++)
+    current[bin] = current[MILAN_HISTOGRAM_INTERIOR_LAST_BIN];
   memcpy (smooth, current, sizeof(current));
 }
 
 static int
-milan_profile9_histogram_global_peak (const int32_t box[256])
+milan_profile9_histogram_global_peak (
+  const int32_t box[MILAN_HISTOGRAM_BIN_COUNT])
 {
   int32_t maximum = 0;
   int peak = 0;
 
-  for (int bin = 0; bin < 256; bin++)
+  for (int bin = 0; bin < MILAN_HISTOGRAM_BIN_COUNT; bin++)
     if (box[bin] > maximum)
       {
         maximum = box[bin];
@@ -286,7 +306,8 @@ milan_profile9_histogram_global_peak (const int32_t box[256])
 }
 
 static int32_t
-milan_profile9_histogram_valley (const int32_t box[256],
+milan_profile9_histogram_valley (
+  const int32_t box[MILAN_HISTOGRAM_BIN_COUNT],
                                  int           first,
                                  int           second)
 {
@@ -301,10 +322,11 @@ milan_profile9_histogram_valley (const int32_t box[256],
 }
 
 static int
-milan_profile9_histogram_local_maximum (const int32_t smooth[256],
+milan_profile9_histogram_local_maximum (
+  const int32_t smooth[MILAN_HISTOGRAM_BIN_COUNT],
                                         int           bin)
 {
-  for (int distance = 10; distance > 0; distance--)
+  for (int distance = MILAN_HISTOGRAM_SMOOTH_RADIUS; distance > 0; distance--)
     if (smooth[bin] < smooth[bin - distance] ||
         smooth[bin] < smooth[bin + distance])
       return 0;
@@ -315,22 +337,25 @@ static uint8_t
 milan_profile9_primary_histogram_state (
   const MilanProfile9Histogram *clipped)
 {
-  int32_t smooth[256];
-  int32_t box[256];
+  int32_t smooth[MILAN_HISTOGRAM_BIN_COUNT];
+  int32_t box[MILAN_HISTOGRAM_BIN_COUNT];
   uint8_t state = 0;
 
-  if (clipped->mode_bin < 10 || clipped->range <= 0)
+  if (clipped->mode_bin < MILAN_HISTOGRAM_SMOOTH_RADIUS ||
+      clipped->range <= 0)
     return 0;
   milan_profile9_smooth_histogram (
     clipped->histogram, 4, smooth, box);
   int global_peak = milan_profile9_histogram_global_peak (box);
-  int width_floor = smooth[global_peak] * 20 / 100;
+  int width_floor = smooth[global_peak] * 20 / MILAN_PERCENT_SCALE;
   int upper = global_peak;
   int lower = global_peak;
 
-  while (upper < 246 && smooth[upper] >= width_floor)
+  while (upper <= MILAN_HISTOGRAM_INTERIOR_LAST_BIN &&
+         smooth[upper] >= width_floor)
     upper++;
-  while (lower > 10 && smooth[lower] >= width_floor)
+  while (lower > MILAN_HISTOGRAM_SMOOTH_RADIUS &&
+         smooth[lower] >= width_floor)
     lower--;
   int width = upper - lower;
   if ((width > 180 && clipped->range > 1200) ||
@@ -338,28 +363,31 @@ milan_profile9_primary_histogram_state (
       (width > 230 && clipped->range > 800))
     state = 1;
 
-  int high_peak = 128;
-  int low_peak = 128;
-  int32_t high_value = smooth[128] * 2 + 1;
+  int high_peak = MILAN_HISTOGRAM_MIDPOINT_BIN;
+  int low_peak = MILAN_HISTOGRAM_MIDPOINT_BIN;
+  int32_t high_value = smooth[MILAN_HISTOGRAM_MIDPOINT_BIN] * 2 + 1;
   int32_t low_value = high_value;
 
-  for (int bin = 128; bin <= 245; bin++)
+  for (int bin = MILAN_HISTOGRAM_MIDPOINT_BIN;
+       bin <= MILAN_HISTOGRAM_INTERIOR_LAST_BIN; bin++)
     if (smooth[bin] > high_value)
       {
         high_value = smooth[bin];
         high_peak = bin;
       }
-  for (int bin = 128; bin >= 10; bin--)
+  for (int bin = MILAN_HISTOGRAM_MIDPOINT_BIN;
+       bin >= MILAN_HISTOGRAM_SMOOTH_RADIUS; bin--)
     if (smooth[bin] > low_value)
       {
         low_value = smooth[bin];
         low_peak = bin;
       }
   if (clipped->range > 1000 && high_peak - low_peak > 210 &&
-      (int64_t) box[low_peak] * 100 >
+       (int64_t) box[low_peak] * MILAN_PERCENT_SCALE >
         (clipped->total_weight >> 4) * 10)
     {
-      int64_t ratio = ((int64_t) box[low_peak] * 100 + 100) /
+      int64_t ratio = ((int64_t) box[low_peak] * MILAN_PERCENT_SCALE +
+                       MILAN_PERCENT_SCALE) /
                       (box[high_peak] + 1);
 
       if (ratio >= 31 && ratio <= 332)
@@ -367,7 +395,8 @@ milan_profile9_primary_histogram_state (
     }
 
   int exclusion = 51200 / clipped->range;
-  for (int bin = 10; bin <= 245; bin++)
+  for (int bin = MILAN_HISTOGRAM_SMOOTH_RADIUS;
+       bin <= MILAN_HISTOGRAM_INTERIOR_LAST_BIN; bin++)
     {
       if (bin >= global_peak - exclusion &&
           bin <= global_peak + exclusion)
@@ -375,13 +404,17 @@ milan_profile9_primary_histogram_state (
       if (!milan_profile9_histogram_local_maximum (smooth, bin))
         continue;
       int32_t prominence = smooth[bin] - smooth[global_peak] / 150;
-      if (smooth[bin - 10] > prominence || smooth[bin + 10] > prominence ||
-          (int64_t) box[bin] * 100 < (int64_t) box[global_peak] * 30)
+      if (smooth[bin - MILAN_HISTOGRAM_SMOOTH_RADIUS] > prominence ||
+          smooth[bin + MILAN_HISTOGRAM_SMOOTH_RADIUS] > prominence ||
+          (int64_t) box[bin] * MILAN_PERCENT_SCALE <
+            (int64_t) box[global_peak] * 30)
         continue;
       int32_t valley = milan_profile9_histogram_valley (
         box, bin, global_peak);
-      if ((int64_t) valley * 100 <= (int64_t) box[bin] * 85 &&
-          (int64_t) valley * 100 <= (int64_t) box[global_peak] * 60)
+      if ((int64_t) valley * MILAN_PERCENT_SCALE <=
+            (int64_t) box[bin] * 85 &&
+          (int64_t) valley * MILAN_PERCENT_SCALE <=
+            (int64_t) box[global_peak] * 60)
         return 2;
     }
   return state;
@@ -391,39 +424,45 @@ static uint8_t
 milan_profile9_secondary_histogram_state (
   const MilanProfile9Histogram *clipped)
 {
-  int32_t smooth[256];
-  int32_t box[256];
+  int32_t smooth[MILAN_HISTOGRAM_BIN_COUNT];
+  int32_t box[MILAN_HISTOGRAM_BIN_COUNT];
 
-  if (clipped->mode_bin < 10 || clipped->mode_bin > 251 ||
+  if (clipped->mode_bin < MILAN_HISTOGRAM_SMOOTH_RADIUS ||
+      clipped->mode_bin > 251 ||
       clipped->range <= 0)
     return 0;
   milan_profile9_smooth_histogram (
     clipped->histogram, 5, smooth, box);
   int global_peak = milan_profile9_histogram_global_peak (box);
-  if ((int64_t) box[global_peak] * 100 >
+  if ((int64_t) box[global_peak] * MILAN_PERCENT_SCALE >
       (clipped->total_weight >> 5) * 35)
     return 0;
 
   int exclusion = 128000 / clipped->range;
-  for (int bin = 10; bin <= 245; bin++)
+  for (int bin = MILAN_HISTOGRAM_SMOOTH_RADIUS;
+       bin <= MILAN_HISTOGRAM_INTERIOR_LAST_BIN; bin++)
     {
       if (bin >= global_peak - exclusion &&
           bin <= global_peak + exclusion)
         continue;
       if (!milan_profile9_histogram_local_maximum (smooth, bin))
         continue;
-      int32_t candidate_reduction = smooth[bin] * 5 / 100;
-      int32_t peak_reduction = smooth[global_peak] / 100;
+      int32_t candidate_reduction = smooth[bin] * 5 / MILAN_PERCENT_SCALE;
+      int32_t peak_reduction = smooth[global_peak] / MILAN_PERCENT_SCALE;
       int32_t reduction = candidate_reduction > peak_reduction
                             ? candidate_reduction : peak_reduction;
       int32_t prominence = smooth[bin] - reduction;
-      if (smooth[bin - 10] > prominence || smooth[bin + 10] > prominence ||
-          (int64_t) box[bin] * 100 < (int64_t) box[global_peak] * 25)
+      if (smooth[bin - MILAN_HISTOGRAM_SMOOTH_RADIUS] > prominence ||
+          smooth[bin + MILAN_HISTOGRAM_SMOOTH_RADIUS] > prominence ||
+          (int64_t) box[bin] * MILAN_PERCENT_SCALE <
+            (int64_t) box[global_peak] * 25)
         continue;
       int32_t valley = milan_profile9_histogram_valley (
         box, bin, global_peak);
-      if ((int64_t) valley * 100 <= (int64_t) box[bin] * 85 &&
-          (int64_t) valley * 100 <= (int64_t) box[global_peak] * 60)
+      if ((int64_t) valley * MILAN_PERCENT_SCALE <=
+            (int64_t) box[bin] * 85 &&
+          (int64_t) valley * MILAN_PERCENT_SCALE <=
+            (int64_t) box[global_peak] * 60)
         return 1;
     }
   return 0;
@@ -456,7 +495,7 @@ milan_profile9_histogram_thresholds (const uint16_t *image,
 {
   int minimum = INT16_MAX;
   int maximum = 0;
-  int32_t histogram[256] = { 0 };
+  int32_t histogram[MILAN_HISTOGRAM_BIN_COUNT] = { 0 };
 
   for (size_t i = 0; i < count; i++)
     if (valid[i] != 0)
@@ -479,19 +518,20 @@ milan_profile9_histogram_thresholds (const uint16_t *image,
   for (size_t i = 0; i < count; i++)
     if (valid[i] != 0)
       {
-        int scaled = ((int16_t) image[i] - minimum) * 255;
+        int scaled = ((int16_t) image[i] - minimum) *
+                     MILAN_HISTOGRAM_LAST_BIN;
         int bin = scaled / range;
         int remainder = scaled - bin * range;
 
         histogram[bin] += range - remainder;
-        if (bin < 255)
+        if (bin < MILAN_HISTOGRAM_LAST_BIN)
           histogram[bin + 1] += remainder;
       }
 
   int mode_bin = 0;
   int32_t mode_weight = 0;
   int64_t total = 0;
-  for (int bin = 0; bin < 256; bin++)
+  for (int bin = 0; bin < MILAN_HISTOGRAM_BIN_COUNT; bin++)
     {
       if (histogram[bin] > mode_weight)
         {
@@ -500,13 +540,13 @@ milan_profile9_histogram_thresholds (const uint16_t *image,
         }
       total += histogram[bin];
     }
-  int64_t target_low = total * 35 / 100;
-  int64_t target_high = total * 50 / 100;
+  int64_t target_low = total * 35 / MILAN_PERCENT_SCALE;
+  int64_t target_high = total * 50 / MILAN_PERCENT_SCALE;
   int64_t cumulative = 0;
   int low_bin = 0;
   int high_bin = 0;
   int low_found = 0;
-  for (int bin = 0; bin < 256; bin++)
+  for (int bin = 0; bin < MILAN_HISTOGRAM_BIN_COUNT; bin++)
     {
       cumulative += histogram[bin];
       if (!low_found && cumulative >= target_low)
@@ -520,12 +560,15 @@ milan_profile9_histogram_thresholds (const uint16_t *image,
           break;
         }
     }
-  int mode_limit = (range * mode_bin + 128) / 255 + minimum;
+  int mode_limit = (range * mode_bin + MILAN_HISTOGRAM_MIDPOINT_BIN) /
+                   MILAN_HISTOGRAM_LAST_BIN + minimum;
 
   if (mode_limit > 8192)
     mode_limit = 8192;
-  *low = (range * low_bin + 128) / 255 + minimum;
-  *high = (range * high_bin + 128) / 255 + minimum;
+  *low = (range * low_bin + MILAN_HISTOGRAM_MIDPOINT_BIN) /
+         MILAN_HISTOGRAM_LAST_BIN + minimum;
+  *high = (range * high_bin + MILAN_HISTOGRAM_MIDPOINT_BIN) /
+          MILAN_HISTOGRAM_LAST_BIN + minimum;
   if (*low > mode_limit)
     *low = mode_limit;
   if (*high > mode_limit)
