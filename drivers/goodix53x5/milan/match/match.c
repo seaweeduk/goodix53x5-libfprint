@@ -8,6 +8,9 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
+/* Orchestrates profile-9/type-12 matching and publishes selected evidence.
+ * Native owner FUN_180055a40 is dispatched by FUN_18005edb0 and FUN_18005d330. */
+
 #include "milan/milan.h"
 #include "milan/print.h"
 #include "milan/private.h"
@@ -46,8 +49,7 @@ enum
   MILAN_MATCH_LARGE_TRANSLATION_Q8 = 51 * MILAN_MATCH_Q8_ONE,
 };
 
-enum
-{
+enum {
   GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET = 0,
   GOODIX_MILAN_POLICY_CONFIG_RETENTION_GATE = 4,
   GOODIX_MILAN_POLICY_CONFIG_OVERLAP_COVERAGE_SCALE_Q8 = 12,
@@ -60,8 +62,7 @@ enum
   GOODIX_MILAN_POLICY_CONFIG_RECOGNITION_MODE = 19,
 };
 
-enum
-{
+enum {
   MILAN_MATCH_RELATION_SENTINEL = 0,
   MILAN_MATCH_RELATION_AFFINE_FIRST = 1,
   MILAN_MATCH_RELATION_AFFINE_XX = 1,
@@ -1092,7 +1093,7 @@ milan_match_build_feature_candidate (
                 feature_result->metrics + GOODIX_MILAN_CANDIDATE_VALID_RECORD_COUNT,
                 feature_result->candidate.words +
                 GOODIX_MILAN_CANDIDATE_VALID_RECORD_COUNT,
-                      5 * sizeof (*feature_result->metrics));
+                5 * sizeof (*feature_result->metrics));
             }
           if (sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
               (abs (feature_result->transform[2]) >
@@ -1182,14 +1183,14 @@ milan_match_publish_feature_candidate (
   GoodixMilanMatcherPolicy          *matcher_policy,
   GoodixMilanMatchSelection         *match_selection,
   GoodixMilanActiveRelationWinner   *active_relation_winner,
-  int                                retention_gate
-#ifdef GOODIX53X5_DEBUG
+  int retention_gate
+#ifdef                               GOODIX53X5_DEBUG
   , GoodixMilanMatchDiagnostics     *diagnostics,
   int32_t                            recognition_mode_before,
   int32_t                            policy_aggregate[15],
   size_t                            *policy_index
 #endif
-  )
+                                      )
 {
   GoodixMilanMatchContributionEvent contribution_event;
   int contributes = 0;
@@ -1498,7 +1499,7 @@ milan_match_relaxed_feature (const MilanMatchDirection     *direction,
 #ifdef GOODIX53X5_DEBUG
                              , GoodixMilanMatchDiagnostics *diagnostics
 #endif
-                             )
+                            )
 {
   int32_t pairs[62];
   int32_t transform[6];
@@ -1690,7 +1691,7 @@ milan_match_finalize (MilanMatchFinalizationContext *context)
     }
 #endif
 
-  /* FUN_180055a40 keeps relation ownership independent of later rescue. */
+  /* Native quirk: relation ownership remains independent of later rescue. */
   if (context->relation_winner->valid)
     {
       result->relation.relation_count = context->relation_winner->count;
@@ -1972,10 +1973,10 @@ static int
 milan_match_prepared_probe (
   const MilanMatchPreparedProbeInput *input,
   GoodixMilanMatchResult             *match_result
-#ifdef GOODIX53X5_DEBUG
-  , GoodixMilanMatchDiagnostics *diagnostics
+#ifdef                                GOODIX53X5_DEBUG
+  , GoodixMilanMatchDiagnostics      *diagnostics
 #endif
-  )
+                           )
 {
   const GoodixMilanFeatureView *probe_feature = input->probe_feature;
   const uint8_t *probe_rescue_mask = input->probe_rescue_mask;
@@ -2046,13 +2047,13 @@ milan_match_prepared_probe (
   int32_t sibling_tail_hamming_limit = MILAN_MATCH_DESCRIPTOR_DISTANCE_LIMIT;
   GoodixMilanMatchSelection match_selection = { 0 };
   int32_t rescue_records[GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT]
-                         [GOODIX_MILAN_MATCH_RESCUE_METRICS] = { { 0 } };
+  [GOODIX_MILAN_MATCH_RESCUE_METRICS] = { { 0 } };
   int32_t rescue_order[GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT] = { 0 };
   size_t rescue_order_count = 0;
   GoodixMilanMatchRescueResult rescue_result;
   GoodixMilanMatchFallback match_fallback;
   GoodixMilanMatchFallbackWorkspace
-    *fallback_by_feature[GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT] = { 0 };
+  *fallback_by_feature[GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT] = { 0 };
   int rescue_applied = 0;
   int retention_gate = 0;
   int retention_gate_latched = 0;
@@ -2068,16 +2069,16 @@ milan_match_prepared_probe (
       !contributor_feature_mask || !lifecycle_update_feature_mask ||
       !retained_evidence_count || !retained_evidence_feature_indices ||
       !retained_evidence_transforms || !retained_evidence_flag ||
-       !study_finalization_gate || !study_action_gate ||
-       !queue_candidate_eligible)
+      !study_finalization_gate || !study_action_gate ||
+      !queue_candidate_eligible)
     return -1;
   *matched_feature_index = SIZE_MAX;
   *score = -7;
-  memset (match_transform, 0, 6 * sizeof(*match_transform));
+  memset (match_transform, 0, 6 * sizeof (*match_transform));
   match_transform[0] = MILAN_MATCH_Q8_ONE;
   match_transform[4] = MILAN_MATCH_Q8_ONE;
   *relation_count = 0;
-  memset (relation_values, 0, 7 * sizeof(*relation_values));
+  memset (relation_values, 0, 7 * sizeof (*relation_values));
   relation_values[MILAN_MATCH_RELATION_AFFINE_XX] = MILAN_MATCH_Q8_ONE;
   relation_values[MILAN_MATCH_RELATION_AFFINE_YY] = MILAN_MATCH_Q8_ONE;
   *direct_positive_feature_mask = 0;
@@ -2086,7 +2087,7 @@ milan_match_prepared_probe (
   *retained_evidence_count = 0;
   memset (retained_evidence_transforms, 0,
           GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY * 6 *
-            sizeof(*retained_evidence_transforms[0]));
+          sizeof (*retained_evidence_transforms[0]));
   *retained_evidence_flag = 0;
   *study_finalization_gate = 0;
   *study_action_gate = 0;
@@ -2094,7 +2095,7 @@ milan_match_prepared_probe (
 #ifdef GOODIX53X5_DEBUG
   if (diagnostics)
     {
-      memset (diagnostics, 0, sizeof(*diagnostics));
+      memset (diagnostics, 0, sizeof (*diagnostics));
       diagnostics->fallback_feature_index = -1;
       diagnostics->direct_feature_index = -1;
       diagnostics->policy_feature_index = -1;
@@ -2102,8 +2103,8 @@ milan_match_prepared_probe (
       diagnostics->probe_optional_c7 = probe_feature->fields.optional_c7;
     }
 #endif
-  enrolled = malloc (sizeof(*enrolled));
-  enrolled_records_storage = malloc (150 * sizeof(*enrolled_records_storage));
+  enrolled = malloc (sizeof (*enrolled));
+  enrolled_records_storage = malloc (150 * sizeof (*enrolled_records_storage));
   if (!enrolled || !enrolled_records_storage ||
       goodix_milan_template_unpack (
         enrolled_template, enrolled_template_size, enrolled) != 0)
@@ -2133,11 +2134,11 @@ milan_match_prepared_probe (
         probe_primary_histogram_class);
       retention_gate =
         matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_RETENTION_GATE] != 0 &&
-                       (((uint32_t) probe_feature->fields.optional_c7 >> 8) &
-                        7) != 5;
+        (((uint32_t) probe_feature->fields.optional_c7 >> 8) &
+         7) != 5;
       sibling_tail_hamming_limit =
         matcher_policy.configuration[GOODIX_MILAN_MATCHER_CONFIGURATION_OFFSET +
-                              GOODIX_MILAN_MATCHER_TAIL_HAMMING_LIMIT_INDEX];
+                                     GOODIX_MILAN_MATCHER_TAIL_HAMMING_LIMIT_INDEX];
     }
   else
     {
@@ -2161,7 +2162,7 @@ milan_match_prepared_probe (
       size_t feature_index = SIZE_MAX;
 
       feature_index = goodix_milan_template_read_u32 (
-        enrolled->tail_state + order_index * sizeof(uint32_t));
+        enrolled->tail_state + order_index * sizeof (uint32_t));
 
       if (order_index >= GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT ||
           feature_index >= GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT)
@@ -2353,14 +2354,14 @@ milan_match_prepared_probe (
           direct_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] > 4 &&
           direct_metrics[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT] > 30 &&
           (candidate_flag == 1 ||
-         goodix_milan_match_fallback_candidate_eligible (
-              direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE],
-              MILAN_MATCH_FALLBACK_OVERLAP_THRESHOLD,
-              direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL])))
+           goodix_milan_match_fallback_candidate_eligible (
+             direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE],
+             MILAN_MATCH_FALLBACK_OVERLAP_THRESHOLD,
+             direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL])))
         {
           legacy.direct_score_sum +=
             ((direct_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] *
-                MILAN_MATCH_Q8_ONE + (score_denominator >> 1)) /
+              MILAN_MATCH_Q8_ONE + (score_denominator >> 1)) /
              score_denominator);
           legacy.direct_candidate_count++;
         }

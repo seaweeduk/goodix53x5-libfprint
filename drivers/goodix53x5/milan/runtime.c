@@ -8,6 +8,9 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
+/* Runs profile-9/type-12 extraction, ordered gallery arbitration, and study.
+ * Native owners are identifyImage, FUN_18005edb0, and FUN_18005d330. */
+
 #include "milan/runtime.h"
 
 #include "milan/debug-hooks.h"

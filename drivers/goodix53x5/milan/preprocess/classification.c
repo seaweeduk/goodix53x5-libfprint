@@ -8,6 +8,10 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
+/* Builds profile-9/type-12 contrast and broken-pixel classifications.
+ * Native owners are FUN_18004d510, FUN_18004ce40, FUN_18004e0e0, and
+ * FUN_18006b290. */
+
 #include "milan/private.h"
 #include "milan/preprocess/state.h"
 

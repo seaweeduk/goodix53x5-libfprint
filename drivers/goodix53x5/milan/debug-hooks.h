@@ -14,59 +14,42 @@
 #include "milan/study/queue.h"
 
 #ifdef GOODIX53X5_DEBUG
-void goodix_milan_debug_runtime_gallery_result_free (
-  GoodixMilanRuntimeGalleryResult *result);
-void goodix_milan_debug_runtime_setup_failed (
-  GoodixMilanRuntimeOutput *output,
-  gint32                    status);
-void goodix_milan_debug_runtime_preprocess_started (
-  GoodixMilanRuntimeOutput *output);
-void goodix_milan_debug_runtime_preprocess_status (
-  GoodixMilanRuntimeOutput *output,
-  gint32                    status);
-void goodix_milan_debug_runtime_preprocess_finished (
-  GoodixMilanRuntimeOutput *output,
-  gint32                    status,
-  const guint8             *processed);
-void goodix_milan_debug_runtime_extraction_started (
-  GoodixMilanRuntimeOutput *output);
-void goodix_milan_debug_runtime_extraction_finished (
-  GoodixMilanRuntimeOutput *output);
-void goodix_milan_debug_runtime_gallery_input (
-  GoodixMilanRuntimeGalleryResult *result,
-  GBytes                          *input_template);
-void goodix_milan_debug_runtime_gallery_validated (
-  GoodixMilanRuntimeGalleryResult *result);
-void goodix_milan_debug_runtime_queue_before_match (
-  GoodixMilanRuntimeGalleryResult *result,
-  const GoodixStudyQueue          *queue);
-void goodix_milan_debug_runtime_queue_after_match (
-  GoodixMilanRuntimeGalleryResult *result,
-  const GoodixStudyQueue          *queue);
-void goodix_milan_debug_runtime_after_match (
-  GoodixMilanRuntimeGalleryResult *result,
-  GBytes                          *after_match);
-void goodix_milan_debug_runtime_study_started (
-  GoodixMilanRuntimeOutput *output);
-void goodix_milan_debug_runtime_queue_after_study (
-  GoodixMilanRuntimeOutput *output,
-  gsize                     winner_position,
-  const GoodixStudyQueue   *queue);
-void goodix_milan_debug_runtime_study_finished (
-  GoodixMilanRuntimeOutput *output);
-void goodix_milan_debug_runtime_output_free (
-  GoodixMilanRuntimeOutput *output);
-void goodix_milan_debug_extraction_antifake (
-  GoodixMilanExtractionDiagnostics *diagnostics,
-  const guint16                    *calibration,
-  const guint16                    *raw_frame,
-  const guint8                     *primary_contrast_plane,
-  const guint8                     *feature_mask,
-  guint16                           t_code,
-  guint16                           dac_high,
-  guint16                           dac_low,
-  guint16                           sensor_subtype,
-  gint32                            calibration_scalar);
+void goodix_milan_debug_runtime_gallery_result_free (GoodixMilanRuntimeGalleryResult *result);
+void goodix_milan_debug_runtime_setup_failed (GoodixMilanRuntimeOutput *output,
+                                              gint32                    status);
+void goodix_milan_debug_runtime_preprocess_started (GoodixMilanRuntimeOutput *output);
+void goodix_milan_debug_runtime_preprocess_status (GoodixMilanRuntimeOutput *output,
+                                                   gint32                    status);
+void goodix_milan_debug_runtime_preprocess_finished (GoodixMilanRuntimeOutput *output,
+                                                     gint32                    status,
+                                                     const guint8             *processed);
+void goodix_milan_debug_runtime_extraction_started (GoodixMilanRuntimeOutput *output);
+void goodix_milan_debug_runtime_extraction_finished (GoodixMilanRuntimeOutput *output);
+void goodix_milan_debug_runtime_gallery_input (GoodixMilanRuntimeGalleryResult *result,
+                                               GBytes                          *input_template);
+void goodix_milan_debug_runtime_gallery_validated (GoodixMilanRuntimeGalleryResult *result);
+void goodix_milan_debug_runtime_queue_before_match (GoodixMilanRuntimeGalleryResult *result,
+                                                    const GoodixStudyQueue          *queue);
+void goodix_milan_debug_runtime_queue_after_match (GoodixMilanRuntimeGalleryResult *result,
+                                                   const GoodixStudyQueue          *queue);
+void goodix_milan_debug_runtime_after_match (GoodixMilanRuntimeGalleryResult *result,
+                                             GBytes                          *after_match);
+void goodix_milan_debug_runtime_study_started (GoodixMilanRuntimeOutput *output);
+void goodix_milan_debug_runtime_queue_after_study (GoodixMilanRuntimeOutput *output,
+                                                   gsize                     winner_position,
+                                                   const GoodixStudyQueue   *queue);
+void goodix_milan_debug_runtime_study_finished (GoodixMilanRuntimeOutput *output);
+void goodix_milan_debug_runtime_output_free (GoodixMilanRuntimeOutput *output);
+void goodix_milan_debug_extraction_antifake (GoodixMilanExtractionDiagnostics *diagnostics,
+                                             const guint16                    *calibration,
+                                             const guint16                    *raw_frame,
+                                             const guint8                     *primary_contrast_plane,
+                                             const guint8                     *feature_mask,
+                                             guint16                           t_code,
+                                             guint16                           dac_high,
+                                             guint16                           dac_low,
+                                             guint16                           sensor_subtype,
+                                             gint32                            calibration_scalar);
 #else
 static inline void
 goodix_milan_debug_runtime_gallery_result_free (
@@ -212,9 +195,8 @@ goodix_milan_debug_extraction_antifake (
 #endif
 
 #if defined(GOODIX53X5_DEBUG) || defined(GOODIX53X5_PARITY)
-void goodix_milan_debug_runtime_hash_after_match (
-  GoodixMilanRuntimeGalleryResult *result,
-  GBytes                          *after_match);
+void goodix_milan_debug_runtime_hash_after_match (GoodixMilanRuntimeGalleryResult *result,
+                                                  GBytes                          *after_match);
 #else
 static inline void
 goodix_milan_debug_runtime_hash_after_match (GoodixMilanRuntimeGalleryResult *result,

@@ -17,12 +17,11 @@ gboolean goodix_milan_match_queue_matches_template (const GoodixStudyQueue *queu
                                                const guint8           *feature,
                                                gsize                   feature_len);
 
-GoodixSigfmTemplateStatus goodix_milan_match_serialized_feature_result_internal (
-  GoodixMatchInfo             *probe_info,
-  const guint8                *feature,
-  gsize                        feature_len,
-  GoodixMilanMatchResult      *match_result,
-  GBytes                     **updated_feature,
+GoodixSigfmTemplateStatus goodix_milan_match_serialized_feature_result_internal (GoodixMatchInfo                *probe_info,
+                                                                                 const guint8                   *feature,
+                                                                                 gsize                           feature_len,
+                                                                                 GoodixMilanMatchResult         *match_result,
+                                                                                 GBytes                        **updated_feature,
 #ifdef GOODIX53X5_DEBUG
   GoodixMilanMatchDiagnostics *diagnostics,
 #endif

@@ -562,12 +562,11 @@ int goodix_milan_study_action0_transient (
 int goodix_milan_study_finalize_action0_transient (
   GoodixMilanStudyTransientState *transient_state);
 
-int goodix_milan_study_finalize (
-  const uint8_t *current_template,
-  size_t         current_template_size,
-  uint32_t       queue_state,
-  uint32_t       queue_transaction_counter,
-  int            finalize_transaction,
-  uint8_t       *packed,
-  size_t         packed_capacity,
-  size_t        *packed_size);
+int goodix_milan_study_finalize (const uint8_t *current_template,
+                                 size_t         current_template_size,
+                                 uint32_t       queue_state,
+                                 uint32_t       queue_transaction_counter,
+                                 int            finalize_transaction,
+                                 uint8_t       *packed,
+                                 size_t         packed_capacity,
+                                 size_t        *packed_size);
