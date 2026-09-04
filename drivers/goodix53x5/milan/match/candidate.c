@@ -23,8 +23,8 @@ goodix_milan_match_candidate_set_primary (GoodixMilanMatchCandidate *candidate,
                                            int32_t retained_count,
                                            const int32_t transform[6])
 {
-  candidate->words[0] = primary_count;
-  candidate->words[1] = retained_count;
+  candidate->words[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT] = primary_count;
+  candidate->words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] = retained_count;
   memcpy (candidate->transform, transform, sizeof(candidate->transform));
 }
 
@@ -69,13 +69,15 @@ goodix_milan_match_candidate_set_record_metrics (
   int32_t                    geometric_percent,
   int32_t                    topology_distance)
 {
-  candidate->words[10] = topology_percent;
-  candidate->words[11] = geometric_percent;
-  candidate->words[66] = valid_count;
-  candidate->words[67] = matched_count;
-  candidate->words[68] = topology_percent;
-  candidate->words[69] = geometric_percent;
-  candidate->words[70] = topology_distance;
+  candidate->words[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT] = topology_percent;
+  candidate->words[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT] = geometric_percent;
+  candidate->words[GOODIX_MILAN_CANDIDATE_VALID_RECORD_COUNT] = valid_count;
+  candidate->words[GOODIX_MILAN_CANDIDATE_MATCHED_RECORD_COUNT] = matched_count;
+  candidate->words[GOODIX_MILAN_CANDIDATE_RECORD_TOPOLOGY_PERCENT] =
+    topology_percent;
+  candidate->words[GOODIX_MILAN_CANDIDATE_RECORD_GEOMETRIC_PERCENT] =
+    geometric_percent;
+  candidate->words[GOODIX_MILAN_CANDIDATE_TOPOLOGY_DISTANCE] = topology_distance;
 }
 
 void
@@ -90,7 +92,7 @@ goodix_milan_match_candidate_set_sibling (
   int32_t                    topology_distance,
   int                         select_transform)
 {
-  candidate->words[2] = sibling_count;
+  candidate->words[GOODIX_MILAN_CANDIDATE_SIBLING_COUNT] = sibling_count;
   if (select_transform)
     memcpy (candidate->transform, sibling_transform,
             sizeof(candidate->transform));
@@ -122,16 +124,20 @@ goodix_milan_match_candidate_skip_pre_primary (
 int
 goodix_milan_match_candidate_admit (GoodixMilanMatchCandidate *candidate)
 {
-  if (candidate->words[2] > candidate->words[1])
-    candidate->words[1] = candidate->words[2];
+  if (candidate->words[GOODIX_MILAN_CANDIDATE_SIBLING_COUNT] >
+      candidate->words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT])
+    candidate->words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] =
+      candidate->words[GOODIX_MILAN_CANDIDATE_SIBLING_COUNT];
 
-  return candidate->words[1] > 4 && candidate->words[10] >= 30;
+  return candidate->words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] > 4 &&
+         candidate->words[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT] >= 30;
 }
 
 void
 goodix_milan_match_candidate_materialize_dispatch (
   GoodixMilanMatchCandidate *candidate)
 {
-  memcpy (candidate->words + 15, candidate->transform,
+  memcpy (candidate->words + GOODIX_MILAN_CANDIDATE_TRANSFORM_FIRST,
+          candidate->transform,
           sizeof(candidate->transform));
 }
