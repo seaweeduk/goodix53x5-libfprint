@@ -729,8 +729,7 @@ goodix_milan_profile9_build_contrast_mask (const uint16_t *normalized_live,
   int threshold;
   int result = -1;
 
-  if (!normalized_live || !setup_map || !contrast_mask || !admitted_pixels ||
-      rows < 28 ||
+  if (rows < 28 ||
       columns == 0 || columns > SIZE_MAX / rows ||
       rows * columns > GOODIX_MILAN_SENSOR_PIXELS)
     return -1;
@@ -1842,8 +1841,7 @@ goodix_milan_profile9_build_broken_mask (
   int history_initialized;
   int result = -1;
 
-  if (!state || !difference || !setup_map || !normalized_live || !contrast_mask ||
-      !broken_mask || !mode || !apply_mask || rows < 3 || columns < 3 ||
+  if (rows < 3 || columns < 3 ||
       columns > SIZE_MAX / rows || rows * columns > GOODIX_MILAN_SENSOR_PIXELS)
     return -1;
   count = rows * columns;
