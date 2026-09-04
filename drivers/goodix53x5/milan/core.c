@@ -11,6 +11,7 @@
 #include "milan/milan.h"
 #include "milan/private.h"
 #include "milan/preprocess/gain.h"
+#include "milan/preprocess/state.h"
 #include "milan/study/order.h"
 #include "milan/study/policy.h"
 

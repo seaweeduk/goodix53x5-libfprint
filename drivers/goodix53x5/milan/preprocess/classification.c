@@ -8,8 +8,8 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
-#include "milan/milan.h"
 #include "milan/private.h"
+#include "milan/preprocess/state.h"
 
 #include <limits.h>
 #include <stdint.h>
