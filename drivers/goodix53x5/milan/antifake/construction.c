@@ -14,29 +14,27 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int milan_antifake_collect_candidates (
-  GoodixMilanAntifakeBlob *antifake,
-  size_t                   antifake_size,
-  const uint16_t          *source,
-  size_t                   rows,
-  size_t                   columns,
-  int32_t                  x_adjustment);
+static int milan_antifake_collect_candidates (GoodixMilanAntifakeBlob *antifake,
+                                              size_t                   antifake_size,
+                                              const uint16_t          *source,
+                                              size_t                   rows,
+                                              size_t                   columns,
+                                              int32_t                  x_adjustment);
 
-static int milan_antifake_build_class (
-  const uint16_t *calibration,
-  const uint16_t *raw_frame,
-  const uint8_t  *classification_plane,
-  const uint8_t  *feature_mask,
-  size_t          feature_mask_size,
-  size_t          rows,
-  size_t          columns,
-  uint16_t        t_code,
-  uint16_t        dac_high,
-  uint16_t        dac_low,
-  uint16_t        chip_type,
-  int32_t         calibration_scalar,
-  GoodixMilanAntifakeBlob *antifake,
-  size_t                   antifake_size);
+static int milan_antifake_build_class (const uint16_t          *calibration,
+                                       const uint16_t          *raw_frame,
+                                       const uint8_t           *classification_plane,
+                                       const uint8_t           *feature_mask,
+                                       size_t                   feature_mask_size,
+                                       size_t                   rows,
+                                       size_t                   columns,
+                                       uint16_t                 t_code,
+                                       uint16_t                 dac_high,
+                                       uint16_t                 dac_low,
+                                       uint16_t                 chip_type,
+                                       int32_t                  calibration_scalar,
+                                       GoodixMilanAntifakeBlob *antifake,
+                                       size_t                   antifake_size);
 
 static int32_t
 milan_antifake_sensor_offset (uint16_t t_code,
@@ -58,18 +56,18 @@ milan_antifake_sensor_offset (uint16_t t_code,
 
 int
 goodix_milan_antifake_build (
-  const uint16_t *calibration,
-  const uint16_t *raw_frame,
-  const uint8_t  *classification_plane,
-  const uint8_t  *feature_mask,
-  size_t          feature_mask_size,
-  size_t          rows,
-  size_t          columns,
-  uint16_t        t_code,
-  uint16_t        dac_high,
-  uint16_t        dac_low,
-  uint16_t        chip_type,
-  int32_t         calibration_scalar,
+  const uint16_t          *calibration,
+  const uint16_t          *raw_frame,
+  const uint8_t           *classification_plane,
+  const uint8_t           *feature_mask,
+  size_t                   feature_mask_size,
+  size_t                   rows,
+  size_t                   columns,
+  uint16_t                 t_code,
+  uint16_t                 dac_high,
+  uint16_t                 dac_low,
+  uint16_t                 chip_type,
+  int32_t                  calibration_scalar,
   GoodixMilanAntifakeBlob *antifake,
   size_t                   antifake_size)
 {
@@ -81,25 +79,24 @@ goodix_milan_antifake_build (
 
 static int
 milan_antifake_build_class (
-  const uint16_t                   *calibration,
-  const uint16_t                   *raw_frame,
-  const uint8_t                    *classification_plane,
-  const uint8_t                    *feature_mask,
-  size_t                            feature_mask_size,
-  size_t                            rows,
-  size_t                            columns,
-  uint16_t                          t_code,
-  uint16_t                          dac_high,
-  uint16_t                          dac_low,
-  uint16_t                          chip_type,
-  int32_t                           calibration_scalar,
-  GoodixMilanAntifakeBlob          *antifake,
-  size_t                            antifake_size)
+  const uint16_t          *calibration,
+  const uint16_t          *raw_frame,
+  const uint8_t           *classification_plane,
+  const uint8_t           *feature_mask,
+  size_t                   feature_mask_size,
+  size_t                   rows,
+  size_t                   columns,
+  uint16_t                 t_code,
+  uint16_t                 dac_high,
+  uint16_t                 dac_low,
+  uint16_t                 chip_type,
+  int32_t                  calibration_scalar,
+  GoodixMilanAntifakeBlob *antifake,
+  size_t                   antifake_size)
 {
   uint16_t *residual = NULL;
   uint8_t *mask = NULL;
   uint8_t *classes = NULL;
-  uint8_t *thinned = NULL;
   int32_t vector[51];
   int32_t threshold;
   int32_t texture;
@@ -116,16 +113,15 @@ milan_antifake_build_class (
       columns > SIZE_MAX / rows)
     return -1;
   count = rows * columns;
-  if (count > SIZE_MAX / sizeof(*residual))
+  if (count > SIZE_MAX / sizeof (*residual))
     return -1;
-  residual = malloc (count * sizeof(*residual));
+  residual = malloc (count * sizeof (*residual));
   mask = malloc (count);
   classes = malloc (count);
-  thinned = malloc (count);
-  if (!residual || !mask || !classes || !thinned)
+  if (!residual || !mask || !classes)
     goto out;
 
-  memset (goodix_milan_antifake_data (antifake), 0, sizeof(*antifake));
+  memset (goodix_milan_antifake_data (antifake), 0, sizeof (*antifake));
   if (goodix_milan_antifake_residual (
         calibration, raw_frame, rows, columns,
         milan_antifake_sensor_offset (t_code, dac_high, dac_low, chip_type),
@@ -138,7 +134,7 @@ milan_antifake_build_class (
         residual, rows, columns, &threshold) != 0)
     goto out;
   goodix_milan_antifake_set_calibration_scalar (antifake,
-                                                 calibration_scalar);
+                                                calibration_scalar);
   goodix_milan_antifake_set_threshold (antifake, threshold);
 
   if (milan_antifake_collect_candidates (
@@ -153,7 +149,7 @@ milan_antifake_build_class (
       goodix_milan_antifake_class_map (
         classification_plane, mask, rows, columns, classes) != 0 ||
       goodix_milan_antifake_boundary_score (
-        residual, classes, rows, columns, thinned, &boundary) != 0 ||
+        residual, classes, rows, columns, &boundary) != 0 ||
       goodix_milan_antifake_model_vector (
         residual, mask, rows, columns, 2, vector) != 0 ||
       goodix_milan_antifake_model_score (vector, &model) != 0)
@@ -186,7 +182,6 @@ milan_antifake_build_class (
   result = 0;
 
 out:
-  free (thinned);
   free (classes);
   free (mask);
   free (residual);
@@ -195,20 +190,20 @@ out:
 
 int
 goodix_milan_antifake_build_with_boundary (
-  const uint16_t                   *calibration,
-  const uint16_t                   *raw_frame,
-  const uint8_t                    *classification_plane,
-  const uint8_t                    *feature_mask,
-  size_t                            feature_mask_size,
-  size_t                            rows,
-  size_t                            columns,
-  uint16_t                          t_code,
-  uint16_t                          dac_high,
-  uint16_t                          dac_low,
-  uint16_t                          chip_type,
-  int32_t                           calibration_scalar,
-  GoodixMilanAntifakeBlob          *antifake,
-  size_t                            antifake_size,
+  const uint16_t                    *calibration,
+  const uint16_t                    *raw_frame,
+  const uint8_t                     *classification_plane,
+  const uint8_t                     *feature_mask,
+  size_t                             feature_mask_size,
+  size_t                             rows,
+  size_t                             columns,
+  uint16_t                           t_code,
+  uint16_t                           dac_high,
+  uint16_t                           dac_low,
+  uint16_t                           chip_type,
+  int32_t                            calibration_scalar,
+  GoodixMilanAntifakeBlob           *antifake,
+  size_t                             antifake_size,
   GoodixMilanAntifakeBoundaryResult *boundary_result)
 {
   GoodixMilanAntifakeBlob *alternate_antifake = NULL;
@@ -216,7 +211,7 @@ goodix_milan_antifake_build_with_boundary (
   int result;
 
   if (boundary_result)
-    memset (boundary_result, 0, sizeof(*boundary_result));
+    memset (boundary_result, 0, sizeof (*boundary_result));
   result = milan_antifake_build_class (
     calibration, raw_frame, classification_plane, feature_mask,
     feature_mask_size, rows, columns, t_code, dac_high, dac_low, chip_type,
@@ -225,7 +220,7 @@ goodix_milan_antifake_build_with_boundary (
       feature_mask_size != 52 * 44)
     return result;
 
-  alternate_antifake = malloc (sizeof(*alternate_antifake));
+  alternate_antifake = malloc (sizeof (*alternate_antifake));
   alternate_feature_mask = malloc (feature_mask_size + 1);
   if (!alternate_antifake || !alternate_feature_mask)
     {
@@ -244,9 +239,9 @@ goodix_milan_antifake_build_with_boundary (
 
   if (boundary_result)
     {
-      memcpy (&boundary_result->zero_projection, antifake, sizeof(*antifake));
+      memcpy (&boundary_result->zero_projection, antifake, sizeof (*antifake));
       memcpy (&boundary_result->nonzero_projection, alternate_antifake,
-              sizeof(*alternate_antifake));
+              sizeof (*alternate_antifake));
       boundary_result->zero_candidate_count =
         goodix_milan_antifake_candidate_count (antifake);
       boundary_result->nonzero_candidate_count =
@@ -254,7 +249,7 @@ goodix_milan_antifake_build_with_boundary (
     }
   if (memcmp (goodix_milan_antifake_const_data (antifake),
               goodix_milan_antifake_const_data (alternate_antifake),
-              sizeof(*antifake)) != 0)
+              sizeof (*antifake)) != 0)
     {
       if (boundary_result)
         boundary_result->classification =
@@ -281,21 +276,22 @@ milan_antifake_collect_candidates (
   int32_t                  x_adjustment)
 {
   static const int8_t offsets[44][2] = {
-    { 1, 0 }, { 1, 1 }, { 0, 1 }, {-1, 1 }, {-1, 0 }, {-1,-1 },
-    { 0,-1 }, { 1,-1 }, { 2, 0 }, { 2, 1 }, { 1, 2 }, { 0, 2 },
-    {-1, 2 }, {-2, 1 }, {-2, 0 }, {-2,-1 }, {-1,-2 }, { 0,-2 },
-    { 1,-2 }, { 2,-1 }, { 3, 0 }, { 3, 1 }, { 3, 2 }, { 2, 2 },
+    { 1, 0 }, { 1, 1 }, { 0, 1 }, {-1, 1 }, {-1, 0 }, {-1, -1 },
+    { 0, -1 }, { 1, -1 }, { 2, 0 }, { 2, 1 }, { 1, 2 }, { 0, 2 },
+    {-1, 2 }, {-2, 1 }, {-2, 0 }, {-2, -1 }, {-1, -2 }, { 0, -2 },
+    { 1, -2 }, { 2, -1 }, { 3, 0 }, { 3, 1 }, { 3, 2 }, { 2, 2 },
     { 2, 3 }, { 1, 3 }, { 0, 3 }, {-1, 3 }, {-2, 3 }, {-2, 2 },
-    {-3, 2 }, {-3, 1 }, {-3, 0 }, {-3,-1 }, {-3,-2 }, {-2,-2 },
-    {-2,-3 }, {-1,-3 }, { 0,-3 }, { 1,-3 }, { 2,-3 }, { 2,-2 },
-    { 3,-2 }, { 3,-1 },
+    {-3, 2 }, {-3, 1 }, {-3, 0 }, {-3, -1 }, {-3, -2 }, {-2, -2 },
+    {-2, -3 }, {-1, -3 }, { 0, -3 }, { 1, -3 }, { 2, -3 }, { 2, -2 },
+    { 3, -2 }, { 3, -1 },
   };
+
   typedef struct
   {
     int32_t x;
     int32_t y;
     int32_t metric;
-    int invalid;
+    int     invalid;
   } AntifakeCandidate;
   AntifakeCandidate candidates[400];
   size_t candidate_count = 0;
@@ -333,7 +329,7 @@ milan_antifake_collect_candidates (
             metric += center - neighbor;
           }
         if (accepted && candidate_count < 400)
-          candidates[candidate_count++] = (AntifakeCandidate) {
+          candidates[candidate_count++] = (AntifakeCandidate){
             (int32_t) x, (int32_t) y, metric, 0,
           };
       }
@@ -375,7 +371,7 @@ milan_antifake_collect_candidates (
         goodix_milan_antifake_set_record_y (record, candidates[i].y);
         memcpy (record + GOODIX_MILAN_ANTIFAKE_RECORD_DATA_24_OFFSET,
                 &candidates[i].metric,
-                sizeof(candidates[i].metric));
+                sizeof (candidates[i].metric));
         output_count++;
       }
   for (size_t i = 0; i < output_count; i++)

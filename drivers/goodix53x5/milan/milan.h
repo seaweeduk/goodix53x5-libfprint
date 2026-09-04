@@ -1228,7 +1228,6 @@ int goodix_milan_antifake_boundary_score (
   const uint8_t  *classes,
   size_t          rows,
   size_t          columns,
-  uint8_t        *thinned,
   int32_t        *score);
 
 int goodix_milan_antifake_build (
