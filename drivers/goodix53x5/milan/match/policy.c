@@ -14,6 +14,27 @@
 #define GOODIX_MILAN_MATCH_ROWS 88
 #define GOODIX_MILAN_MATCH_COLUMNS 104
 
+enum
+{
+  GOODIX_MILAN_POLICY_METRIC_PRIMARY = 0,
+  GOODIX_MILAN_POLICY_METRIC_FILTERED = 1,
+  GOODIX_MILAN_POLICY_METRIC_OVERLAP = 4,
+  GOODIX_MILAN_POLICY_METRIC_DETAIL = 5,
+  GOODIX_MILAN_POLICY_METRIC_COMBINED = 8,
+  GOODIX_MILAN_POLICY_METRIC_COVERAGE = 9,
+  GOODIX_MILAN_POLICY_METRIC_TOPOLOGY = 10,
+  GOODIX_MILAN_POLICY_METRIC_PENALTY_FIRST = 12,
+  GOODIX_MILAN_POLICY_METRIC_PENALTY_SECOND = 13,
+  GOODIX_MILAN_POLICY_METRIC_PENALTY_THIRD = 14,
+};
+
+enum
+{
+  GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET = 0,
+  GOODIX_MILAN_POLICY_CONFIG_PRIMARY_OFFSET = 1,
+  GOODIX_MILAN_POLICY_CONFIG_ALTERNATE_PENALTY = 16,
+};
+
 static int32_t
 policy_u32_as_s32 (uint32_t value)
 {
@@ -82,33 +103,37 @@ initial_classifier (const int32_t metrics[77],
     0xfffffff, 0xfffffff, 0xfffffff, 233, 229, 225, 223, 221,
     218, 215, 209, 210, 206, 201, 196, 195, 195, 195, 195, 195, 195, 195,
   };
-  int32_t primary = metrics[0];
-  int32_t filtered = metrics[1];
-  int32_t overlap = metrics[4];
-  int32_t detail = metrics[5];
-  int32_t coverage = metrics[9];
+  int32_t primary = metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY];
+  int32_t filtered = metrics[GOODIX_MILAN_POLICY_METRIC_FILTERED];
+  int32_t overlap = metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP];
+  int32_t detail = metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL];
+  int32_t coverage = metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE];
   int32_t penalty = 0;
-  int32_t adjusted_overlap = overlap - config[0];
-  int32_t adjusted_detail = detail - config[0];
+  int32_t adjusted_overlap = overlap - config[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET];
+  int32_t adjusted_detail = detail - config[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET];
 
-  if (config[16] != 0 && filtered < 11)
+  if (config[GOODIX_MILAN_POLICY_CONFIG_ALTERNATE_PENALTY] != 0 && filtered < 11)
     {
-      penalty = (metrics[12] + metrics[13]) * 4;
+      penalty = (metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_FIRST] +
+                 metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_SECOND]) * 4;
       adjusted_overlap -= penalty;
       adjusted_detail -= penalty;
       overlap -= penalty;
       detail -= penalty;
     }
-  if (metrics[10] > 60 && primary > 4)
+  if (metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 60 && primary > 4)
     {
-      int32_t adjustment = 1 + (metrics[10] - 60) / 5;
+      int32_t adjustment = 1 +
+                           (metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] - 60) / 5;
 
       primary += adjustment;
       filtered += adjustment;
     }
 
-  int32_t primary_index = clamp (primary - config[1], 0, 21);
-  int32_t filtered_index = clamp (filtered - config[1], 0, 21);
+  int32_t primary_index =
+    clamp (primary - config[GOODIX_MILAN_POLICY_CONFIG_PRIMARY_OFFSET], 0, 21);
+  int32_t filtered_index =
+    clamp (filtered - config[GOODIX_MILAN_POLICY_CONFIG_PRIMARY_OFFSET], 0, 21);
 
   output[1] = adjusted_detail > broad_by_primary[primary_index] ||
               adjusted_overlap > broad_by_filtered[primary_index] ||
@@ -137,23 +162,31 @@ fallback_classifier (const int32_t metrics[77],
   static const int32_t coverage_thresholds[10] = {
     0xfffffff, 90, 85, 80, 73, 63, 55, 55, 55, 55,
   };
-  int32_t primary = metrics[0];
-  int32_t filtered = metrics[1];
-  int32_t coverage = metrics[9];
+  int32_t primary = metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY];
+  int32_t filtered = metrics[GOODIX_MILAN_POLICY_METRIC_FILTERED];
+  int32_t coverage = metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE];
   int32_t penalty = 0;
 
-  if (config[16] == 0 && filtered < 14)
+  if (config[GOODIX_MILAN_POLICY_CONFIG_ALTERNATE_PENALTY] == 0 && filtered < 14)
     penalty = ((coverage < 91) + (coverage < 76)) * 3 +
-              (metrics[13] + metrics[14]) * 5;
-  else if (config[16] != 0 && (filtered < 11 || primary < 4))
-    penalty = ((primary < 4) + metrics[13]) * 5;
+              (metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_SECOND] +
+               metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_THIRD]) * 5;
+  else if (config[GOODIX_MILAN_POLICY_CONFIG_ALTERNATE_PENALTY] != 0 &&
+           (filtered < 11 || primary < 4))
+    penalty = ((primary < 4) +
+               metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_SECOND]) * 5;
 
-  int32_t index = clamp (filtered - config[1] - 4, 0, 9);
-  int32_t detail = metrics[5] - penalty;
-  int32_t combined = metrics[8] - penalty;
+  int32_t index =
+    clamp (filtered - config[GOODIX_MILAN_POLICY_CONFIG_PRIMARY_OFFSET] - 4,
+           0,
+           9);
+  int32_t detail = metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] - penalty;
+  int32_t combined = metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] - penalty;
 
-  output[1] = combined - config[0] >= combined_thresholds[index] &&
-              detail - config[0] >= detail_thresholds[index] &&
+  output[1] = combined - config[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET] >=
+                combined_thresholds[index] &&
+              detail - config[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET] >=
+                detail_thresholds[index] &&
               coverage >= coverage_thresholds[index];
 
   index = clamp (filtered - 4, 0, 9);
@@ -162,7 +195,9 @@ fallback_classifier (const int32_t metrics[77],
   if (strict_coverage > 100)
     strict_coverage = 100;
   output[0] = !((primary < 6 && filtered < 16 &&
-                 (primary < 5 || metrics[10] < 56 || coverage < 125)) ||
+                  (primary < 5 ||
+                   metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] < 56 ||
+                   coverage < 125)) ||
                 combined < combined_thresholds[index] + 2 || detail < 206 ||
                 coverage < strict_coverage);
   output[1] |= output[0];
