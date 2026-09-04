@@ -37,6 +37,7 @@ goodix53x5_sources = files(
     'milan/match/study.c',
     'milan/match/match.c',
     'milan/core.c',
+    'milan/debug-hooks.c',
     'milan/preprocess/classification.c',
     'milan/preprocess/gain.c',
     'milan/preprocess/selection.c',

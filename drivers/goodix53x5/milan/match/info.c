@@ -11,6 +11,7 @@
 #define FP_COMPONENT "goodix53x5"
 
 #include "drivers_api.h"
+#include "milan/debug-hooks.h"
 #include "milan/match/match.h"
 #include "milan/match/info-private.h"
 #include "milan/match/rescue.h"
@@ -328,26 +329,8 @@ static GoodixMilanExtractionStatus goodix_milan_match_extract_planes (
   guint16        dac_low,
   guint16        sensor_subtype,
   gint32         calibration_scalar,
-  GoodixMatchInfo **result
-#ifdef GOODIX53X5_DEBUG
-  , GoodixMilanExtractionDiagnostics *diagnostics
-#endif
-  );
-
-#ifdef GOODIX53X5_DEBUG
-static void
-goodix_milan_match_hash_projection (
-  const GoodixMilanAntifakeBlob *projection,
-  gchar                          digest[GOODIX_MILAN_EXTRACTION_SHA256_SIZE])
-{
-  g_autofree gchar *checksum = g_compute_checksum_for_data (
-    G_CHECKSUM_SHA256, goodix_milan_antifake_const_data (projection),
-    GOODIX_MILAN_ANTIFAKE_DEFINED_MATERIAL_SIZE);
-
-  g_strlcpy (digest, checksum ? checksum : "",
-             GOODIX_MILAN_EXTRACTION_SHA256_SIZE);
-}
-#endif
+  GoodixMatchInfo **result,
+  GoodixMilanExtractionDiagnostics *diagnostics);
 
 GoodixMatchInfo *
 goodix_milan_match_extract_native (const guint8               *image,
@@ -391,11 +374,7 @@ goodix_milan_match_extract_native_result (
     &preprocess_state->extraction_classification,
     &preprocess_state->extraction_auxiliary, preprocess_state->setup_map,
     raw_frame, t_code, dac_high, dac_low, sensor_subtype,
-    preprocess_state->selected_refined, info
-#ifdef GOODIX53X5_DEBUG
-    , NULL
-#endif
-    );
+    preprocess_state->selected_refined, info, NULL);
 }
 
 #ifdef GOODIX53X5_DEBUG
@@ -442,17 +421,11 @@ goodix_milan_match_extract_planes (const guint8  *image,
                              guint16        dac_high,
                              guint16        dac_low,
                              guint16        sensor_subtype,
-                             gint32         calibration_scalar,
-                             GoodixMatchInfo **result
-#ifdef GOODIX53X5_DEBUG
-                             , GoodixMilanExtractionDiagnostics *diagnostics
-#endif
-                             )
+                              gint32         calibration_scalar,
+                              GoodixMatchInfo **result,
+                              GoodixMilanExtractionDiagnostics *diagnostics)
 {
   GoodixMatchInfo *info = NULL;
-#ifdef GOODIX53X5_DEBUG
-  g_autofree GoodixMilanAntifakeBlob *diagnostic_antifake = NULL;
-#endif
   guint8 *cropped = NULL;
   guint8 *high = NULL;
   guint8 *low = NULL;
@@ -559,32 +532,9 @@ goodix_milan_match_extract_planes (const guint8  *image,
         dac_low,
         sensor_subtype, calibration_scalar, antifake, sizeof(*antifake)) != 0)
     goto out;
-#ifdef GOODIX53X5_DEBUG
-  if (diagnostics && calibration && raw_frame &&
-      (diagnostic_antifake = g_try_malloc0 (
-         sizeof(*diagnostic_antifake))) != NULL)
-    {
-      GoodixMilanAntifakeBoundaryResult boundary = { 0 };
-      int diagnostic_status = goodix_milan_antifake_build_with_boundary (
-        calibration, raw_frame, primary_contrast_plane, feature_mask,
-        52 * 44, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, t_code,
-        dac_high, dac_low, sensor_subtype, calibration_scalar, diagnostic_antifake,
-        sizeof(*diagnostic_antifake), &boundary);
-
-      if (diagnostic_status == 0 ||
-          diagnostic_status == GOODIX_MILAN_ANTIFAKE_AMBIGUOUS)
-        {
-          diagnostics->boundary_classification = boundary.classification;
-          diagnostics->zero_candidate_count = boundary.zero_candidate_count;
-          diagnostics->nonzero_candidate_count = boundary.nonzero_candidate_count;
-          goodix_milan_match_hash_projection (
-            &boundary.zero_projection, diagnostics->zero_projection_sha256);
-          goodix_milan_match_hash_projection (
-            &boundary.nonzero_projection,
-            diagnostics->nonzero_projection_sha256);
-        }
-    }
-#endif
+  goodix_milan_debug_extraction_antifake (
+    diagnostics, calibration, raw_frame, primary_contrast_plane, feature_mask,
+    t_code, dac_high, dac_low, sensor_subtype, calibration_scalar);
   goodix_milan_feature_mask_expand (inline_mask, feature_mask);
   if (calibration && raw_frame &&
       goodix_milan_template_initialize_tail (
