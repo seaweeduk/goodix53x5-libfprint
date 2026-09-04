@@ -31,6 +31,15 @@ enum
   MILAN_TRIANGLE_ORIENTATION_TOLERANCE = 0x400,
   MILAN_TRIANGLE_AFFINE_SYMMETRY_TOLERANCE = 0x32,
   MILAN_TRIANGLE_AFFINE_COEFFICIENT_LIMIT = 300,
+  MILAN_TRIANGLE_MINIMUM_EDGE_SQUARED = 0x2ffff,
+  MILAN_RECOGNITION_TRIANGLE_LIMIT = 0x3b2,
+  MILAN_RECOGNITION_NO_MODEL_RESIDUAL = 0x190000,
+  MILAN_RECOGNITION_INLIER_AXIS_LIMIT = 0x281,
+  MILAN_RECOGNITION_INLIER_SQUARED_LIMIT = 0x64000,
+  MILAN_RECOGNITION_ORIENTATION_LIMIT = 0x506,
+  MILAN_RECOGNITION_EARLY_INLIER_COUNT = 20,
+  MILAN_RECOGNITION_REFINE_INLIER_COUNT = 3,
+  MILAN_RECOGNITION_REFINE_RESIDUAL = 0x4000,
 };
 
 static void
@@ -188,7 +197,8 @@ milan_triangle_edge_is_consistent (int32_t source_distance,
            (uint32_t) target_distance * UINT32_C (5)) <=
            milan_reinterpret_uint32_as_int32 (
              (uint32_t) source_distance * UINT32_C (6)) &&
-         source_distance > 0x2ffff && target_distance > 0x2ffff;
+          source_distance > MILAN_TRIANGLE_MINIMUM_EDGE_SQUARED &&
+          target_distance > MILAN_TRIANGLE_MINIMUM_EDGE_SQUARED;
 }
 
 static int32_t
@@ -430,14 +440,14 @@ milan_refine_affine_least_squares (
         (uint16_t) enrolled_records[enrolled_index].refined_y;
       uint64_t squared = (uint64_t) (dx * dx + dy * dy);
 
-      if (squared < 0x64000)
+      if (squared < MILAN_RECOGNITION_INLIER_SQUARED_LIMIT)
         {
           refined_inlier_count++;
           refined_residual_sum += squared;
         }
     }
   int32_t refined_residual = refined_inlier_count == 0
-                               ? 0x190000
+                                ? MILAN_RECOGNITION_NO_MODEL_RESIDUAL
                                : (int32_t) ((refined_residual_sum +
                                              (refined_inlier_count >> 1)) /
                                             refined_inlier_count);
@@ -504,7 +514,7 @@ milan_filter_affine_orientation (
             opposite = MILAN_ORIENTATION_FULL_PERIOD - opposite;
           if (opposite < direct)
             direct = opposite;
-          if (direct > 0x506)
+          if (direct > MILAN_RECOGNITION_ORIENTATION_LIMIT)
             inliers[i] = 0;
         }
       retained += inliers[i] != 0;
@@ -529,11 +539,11 @@ goodix_milan_filter_recognition_pairs_internal (
 
   if (model_valid)
     *model_valid = 0;
-  *best_residual = 0x190000;
+  *best_residual = MILAN_RECOGNITION_NO_MODEL_RESIDUAL;
   memset (best_affine, 0, 6 * sizeof(*best_affine));
   for (size_t first = 0; first + 2 < match_count; first++)
     {
-      if (triangle_count >= 0x3b2)
+      if (triangle_count >= MILAN_RECOGNITION_TRIANGLE_LIMIT)
         break;
       for (size_t second = first + 1; second + 1 < match_count; second++)
         for (size_t third = second + 1; third < match_count; third++)
@@ -606,8 +616,9 @@ goodix_milan_filter_recognition_pairs_internal (
                   (uint16_t) enrolled_records[enrolled_index].refined_y;
                 int64_t squared = dx * dx + dy * dy;
 
-                if (llabs (dx) < 0x281 && llabs (dy) < 0x281 &&
-                    squared < 0x64000)
+                if (llabs (dx) < MILAN_RECOGNITION_INLIER_AXIS_LIMIT &&
+                    llabs (dy) < MILAN_RECOGNITION_INLIER_AXIS_LIMIT &&
+                    squared < MILAN_RECOGNITION_INLIER_SQUARED_LIMIT)
                   {
                     inliers++;
                     residual_sum += squared;
@@ -615,7 +626,7 @@ goodix_milan_filter_recognition_pairs_internal (
                   }
               }
             int residual = inliers == 0
-                             ? 0x190000
+                             ? MILAN_RECOGNITION_NO_MODEL_RESIDUAL
                              : (int) ((residual_sum + (inliers >> 1)) /
                                       inliers);
             if ((inliers > best_inliers ||
@@ -627,7 +638,7 @@ goodix_milan_filter_recognition_pairs_internal (
                 memcpy (best_affine, affine, 6 * sizeof(*best_affine));
                 memcpy (best_mask, mask, sizeof(best_mask));
               }
-            if (best_inliers > 20)
+            if (best_inliers > MILAN_RECOGNITION_EARLY_INLIER_COUNT)
               goto done;
           }
     }
@@ -639,7 +650,8 @@ done:
     best_mask);
   if (output_mask)
     memcpy (output_mask, best_mask, sizeof(best_mask));
-  if (best_inliers > 3 && *best_residual > 0x4000)
+  if (best_inliers > MILAN_RECOGNITION_REFINE_INLIER_COUNT &&
+      *best_residual > MILAN_RECOGNITION_REFINE_RESIDUAL)
     milan_refine_affine_least_squares (
       enrolled_records, probe_records, pairs, match_count, best_mask,
       *best_residual, best_affine);
