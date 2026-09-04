@@ -46,6 +46,46 @@ enum
 
 enum
 {
+  MILAN_TEMPLATE_TAG_PAYLOAD = 0x86,
+  MILAN_TEMPLATE_TAG_ENVELOPE = 0x87,
+  MILAN_TEMPLATE_TAG_HEADER_FORMAT = 0x81,
+  MILAN_TEMPLATE_TAG_FEATURE_COUNT = 0x91,
+  MILAN_TEMPLATE_TAG_REGISTRATION_COUNT = 0x92,
+  MILAN_TEMPLATE_TAG_GRAPH = 0x93,
+  MILAN_TEMPLATE_TAG_TAIL = 0x94,
+  MILAN_TEMPLATE_TAG_RELATION = 0x96,
+  MILAN_TEMPLATE_TAG_MAXIMUM_FEATURES = 0x97,
+  MILAN_TEMPLATE_TAG_SENSOR_TYPE = 0x98,
+  MILAN_TEMPLATE_TAG_ROWS = 0x9a,
+  MILAN_TEMPLATE_TAG_COLUMNS = 0x9b,
+  MILAN_TEMPLATE_TAG_GEOMETRY_PRIMARY = 0x9c,
+  MILAN_TEMPLATE_TAG_GEOMETRY_SECONDARY = 0x9d,
+  MILAN_TEMPLATE_TAG_MAXIMUM_RECORDS = 0x9e,
+  MILAN_TEMPLATE_TAG_MAXIMUM_RECORDS_COPY = 0x9f,
+  MILAN_TEMPLATE_TAG_QUEUE_STATE = 0xfa,
+  MILAN_TEMPLATE_TAG_QUEUE_COUNTER = 0xfb,
+  MILAN_TEMPLATE_TAG_TAIL_RECORDS = 0xa1,
+  MILAN_TEMPLATE_TAG_TAIL_SCALAR = 0xa2,
+  MILAN_TEMPLATE_TAG_TAIL_VECTOR = 0xa3,
+  MILAN_TEMPLATE_TAG_TAIL_BITMAP = 0xa4,
+  MILAN_TEMPLATE_TAG_TAIL_TRAILER_FIRST = 0xa5,
+  MILAN_TEMPLATE_TAG_TAIL_TRAILER_LAST = 0xa8,
+  MILAN_TEMPLATE_TAG_RELATION_LEADING = 0xe1,
+  MILAN_TEMPLATE_TAG_RELATION_INDEX = 0xe3,
+  MILAN_TEMPLATE_TAG_RELATION_VALUE_1 = 0xe4,
+  MILAN_TEMPLATE_TAG_RELATION_VALUE_2 = 0xe5,
+  MILAN_TEMPLATE_TAG_RELATION_VALUE_3 = 0xe6,
+  MILAN_TEMPLATE_TAG_RELATION_VALUE_4 = 0xe7,
+  MILAN_TEMPLATE_TAG_RELATION_VALUE_5 = 0xe8,
+  MILAN_TEMPLATE_TAG_RELATION_VALUE_6 = 0xe9,
+  MILAN_TEMPLATE_TAG_GRAPH_REFERENCE = 0xf2,
+  MILAN_TEMPLATE_TAG_GRAPH_COMPANION_FIRST = 0xf3,
+  MILAN_TEMPLATE_TAG_GRAPH_COMPANION_SECOND = 0xf4,
+  MILAN_TEMPLATE_TAG_GRAPH_ESTABLISHED = 0xf5,
+};
+
+enum
+{
   MILAN_FEATURE_BITMAP_SIZE = 286,
   MILAN_FEATURE_INLINE_MASK_SIZE = 72,
   MILAN_FEATURE_PACKED_RECORD_SIZE = 32,
@@ -473,8 +513,15 @@ goodix_milan_template_pack (
   size_t                               *packed_size)
 {
   static const uint8_t header_tags[13] = {
-    0x81, 0x98, 0x9a, 0x9b, 0x91, 0x97, 0x92,
-    0x9e, 0x9f, 0x9c, 0x9d, 0xfa, 0xfb,
+    MILAN_TEMPLATE_TAG_HEADER_FORMAT, MILAN_TEMPLATE_TAG_SENSOR_TYPE,
+    MILAN_TEMPLATE_TAG_ROWS, MILAN_TEMPLATE_TAG_COLUMNS,
+    MILAN_TEMPLATE_TAG_FEATURE_COUNT, MILAN_TEMPLATE_TAG_MAXIMUM_FEATURES,
+    MILAN_TEMPLATE_TAG_REGISTRATION_COUNT,
+    MILAN_TEMPLATE_TAG_MAXIMUM_RECORDS,
+    MILAN_TEMPLATE_TAG_MAXIMUM_RECORDS_COPY,
+    MILAN_TEMPLATE_TAG_GEOMETRY_PRIMARY,
+    MILAN_TEMPLATE_TAG_GEOMETRY_SECONDARY, MILAN_TEMPLATE_TAG_QUEUE_STATE,
+    MILAN_TEMPLATE_TAG_QUEUE_COUNTER,
   };
   size_t total_size = 75 + 25 + 1333;
   uint8_t *output;
@@ -503,8 +550,8 @@ goodix_milan_template_pack (
     metadata->maximum_records, metadata->maximum_records, 1, 1,
     metadata->queue_state, metadata->queue_transaction_counter,
   };
-  packed[0] = 0x87;
-  packed[5] = 0x86;
+  packed[0] = MILAN_TEMPLATE_TAG_ENVELOPE;
+  packed[5] = MILAN_TEMPLATE_TAG_PAYLOAD;
   output = packed + 10;
   for (size_t i = 0; i < 13; i++)
     output = milan_pack_tagged_u32 (output, header_tags[i], header_values[i]);
@@ -516,10 +563,17 @@ goodix_milan_template_pack (
   for (size_t i = 0; i < relation_count; i++)
     {
       static const uint8_t relation_tags[8] = {
-        0xe3, 0xe1, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9,
+        MILAN_TEMPLATE_TAG_RELATION_INDEX,
+        MILAN_TEMPLATE_TAG_RELATION_LEADING,
+        MILAN_TEMPLATE_TAG_RELATION_VALUE_1,
+        MILAN_TEMPLATE_TAG_RELATION_VALUE_2,
+        MILAN_TEMPLATE_TAG_RELATION_VALUE_3,
+        MILAN_TEMPLATE_TAG_RELATION_VALUE_4,
+        MILAN_TEMPLATE_TAG_RELATION_VALUE_5,
+        MILAN_TEMPLATE_TAG_RELATION_VALUE_6,
       };
 
-      *output++ = 0x96;
+      *output++ = MILAN_TEMPLATE_TAG_RELATION;
       goodix_milan_template_write_u32 (output, 40);
       output += 4;
       output = milan_pack_tagged_u32 (
@@ -529,34 +583,39 @@ goodix_milan_template_pack (
           output, relation_tags[value + 1],
           (uint32_t) relations[i].values[value]);
     }
-  *output++ = 0x93;
+  *output++ = MILAN_TEMPLATE_TAG_GRAPH;
   goodix_milan_template_write_u32 (output, 20);
   output += 4;
   output = milan_pack_tagged_u32 (
-    output, 0xf2, (uint32_t) metadata->graph_reference_index);
+    output, MILAN_TEMPLATE_TAG_GRAPH_REFERENCE,
+    (uint32_t) metadata->graph_reference_index);
   output = milan_pack_tagged_u32 (
-    output, 0xf3, (uint32_t) metadata->graph_companion_f3);
+    output, MILAN_TEMPLATE_TAG_GRAPH_COMPANION_FIRST,
+    (uint32_t) metadata->graph_companion_f3);
   output = milan_pack_tagged_u32 (
-    output, 0xf4, (uint32_t) metadata->graph_companion_f4);
+    output, MILAN_TEMPLATE_TAG_GRAPH_COMPANION_SECOND,
+    (uint32_t) metadata->graph_companion_f4);
   output = milan_pack_tagged_u32 (
-    output, 0xf5, metadata->graph_established);
-  *output++ = 0x94;
+    output, MILAN_TEMPLATE_TAG_GRAPH_ESTABLISHED,
+    metadata->graph_established);
+  *output++ = MILAN_TEMPLATE_TAG_TAIL;
   goodix_milan_template_write_u32 (output, 0x530);
   output += 4;
-  *output++ = 0xa1;
+  *output++ = MILAN_TEMPLATE_TAG_TAIL_RECORDS;
   goodix_milan_template_write_u32 (output, 200);
   output += 4;
   memcpy (output, tail_state, 200);
   output += 200;
   uint32_t value;
   memcpy (&value, tail_state + 0xc8, sizeof(value));
-  output = milan_pack_tagged_u32 (output, 0xa2, value);
-  *output++ = 0xa3;
+  output = milan_pack_tagged_u32 (
+    output, MILAN_TEMPLATE_TAG_TAIL_SCALAR, value);
+  *output++ = MILAN_TEMPLATE_TAG_TAIL_VECTOR;
   goodix_milan_template_write_u32 (output, 64);
   output += 4;
   memcpy (output, tail_state + 0xcc, 64);
   output += 64;
-  *output++ = 0xa4;
+  *output++ = MILAN_TEMPLATE_TAG_TAIL_BITMAP;
   goodix_milan_template_write_u32 (output, 0x400);
   output += 4;
   memcpy (output, tail_state + 0x10c, 0x400);
@@ -564,7 +623,8 @@ goodix_milan_template_pack (
   for (size_t i = 0; i < 4; i++)
     {
       memcpy (&value, tail_state + 0x50c + i * 4, sizeof(value));
-      output = milan_pack_tagged_u32 (output, (uint8_t) (0xa5 + i), value);
+      output = milan_pack_tagged_u32 (
+        output, (uint8_t) (MILAN_TEMPLATE_TAG_TAIL_TRAILER_FIRST + i), value);
     }
 
   *packed_size = (size_t) (output - packed);
@@ -584,17 +644,29 @@ goodix_milan_template_unpack (
   GoodixMilanUnpackedTemplate *unpacked)
 {
   static const uint8_t header_tags[13] = {
-    0x81, 0x98, 0x9a, 0x9b, 0x91, 0x97, 0x92,
-    0x9e, 0x9f, 0x9c, 0x9d, 0xfa, 0xfb,
+    MILAN_TEMPLATE_TAG_HEADER_FORMAT, MILAN_TEMPLATE_TAG_SENSOR_TYPE,
+    MILAN_TEMPLATE_TAG_ROWS, MILAN_TEMPLATE_TAG_COLUMNS,
+    MILAN_TEMPLATE_TAG_FEATURE_COUNT, MILAN_TEMPLATE_TAG_MAXIMUM_FEATURES,
+    MILAN_TEMPLATE_TAG_REGISTRATION_COUNT,
+    MILAN_TEMPLATE_TAG_MAXIMUM_RECORDS,
+    MILAN_TEMPLATE_TAG_MAXIMUM_RECORDS_COPY,
+    MILAN_TEMPLATE_TAG_GEOMETRY_PRIMARY,
+    MILAN_TEMPLATE_TAG_GEOMETRY_SECONDARY, MILAN_TEMPLATE_TAG_QUEUE_STATE,
+    MILAN_TEMPLATE_TAG_QUEUE_COUNTER,
   };
   static const uint8_t relation_tags[8] = {
-    0xe3, 0xe1, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9,
+    MILAN_TEMPLATE_TAG_RELATION_INDEX, MILAN_TEMPLATE_TAG_RELATION_LEADING,
+    MILAN_TEMPLATE_TAG_RELATION_VALUE_1, MILAN_TEMPLATE_TAG_RELATION_VALUE_2,
+    MILAN_TEMPLATE_TAG_RELATION_VALUE_3, MILAN_TEMPLATE_TAG_RELATION_VALUE_4,
+    MILAN_TEMPLATE_TAG_RELATION_VALUE_5, MILAN_TEMPLATE_TAG_RELATION_VALUE_6,
   };
   uint32_t header_values[13];
   size_t cursor = 10;
 
-  if (!packed || !unpacked || packed_size < 1433 || packed[0] != 0x87 ||
-      packed[5] != 0x86 || goodix_milan_template_read_u32 (packed + 6) != packed_size - 10 ||
+  if (!packed || !unpacked || packed_size < 1433 ||
+      packed[0] != MILAN_TEMPLATE_TAG_ENVELOPE ||
+      packed[5] != MILAN_TEMPLATE_TAG_PAYLOAD ||
+      goodix_milan_template_read_u32 (packed + 6) != packed_size - 10 ||
       goodix_milan_template_read_u32 (packed + 1) !=
         milan_template_crc32 (packed + 10, packed_size - 10))
     return -1;
@@ -624,7 +696,8 @@ goodix_milan_template_unpack (
 
   for (size_t i = 0; i < unpacked->feature_count; i++)
     {
-      if (cursor + 5 > packed_size || packed[cursor] != 0x95)
+      if (cursor + 5 > packed_size ||
+          packed[cursor] != MILAN_FEATURE_TAG_ELEMENT)
         return -1;
       size_t element_size = 5 + goodix_milan_template_read_u32 (packed + cursor + 1);
 
@@ -634,7 +707,8 @@ goodix_milan_template_unpack (
       unpacked->feature_element_sizes[i] = element_size;
       cursor += element_size;
     }
-  while (cursor < packed_size && packed[cursor] == 0x96)
+  while (cursor < packed_size &&
+         packed[cursor] == MILAN_TEMPLATE_TAG_RELATION)
     {
       if (unpacked->relation_count >= GOODIX_MILAN_TEMPLATE_RELATION_CAPACITY ||
           cursor + 45 > packed_size ||
@@ -658,13 +732,14 @@ goodix_milan_template_unpack (
         }
       cursor += 45;
     }
-  if (cursor + 25 > packed_size || packed[cursor] != 0x93 ||
+  if (cursor + 25 > packed_size ||
+      packed[cursor] != MILAN_TEMPLATE_TAG_GRAPH ||
       goodix_milan_template_read_u32 (packed + cursor + 1) != 20)
     return -1;
   cursor += 5;
   for (size_t i = 0; i < 4; i++)
     {
-      if (packed[cursor] != 0xf2 + i)
+      if (packed[cursor] != MILAN_TEMPLATE_TAG_GRAPH_REFERENCE + i)
         return -1;
       uint32_t value = goodix_milan_template_read_u32 (packed + cursor + 1);
 
@@ -684,32 +759,37 @@ goodix_milan_template_unpack (
        unpacked->metadata.graph_established == 0 &&
        unpacked->relation_count != 0))
     return -1;
-  if (cursor + 5 > packed_size || packed[cursor] != 0x94 ||
+  if (cursor + 5 > packed_size || packed[cursor] != MILAN_TEMPLATE_TAG_TAIL ||
       goodix_milan_template_read_u32 (packed + cursor + 1) != 0x530)
     return -1;
   cursor += 5;
-  if (cursor + 5 + 200 > packed_size || packed[cursor] != 0xa1 ||
+  if (cursor + 5 + 200 > packed_size ||
+      packed[cursor] != MILAN_TEMPLATE_TAG_TAIL_RECORDS ||
       goodix_milan_template_read_u32 (packed + cursor + 1) != 200)
     return -1;
   memcpy (unpacked->tail_state, packed + cursor + 5, 200);
   cursor += 205;
-  if (cursor + 5 > packed_size || packed[cursor] != 0xa2)
+  if (cursor + 5 > packed_size ||
+      packed[cursor] != MILAN_TEMPLATE_TAG_TAIL_SCALAR)
     return -1;
   memcpy (unpacked->tail_state + 0xc8, packed + cursor + 1, 4);
   cursor += 5;
-  if (cursor + 5 + 64 > packed_size || packed[cursor] != 0xa3 ||
+  if (cursor + 5 + 64 > packed_size ||
+      packed[cursor] != MILAN_TEMPLATE_TAG_TAIL_VECTOR ||
       goodix_milan_template_read_u32 (packed + cursor + 1) != 64)
     return -1;
   memcpy (unpacked->tail_state + 0xcc, packed + cursor + 5, 64);
   cursor += 69;
-  if (cursor + 5 + 0x400 > packed_size || packed[cursor] != 0xa4 ||
+  if (cursor + 5 + 0x400 > packed_size ||
+      packed[cursor] != MILAN_TEMPLATE_TAG_TAIL_BITMAP ||
       goodix_milan_template_read_u32 (packed + cursor + 1) != 0x400)
     return -1;
   memcpy (unpacked->tail_state + 0x10c, packed + cursor + 5, 0x400);
   cursor += 0x405;
   for (size_t i = 0; i < 4; i++)
     {
-      if (cursor + 5 > packed_size || packed[cursor] != 0xa5 + i)
+      if (cursor + 5 > packed_size ||
+          packed[cursor] != MILAN_TEMPLATE_TAG_TAIL_TRAILER_FIRST + i)
         return -1;
       memcpy (unpacked->tail_state + 0x50c + i * 4,
               packed + cursor + 1, 4);
@@ -729,8 +809,15 @@ goodix_milan_template_pack_one_feature (
   size_t        *packed_size)
 {
   static const uint8_t header_tags[13] = {
-    0x81, 0x98, 0x9a, 0x9b, 0x91, 0x97, 0x92,
-    0x9e, 0x9f, 0x9c, 0x9d, 0xfa, 0xfb,
+    MILAN_TEMPLATE_TAG_HEADER_FORMAT, MILAN_TEMPLATE_TAG_SENSOR_TYPE,
+    MILAN_TEMPLATE_TAG_ROWS, MILAN_TEMPLATE_TAG_COLUMNS,
+    MILAN_TEMPLATE_TAG_FEATURE_COUNT, MILAN_TEMPLATE_TAG_MAXIMUM_FEATURES,
+    MILAN_TEMPLATE_TAG_REGISTRATION_COUNT,
+    MILAN_TEMPLATE_TAG_MAXIMUM_RECORDS,
+    MILAN_TEMPLATE_TAG_MAXIMUM_RECORDS_COPY,
+    MILAN_TEMPLATE_TAG_GEOMETRY_PRIMARY,
+    MILAN_TEMPLATE_TAG_GEOMETRY_SECONDARY, MILAN_TEMPLATE_TAG_QUEUE_STATE,
+    MILAN_TEMPLATE_TAG_QUEUE_COUNTER,
   };
   static const uint32_t header_values[13] = {
     0x11f248ea, 12, 88, 104, 1, 1, 1, 150, 150, 1, 1, 0, 0,
@@ -747,49 +834,58 @@ goodix_milan_template_pack_one_feature (
   if (packed_capacity < total_size)
     return -1;
 
-  packed[0] = 0x87;
-  packed[5] = 0x86;
+  packed[0] = MILAN_TEMPLATE_TAG_ENVELOPE;
+  packed[5] = MILAN_TEMPLATE_TAG_PAYLOAD;
   output = packed + 10;
   for (size_t i = 0; i < 13; i++)
     output = milan_pack_tagged_u32 (output, header_tags[i], header_values[i]);
   memcpy (output, feature_element, feature_element_size);
   output += feature_element_size;
-  *output++ = 0x93;
+  *output++ = MILAN_TEMPLATE_TAG_GRAPH;
   goodix_milan_template_write_u32 (output, 20);
   output += 4;
-  output = milan_pack_tagged_u32 (output, 0xf2, UINT32_MAX);
-  output = milan_pack_tagged_u32 (output, 0xf3, UINT32_MAX);
-  output = milan_pack_tagged_u32 (output, 0xf4, UINT32_MAX);
-  output = milan_pack_tagged_u32 (output, 0xf5, 0);
-  *output++ = 0x94;
+  output = milan_pack_tagged_u32 (
+    output, MILAN_TEMPLATE_TAG_GRAPH_REFERENCE, UINT32_MAX);
+  output = milan_pack_tagged_u32 (
+    output, MILAN_TEMPLATE_TAG_GRAPH_COMPANION_FIRST, UINT32_MAX);
+  output = milan_pack_tagged_u32 (
+    output, MILAN_TEMPLATE_TAG_GRAPH_COMPANION_SECOND, UINT32_MAX);
+  output = milan_pack_tagged_u32 (
+    output, MILAN_TEMPLATE_TAG_GRAPH_ESTABLISHED, 0);
+  *output++ = MILAN_TEMPLATE_TAG_TAIL;
   goodix_milan_template_write_u32 (output, 0x530);
   output += 4;
-  *output++ = 0xa1;
+  *output++ = MILAN_TEMPLATE_TAG_TAIL_RECORDS;
   goodix_milan_template_write_u32 (output, 200);
   output += 4;
   memcpy (output, tail_state, 200);
   output += 200;
   uint32_t value;
   memcpy (&value, tail_state + 0xc8, sizeof(value));
-  output = milan_pack_tagged_u32 (output, 0xa2, value);
-  *output++ = 0xa3;
+  output = milan_pack_tagged_u32 (
+    output, MILAN_TEMPLATE_TAG_TAIL_SCALAR, value);
+  *output++ = MILAN_TEMPLATE_TAG_TAIL_VECTOR;
   goodix_milan_template_write_u32 (output, 64);
   output += 4;
   memcpy (output, tail_state + 0xcc, 64);
   output += 64;
-  *output++ = 0xa4;
+  *output++ = MILAN_TEMPLATE_TAG_TAIL_BITMAP;
   goodix_milan_template_write_u32 (output, 0x400);
   output += 4;
   memcpy (output, tail_state + 0x10c, 0x400);
   output += 0x400;
   memcpy (&value, tail_state + 0x50c, sizeof(value));
-  output = milan_pack_tagged_u32 (output, 0xa5, value);
+  output = milan_pack_tagged_u32 (
+    output, MILAN_TEMPLATE_TAG_TAIL_TRAILER_FIRST, value);
   memcpy (&value, tail_state + 0x510, sizeof(value));
-  output = milan_pack_tagged_u32 (output, 0xa6, value);
+  output = milan_pack_tagged_u32 (
+    output, MILAN_TEMPLATE_TAG_TAIL_TRAILER_FIRST + 1, value);
   memcpy (&value, tail_state + 0x514, sizeof(value));
-  output = milan_pack_tagged_u32 (output, 0xa7, value);
+  output = milan_pack_tagged_u32 (
+    output, MILAN_TEMPLATE_TAG_TAIL_TRAILER_FIRST + 2, value);
   memcpy (&value, tail_state + 0x518, sizeof(value));
-  output = milan_pack_tagged_u32 (output, 0xa8, value);
+  output = milan_pack_tagged_u32 (
+    output, MILAN_TEMPLATE_TAG_TAIL_TRAILER_LAST, value);
 
   *packed_size = (size_t) (output - packed);
   if (*packed_size != total_size)
