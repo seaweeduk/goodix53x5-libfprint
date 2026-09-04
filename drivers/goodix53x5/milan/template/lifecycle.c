@@ -9,6 +9,7 @@
  */
 
 #include "milan/milan.h"
+#include "milan/print.h"
 #include "milan/private.h"
 #include "milan/relations.h"
 #include "milan/template/codec-private.h"
@@ -186,8 +187,8 @@ goodix_milan_template_normalize_unpacked (
   uint8_t *feature_copies[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
   int32_t overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY])
 {
-  const int32_t rows = 88;
-  const int32_t columns = 104;
+  const int32_t rows = GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS;
+  const int32_t columns = GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS;
   const int32_t effective_rows =
     goodix_milan_template_normalization_sar1 (rows);
   const int32_t effective_columns =
@@ -309,7 +310,7 @@ goodix_milan_template_normalize (
     }
   else
     {
-      if (unpacked->metadata.sensor_type != 12 ||
+      if (unpacked->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE ||
           unpacked->metadata.graph_established != 0 ||
           unpacked->metadata.graph_reference_index != -1 ||
           unpacked->relation_count != 0)

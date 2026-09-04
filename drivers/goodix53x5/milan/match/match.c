@@ -9,6 +9,7 @@
  */
 
 #include "milan/milan.h"
+#include "milan/print.h"
 #include "milan/private.h"
 #include "milan/template/codec-private.h"
 #include "milan/match/candidate.h"
@@ -761,8 +762,8 @@ milan_match_build_feature_candidate (
         &feature_result->filtered_count, &feature_result->descriptor_score,
         &feature_result->topology_percent, &feature_result->geometric_percent,
         &feature_result->topology_bonus, feature, probe_feature,
-        sensor_type == 12 ? 42 : 31,
-        sensor_type == 12 ? &feature_result->candidate : NULL) != 0)
+        sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ? 42 : 31,
+        sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ? &feature_result->candidate : NULL) != 0)
     return 1;
   milan_match_apply_secondary (
     enrolled_records, enrolled_record_count, enrolled_partition_count,
@@ -770,10 +771,10 @@ milan_match_build_feature_candidate (
     &feature_result->primary_filtered_count, &feature_result->filtered_count,
     feature_result->transform, &feature_result->topology_percent,
     &feature_result->geometric_percent, &feature_result->topology_bonus,
-    sensor_type == 12 ? 42 : 31, sibling_tail_hamming_limit,
+    sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ? 42 : 31, sibling_tail_hamming_limit,
     feature, probe_feature,
-    sensor_type == 12 ? &feature_result->candidate : NULL);
-  if (sensor_type == 12)
+    sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ? &feature_result->candidate : NULL);
+  if (sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       if (!goodix_milan_match_candidate_admit (&feature_result->candidate))
         {
@@ -798,7 +799,7 @@ milan_match_build_feature_candidate (
     }
   feature_result->descriptor_score =
     (int32_t) feature_result->filtered_count * 100 /
-    (sensor_type == 12 ? 42 : 31);
+    (sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ? 42 : 31);
 
   if (goodix_milan_match_overlap_metrics_with_context (
         feature, probe_feature, feature_result->transform, &overlap_score,
@@ -814,7 +815,7 @@ milan_match_build_feature_candidate (
     }
 #endif
 
-  if (sensor_type != 12)
+  if (sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       feature_result->metrics[0] =
         (int32_t) feature_result->primary_filtered_count;
@@ -827,7 +828,7 @@ milan_match_build_feature_candidate (
   feature_result->metrics[9] = overlap_coverage * 246 >> 8;
   feature_result->metrics[10] = feature_result->topology_percent;
   feature_result->metrics[11] = feature_result->geometric_percent;
-  if (sensor_type != 12 &&
+  if (sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
       (abs (feature_result->transform[2]) > 51 * 0x100 ||
        abs (feature_result->transform[5]) > 51 * 0x100) &&
       feature_result->metrics[11] < 36)
@@ -869,7 +870,7 @@ milan_match_build_feature_candidate (
         &feature_result->candidate_flag, NULL) != 0)
     return 1;
   feature_result->fallback_enabled = feature_result->candidate_flag;
-  if (sensor_type != 12 && feature_result->metrics[0] > 4 &&
+  if (sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE && feature_result->metrics[0] > 4 &&
       feature_result->metrics[5] > 195)
     {
       *rejection_candidate_seen = 1;
@@ -909,7 +910,7 @@ milan_match_build_feature_candidate (
                   sizeof (refined_transform));
           feature_result->metrics[4] = refined_overlap_score;
           feature_result->metrics[5] = refined_overlap_detail;
-          if (sensor_type == 12)
+          if (sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
             memcpy (low_bitmap_metrics, refined_low_metrics,
                     sizeof (low_bitmap_metrics));
           else
@@ -926,7 +927,7 @@ milan_match_build_feature_candidate (
             &refined_valid_count, &refined_matched_count);
           feature_result->metrics[10] = feature_result->topology_percent;
           feature_result->metrics[11] = feature_result->geometric_percent;
-          if (sensor_type == 12)
+          if (sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
             {
               goodix_milan_match_candidate_set_record_metrics (
                 &feature_result->candidate, refined_valid_count,
@@ -936,7 +937,7 @@ milan_match_build_feature_candidate (
                       feature_result->candidate.words + 66,
                       5 * sizeof (*feature_result->metrics));
             }
-          if (sensor_type != 12 &&
+          if (sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
               (abs (feature_result->transform[2]) > 51 * 0x100 ||
                abs (feature_result->transform[5]) > 51 * 0x100) &&
               feature_result->metrics[11] < 36)
@@ -955,7 +956,7 @@ milan_match_build_feature_candidate (
         matcher_policy->configuration, &feature_result->match_flag,
         &feature_result->candidate_flag, NULL) != 0)
     return 1;
-  if (sensor_type == 12)
+  if (sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       int status;
 
@@ -1028,7 +1029,7 @@ milan_match_publish_feature_candidate (
   int blocked = 0;
 
   memset (&contribution_event, 0, sizeof (contribution_event));
-  if (enrolled->metadata.sensor_type == 12)
+  if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       contributes = goodix_milan_match_selection_contribute (
         match_selection, feature_result->metrics, feature_result->transform,
@@ -1134,7 +1135,7 @@ milan_match_publish_feature_candidate (
       *policy_index = feature_index;
     }
 #endif
-  if (enrolled->metadata.sensor_type == 12 &&
+  if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
       contribution_event.direct_published && !retention_gate)
     return 2;
   return 0;
@@ -1291,7 +1292,7 @@ milan_match_prepared_probe (
         enrolled_template, enrolled_template_size, enrolled) != 0)
     goto out;
   matcher_policy.configuration[15] = (int32_t) enrolled->metadata.sensor_type;
-  if (enrolled->metadata.sensor_type == 12)
+  if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       if (probe_feature->fields.tagged_values[2] < 0 ||
           (size_t) probe_feature->fields.tagged_values[2] > probe_record_count)
@@ -1386,14 +1387,14 @@ milan_match_prepared_probe (
             continue;
           enrolled_records = enrolled_records_storage;
         }
-      if (enrolled->metadata.sensor_type != 12)
+      if (enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE)
         {
           enrolled_partition_count = 0;
           while (enrolled_partition_count < feature.record_count &&
                  enrolled_records[enrolled_partition_count].foreground == 0)
             enrolled_partition_count++;
         }
-      if (enrolled->metadata.sensor_type == 12)
+      if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
         {
           int32_t fallback_pairs[GOODIX_MILAN_MATCH_FALLBACK_PAIR_CAPACITY * 2];
           size_t fallback_pair_count;
@@ -1410,7 +1411,7 @@ milan_match_prepared_probe (
             &match_fallback.workspaces[match_fallback.workspace_count - 1];
           fallback_by_feature[feature_index] = fallback_workspace;
         }
-      if (enrolled->metadata.sensor_type == 12)
+      if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
         {
           goodix_milan_matcher_late_context_derive (
             &late_policy_context, feature.fields.optional_c7,
@@ -1470,7 +1471,7 @@ milan_match_prepared_probe (
       int32_t match_flag = feature_result.match_flag;
       int32_t candidate_flag = feature_result.candidate_flag;
       int32_t fallback_enabled = feature_result.fallback_enabled;
-      if (enrolled->metadata.sensor_type != 12 &&
+      if (enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
           direct_metrics[1] > 4 &&
           direct_metrics[10] > 30 &&
           (candidate_flag == 1 ||
@@ -1494,7 +1495,7 @@ milan_match_prepared_probe (
           direct_positive = candidate_flag == 1;
           memcpy (direct_transform, transform, sizeof(direct_transform));
         }
-      if (enrolled->metadata.sensor_type != 12 &&
+      if (enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
           direct_metrics[1] > 4 &&
           direct_metrics[10] > 30 &&
           (candidate_flag == 1 ||
@@ -1523,7 +1524,7 @@ milan_match_prepared_probe (
       int32_t reverse_match_flag;
       int32_t reverse_candidate_flag;
 
-       if (enrolled->metadata.sensor_type != 12 &&
+       if (enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
           milan_match_score_counts (
             probe_records, probe_record_count, probe_partition_count,
             enrolled_records, feature.record_count, enrolled_partition_count,
@@ -1532,7 +1533,8 @@ milan_match_prepared_probe (
             &reverse_filtered_count, &reverse_descriptor_score,
             &reverse_topology_percent, &reverse_geometric_percent,
              &reverse_topology_bonus, probe_feature, &feature,
-              enrolled->metadata.sensor_type == 12 ? 42 : 31, NULL) == 0)
+              enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE
+                ? 42 : 31, NULL) == 0)
         {
           milan_match_apply_secondary (
             probe_records, probe_record_count, probe_partition_count,
@@ -1541,12 +1543,12 @@ milan_match_prepared_probe (
             reverse_transform,
             &reverse_topology_percent, &reverse_geometric_percent,
             &reverse_topology_bonus,
-            enrolled->metadata.sensor_type == 12 ? 42 : 31,
+            enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ? 42 : 31,
             sibling_tail_hamming_limit,
             probe_feature, &feature, NULL);
           reverse_descriptor_score =
             (int32_t) reverse_filtered_count * 100 /
-            (enrolled->metadata.sensor_type == 12 ? 42 : 31);
+            (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ? 42 : 31);
 #ifdef GOODIX53X5_DEBUG
           if (diagnostics &&
               reverse_descriptor_score > diagnostics->descriptor_score)
@@ -1654,11 +1656,11 @@ milan_match_prepared_probe (
                 }
             }
         }
-      if (enrolled->metadata.sensor_type == 12)
+      if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
         fallback_workspace->enabled =
           matcher_policy.configuration[13] == 1 &&
           match_selection.acceptance_evidence == 0;
-      if (fallback_enabled && enrolled->metadata.sensor_type != 12)
+      if (fallback_enabled && enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE)
         {
           int32_t relaxed_pairs[62];
           int32_t relaxed_transform[6];
@@ -1718,7 +1720,7 @@ milan_match_prepared_probe (
         }
     }
 
-  if (enrolled->metadata.sensor_type == 12)
+  if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       *contributor_feature_mask =
         goodix_milan_match_selection_contributor_mask (&match_selection);
@@ -1734,8 +1736,8 @@ milan_match_prepared_probe (
     {
       GoodixMilanMatchRescueInput rescue_input = {
         .type = enrolled->metadata.sensor_type,
-        .width = 104,
-        .height = 88,
+        .width = GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS,
+        .height = GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS,
         .half_resolution = 1,
         .source_mask = probe_rescue_mask,
         .source_mask_size = GOODIX_MILAN_MATCH_RESCUE_MASK_SIZE,
@@ -1756,10 +1758,10 @@ milan_match_prepared_probe (
 
   effective_rejection = match_selection.rejection_evidence != 0 ||
                         (rescue_applied && rescue_result.set_rejection);
-  if (enrolled->metadata.sensor_type == 12 && !retention_gate)
+  if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE && !retention_gate)
     effective_rejection = 0;
 
-  if (enrolled->metadata.sensor_type == 12)
+  if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       *queue_candidate_eligible =
         effective_rejection == 0 && matcher_policy.configuration[13] == 1 &&
@@ -1783,7 +1785,7 @@ milan_match_prepared_probe (
 #ifdef GOODIX53X5_DEBUG
   if (diagnostics)
     {
-      if (enrolled->metadata.sensor_type == 12)
+      if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
         memcpy (diagnostics->direct_aggregate, match_selection.winner_metrics,
                 sizeof(diagnostics->direct_aggregate));
       else
@@ -1793,7 +1795,8 @@ milan_match_prepared_probe (
               sizeof(policy_aggregate));
       memcpy (diagnostics->probe_policy_aggregate, probe_policy_metrics,
               sizeof(probe_policy_metrics));
-      diagnostics->direct_feature_index = enrolled->metadata.sensor_type == 12
+      diagnostics->direct_feature_index =
+        enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE
                                             ? match_selection.winner_feature
                                             : (direct_index == SIZE_MAX
                                                  ? -1
@@ -1802,10 +1805,11 @@ milan_match_prepared_probe (
         policy_index == SIZE_MAX ? -1 : (int32_t) policy_index;
       diagnostics->probe_policy_feature_index =
         probe_policy_index == SIZE_MAX ? -1 : (int32_t) probe_policy_index;
-      diagnostics->q8_sum = enrolled->metadata.sensor_type == 12
+      diagnostics->q8_sum = enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE
                               ? match_selection.q8_sum
                               : direct_score_sum;
-      diagnostics->q8_contributor_count = enrolled->metadata.sensor_type == 12
+      diagnostics->q8_contributor_count =
+        enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE
                                              ? match_selection.q8_contributor_count
                                              : direct_candidate_count;
       diagnostics->postloop_blocking_count =
@@ -1817,7 +1821,7 @@ milan_match_prepared_probe (
       diagnostics->final_selected_feature_index =
         rescue_applied
           ? rescue_result.selected_feature
-          : (enrolled->metadata.sensor_type == 12
+          : (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE
                ? match_selection.selected_feature
                : (direct_index == SIZE_MAX ? -1 : (int32_t) direct_index));
     }
@@ -1847,7 +1851,7 @@ milan_match_prepared_probe (
       goto out;
     }
 
-  if (enrolled->metadata.sensor_type == 12 &&
+  if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
       !match_selection.score_latched &&
       (late_policy_context.accumulated_high_class >= 4 ||
        late_policy_context.probe_primary_histogram_class >= 2))
@@ -1857,7 +1861,7 @@ milan_match_prepared_probe (
       result = 0;
       goto out;
     }
-  if (enrolled->metadata.sensor_type == 12 &&
+  if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
       !match_selection.score_latched &&
       matcher_policy.configuration[13] == 0)
     {
@@ -1866,7 +1870,7 @@ milan_match_prepared_probe (
       goto out;
     }
 
-  if (enrolled->metadata.sensor_type == 12 &&
+  if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
       goodix_milan_match_selection_finalize (
         &match_selection, matcher_policy.configuration[18],
         match_selection.postloop_blocking_count,
@@ -1886,7 +1890,7 @@ milan_match_prepared_probe (
         *score = -65536;
       goto out;
     }
-  if (enrolled->metadata.sensor_type == 12)
+  if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       for (size_t feature_index = 0; feature_index < enrolled->feature_count;
            feature_index++)
@@ -2006,7 +2010,7 @@ milan_match_prepared_probe (
       if (match_selection.postloop_blocking_count > 0)
         *score = -65536;
     }
-  if (enrolled->metadata.sensor_type != 12 &&
+  if (enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
       direct_index != SIZE_MAX && direct_candidate_count > 0 &&
       (direct_positive ||
        (goodix_milan_match_final_score (
@@ -2054,7 +2058,7 @@ milan_match_prepared_probe (
             *relation_count = 0;
         }
     }
-  if (enrolled->metadata.sensor_type != 12 &&
+  if (enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
       *matched_feature_index == SIZE_MAX)
     {
       int rejection_reason = (rejection_count_sum < 6) << 2;
@@ -2078,7 +2082,7 @@ out:
   *retained_evidence_flag = match_selection.retained_active_evidence;
   *study_finalization_gate = match_selection.acceptance_evidence != 0 ||
                              (rescue_applied && rescue_result.set_acceptance);
-  *study_action_gate = matcher_policy.configuration[15] == 12
+  *study_action_gate = matcher_policy.configuration[15] == GOODIX_MILAN_PRINT_SENSOR_TYPE
                          ? effective_rejection
                          : match_selection.rejection_evidence != 0 ||
                              (rescue_applied && rescue_result.set_rejection);

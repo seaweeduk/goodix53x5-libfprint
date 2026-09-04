@@ -9,6 +9,7 @@
  */
 
 #include "milan/match/overlap.h"
+#include "milan/preprocess/state.h"
 #include "milan/private.h"
 
 #include <limits.h>
@@ -226,8 +227,8 @@ goodix_milan_feature_mask_forward_overlap (
   int32_t                      *overlap,
   int32_t                      *overlap_count)
 {
-  uint8_t first_mask[88 * 104];
-  uint8_t second_mask[88 * 104];
+  uint8_t first_mask[GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS];
+  uint8_t second_mask[GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS];
   size_t scale;
   size_t rows;
   size_t columns;

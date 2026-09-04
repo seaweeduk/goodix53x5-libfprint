@@ -14,7 +14,7 @@
 #include <stdint.h>
 
 GoodixStudyQueue *
-goodix_study_queue_new (uint32_t enabled_state,
+goodix_milan_study_queue_new (uint32_t enabled_state,
                         uint32_t transaction_counter)
 {
   GoodixStudyQueue *queue = g_new0 (GoodixStudyQueue, 1);
@@ -34,24 +34,24 @@ goodix_study_queue_new (uint32_t enabled_state,
     }
   for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
     {
-      queue->entries[i].info = goodix_match_info_new_empty ();
+      queue->entries[i].info = goodix_milan_match_info_new_empty ();
       queue->entries[i].rank = -1;
     }
   return queue;
 }
 
 void
-goodix_study_queue_free (GoodixStudyQueue *queue)
+goodix_milan_study_queue_free (GoodixStudyQueue *queue)
 {
   if (!queue)
     return;
   for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
-    goodix_match_free_info (queue->entries[i].info);
+    goodix_milan_match_free_info (queue->entries[i].info);
   g_free (queue);
 }
 
 gsize
-goodix_study_queue_occupied (const GoodixStudyQueue *queue)
+goodix_milan_study_queue_occupied (const GoodixStudyQueue *queue)
 {
   gsize occupied = 0;
 
@@ -63,7 +63,7 @@ goodix_study_queue_occupied (const GoodixStudyQueue *queue)
 }
 
 gsize
-goodix_study_queue_allocated (const GoodixStudyQueue *queue)
+goodix_milan_study_queue_allocated (const GoodixStudyQueue *queue)
 {
   gsize allocated = 0;
 
@@ -75,30 +75,30 @@ goodix_study_queue_allocated (const GoodixStudyQueue *queue)
 }
 
 gboolean
-goodix_study_queue_validate (const GoodixStudyQueue *queue)
+goodix_milan_study_queue_validate (const GoodixStudyQueue *queue)
 {
   gboolean seen[GOODIX_STUDY_QUEUE_CAPACITY] = { FALSE };
   gsize occupied;
 
   if (!queue || queue->enabled_state > 1)
     return FALSE;
-  occupied = goodix_study_queue_occupied (queue);
+  occupied = goodix_milan_study_queue_occupied (queue);
   if (queue->enabled_state == 1)
     {
-      if (occupied != 0 || goodix_study_queue_allocated (queue) != 0)
+      if (occupied != 0 || goodix_milan_study_queue_allocated (queue) != 0)
         return FALSE;
       for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
         if (queue->entries[i].rank != -1)
           return FALSE;
       return TRUE;
     }
-  if (goodix_study_queue_allocated (queue) != GOODIX_STUDY_QUEUE_CAPACITY)
+  if (goodix_milan_study_queue_allocated (queue) != GOODIX_STUDY_QUEUE_CAPACITY)
     return FALSE;
 
   for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
     {
       gint rank = queue->entries[i].rank;
-      gboolean complete = goodix_match_info_is_complete (
+      gboolean complete = goodix_milan_match_info_is_complete (
         queue->entries[i].info);
 
       if (rank < -1 || rank >= GOODIX_STUDY_QUEUE_CAPACITY ||
@@ -118,7 +118,7 @@ goodix_study_queue_validate (const GoodixStudyQueue *queue)
 }
 
 GoodixStudyQueueEnqueueResult
-goodix_study_queue_enqueue (GoodixStudyQueue           *queue,
+goodix_milan_study_queue_enqueue (GoodixStudyQueue           *queue,
                             const GoodixMatchInfo      *incoming,
                             GoodixStudyQueueMetricFunc  metric_func,
                             gpointer                    user_data)
@@ -127,13 +127,13 @@ goodix_study_queue_enqueue (GoodixStudyQueue           *queue,
   gsize newest_slot = SIZE_MAX;
   gsize destination = SIZE_MAX;
 
-  if (!queue || !incoming || !goodix_match_info_is_complete (incoming) ||
-      !goodix_study_queue_validate (queue))
+  if (!queue || !incoming || !goodix_milan_match_info_is_complete (incoming) ||
+      !goodix_milan_study_queue_validate (queue))
     return GOODIX_STUDY_QUEUE_INVALID;
   if (queue->enabled_state != 0)
     return GOODIX_STUDY_QUEUE_DISABLED;
 
-  occupied = goodix_study_queue_occupied (queue);
+  occupied = goodix_milan_study_queue_occupied (queue);
   for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
     {
       if (queue->entries[i].rank == (gint) occupied - 1)
@@ -160,7 +160,7 @@ goodix_study_queue_enqueue (GoodixStudyQueue           *queue,
           destination = i;
           break;
         }
-  if (destination == SIZE_MAX || !goodix_match_info_copy (
+  if (destination == SIZE_MAX || !goodix_milan_match_info_copy (
         queue->entries[destination].info, incoming))
     return GOODIX_STUDY_QUEUE_INVALID;
 
@@ -176,7 +176,7 @@ goodix_study_queue_enqueue (GoodixStudyQueue           *queue,
 }
 
 gboolean
-goodix_study_queue_process (GoodixStudyQueue             *queue,
+goodix_milan_study_queue_process (GoodixStudyQueue             *queue,
                             gsize                         primary_selected_index,
                             GoodixStudyQueueFollowupFunc  followup_func,
                             gpointer                      user_data,
@@ -191,7 +191,7 @@ goodix_study_queue_process (GoodixStudyQueue             *queue,
     *mutated = FALSE;
   if (!queue || !followup_func || !mutated ||
       primary_selected_index == SIZE_MAX ||
-      !goodix_study_queue_validate (queue) || queue->enabled_state != 0)
+      !goodix_milan_study_queue_validate (queue) || queue->enabled_state != 0)
     return FALSE;
   continuation[0] = primary_selected_index;
 
@@ -215,7 +215,7 @@ goodix_study_queue_process (GoodixStudyQueue             *queue,
             continue;
 
           consumed_rank = queue->entries[slot].rank;
-          goodix_match_info_clear (queue->entries[slot].info);
+          goodix_milan_match_info_clear (queue->entries[slot].info);
           queue->entries[slot].rank = -1;
           for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
             if (queue->entries[i].rank > consumed_rank)
@@ -230,17 +230,17 @@ goodix_study_queue_process (GoodixStudyQueue             *queue,
             break;
         }
     }
-  return goodix_study_queue_validate (queue);
+  return goodix_milan_study_queue_validate (queue);
 }
 
 void
-goodix_study_queue_disable (GoodixStudyQueue *queue)
+goodix_milan_study_queue_disable (GoodixStudyQueue *queue)
 {
   if (!queue)
     return;
   for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
     {
-      g_clear_pointer (&queue->entries[i].info, goodix_match_free_info);
+      g_clear_pointer (&queue->entries[i].info, goodix_milan_match_free_info);
       queue->entries[i].rank = -1;
     }
   queue->enabled_state = 1;

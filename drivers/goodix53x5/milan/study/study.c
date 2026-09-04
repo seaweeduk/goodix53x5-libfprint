@@ -9,6 +9,7 @@
  */
 
 #include "milan/milan.h"
+#include "milan/print.h"
 #include "milan/private.h"
 #include "milan/template/codec-private.h"
 #include "milan/template/normalization.h"
@@ -125,7 +126,8 @@ milan_study_build_relation_matrix (
 {
   int32_t row_bases[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
 
-  if (!current || !matrix || current->metadata.sensor_type != 12)
+  if (!current || !matrix ||
+      current->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE)
     return -1;
   for (size_t i = 0; i < current->feature_count; i++)
     if (goodix_milan_template_read_feature_scalar (
@@ -291,7 +293,7 @@ milan_sort_type12_template_order (GoodixMilanUnpackedTemplate *unpacked)
 static int
 milan_finalize_template_study_order (GoodixMilanUnpackedTemplate *unpacked)
 {
-  if (unpacked->metadata.sensor_type == 12)
+  if (unpacked->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     return milan_sort_type12_template_order (unpacked);
   return milan_sort_legacy_template_order (unpacked);
 }
@@ -303,7 +305,8 @@ milan_capture_study_transient (
 {
   uint8_t seen[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
 
-  if (!unpacked || !state || unpacked->metadata.sensor_type != 12 ||
+  if (!unpacked || !state ||
+      unpacked->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE ||
       unpacked->feature_count > GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
     return -1;
   memset (state, 0, sizeof(*state));
@@ -379,7 +382,7 @@ goodix_milan_study_action0_transient (
   current = malloc (sizeof(*current));
   if (!current || goodix_milan_template_unpack (
         current_template, current_template_size, current) != 0 ||
-      current->metadata.sensor_type != 12)
+      current->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE)
     goto out;
   if (retained_count > 0 && retained_flag == 1)
     {
@@ -571,7 +574,7 @@ goodix_milan_study_append (
                    (uint32_t) old_feature_count);
   if ((finalize_study && milan_finalize_template_study_order (current) != 0) ||
       milan_study_project_relations (current, relation_matrix) != 0 ||
-      (current->metadata.sensor_type == 12 &&
+      (current->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
        current->feature_count == current->metadata.maximum_features &&
        goodix_milan_template_normalize_unpacked (
           current, normalization_copies, live_overlap_counts) != 0))

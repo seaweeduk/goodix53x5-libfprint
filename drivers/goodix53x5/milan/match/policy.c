@@ -8,12 +8,10 @@
 
 #include "milan/match/policy.h"
 #include "milan/match/candidate.h"
+#include "milan/print.h"
 
 #include <limits.h>
 #include <string.h>
-
-#define GOODIX_MILAN_MATCH_ROWS 88
-#define GOODIX_MILAN_MATCH_COLUMNS 104
 
 enum
 {
@@ -935,7 +933,7 @@ goodix_milan_matcher_policy_init (GoodixMilanMatcherPolicy *policy,
 {
   static const int32_t profile9_type12[20] = {
     0, 0, 5, 218, 1, 1, 23, 47, 40, 38,
-    -1, 16, 246, 1, 0, 12, 0, 1, 0, 1,
+    -1, 16, 246, 1, 0, GOODIX_MILAN_PRINT_SENSOR_TYPE, 0, 1, 0, 1,
   };
 
   memcpy (policy->configuration, profile9_type12, sizeof(profile9_type12));
@@ -1045,7 +1043,9 @@ goodix_milan_matcher_policy_apply_late_veto (
   int32_t                        *match_flag,
   int32_t                        *candidate_flag)
 {
-  if (policy->configuration[18] > 0 && policy->configuration[15] == 12 &&
+  if (policy->configuration[18] > 0 &&
+      policy->configuration[GOODIX_MILAN_POLICY_CONFIG_SUBTYPE] ==
+        GOODIX_MILAN_PRINT_SENSOR_TYPE &&
       ((metrics[0] < 9 && metrics[11] < 12) ||
        (metrics[0] < 8 && metrics[11] < 14) ||
        (metrics[0] < 7 && metrics[11] < 16) ||
@@ -1223,12 +1223,14 @@ overlap_eligible_type12 (const int32_t state[3],
 static int32_t
 transformed_in_bounds_area_type12 (const int32_t transform[6])
 {
-  const int32_t maximum_x = (GOODIX_MILAN_MATCH_COLUMNS - 1) * 256;
-  const int32_t maximum_y = (GOODIX_MILAN_MATCH_ROWS - 1) * 256;
+  const int32_t maximum_x =
+    (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS - 1) * 256;
+  const int32_t maximum_y =
+    (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS - 1) * 256;
   int32_t area = 0;
 
-  for (int32_t y = 0; y < GOODIX_MILAN_MATCH_ROWS; y++)
-    for (int32_t x = 0; x < GOODIX_MILAN_MATCH_COLUMNS; x++)
+  for (int32_t y = 0; y < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS; y++)
+    for (int32_t x = 0; x < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS; x++)
       {
         int64_t source_x = (int64_t) x * transform[0] +
                            (int64_t) y * transform[1] + transform[2];
@@ -1247,7 +1249,8 @@ overlap_status_type12 (int32_t area,
                        int32_t margin)
 {
   return area * 100 >
-         (100 - margin) * GOODIX_MILAN_MATCH_ROWS * GOODIX_MILAN_MATCH_COLUMNS;
+         (100 - margin) * GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS *
+           GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS;
 }
 
 static int
@@ -1255,7 +1258,8 @@ overlap_clears_match_flag_type12 (int32_t area,
                               int32_t margin)
 {
   return area * 100 >
-         (95 - margin) * GOODIX_MILAN_MATCH_ROWS * GOODIX_MILAN_MATCH_COLUMNS;
+         (95 - margin) * GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS *
+           GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS;
 }
 
 int
