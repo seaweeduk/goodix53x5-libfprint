@@ -15,6 +15,21 @@
 #include <stdint.h>
 #include <string.h>
 
+/* Profile-9 anti-fake signal stages recovered from FUN_18003a150,
+ * FUN_18003a9b0, FUN_18003aff0, and FUN_180039c10. */
+#define ANTIFAKE_RESIDUAL_BASELINE 0x1bb7
+#define ANTIFAKE_EDGE_REPLICATE_TYPE_12 0x0c
+#define ANTIFAKE_EDGE_REPLICATE_TYPE_17 0x11
+#define ANTIFAKE_NEIGHBORHOOD_SIZE 9
+#define ANTIFAKE_NEIGHBORHOOD_MEDIAN 4
+#define ANTIFAKE_HISTOGRAM_BINS 4096
+#define ANTIFAKE_HISTOGRAM_LIMIT 0x0fff
+#define ANTIFAKE_TAIL_COUNT_DIVISOR 50
+#define ANTIFAKE_IMPULSE_CUTOFF_NUMERATOR 11
+#define ANTIFAKE_IMPULSE_CUTOFF_DENOMINATOR 10
+#define ANTIFAKE_ROUGHNESS_MEDIAN_SCALE 5
+#define ANTIFAKE_ROUGHNESS_CENTER_SCALE 2
+
 int
 goodix_milan_antifake_residual (
   const uint16_t *calibration,
@@ -31,27 +46,28 @@ goodix_milan_antifake_residual (
       columns > SIZE_MAX / rows)
     return -1;
   count = rows * columns;
-  if (count > SIZE_MAX / sizeof(*residual))
+  if (count > SIZE_MAX / sizeof (*residual))
     return -1;
 
-  memset (residual, 0, count * sizeof(*residual));
+  memset (residual, 0, count * sizeof (*residual));
   for (size_t row = 1; row + 1 < rows; row++)
     for (size_t column = 1; column + 1 < columns; column++)
       {
         size_t i = row * columns + column;
         int32_t value = (int32_t) calibration[i] - raw_frame[i] -
-                        sensor_offset - 0x1bb7;
+                        sensor_offset - ANTIFAKE_RESIDUAL_BASELINE;
 
         residual[i] = (uint16_t) value;
       }
 
-  if (chip_type == 0x0c || chip_type == 0x11)
+  if (chip_type == ANTIFAKE_EDGE_REPLICATE_TYPE_12 ||
+      chip_type == ANTIFAKE_EDGE_REPLICATE_TYPE_17)
     {
       memcpy (residual, residual + columns,
-              columns * sizeof(*residual));
+              columns * sizeof (*residual));
       memcpy (residual + (rows - 1) * columns,
               residual + (rows - 2) * columns,
-              columns * sizeof(*residual));
+              columns * sizeof (*residual));
       for (size_t row = 0; row < rows; row++)
         {
           residual[row * columns] = residual[row * columns + 1];
@@ -64,12 +80,12 @@ goodix_milan_antifake_residual (
 }
 
 static uint16_t
-antifake_median9_u16 (const uint16_t values[9])
+antifake_median9_u16 (const uint16_t values[ANTIFAKE_NEIGHBORHOOD_SIZE])
 {
-  uint16_t sorted[9];
+  uint16_t sorted[ANTIFAKE_NEIGHBORHOOD_SIZE];
 
-  memcpy (sorted, values, sizeof(sorted));
-  for (size_t i = 1; i < 9; i++)
+  memcpy (sorted, values, sizeof (sorted));
+  for (size_t i = 1; i < ANTIFAKE_NEIGHBORHOOD_SIZE; i++)
     {
       uint16_t value = sorted[i];
       size_t j = i;
@@ -81,7 +97,7 @@ antifake_median9_u16 (const uint16_t values[9])
         }
       sorted[j] = value;
     }
-  return sorted[4];
+  return sorted[ANTIFAKE_NEIGHBORHOOD_MEDIAN];
 }
 
 static int32_t
@@ -107,8 +123,8 @@ antifake_local_roughness (const uint16_t *residual,
       {
         uint16_t neighbor = residual[(size_t) (y + dy) * columns +
                                      (size_t) (x + dx)];
-        roughness += center < neighbor ? neighbor - center
-                                       : center - neighbor;
+        roughness += center < neighbor ? neighbor - center :
+                     center - neighbor;
       }
   return roughness;
 }
@@ -120,28 +136,31 @@ goodix_milan_antifake_impulse_filter (
   size_t    columns,
   int32_t  *threshold)
 {
-  uint32_t histogram[4096] = { 0 };
+  uint32_t histogram[ANTIFAKE_HISTOGRAM_BINS] = { 0 };
 
   if (!residual || !threshold || rows < 3 || columns < 3 ||
       columns > SIZE_MAX / rows || rows * columns > INT32_MAX)
     return -1;
   for (size_t row = 1; row + 1 < rows; row++)
     for (size_t column = 1; column + 1 < columns; column++)
-      if (residual[row * columns + column] < 0x0fff)
+      if (residual[row * columns + column] < ANTIFAKE_HISTOGRAM_LIMIT)
         histogram[residual[row * columns + column]]++;
-  for (int value = 4094; value >= 0; value--)
+  for (int value = ANTIFAKE_HISTOGRAM_BINS - 2; value >= 0; value--)
     histogram[value] += histogram[value + 1];
 
   int32_t selected = 0;
-  int32_t minimum_count = (int32_t) (rows * columns) / 50;
-  for (int32_t value = 4095; value >= 0; value--)
+  int32_t minimum_count =
+    (int32_t) (rows * columns) / ANTIFAKE_TAIL_COUNT_DIVISOR;
+  for (int32_t value = ANTIFAKE_HISTOGRAM_BINS - 1; value >= 0; value--)
     if ((int32_t) histogram[value] > minimum_count)
       {
         selected = value;
         break;
       }
   *threshold = selected;
-  uint16_t cutoff = (uint16_t) ((selected * 11) / 10);
+  uint16_t cutoff =
+    (uint16_t) ((selected * ANTIFAKE_IMPULSE_CUTOFF_NUMERATOR) /
+                ANTIFAKE_IMPULSE_CUTOFF_DENOMINATOR);
   for (size_t row = 0; row < rows; row++)
     for (size_t column = 0; column < columns; column++)
       {
@@ -149,16 +168,16 @@ goodix_milan_antifake_impulse_filter (
 
         if (residual[pixel] < cutoff)
           continue;
-        int32_t roughness[9];
+        int32_t roughness[ANTIFAKE_NEIGHBORHOOD_SIZE];
         size_t roughness_index = 0;
         for (ptrdiff_t dy = -1; dy <= 1; dy++)
           for (ptrdiff_t dx = -1; dx <= 1; dx++)
             roughness[roughness_index++] = antifake_local_roughness (
               residual, rows, columns, (ptrdiff_t) column + dx,
               (ptrdiff_t) row + dy);
-        int32_t sorted_roughness[9];
-        memcpy (sorted_roughness, roughness, sizeof(sorted_roughness));
-        for (size_t i = 1; i < 9; i++)
+        int32_t sorted_roughness[ANTIFAKE_NEIGHBORHOOD_SIZE];
+        memcpy (sorted_roughness, roughness, sizeof (sorted_roughness));
+        for (size_t i = 1; i < ANTIFAKE_NEIGHBORHOOD_SIZE; i++)
           {
             int32_t value = sorted_roughness[i];
             size_t j = i;
@@ -170,9 +189,12 @@ goodix_milan_antifake_impulse_filter (
               }
             sorted_roughness[j] = value;
           }
-        if (sorted_roughness[4] * 5 <= roughness[4] * 2)
+        if (sorted_roughness[ANTIFAKE_NEIGHBORHOOD_MEDIAN] *
+            ANTIFAKE_ROUGHNESS_MEDIAN_SCALE <=
+            roughness[ANTIFAKE_NEIGHBORHOOD_MEDIAN] *
+            ANTIFAKE_ROUGHNESS_CENTER_SCALE)
           {
-            uint16_t neighborhood[9];
+            uint16_t neighborhood[ANTIFAKE_NEIGHBORHOOD_SIZE];
             size_t neighborhood_index = 0;
             size_t count = rows * columns;
 
@@ -182,11 +204,13 @@ goodix_milan_antifake_impulse_filter (
              * fallback.
              */
             if (pixel >= columns + 1 && pixel + columns + 1 < count)
-              for (ptrdiff_t dy = -1; dy <= 1; dy++)
-                for (ptrdiff_t dx = -1; dx <= 1; dx++)
-                  neighborhood[neighborhood_index++] = residual[
-                    (size_t) ((ptrdiff_t) pixel +
-                              dy * (ptrdiff_t) columns + dx)];
+              {
+                for (ptrdiff_t dy = -1; dy <= 1; dy++)
+                  for (ptrdiff_t dx = -1; dx <= 1; dx++)
+                    neighborhood[neighborhood_index++] = residual[
+                      (size_t) ((ptrdiff_t) pixel +
+                                dy * (ptrdiff_t) columns + dx)];
+              }
             else
               {
                 ptrdiff_t center_x = (ptrdiff_t) column;
@@ -236,40 +260,42 @@ goodix_milan_antifake_statistics (
         masked_sum += residual[i];
         masked_count++;
       }
-  *mean = masked_count == 0
-            ? 0
-            : (int32_t) ((masked_sum + masked_count / 2) / masked_count);
+  *mean = masked_count == 0 ?
+          0 :
+          (int32_t) ((masked_sum + masked_count / 2) / masked_count);
 
   if (rows > 8 && columns > 8)
-    for (size_t row = 4; row + 4 < rows; row++)
-      for (size_t column = 4; column + 4 < columns; column++)
-        {
-          size_t i = row * columns + column;
-          uint32_t local_sum = 0;
-          size_t top = row > 5 ? row - 5 : 0;
-          size_t bottom = row + 5 < rows ? row + 5 : rows - 1;
-          size_t left = column > 5 ? column - 5 : 0;
-          size_t right = column + 5 < columns ? column + 5 : columns - 1;
-          size_t area = (bottom - top + 1) * (right - left + 1);
+    {
+      for (size_t row = 4; row + 4 < rows; row++)
+        for (size_t column = 4; column + 4 < columns; column++)
+          {
+            size_t i = row * columns + column;
+            uint32_t local_sum = 0;
+            size_t top = row > 5 ? row - 5 : 0;
+            size_t bottom = row + 5 < rows ? row + 5 : rows - 1;
+            size_t left = column > 5 ? column - 5 : 0;
+            size_t right = column + 5 < columns ? column + 5 : columns - 1;
+            size_t area = (bottom - top + 1) * (right - left + 1);
 
-          if (mask[i] == 0)
-            continue;
-          for (size_t y = top; y <= bottom; y++)
-            for (size_t x = left; x <= right; x++)
-              local_sum += residual[y * columns + x];
-          uint16_t local_mean = (uint16_t) ((local_sum + area / 2) / area);
-          int16_t highpass = (int16_t) ((int16_t) residual[i] -
-                                        (int16_t) local_mean + 0x2000);
-          uint16_t encoded = (uint16_t) highpass;
+            if (mask[i] == 0)
+              continue;
+            for (size_t y = top; y <= bottom; y++)
+              for (size_t x = left; x <= right; x++)
+                local_sum += residual[y * columns + x];
+            uint16_t local_mean = (uint16_t) ((local_sum + area / 2) / area);
+            int16_t highpass = (int16_t) ((int16_t) residual[i] -
+                                          (int16_t) local_mean + 0x2000);
+            uint16_t encoded = (uint16_t) highpass;
 
-          texture_sum += encoded > 0x2000 ? encoded - 0x2000
-                                           : 0x2000 - encoded;
-          texture_count++;
-        }
-  *texture = texture_count == 0
-               ? 0
-               : (int32_t) (((texture_sum + texture_count / 2) * 3) /
-                            texture_count);
+            texture_sum += encoded > 0x2000 ? encoded - 0x2000 :
+                           0x2000 - encoded;
+            texture_count++;
+          }
+    }
+  *texture = texture_count == 0 ?
+             0 :
+             (int32_t) (((texture_sum + texture_count / 2) * 3) /
+                        texture_count);
   return 0;
 }
 
@@ -357,7 +383,7 @@ goodix_milan_antifake_block_variation (
     variance = 0;
   uint32_t scaled = antifake_integer_sqrt (variance) * 0x1000;
 
-  *variation = mean == 0 ? (int32_t) scaled
-                         : (int32_t) ((scaled + mean / 2) / mean);
+  *variation = mean == 0 ? (int32_t) scaled :
+               (int32_t) ((scaled + mean / 2) / mean);
   return 0;
 }
