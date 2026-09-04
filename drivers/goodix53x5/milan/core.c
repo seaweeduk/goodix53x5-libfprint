@@ -1707,14 +1707,13 @@ goodix_milan_preprocess_quality (const uint8_t *frame,
     goto out;
 
   if (goodix_milan_preprocess_quality_coverage_mask (
-        frame, rows, columns, coverage_mask, &raw_coverage) != 0 ||
-      goodix_milan_preprocess_quality_valid_mask (
-        frame, rows, columns, valid_mask, &original_valid_score) != 0)
+        frame, rows, columns, coverage_mask, &raw_coverage) != 0)
     goto out;
+  goodix_milan_preprocess_quality_valid_mask (
+    frame, rows, columns, valid_mask, &original_valid_score);
   propagated_valid_score =
     goodix_milan_preprocess_quality_mask_coverage (valid_mask, count);
-  if (propagated_valid_score < 0 ||
-      quality_patch_score_core (
+  if (quality_patch_score_core (
         frame, valid_mask, rows, columns, 1, refined_mask, &patch_score) != 0 ||
       quality_mask_fraction_core (
         frame, refined_mask, rows, columns, &mask_fraction) != 0 ||

@@ -10,7 +10,6 @@
 
 #include "milan/milan.h"
 
-#include <limits.h>
 #include <stdint.h>
 
 int
@@ -19,8 +18,6 @@ goodix_milan_preprocess_quality_mask_coverage (const uint8_t *mask,
 {
   size_t selected = 0;
 
-  if (!mask || count == 0 || count > INT_MAX)
-    return -1;
   for (size_t i = 0; i < count; i++)
     selected += mask[i] != 0;
   return (int) ((selected * UINT32_C(0x10000)) / count);
@@ -36,14 +33,7 @@ goodix_milan_preprocess_quality_valid_mask (const uint8_t *frame,
   size_t count;
   size_t valid = 0;
 
-  if (!frame || !mask || !valid_score || rows == 0 || columns == 0 ||
-      columns > SIZE_MAX / rows)
-    return -1;
-
   count = rows * columns;
-  if (count > INT_MAX)
-    return -1;
-
   for (size_t row = 0; row < rows; row++)
     {
       for (size_t column = 0; column < columns; column++)
