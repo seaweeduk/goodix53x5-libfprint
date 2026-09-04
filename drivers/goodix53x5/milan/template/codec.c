@@ -15,6 +15,42 @@
 #include <stdint.h>
 #include <string.h>
 
+enum
+{
+  MILAN_FEATURE_TAG_ELEMENT = 0x95,
+  MILAN_FEATURE_TAG_HIGH_BITMAP = 0xb2,
+  MILAN_FEATURE_TAG_RECORD_COUNT = 0xb3,
+  MILAN_FEATURE_TAG_RECORDS = 0xb4,
+  MILAN_FEATURE_TAG_SCALAR_B5 = 0xb5,
+  MILAN_FEATURE_TAG_SCALAR_B6 = 0xb6,
+  MILAN_FEATURE_TAG_SCALAR_B7 = 0xb7,
+  MILAN_FEATURE_TAG_SCALAR_B8 = 0xb8,
+  MILAN_FEATURE_TAG_SCALAR_B9 = 0xb9,
+  MILAN_FEATURE_TAG_SCALAR_BA = 0xba,
+  MILAN_FEATURE_TAG_SCALAR_BB = 0xbb,
+  MILAN_FEATURE_TAG_SCALAR_BC = 0xbc,
+  MILAN_FEATURE_TAG_SCALAR_BD = 0xbd,
+  MILAN_FEATURE_TAG_SCALAR_BE = 0xbe,
+  MILAN_FEATURE_TAG_ANTIFAKE = 0xbf,
+  MILAN_FEATURE_TAG_SCALAR_C0 = 0xc0,
+  MILAN_FEATURE_TAG_BITMAP_COLUMNS = 0xc1,
+  MILAN_FEATURE_TAG_BITMAP_ROWS = 0xc2,
+  MILAN_FEATURE_TAG_BITMAP_SENTINEL = 0xc3,
+  MILAN_FEATURE_TAG_BITMAP_SCALE = 0xc4,
+  MILAN_FEATURE_TAG_BITMAP_DATA = 0xc5,
+  MILAN_FEATURE_TAG_OPTIONAL_C7 = 0xc7,
+  MILAN_FEATURE_TAG_LOW_BITMAP = 0xcd,
+  MILAN_FEATURE_TAG_INLINE_MASK = 0xce,
+  MILAN_FEATURE_TAG_ENHANCED_BITMAP = 0xcf,
+};
+
+enum
+{
+  MILAN_FEATURE_BITMAP_SIZE = 286,
+  MILAN_FEATURE_INLINE_MASK_SIZE = 72,
+  MILAN_FEATURE_PACKED_RECORD_SIZE = 32,
+};
+
 int
 goodix_milan_feature_pack_template_records (
   const GoodixMilanFeatureRecord *records,
@@ -23,7 +59,7 @@ goodix_milan_feature_pack_template_records (
   size_t                          packed_size)
 {
   static const uint8_t swap_order[8] = { 0, 1, 1, 0, 1, 0, 0, 1 };
-  const size_t packed_record_size = 32;
+  const size_t packed_record_size = MILAN_FEATURE_PACKED_RECORD_SIZE;
 
   if (!records || !packed || record_count > SIZE_MAX / packed_record_size ||
       packed_size < record_count * packed_record_size)
@@ -79,12 +115,13 @@ goodix_milan_feature_unpack_template_records (
 
   if (!packed || !records || partition_count > record_count ||
       record_count > record_capacity ||
-      record_count > SIZE_MAX / 32)
+      record_count > SIZE_MAX / MILAN_FEATURE_PACKED_RECORD_SIZE)
     return -1;
   memset (records, 0, record_count * sizeof(*records));
   for (size_t i = 0; i < record_count; i++)
     {
-      const uint8_t *input = packed + i * 32;
+      const uint8_t *input =
+        packed + i * MILAN_FEATURE_PACKED_RECORD_SIZE;
       uint8_t *record = (uint8_t *) &records[i];
       uint32_t position = goodix_milan_template_read_u32 (input);
       uint8_t packed_orientation = (uint8_t) position;
@@ -143,12 +180,19 @@ milan_feature_read_bitmap (const uint8_t **cursor,
 {
   const uint8_t *block;
 
-  if (milan_feature_read_tagged_block (cursor, end, tag, 311, &block) != 0 ||
-      block[0] != 0xc1 || goodix_milan_template_read_u32 (block + 1) != 52 ||
-      block[5] != 0xc2 || goodix_milan_template_read_u32 (block + 6) != 44 ||
-      block[10] != 0xc3 || goodix_milan_template_read_u32 (block + 11) != UINT32_MAX ||
-      block[15] != 0xc4 || goodix_milan_template_read_u32 (block + 16) != 8 ||
-      block[20] != 0xc5 || goodix_milan_template_read_u32 (block + 21) != 286)
+  if (milan_feature_read_tagged_block (
+        cursor, end, tag, MILAN_FEATURE_BITMAP_SIZE + 25, &block) != 0 ||
+      block[0] != MILAN_FEATURE_TAG_BITMAP_COLUMNS ||
+      goodix_milan_template_read_u32 (block + 1) != 52 ||
+      block[5] != MILAN_FEATURE_TAG_BITMAP_ROWS ||
+      goodix_milan_template_read_u32 (block + 6) != 44 ||
+      block[10] != MILAN_FEATURE_TAG_BITMAP_SENTINEL ||
+      goodix_milan_template_read_u32 (block + 11) != UINT32_MAX ||
+      block[15] != MILAN_FEATURE_TAG_BITMAP_SCALE ||
+      goodix_milan_template_read_u32 (block + 16) != 8 ||
+      block[20] != MILAN_FEATURE_TAG_BITMAP_DATA ||
+      goodix_milan_template_read_u32 (block + 21) !=
+        MILAN_FEATURE_BITMAP_SIZE)
     return -1;
   *bitmap = block + 25;
   return 0;
@@ -161,39 +205,51 @@ goodix_milan_template_parse_feature_element (
   GoodixMilanFeatureView *view)
 {
   static const uint8_t scalar_tags[11] = {
-    0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xc0,
+    MILAN_FEATURE_TAG_SCALAR_B5, MILAN_FEATURE_TAG_SCALAR_B6,
+    MILAN_FEATURE_TAG_SCALAR_B7, MILAN_FEATURE_TAG_SCALAR_B8,
+    MILAN_FEATURE_TAG_SCALAR_B9, MILAN_FEATURE_TAG_SCALAR_BA,
+    MILAN_FEATURE_TAG_SCALAR_BB, MILAN_FEATURE_TAG_SCALAR_BC,
+    MILAN_FEATURE_TAG_SCALAR_BD, MILAN_FEATURE_TAG_SCALAR_BE,
+    MILAN_FEATURE_TAG_SCALAR_C0,
   };
   const uint8_t *cursor;
   const uint8_t *end;
   const uint8_t *packed_records;
   uint32_t count;
 
-  if (!packed || !view || packed_size < 5 || packed[0] != 0x95 ||
+  if (!packed || !view || packed_size < 5 ||
+      packed[0] != MILAN_FEATURE_TAG_ELEMENT ||
       goodix_milan_template_read_u32 (packed + 1) != packed_size - 5)
     return -1;
   memset (view, 0, sizeof(*view));
   cursor = packed + 5;
   end = packed + packed_size;
-  if (milan_feature_read_bitmap (&cursor, end, 0xb2,
-                                 &view->high_bitmap) != 0 ||
-      milan_feature_read_bitmap (&cursor, end, 0xcf,
+  if (milan_feature_read_bitmap (&cursor, end, MILAN_FEATURE_TAG_HIGH_BITMAP,
+                                  &view->high_bitmap) != 0 ||
+      milan_feature_read_bitmap (&cursor, end,
+                                 MILAN_FEATURE_TAG_ENHANCED_BITMAP,
                                  &view->enhanced_bitmap) != 0 ||
-      milan_feature_read_tagged_block (&cursor, end, 0xce, 72,
+      milan_feature_read_tagged_block (&cursor, end,
+                                       MILAN_FEATURE_TAG_INLINE_MASK,
+                                       MILAN_FEATURE_INLINE_MASK_SIZE,
                                        &view->inline_mask) != 0 ||
-      milan_feature_read_bitmap (&cursor, end, 0xcd,
-                                 &view->low_bitmap) != 0 ||
-      (size_t) (end - cursor) < 5 || cursor[0] != 0xb3)
+      milan_feature_read_bitmap (&cursor, end, MILAN_FEATURE_TAG_LOW_BITMAP,
+                                  &view->low_bitmap) != 0 ||
+      (size_t) (end - cursor) < 5 ||
+      cursor[0] != MILAN_FEATURE_TAG_RECORD_COUNT)
     return -1;
   count = goodix_milan_template_read_u32 (cursor + 1);
   cursor += 5;
-  if ((size_t) (end - cursor) < 6 || cursor[0] != 0xbf || cursor[1] != 1 ||
+  if ((size_t) (end - cursor) < 6 ||
+      cursor[0] != MILAN_FEATURE_TAG_ANTIFAKE || cursor[1] != 1 ||
       goodix_milan_template_read_u32 (cursor + 2) != GOODIX_MILAN_ANTIFAKE_SIZE ||
       (size_t) (end - cursor - 6) < GOODIX_MILAN_ANTIFAKE_SIZE)
     return -1;
   view->antifake = (const GoodixMilanAntifakeBlob *) (cursor + 6);
   cursor += 6 + GOODIX_MILAN_ANTIFAKE_SIZE;
-  if (milan_feature_read_tagged_block (&cursor, end, 0xb4,
-                                       (size_t) count * 32,
+  if (milan_feature_read_tagged_block (
+        &cursor, end, MILAN_FEATURE_TAG_RECORDS,
+        (size_t) count * MILAN_FEATURE_PACKED_RECORD_SIZE,
                                        &packed_records) != 0)
     return -1;
   view->packed_records = packed_records;
@@ -205,7 +261,8 @@ goodix_milan_template_parse_feature_element (
       view->fields.tagged_values[i] = (int32_t) goodix_milan_template_read_u32 (cursor + 1);
       cursor += 5;
     }
-  if ((size_t) (end - cursor) >= 5 && cursor[0] == 0xc7)
+  if ((size_t) (end - cursor) >= 5 &&
+      cursor[0] == MILAN_FEATURE_TAG_OPTIONAL_C7)
     {
       view->fields.optional_c7 = (int32_t) goodix_milan_template_read_u32 (cursor + 1);
       cursor += 5;
@@ -247,24 +304,24 @@ milan_pack_feature_bitmap (uint8_t       *output,
                            uint8_t        tag,
                            const uint8_t *bitmap)
 {
-  const uint32_t bitmap_size = 286;
+  const uint32_t bitmap_size = MILAN_FEATURE_BITMAP_SIZE;
 
   *output++ = tag;
   goodix_milan_template_write_u32 (output, bitmap_size + 25);
   output += 4;
-  *output++ = 0xc1;
+  *output++ = MILAN_FEATURE_TAG_BITMAP_COLUMNS;
   goodix_milan_template_write_u32 (output, 52);
   output += 4;
-  *output++ = 0xc2;
+  *output++ = MILAN_FEATURE_TAG_BITMAP_ROWS;
   goodix_milan_template_write_u32 (output, 44);
   output += 4;
-  *output++ = 0xc3;
+  *output++ = MILAN_FEATURE_TAG_BITMAP_SENTINEL;
   goodix_milan_template_write_u32 (output, UINT32_MAX);
   output += 4;
-  *output++ = 0xc4;
+  *output++ = MILAN_FEATURE_TAG_BITMAP_SCALE;
   goodix_milan_template_write_u32 (output, 8);
   output += 4;
-  *output++ = 0xc5;
+  *output++ = MILAN_FEATURE_TAG_BITMAP_DATA;
   goodix_milan_template_write_u32 (output, bitmap_size);
   output += 4;
   memcpy (output, bitmap, bitmap_size);
@@ -286,10 +343,15 @@ goodix_milan_template_pack_feature_element (
   size_t                                *packed_size)
 {
   static const uint8_t scalar_tags[11] = {
-    0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xc0,
+    MILAN_FEATURE_TAG_SCALAR_B5, MILAN_FEATURE_TAG_SCALAR_B6,
+    MILAN_FEATURE_TAG_SCALAR_B7, MILAN_FEATURE_TAG_SCALAR_B8,
+    MILAN_FEATURE_TAG_SCALAR_B9, MILAN_FEATURE_TAG_SCALAR_BA,
+    MILAN_FEATURE_TAG_SCALAR_BB, MILAN_FEATURE_TAG_SCALAR_BC,
+    MILAN_FEATURE_TAG_SCALAR_BD, MILAN_FEATURE_TAG_SCALAR_BE,
+    MILAN_FEATURE_TAG_SCALAR_C0,
   };
-  const size_t inline_mask_size = 72;
-  const size_t packed_record_size = 32;
+  const size_t inline_mask_size = MILAN_FEATURE_INLINE_MASK_SIZE;
+  const size_t packed_record_size = MILAN_FEATURE_PACKED_RECORD_SIZE;
   size_t total_size;
   uint8_t *output;
 
@@ -304,28 +366,31 @@ goodix_milan_template_pack_feature_element (
     return -1;
 
   output = packed;
-  *output++ = 0x95;
+  *output++ = MILAN_FEATURE_TAG_ELEMENT;
   goodix_milan_template_write_u32 (output, (uint32_t) (total_size - 5));
   output += 4;
-  output = milan_pack_feature_bitmap (output, 0xb2, high_bitmap);
-  output = milan_pack_feature_bitmap (output, 0xcf, enhanced_bitmap);
-  *output++ = 0xce;
+  output = milan_pack_feature_bitmap (
+    output, MILAN_FEATURE_TAG_HIGH_BITMAP, high_bitmap);
+  output = milan_pack_feature_bitmap (
+    output, MILAN_FEATURE_TAG_ENHANCED_BITMAP, enhanced_bitmap);
+  *output++ = MILAN_FEATURE_TAG_INLINE_MASK;
   goodix_milan_template_write_u32 (output, inline_mask_size);
   output += 4;
   memcpy (output, inline_mask, inline_mask_size);
   output += inline_mask_size;
-  output = milan_pack_feature_bitmap (output, 0xcd, low_bitmap);
-  *output++ = 0xb3;
+  output = milan_pack_feature_bitmap (
+    output, MILAN_FEATURE_TAG_LOW_BITMAP, low_bitmap);
+  *output++ = MILAN_FEATURE_TAG_RECORD_COUNT;
   goodix_milan_template_write_u32 (output, (uint32_t) record_count);
   output += 4;
-  *output++ = 0xbf;
+  *output++ = MILAN_FEATURE_TAG_ANTIFAKE;
   *output++ = 1;
   goodix_milan_template_write_u32 (output, GOODIX_MILAN_ANTIFAKE_SIZE);
   output += 4;
   memcpy (output, goodix_milan_antifake_const_data (antifake),
           GOODIX_MILAN_ANTIFAKE_SIZE);
   output += GOODIX_MILAN_ANTIFAKE_SIZE;
-  *output++ = 0xb4;
+  *output++ = MILAN_FEATURE_TAG_RECORDS;
   goodix_milan_template_write_u32 (output, (uint32_t) (record_count * packed_record_size));
   output += 4;
   if (goodix_milan_feature_pack_template_records (
@@ -341,7 +406,7 @@ goodix_milan_template_pack_feature_element (
     }
   if (fields->optional_c7 != 0)
     {
-      *output++ = 0xc7;
+      *output++ = MILAN_FEATURE_TAG_OPTIONAL_C7;
       goodix_milan_template_write_u32 (output, (uint32_t) fields->optional_c7);
       output += 4;
     }
