@@ -92,6 +92,22 @@ typedef struct
   int                            repaired;
 } MilanMatchPromotionRepairResult;
 
+typedef struct
+{
+  int32_t                   transform[6];
+  size_t                    primary_filtered_count;
+  size_t                    filtered_count;
+  int32_t                   descriptor_score;
+  int32_t                   topology_percent;
+  int32_t                   geometric_percent;
+  int32_t                   topology_bonus;
+  int32_t                   metrics[77];
+  int32_t                   match_flag;
+  int32_t                   candidate_flag;
+  int32_t                   fallback_enabled;
+  GoodixMilanMatchCandidate candidate;
+} MilanMatchFeatureResult;
+
 static int32_t
 milan_match_scale_q8_s32 (int32_t value,
                           int32_t scale)
@@ -695,6 +711,436 @@ bonus:
 }
 
 static int
+milan_match_build_feature_candidate (
+  const GoodixMilanFeatureRecord    *enrolled_records,
+  size_t                             enrolled_record_count,
+  size_t                             enrolled_partition_count,
+  const GoodixMilanFeatureRecord    *probe_records,
+  size_t                             probe_record_count,
+  size_t                             probe_partition_count,
+  const GoodixMilanFeatureView      *feature,
+  const GoodixMilanFeatureView      *probe_feature,
+  uint32_t                           sensor_type,
+  int32_t                            image_quality,
+  int32_t                            image_coverage,
+  int32_t                            sibling_tail_hamming_limit,
+  size_t                             feature_index,
+  GoodixMilanMatcherPolicy          *matcher_policy,
+  GoodixMilanMatcherLateContext     *late_policy_context,
+  int32_t                            late_policy_state[3],
+  int32_t                           *late_policy_status_counter,
+  GoodixMilanMatchSelection         *match_selection,
+  GoodixMilanMatchFallbackWorkspace *fallback_workspace,
+  int32_t                            rescue_record[GOODIX_MILAN_MATCH_RESCUE_METRICS],
+  int                               *rejection_candidate_seen,
+  int32_t                           *rejection_count_sum,
+  int32_t                           *rejection_best_detail,
+  int32_t                           *rejection_best_coverage,
+  MilanMatchFeatureResult           *feature_result
+#ifdef GOODIX53X5_DEBUG
+  , GoodixMilanMatchDiagnostics     *diagnostics,
+  int32_t                            probe_policy_metrics[15],
+  size_t                            *probe_policy_index,
+  int32_t                           *probe_policy_descriptor,
+  int32_t                           *probe_policy_overlap
+#endif
+  )
+{
+  size_t correspondence_count;
+  int32_t overlap_score;
+  int32_t overlap_coverage;
+  int32_t overlap_detail;
+  int32_t low_bitmap_metrics[3];
+
+  memset (feature_result->metrics, 0, sizeof (feature_result->metrics));
+  if (milan_match_score_counts (
+        enrolled_records, enrolled_record_count, enrolled_partition_count,
+        probe_records, probe_record_count, probe_partition_count,
+        feature_result->transform, &correspondence_count,
+        &feature_result->primary_filtered_count,
+        &feature_result->filtered_count, &feature_result->descriptor_score,
+        &feature_result->topology_percent, &feature_result->geometric_percent,
+        &feature_result->topology_bonus, feature, probe_feature,
+        sensor_type == 12 ? 42 : 31,
+        sensor_type == 12 ? &feature_result->candidate : NULL) != 0)
+    return 1;
+  milan_match_apply_secondary (
+    enrolled_records, enrolled_record_count, enrolled_partition_count,
+    probe_records, probe_record_count, probe_partition_count,
+    &feature_result->primary_filtered_count, &feature_result->filtered_count,
+    feature_result->transform, &feature_result->topology_percent,
+    &feature_result->geometric_percent, &feature_result->topology_bonus,
+    sensor_type == 12 ? 42 : 31, sibling_tail_hamming_limit,
+    feature, probe_feature,
+    sensor_type == 12 ? &feature_result->candidate : NULL);
+  if (sensor_type == 12)
+    {
+      if (!goodix_milan_match_candidate_admit (&feature_result->candidate))
+        {
+          fallback_workspace->enabled =
+            feature_result->candidate.words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] >= 3 &&
+            matcher_policy->configuration[13] == 1 &&
+            match_selection->acceptance_evidence == 0;
+          return 1;
+        }
+      memcpy (feature_result->metrics, feature_result->candidate.words,
+              sizeof (feature_result->metrics));
+      memcpy (feature_result->transform, feature_result->candidate.transform,
+              sizeof (feature_result->transform));
+      feature_result->primary_filtered_count = (size_t)
+                                               feature_result->candidate.words[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT];
+      feature_result->filtered_count = (size_t)
+                                       feature_result->candidate.words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT];
+      feature_result->topology_percent =
+        feature_result->candidate.words[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT];
+      feature_result->geometric_percent =
+        feature_result->candidate.words[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT];
+    }
+  feature_result->descriptor_score =
+    (int32_t) feature_result->filtered_count * 100 /
+    (sensor_type == 12 ? 42 : 31);
+
+  if (goodix_milan_match_overlap_metrics_with_context (
+        feature, probe_feature, feature_result->transform, &overlap_score,
+        &overlap_coverage, &overlap_detail, low_bitmap_metrics,
+        (int32_t) feature_result->filtered_count) != 0)
+    return 1;
+#ifdef GOODIX53X5_DEBUG
+  if (diagnostics && overlap_score > diagnostics->overlap_score)
+    {
+      diagnostics->overlap_score = overlap_score;
+      diagnostics->overlap_detail = overlap_detail;
+      diagnostics->overlap_coverage = overlap_coverage;
+    }
+#endif
+
+  if (sensor_type != 12)
+    {
+      feature_result->metrics[0] =
+        (int32_t) feature_result->primary_filtered_count;
+      feature_result->metrics[1] = (int32_t) feature_result->filtered_count;
+      memcpy (feature_result->metrics + 6, low_bitmap_metrics,
+              sizeof (low_bitmap_metrics));
+    }
+  feature_result->metrics[4] = overlap_score;
+  feature_result->metrics[5] = overlap_detail;
+  feature_result->metrics[9] = overlap_coverage * 246 >> 8;
+  feature_result->metrics[10] = feature_result->topology_percent;
+  feature_result->metrics[11] = feature_result->geometric_percent;
+  if (sensor_type != 12 &&
+      (abs (feature_result->transform[2]) > 51 * 0x100 ||
+       abs (feature_result->transform[5]) > 51 * 0x100) &&
+      feature_result->metrics[11] < 36)
+    feature_result->metrics[11] = 36;
+#ifdef GOODIX53X5_DEBUG
+  if (diagnostics && feature_index < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
+    {
+      memcpy (diagnostics->feature_metrics[feature_index][0],
+              feature_result->metrics, 15 * sizeof (*feature_result->metrics));
+      memcpy (diagnostics->feature_transforms[feature_index][0],
+              feature_result->transform, sizeof (feature_result->transform));
+    }
+  if (diagnostics &&
+      feature_result->descriptor_score > diagnostics->descriptor_score)
+    {
+      diagnostics->descriptor_score = feature_result->descriptor_score;
+      diagnostics->filtered_count = (int32_t) feature_result->filtered_count;
+      memcpy (diagnostics->transform, feature_result->transform,
+              sizeof (diagnostics->transform));
+    }
+  if (feature_result->descriptor_score > *probe_policy_descriptor)
+    {
+      *probe_policy_descriptor = feature_result->descriptor_score;
+      probe_policy_metrics[0] = feature_result->metrics[0];
+      probe_policy_metrics[1] = feature_result->metrics[1];
+      *probe_policy_index = feature_index;
+    }
+  if (overlap_score > *probe_policy_overlap)
+    {
+      *probe_policy_overlap = overlap_score;
+      probe_policy_metrics[4] = feature_result->metrics[4];
+      probe_policy_metrics[5] = feature_result->metrics[5];
+      probe_policy_metrics[9] = feature_result->metrics[9];
+    }
+#endif
+  if (goodix_milan_match_initial_flags (
+        feature_result->metrics, image_quality, image_coverage,
+        matcher_policy->configuration, &feature_result->match_flag,
+        &feature_result->candidate_flag, NULL) != 0)
+    return 1;
+  feature_result->fallback_enabled = feature_result->candidate_flag;
+  if (sensor_type != 12 && feature_result->metrics[0] > 4 &&
+      feature_result->metrics[5] > 195)
+    {
+      *rejection_candidate_seen = 1;
+      *rejection_count_sum += feature_result->metrics[0];
+      if (feature_result->metrics[5] > *rejection_best_detail)
+        {
+          *rejection_best_detail = feature_result->metrics[5];
+          *rejection_best_coverage = feature_result->metrics[9];
+        }
+    }
+  if ((feature_result->metrics[4] < 207 ||
+       feature_result->match_flag == 0 ||
+       feature_result->candidate_flag == 0))
+    {
+      int32_t refined_transform[6];
+      int32_t refined_overlap_score;
+      int32_t refined_overlap_coverage;
+      int32_t refined_overlap_detail;
+      int32_t refined_low_metrics[3];
+      int32_t refined_topology_distance;
+      int32_t refined_valid_count;
+      int32_t refined_matched_count;
+
+      if (goodix_milan_refine_record_similarity (
+            enrolled_records, enrolled_record_count, enrolled_partition_count,
+            probe_records, probe_record_count, probe_partition_count,
+            feature_result->transform, 2, refined_transform) == 0 &&
+          goodix_milan_match_overlap_metrics_with_context (
+            feature, probe_feature, refined_transform, &refined_overlap_score,
+            &refined_overlap_coverage, &refined_overlap_detail,
+            refined_low_metrics, (int32_t) feature_result->filtered_count) == 0 &&
+          goodix_milan_match_post_admission_replaces (
+            feature_result->metrics[4], feature_result->metrics[5],
+            refined_overlap_score, refined_overlap_detail))
+        {
+          memcpy (feature_result->transform, refined_transform,
+                  sizeof (refined_transform));
+          feature_result->metrics[4] = refined_overlap_score;
+          feature_result->metrics[5] = refined_overlap_detail;
+          if (sensor_type == 12)
+            memcpy (low_bitmap_metrics, refined_low_metrics,
+                    sizeof (low_bitmap_metrics));
+          else
+            memcpy (feature_result->metrics + 6, refined_low_metrics,
+                    sizeof (refined_low_metrics));
+          feature_result->metrics[9] = refined_overlap_coverage * 246 >> 8;
+          goodix_milan_match_record_metrics_internal (
+            enrolled_records, enrolled_record_count, probe_records,
+            probe_record_count, feature_result->transform,
+            (int) feature_result->filtered_count,
+            &feature_result->topology_percent,
+            &feature_result->geometric_percent,
+            &feature_result->topology_bonus, &refined_topology_distance,
+            &refined_valid_count, &refined_matched_count);
+          feature_result->metrics[10] = feature_result->topology_percent;
+          feature_result->metrics[11] = feature_result->geometric_percent;
+          if (sensor_type == 12)
+            {
+              goodix_milan_match_candidate_set_record_metrics (
+                &feature_result->candidate, refined_valid_count,
+                refined_matched_count, feature_result->topology_percent,
+                feature_result->geometric_percent, refined_topology_distance);
+              memcpy (feature_result->metrics + 66,
+                      feature_result->candidate.words + 66,
+                      5 * sizeof (*feature_result->metrics));
+            }
+          if (sensor_type != 12 &&
+              (abs (feature_result->transform[2]) > 51 * 0x100 ||
+               abs (feature_result->transform[5]) > 51 * 0x100) &&
+              feature_result->metrics[11] < 36)
+            feature_result->metrics[11] = 36;
+#ifdef GOODIX53X5_DEBUG
+          if (diagnostics &&
+              feature_index < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
+            memcpy (diagnostics->feature_transforms[feature_index][0],
+                    feature_result->transform,
+                    sizeof (feature_result->transform));
+#endif
+        }
+    }
+  if (goodix_milan_match_initial_flags (
+        feature_result->metrics, image_quality, image_coverage,
+        matcher_policy->configuration, &feature_result->match_flag,
+        &feature_result->candidate_flag, NULL) != 0)
+    return 1;
+  if (sensor_type == 12)
+    {
+      int status;
+
+      memcpy (feature_result->candidate.transform, feature_result->transform,
+              sizeof (feature_result->transform));
+      goodix_milan_match_candidate_materialize_dispatch (
+        &feature_result->candidate);
+      memcpy (feature_result->metrics + 15,
+              feature_result->candidate.words + 15,
+              6 * sizeof (*feature_result->metrics));
+      if (feature_result->match_flag != 2 ||
+          late_policy_context->accumulated_high_class > 1)
+        memcpy (feature_result->metrics + 6, low_bitmap_metrics,
+                sizeof (low_bitmap_metrics));
+      memcpy (rescue_record, feature_result->metrics,
+              GOODIX_MILAN_MATCH_RESCUE_METRICS * sizeof (*rescue_record));
+      goodix_milan_matcher_policy_evaluate (
+        matcher_policy, feature_result->metrics, image_quality, image_coverage,
+        late_policy_context->accumulated_high_class,
+        &feature_result->match_flag, &feature_result->candidate_flag);
+      goodix_milan_matcher_policy_apply_late_veto (
+        matcher_policy, feature_result->metrics, &feature_result->match_flag,
+        &feature_result->candidate_flag);
+      status = goodix_milan_matcher_policy_apply_status (
+        feature_result->metrics, feature_result->transform, late_policy_state,
+        (int32_t) probe_record_count, image_coverage, image_quality,
+        &feature_result->match_flag, late_policy_status_counter);
+      if (status)
+        return 1;
+      /* The native profile-9 probe has no active masked-overlap context;
+       * its caller class tuple and therefore its support ratio are zero. */
+      goodix_milan_matcher_policy_apply_final (
+        feature_result->metrics, image_quality,
+        late_policy_context->accumulated_high_class, late_policy_state[1], 0,
+        &feature_result->match_flag, &feature_result->candidate_flag);
+    }
+  else
+    {
+      memcpy (rescue_record, feature_result->metrics,
+              GOODIX_MILAN_MATCH_RESCUE_METRICS * sizeof (*rescue_record));
+    }
+  return 0;
+}
+
+static int
+milan_match_publish_feature_candidate (
+  const GoodixMilanUnpackedTemplate *enrolled,
+  const GoodixMilanFeatureView      *feature,
+  const GoodixMilanAntifakeBlob     *probe_antifake,
+  int                                caller_blocking_enabled,
+  int32_t                            image_coverage,
+  size_t                             order_index,
+  size_t                             feature_index,
+  const MilanMatchFeatureResult     *feature_result,
+  GoodixMilanMatcherPolicy          *matcher_policy,
+  GoodixMilanMatchSelection         *match_selection,
+  GoodixMilanActiveRelationWinner   *active_relation_winner,
+  int                                retention_gate
+#ifdef GOODIX53X5_DEBUG
+  , GoodixMilanMatchDiagnostics     *diagnostics,
+  int32_t                            recognition_mode_before,
+  int32_t                            policy_aggregate[15],
+  size_t                            *policy_index
+#endif
+  )
+{
+  GoodixMilanMatchContributionEvent contribution_event;
+  int contributes = 0;
+  int retained = 0;
+  int blocked = 0;
+
+  memset (&contribution_event, 0, sizeof (contribution_event));
+  if (enrolled->metadata.sensor_type == 12)
+    {
+      contributes = goodix_milan_match_selection_contribute (
+        match_selection, feature_result->metrics, feature_result->transform,
+        feature_index, matcher_policy->configuration[0],
+        feature_result->match_flag, feature_result->candidate_flag,
+        &contribution_event);
+      if (contributes < 0)
+        return -1;
+      if (contributes > 0 && caller_blocking_enabled && probe_antifake &&
+          feature->antifake && image_coverage > 40 &&
+          feature->fields.tagged_values[4] > 40)
+        {
+          int32_t comparison_metrics[5];
+
+          if (goodix_milan_antifake_pair_metrics (
+                feature->antifake, GOODIX_MILAN_ANTIFAKE_SIZE, probe_antifake,
+                GOODIX_MILAN_ANTIFAKE_SIZE, feature_result->transform,
+                comparison_metrics) != 0)
+            return -1;
+          int32_t texture_delta = goodix_milan_transform_s32 (
+            (uint32_t) goodix_milan_antifake_texture (feature->antifake) -
+            (uint32_t) goodix_milan_antifake_texture (probe_antifake));
+          int32_t mean_delta = goodix_milan_transform_s32 (
+            (uint32_t) goodix_milan_antifake_mean (feature->antifake) -
+            (uint32_t) goodix_milan_antifake_mean (probe_antifake));
+          int32_t threshold_delta = goodix_milan_transform_s32 (
+            (uint32_t) goodix_milan_antifake_threshold (feature->antifake) -
+            (uint32_t) goodix_milan_antifake_threshold (probe_antifake));
+
+          blocked = goodix_milan_match_selection_block_candidate (
+            match_selection, enrolled->metadata.sensor_type,
+            comparison_metrics, texture_delta, mean_delta, threshold_delta,
+            goodix_milan_antifake_pair_score (feature->antifake),
+            feature_result->metrics[9], &contribution_event);
+          if (blocked < 0)
+            return -1;
+        }
+      if (!blocked)
+        {
+          retained = goodix_milan_match_selection_admit (
+            match_selection, feature_result->metrics, feature_result->transform,
+            feature_index, feature->fields.tagged_values[0],
+            feature_result->match_flag, feature_result->candidate_flag,
+            &contribution_event);
+          if (retained < 0)
+            return -1;
+        }
+    }
+  if (retained > 0 && contribution_event.direct_published &&
+      feature->fields.tagged_values[0] == 1 &&
+      goodix_milan_active_relation_winner_would_update (
+        active_relation_winner, feature_result->metrics[1]))
+    {
+      int32_t routed[7];
+      int relation_status = goodix_milan_match_reference_transform (
+        enrolled, feature_index, feature_result->transform, routed);
+
+      if (relation_status == 0)
+        goodix_milan_active_relation_winner_update (
+          active_relation_winner, 1, feature_result->metrics[1],
+          (int32_t) feature_index, feature_result->transform, routed + 1);
+    }
+#ifdef GOODIX53X5_DEBUG
+  int outer_eligible =
+    feature_result->metrics[1] > 4 && feature_result->metrics[10] > 30 &&
+    (feature_result->candidate_flag == 1 ||
+     goodix_milan_match_fallback_candidate_eligible (
+       feature_result->metrics[4], 207, feature_result->metrics[5]));
+
+  if (diagnostics &&
+      diagnostics->candidate_count < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
+    {
+      GoodixMilanMatchCandidateDiagnostic *candidate =
+        &diagnostics->candidates[diagnostics->candidate_count++];
+
+      candidate->order_index = (int32_t) order_index;
+      candidate->enrolled_feature_index = (int32_t) feature_index;
+      candidate->probe_feature_index = 0;
+      memcpy (candidate->metrics, feature_result->metrics,
+              sizeof (candidate->metrics));
+      memcpy (candidate->transform, feature_result->transform,
+              sizeof (candidate->transform));
+      candidate->final_flags[0] = feature_result->match_flag;
+      candidate->final_flags[1] = feature_result->candidate_flag;
+      candidate->recognition_mode_before = recognition_mode_before;
+      candidate->recognition_mode_after = matcher_policy->configuration[19];
+      candidate->outer_eligible = outer_eligible;
+      candidate->contributes = contributes;
+      candidate->q8_contribution = contribution_event.q8_term;
+      candidate->blocking_recorded = contribution_event.blocking_recorded;
+      candidate->blocking_metric = contribution_event.blocking_metric;
+    }
+#endif
+  if (blocked)
+    return 1;
+#ifdef GOODIX53X5_DEBUG
+  if (feature_result->metrics[1] > policy_aggregate[1] ||
+      (feature_result->metrics[1] == policy_aggregate[1] &&
+       feature_result->metrics[5] > policy_aggregate[5]))
+    {
+      memcpy (policy_aggregate, feature_result->metrics,
+              15 * sizeof (*policy_aggregate));
+      *policy_index = feature_index;
+    }
+#endif
+  if (enrolled->metadata.sensor_type == 12 &&
+      contribution_event.direct_published && !retention_gate)
+    return 2;
+  return 0;
+}
+
+static int
 milan_match_validate_winner (const int32_t metrics[77],
                              void         *user_data,
                              int32_t      *score)
@@ -902,26 +1348,9 @@ milan_match_prepared_probe (
       rescue_order_count = order_index + 1;
 
       GoodixMilanFeatureView feature;
-      int32_t transform[6];
-      size_t correspondence_count;
-      size_t primary_filtered_count;
-      size_t filtered_count;
-      int32_t descriptor_score;
-      int32_t topology_percent;
-      int32_t geometric_percent;
-      int32_t topology_bonus;
-      int32_t overlap_score;
-      int32_t overlap_coverage;
-      int32_t overlap_detail;
-      GoodixMilanMatchCandidate direct_candidate;
-      int32_t direct_metrics[77] = { 0 };
-      int32_t low_bitmap_metrics[3];
-      int32_t match_flag;
-      int32_t candidate_flag;
-      int32_t fallback_enabled;
+      MilanMatchFeatureResult feature_result;
       GoodixMilanMatchFallbackWorkspace *fallback_workspace = NULL;
       int32_t late_policy_state[3] = { 0 };
-      GoodixMilanMatchContributionEvent contribution_event;
 #ifdef GOODIX53X5_DEBUG
       int32_t recognition_mode_before = matcher_policy.configuration[19];
 #endif
@@ -1003,353 +1432,44 @@ milan_match_prepared_probe (
                 feature.fields.tagged_values[0]))
             continue;
         }
-      if (milan_match_score_counts (
-             enrolled_records, feature.record_count, enrolled_partition_count,
-             probe_records, probe_record_count, probe_partition_count,
-             transform, &correspondence_count,
-             &primary_filtered_count, &filtered_count, &descriptor_score,
-               &topology_percent, &geometric_percent, &topology_bonus,
-                &feature, probe_feature,
-                enrolled->metadata.sensor_type == 12 ? 42 : 31,
-                 enrolled->metadata.sensor_type == 12 ? &direct_candidate : NULL) != 0)
+      if (milan_match_build_feature_candidate (
+            enrolled_records, feature.record_count, enrolled_partition_count,
+            probe_records, probe_record_count, probe_partition_count, &feature,
+            probe_feature, enrolled->metadata.sensor_type, image_quality,
+            image_coverage, sibling_tail_hamming_limit, feature_index,
+            &matcher_policy, &late_policy_context, late_policy_state,
+            &late_policy_status_counter, &match_selection, fallback_workspace,
+            rescue_records[feature_index], &rejection_candidate_seen,
+            &rejection_count_sum, &rejection_best_detail,
+            &rejection_best_coverage, &feature_result
+#ifdef GOODIX53X5_DEBUG
+            , diagnostics, probe_policy_metrics, &probe_policy_index,
+            &probe_policy_descriptor, &probe_policy_overlap
+#endif
+                                              ) != 0)
         continue;
-      milan_match_apply_secondary (
-        enrolled_records, feature.record_count, enrolled_partition_count,
-        probe_records, probe_record_count, probe_partition_count,
-        &primary_filtered_count, &filtered_count, transform, &topology_percent,
-        &geometric_percent, &topology_bonus,
-        enrolled->metadata.sensor_type == 12 ? 42 : 31,
-        sibling_tail_hamming_limit,
-        &feature, probe_feature,
-        enrolled->metadata.sensor_type == 12 ? &direct_candidate : NULL);
-      if (enrolled->metadata.sensor_type == 12)
-        {
-          if (!goodix_milan_match_candidate_admit (&direct_candidate))
-            {
-              fallback_workspace->enabled =
-                direct_candidate.words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] >= 3 &&
-                matcher_policy.configuration[13] == 1 &&
-                match_selection.acceptance_evidence == 0;
-              continue;
-            }
-          memcpy (direct_metrics, direct_candidate.words,
-                  sizeof(direct_metrics));
-          memcpy (transform, direct_candidate.transform, sizeof(transform));
-          primary_filtered_count = (size_t)
-            direct_candidate.words[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT];
-          filtered_count = (size_t)
-            direct_candidate.words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT];
-          topology_percent =
-            direct_candidate.words[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT];
-          geometric_percent =
-            direct_candidate.words[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT];
-        }
-      descriptor_score = (int32_t) filtered_count * 100 /
-                         (enrolled->metadata.sensor_type == 12 ? 42 : 31);
 
-      if (goodix_milan_match_overlap_metrics_with_context (
-            &feature, probe_feature, transform, &overlap_score,
-            &overlap_coverage, &overlap_detail, low_bitmap_metrics,
-            (int32_t) filtered_count) != 0)
+      int publish_status = milan_match_publish_feature_candidate (
+        enrolled, &feature, probe_antifake,
+        caller_blocking_enabled, image_coverage, order_index, feature_index,
+        &feature_result, &matcher_policy, &match_selection,
+        &active_relation_winner, retention_gate
+#ifdef GOODIX53X5_DEBUG
+        , diagnostics, recognition_mode_before, policy_aggregate, &policy_index
+#endif
+                                                                 );
+      if (publish_status < 0)
+        goto out;
+      if (publish_status == 1)
         continue;
-#ifdef GOODIX53X5_DEBUG
-      if (diagnostics && overlap_score > diagnostics->overlap_score)
-        {
-          diagnostics->overlap_score = overlap_score;
-          diagnostics->overlap_detail = overlap_detail;
-          diagnostics->overlap_coverage = overlap_coverage;
-        }
-#endif
-
-      if (enrolled->metadata.sensor_type != 12)
-        {
-          direct_metrics[0] = (int32_t) primary_filtered_count;
-          direct_metrics[1] = (int32_t) filtered_count;
-          memcpy (direct_metrics + 6, low_bitmap_metrics,
-                  sizeof(low_bitmap_metrics));
-        }
-      direct_metrics[4] = overlap_score;
-      direct_metrics[5] = overlap_detail;
-      direct_metrics[9] = overlap_coverage * 246 >> 8;
-      direct_metrics[10] = topology_percent;
-      direct_metrics[11] = geometric_percent;
-      if (enrolled->metadata.sensor_type != 12 &&
-          (abs (transform[2]) > 51 * 0x100 ||
-           abs (transform[5]) > 51 * 0x100) && direct_metrics[11] < 36)
-        direct_metrics[11] = 36;
-#ifdef GOODIX53X5_DEBUG
-      if (diagnostics && feature_index < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
-        {
-          memcpy (diagnostics->feature_metrics[feature_index][0],
-                  direct_metrics, 15 * sizeof(*direct_metrics));
-          memcpy (diagnostics->feature_transforms[feature_index][0], transform,
-                  sizeof(transform));
-        }
-      if (diagnostics && descriptor_score > diagnostics->descriptor_score)
-        {
-          diagnostics->descriptor_score = descriptor_score;
-          diagnostics->filtered_count = (int32_t) filtered_count;
-          memcpy (diagnostics->transform, transform,
-                  sizeof(diagnostics->transform));
-        }
-#endif
-#ifdef GOODIX53X5_DEBUG
-      if (descriptor_score > probe_policy_descriptor)
-        {
-          probe_policy_descriptor = descriptor_score;
-          probe_policy_metrics[0] = direct_metrics[0];
-          probe_policy_metrics[1] = direct_metrics[1];
-          probe_policy_index = feature_index;
-        }
-      if (overlap_score > probe_policy_overlap)
-        {
-          probe_policy_overlap = overlap_score;
-          probe_policy_metrics[4] = direct_metrics[4];
-          probe_policy_metrics[5] = direct_metrics[5];
-          probe_policy_metrics[9] = direct_metrics[9];
-        }
-#endif
-      if (goodix_milan_match_initial_flags (
-            direct_metrics, image_quality, image_coverage,
-            matcher_policy.configuration, &match_flag, &candidate_flag, NULL) != 0)
-        continue;
-      fallback_enabled = candidate_flag;
-      if (enrolled->metadata.sensor_type != 12 && direct_metrics[0] > 4 &&
-          direct_metrics[5] > 195)
-        {
-          rejection_candidate_seen = 1;
-          rejection_count_sum += direct_metrics[0];
-          if (direct_metrics[5] > rejection_best_detail)
-            {
-              rejection_best_detail = direct_metrics[5];
-              rejection_best_coverage = direct_metrics[9];
-            }
-        }
-      if ((direct_metrics[4] < 207 || match_flag == 0 || candidate_flag == 0))
-        {
-          int32_t refined_transform[6];
-          int32_t refined_overlap_score;
-          int32_t refined_overlap_coverage;
-          int32_t refined_overlap_detail;
-          int32_t refined_low_metrics[3];
-          int32_t refined_topology_distance;
-          int32_t refined_valid_count;
-          int32_t refined_matched_count;
-
-          if (goodix_milan_refine_record_similarity (
-                enrolled_records, feature.record_count,
-                enrolled_partition_count, probe_records, probe_record_count,
-                probe_partition_count, transform, 2,
-                refined_transform) == 0 &&
-              goodix_milan_match_overlap_metrics_with_context (
-                &feature, probe_feature, refined_transform,
-                &refined_overlap_score, &refined_overlap_coverage,
-                &refined_overlap_detail, refined_low_metrics,
-                (int32_t) filtered_count) == 0 &&
-              goodix_milan_match_post_admission_replaces (
-                direct_metrics[4], direct_metrics[5], refined_overlap_score,
-                refined_overlap_detail))
-            {
-              memcpy (transform, refined_transform,
-                      sizeof(refined_transform));
-              direct_metrics[4] = refined_overlap_score;
-              direct_metrics[5] = refined_overlap_detail;
-              if (enrolled->metadata.sensor_type == 12)
-                memcpy (low_bitmap_metrics, refined_low_metrics,
-                        sizeof(low_bitmap_metrics));
-              else
-                memcpy (direct_metrics + 6, refined_low_metrics,
-                        sizeof(refined_low_metrics));
-              direct_metrics[9] = refined_overlap_coverage * 246 >> 8;
-              goodix_milan_match_record_metrics_internal (
-                enrolled_records, feature.record_count, probe_records,
-                probe_record_count, transform, (int) filtered_count,
-                &topology_percent, &geometric_percent, &topology_bonus,
-                &refined_topology_distance, &refined_valid_count,
-                &refined_matched_count);
-              direct_metrics[10] = topology_percent;
-              direct_metrics[11] = geometric_percent;
-              if (enrolled->metadata.sensor_type == 12)
-                {
-                  goodix_milan_match_candidate_set_record_metrics (
-                    &direct_candidate, refined_valid_count,
-                    refined_matched_count, topology_percent,
-                    geometric_percent, refined_topology_distance);
-                  memcpy (direct_metrics + 66, direct_candidate.words + 66,
-                          5 * sizeof(*direct_metrics));
-                }
-              if (enrolled->metadata.sensor_type != 12 &&
-                  (abs (transform[2]) > 51 * 0x100 ||
-                   abs (transform[5]) > 51 * 0x100) &&
-                  direct_metrics[11] < 36)
-                direct_metrics[11] = 36;
-#ifdef GOODIX53X5_DEBUG
-              if (diagnostics &&
-                  feature_index < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
-                memcpy (diagnostics->feature_transforms[feature_index][0],
-                        transform, sizeof(transform));
-#endif
-            }
-        }
-      if (goodix_milan_match_initial_flags (
-            direct_metrics, image_quality, image_coverage,
-            matcher_policy.configuration, &match_flag, &candidate_flag, NULL) != 0)
-        continue;
-      if (enrolled->metadata.sensor_type == 12)
-        {
-          memcpy (direct_candidate.transform, transform, sizeof(transform));
-          goodix_milan_match_candidate_materialize_dispatch (&direct_candidate);
-          memcpy (direct_metrics + 15, direct_candidate.words + 15,
-                  6 * sizeof(*direct_metrics));
-          if (match_flag != 2 ||
-              late_policy_context.accumulated_high_class > 1)
-            memcpy (direct_metrics + 6, low_bitmap_metrics,
-                    sizeof(low_bitmap_metrics));
-        }
-      memcpy (rescue_records[feature_index], direct_metrics,
-              sizeof(rescue_records[feature_index]));
-      if (enrolled->metadata.sensor_type == 12)
-        {
-          int status;
-
-          goodix_milan_matcher_policy_evaluate (
-            &matcher_policy, direct_metrics, image_quality, image_coverage,
-            late_policy_context.accumulated_high_class,
-            &match_flag, &candidate_flag);
-          goodix_milan_matcher_policy_apply_late_veto (
-            &matcher_policy, direct_metrics, &match_flag, &candidate_flag);
-          status = goodix_milan_matcher_policy_apply_status (
-            direct_metrics, transform, late_policy_state,
-            (int32_t) probe_record_count, image_coverage, image_quality,
-            &match_flag, &late_policy_status_counter);
-          if (status)
-            continue;
-          /* The native profile-9 probe has no active masked-overlap context;
-           * its caller class tuple and therefore its support ratio are zero. */
-          goodix_milan_matcher_policy_apply_final (
-            direct_metrics, image_quality,
-            late_policy_context.accumulated_high_class,
-            late_policy_state[1], 0, &match_flag, &candidate_flag);
-        }
-      memset (&contribution_event, 0, sizeof(contribution_event));
-      int contributes = 0;
-      int retained = 0;
-      int blocked = 0;
-      if (enrolled->metadata.sensor_type == 12)
-        {
-          contributes = goodix_milan_match_selection_contribute (
-            &match_selection, direct_metrics, transform, feature_index,
-            matcher_policy.configuration[0], match_flag, candidate_flag,
-            &contribution_event);
-          if (contributes < 0)
-            goto out;
-          if (contributes > 0 && caller_blocking_enabled && probe_antifake &&
-              feature.antifake &&
-              image_coverage > 40 && feature.fields.tagged_values[4] > 40)
-            {
-              int32_t comparison_metrics[5];
-              if (goodix_milan_antifake_pair_metrics (
-                    feature.antifake, GOODIX_MILAN_ANTIFAKE_SIZE,
-                    probe_antifake, GOODIX_MILAN_ANTIFAKE_SIZE, transform,
-                    comparison_metrics) != 0)
-                goto out;
-              int32_t texture_delta = goodix_milan_transform_s32 (
-                (uint32_t) goodix_milan_antifake_texture (feature.antifake) -
-                (uint32_t) goodix_milan_antifake_texture (probe_antifake));
-              int32_t mean_delta = goodix_milan_transform_s32 (
-                (uint32_t) goodix_milan_antifake_mean (feature.antifake) -
-                (uint32_t) goodix_milan_antifake_mean (probe_antifake));
-              int32_t threshold_delta = goodix_milan_transform_s32 (
-                (uint32_t) goodix_milan_antifake_threshold (feature.antifake) -
-                (uint32_t) goodix_milan_antifake_threshold (probe_antifake));
-
-              blocked = goodix_milan_match_selection_block_candidate (
-                &match_selection, enrolled->metadata.sensor_type,
-                comparison_metrics, texture_delta, mean_delta, threshold_delta,
-                goodix_milan_antifake_pair_score (feature.antifake),
-                direct_metrics[9], &contribution_event);
-              if (blocked < 0)
-                goto out;
-            }
-          if (!blocked)
-            {
-              retained = goodix_milan_match_selection_admit (
-                &match_selection, direct_metrics, transform, feature_index,
-                feature.fields.tagged_values[0], match_flag, candidate_flag,
-                &contribution_event);
-              if (retained < 0)
-                goto out;
-            }
-        }
-      if (retained > 0)
-        {
-          if (contribution_event.direct_published &&
-              feature.fields.tagged_values[0] == 1)
-            {
-              if (goodix_milan_active_relation_winner_would_update (
-                    &active_relation_winner, direct_metrics[1]))
-                {
-                  int32_t routed[7];
-                  int relation_status =
-                    goodix_milan_match_reference_transform (
-                      enrolled, feature_index, transform,
-                      routed);
-
-                  if (relation_status == 0)
-                    goodix_milan_active_relation_winner_update (
-                      &active_relation_winner, 1, direct_metrics[1],
-                      (int32_t) feature_index, transform, routed + 1);
-                }
-            }
-        }
-#ifdef GOODIX53X5_DEBUG
-      int outer_eligible =
-        direct_metrics[1] > 4 && direct_metrics[10] > 30 &&
-        (candidate_flag == 1 ||
-         goodix_milan_match_fallback_candidate_eligible (
-           direct_metrics[4], 207, direct_metrics[5]));
-#endif
-
-#ifdef GOODIX53X5_DEBUG
-      if (diagnostics &&
-          diagnostics->candidate_count < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
-        {
-          GoodixMilanMatchCandidateDiagnostic *candidate =
-            &diagnostics->candidates[diagnostics->candidate_count++];
-
-          candidate->order_index = (int32_t) order_index;
-          candidate->enrolled_feature_index = (int32_t) feature_index;
-          candidate->probe_feature_index = 0;
-          memcpy (candidate->metrics, direct_metrics,
-                  sizeof(candidate->metrics));
-          memcpy (candidate->transform, transform,
-                  sizeof(candidate->transform));
-          candidate->final_flags[0] = match_flag;
-          candidate->final_flags[1] = candidate_flag;
-          candidate->recognition_mode_before = recognition_mode_before;
-          candidate->recognition_mode_after = matcher_policy.configuration[19];
-          candidate->outer_eligible = outer_eligible;
-          candidate->contributes = contributes;
-          candidate->q8_contribution = contribution_event.q8_term;
-          candidate->blocking_recorded =
-            contribution_event.blocking_recorded;
-          candidate->blocking_metric = contribution_event.blocking_metric;
-        }
-#endif
-      if (blocked)
-        continue;
-#ifdef GOODIX53X5_DEBUG
-      if (direct_metrics[1] > policy_aggregate[1] ||
-          (direct_metrics[1] == policy_aggregate[1] &&
-           direct_metrics[5] > policy_aggregate[5]))
-        {
-          memcpy (policy_aggregate, direct_metrics, sizeof(policy_aggregate));
-          policy_index = feature_index;
-        }
-#endif
-      if (enrolled->metadata.sensor_type == 12 &&
-          contribution_event.direct_published && !retention_gate)
+      if (publish_status == 2)
         break;
+
+      int32_t *transform = feature_result.transform;
+      int32_t *direct_metrics = feature_result.metrics;
+      int32_t match_flag = feature_result.match_flag;
+      int32_t candidate_flag = feature_result.candidate_flag;
+      int32_t fallback_enabled = feature_result.fallback_enabled;
       if (enrolled->metadata.sensor_type != 12 &&
           direct_metrics[1] > 4 &&
           direct_metrics[10] > 30 &&
