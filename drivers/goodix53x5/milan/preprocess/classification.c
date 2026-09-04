@@ -1516,88 +1516,21 @@ out:
   free (gradient);
 }
 
-int
-goodix_milan_profile9_build_broken_mask (
-  GoodixMilanPreprocessState *state,
-  const uint16_t             *difference,
-  const uint16_t             *setup_map,
-  const uint16_t             *normalized_live,
-  const uint8_t              *contrast_mask,
-  size_t                      rows,
-  size_t                      columns,
-  uint8_t                    *broken_mask,
-  uint8_t                    *class_plane,
-  int                        *mode,
-  int                        *apply_mask)
+static void
+milan_profile9_primary_path_scores (const uint16_t *blurred,
+                                    const uint8_t  *valid,
+                                    size_t          rows,
+                                    size_t          columns,
+                                    int             low,
+                                    int             high,
+                                    uint16_t       *gradient,
+                                    int16_t        *direction,
+                                    uint16_t       *scores)
 {
-  static const uint32_t primary_kernel[3] = { 6980, 51576, 6980 };
-  static const uint32_t edge_kernel[9] = {
-    58, 791, 5088, 15549, 22564, 15549, 5088, 791, 58,
-  };
   static const int dx[8] = { -1, 1, 0, 0, -1, -1, 1, 1 };
   static const int dy[8] = { 0, 0, -1, 1, -1, 1, -1, 1 };
-  size_t count;
-  uint16_t *prepared = NULL;
-  uint8_t *valid = NULL;
-  uint8_t *history_qualified = NULL;
-  uint16_t *blurred = NULL;
-  uint16_t *gradient = NULL;
-  int16_t *direction = NULL;
-  uint16_t *scores = NULL;
-  uint16_t *edge_blurred = NULL;
-  int16_t *edge_map = NULL;
-  uint8_t *adaptive = NULL;
-  uint16_t *class2_scores = NULL;
-  int low;
-  int high;
-  size_t active_count = 0;
-  uint8_t primary_histogram_state;
-  uint8_t secondary_histogram_state = 0;
-  uint8_t secondary_count_state = 0;
-  uint8_t directional_state;
-  int history_initialized;
-  int result = -1;
+  size_t count = rows * columns;
 
-  if (!state || !difference || !setup_map || !normalized_live || !contrast_mask ||
-      !broken_mask || !mode || !apply_mask || rows < 3 || columns < 3 ||
-      columns > SIZE_MAX / rows || rows * columns > GOODIX_MILAN_SENSOR_PIXELS)
-    return -1;
-  count = rows * columns;
-  for (size_t i = 0; i < count; i++)
-    active_count += contrast_mask[i] != 0;
-  prepared = malloc (count * sizeof(*prepared));
-  valid = malloc (count);
-  history_qualified = calloc (count, 1);
-  blurred = malloc (count * sizeof(*blurred));
-  gradient = calloc (count, sizeof(*gradient));
-  direction = malloc (count * sizeof(*direction));
-  scores = calloc (count, sizeof(*scores));
-  edge_blurred = malloc (count * sizeof(*edge_blurred));
-  edge_map = calloc (count, sizeof(*edge_map));
-  adaptive = malloc (count);
-  class2_scores = calloc (count, sizeof(*class2_scores));
-  if (!prepared || !valid || !history_qualified || !blurred || !gradient ||
-      !direction || !scores || !edge_blurred || !edge_map || !adaptive ||
-      !class2_scores)
-    goto out;
-
-  if (setup_map[0] < 4096)
-    for (size_t i = 0; i < count; i++)
-      {
-        int value = (int) setup_map[i] - normalized_live[i] + 3000;
-
-        prepared[i] = value > 0 ? (uint16_t) value : 0;
-      }
-  else
-    memcpy (prepared, difference, count * sizeof(*prepared));
-  milan_profile9_erode_valid (contrast_mask, valid, rows, columns, 8);
-  history_initialized = milan_profile9_prepare_history (
-    state, prepared, contrast_mask, count);
-  milan_profile9_filter_q16 (
-    prepared, rows, columns, primary_kernel, 3, blurred);
-  primary_histogram_state = milan_profile9_histogram_state (
-    blurred, valid, count, 1);
-  milan_profile9_histogram_thresholds (blurred, valid, count, &low, &high);
   for (size_t row = 0; row < rows; row++)
     for (size_t column = 0; column < columns; column++)
       {
@@ -1646,18 +1579,34 @@ goodix_milan_profile9_build_broken_mask (
           }
         scores[i] = score;
       }
+}
 
+static size_t
+milan_profile9_build_severe_mask (const uint16_t *scores,
+                                  const uint16_t *blurred,
+                                  const uint8_t  *valid,
+                                  size_t          rows,
+                                  size_t          columns,
+                                  uint16_t       *edge_blurred,
+                                  int16_t        *edge_map,
+                                  uint8_t        *broken_mask)
+{
+  static const uint32_t edge_kernel[9] = {
+    58, 791, 5088, 15549, 22564, 15549, 5088, 791, 58,
+  };
+  size_t count = rows * columns;
   uint64_t score_sum = 0;
   size_t score_count = 0;
+
   for (size_t i = 0; i < count; i++)
     if (scores[i] > 0 && scores[i] < 400)
       {
         score_sum += scores[i];
         score_count++;
       }
-  int average = score_count != 0
-                  ? (int) ((score_sum + score_count / 2) / score_count)
-                  : 0;
+  int average = score_count != 0 ?
+                (int) ((score_sum + score_count / 2) / score_count) :
+                0;
   int seed_threshold = (768 * average) >> 8;
   int five_average = 5 * average;
   if (five_average > 800)
@@ -1712,25 +1661,23 @@ goodix_milan_profile9_build_broken_mask (
 
   for (size_t i = 0; i < count; i++)
     broken_mask[i] = broken_mask[i] != 0 ? 3 : 0;
+  return severe_count;
+}
 
-  if (severe_count <= 300)
-    {
-      milan_profile9_adaptive_mask (
-        scores, blurred, valid, rows, columns, 300, 240, 640, 448, 150,
-        adaptive);
-      for (size_t i = 0; i < count; i++)
-        if (adaptive[i] != 0 && broken_mask[i] < 3)
-          broken_mask[i] = 1;
-      selected = 0;
-      for (size_t i = 0; i < count; i++)
-        selected += broken_mask[i] != 0;
-      if (selected > 150)
-        milan_profile9_density_class1 (scores, rows, columns, broken_mask);
-    }
-
-  milan_profile9_component_class1 (
-    state, gradient, rows, columns, broken_mask,
-    active_count * 100 >= count * 75);
+static void
+milan_profile9_admit_class2 (const uint8_t  *valid,
+                             const uint16_t *blurred,
+                             int             low,
+                             const uint16_t *gradient,
+                             const int16_t  *direction,
+                             size_t          rows,
+                             size_t          columns,
+                             uint16_t       *class2_scores,
+                             uint8_t        *broken_mask)
+{
+  static const int dx[8] = { -1, 1, 0, 0, -1, -1, 1, 1 };
+  static const int dy[8] = { 0, 0, -1, 1, -1, 1, -1, 1 };
+  size_t count = rows * columns;
 
   for (size_t i = 0; i < count; i++)
     if (valid[i] != 0 && (int16_t) blurred[i] < low)
@@ -1749,74 +1696,44 @@ goodix_milan_profile9_build_broken_mask (
           }
         class2_scores[i] = score;
       }
-  score_sum = 0;
-  score_count = 0;
+  uint64_t score_sum = 0;
+  size_t score_count = 0;
   for (size_t i = 0; i < count; i++)
     if (class2_scores[i] > 0 && class2_scores[i] < 400)
       {
         score_sum += class2_scores[i];
         score_count++;
       }
-  average = score_count != 0
-              ? (int) ((score_sum + score_count / 2) / score_count)
-              : 0;
+  int average = score_count != 0 ?
+                (int) ((score_sum + score_count / 2) / score_count) :
+                0;
   int class2_threshold = average * 512 >> 8;
   if (score_count != 0 && class2_threshold < 400)
     class2_threshold = 400;
   for (size_t i = 0; i < count; i++)
     if (class2_scores[i] > class2_threshold && broken_mask[i] < 3)
       broken_mask[i] = 2;
+}
 
-  if (primary_histogram_state < 2)
-    {
-      size_t classified_count = 0;
-
-      for (size_t i = 0; i < count; i++)
-        if (broken_mask[i] != 0)
-          {
-            classified_count++;
-          }
-      if (classified_count * 100 > active_count * 30)
-        {
-          primary_histogram_state = 2;
-        }
-    }
-  if (state->profile9_history_count > 20)
-    {
-      milan_profile9_build_history_qualified (
-        state, valid, rows, columns, history_qualified);
-      secondary_histogram_state = milan_profile9_histogram_state (
-        state->profile9_history_reference, history_qualified, count, 0);
-      secondary_count_state = milan_profile9_secondary_count_state (
-        state->profile9_history_reference, history_qualified, rows, columns);
-      if (secondary_histogram_state == 0 && secondary_count_state == 0 &&
-          !history_initialized)
-        {
-          secondary_histogram_state = milan_profile9_histogram_state (
-            state->calibration_map, history_qualified, count, 0);
-          secondary_count_state = milan_profile9_secondary_count_state (
-            state->calibration_map, history_qualified, rows, columns);
-        }
-      milan_profile9_temporal_class3 (
-        state, history_qualified, rows, columns, broken_mask);
-    }
-
-  for (size_t row = 3; row + 3 < rows; row++)
-    for (size_t column = 3; column + 3 < columns; column++)
-      {
-        size_t index = row * columns + column;
-
-        if (normalized_live[index] < 50)
-          broken_mask[index] = 3;
-      }
-
-  directional_state = milan_profile9_directional_state (
-    normalized_live, valid, rows, columns, active_count);
-
+static int
+milan_profile9_publish_classification (GoodixMilanPreprocessState *state,
+                                       const uint8_t              *contrast_mask,
+                                       size_t                      count,
+                                       size_t                      active_count,
+                                       uint8_t                    *broken_mask,
+                                       uint8_t                    *class_plane,
+                                       uint8_t                     primary_histogram_state,
+                                       uint8_t                     secondary_histogram_state,
+                                       uint8_t                     secondary_count_state,
+                                       uint8_t                     directional_state,
+                                       int                        *mode,
+                                       int                        *apply_mask)
+{
   size_t class1_count = 0;
   size_t class2_count = 0;
   size_t class3_count = 0;
   size_t mask_count = 0;
+
   for (size_t i = 0; i < count; i++)
     {
       class1_count += broken_mask[i] == 1;
@@ -1858,11 +1775,15 @@ goodix_milan_profile9_build_broken_mask (
       *apply_mask = 1;
     }
   else if (class2_count > 600 || class1_count > 500)
-    *mode = 6;
+    {
+      *mode = 6;
+    }
   else if (class2_count > 300 || class1_count > 300 ||
            class1_count + class2_count > 300)
-    *mode = 5;
-  result = 0;
+    {
+      *mode = 5;
+    }
+  int result = 0;
   if (class3_count * 100 > active_count * 30 ||
       (primary_histogram_state == 2 &&
        class3_count * 100 > active_count * 10))
@@ -1881,6 +1802,165 @@ goodix_milan_profile9_build_broken_mask (
     *mode = 5;
   state->extraction_auxiliary.promoted_secondary_histogram_state =
     secondary_histogram_state;
+  return result;
+}
+
+int
+goodix_milan_profile9_build_broken_mask (
+  GoodixMilanPreprocessState *state,
+  const uint16_t             *difference,
+  const uint16_t             *setup_map,
+  const uint16_t             *normalized_live,
+  const uint8_t              *contrast_mask,
+  size_t                      rows,
+  size_t                      columns,
+  uint8_t                    *broken_mask,
+  uint8_t                    *class_plane,
+  int                        *mode,
+  int                        *apply_mask)
+{
+  static const uint32_t primary_kernel[3] = { 6980, 51576, 6980 };
+  size_t count;
+  uint16_t *prepared = NULL;
+  uint8_t *valid = NULL;
+  uint8_t *history_qualified = NULL;
+  uint16_t *blurred = NULL;
+  uint16_t *gradient = NULL;
+  int16_t *direction = NULL;
+  uint16_t *scores = NULL;
+  uint16_t *edge_blurred = NULL;
+  int16_t *edge_map = NULL;
+  uint8_t *adaptive = NULL;
+  uint16_t *class2_scores = NULL;
+  int low;
+  int high;
+  size_t active_count = 0;
+  uint8_t primary_histogram_state;
+  uint8_t secondary_histogram_state = 0;
+  uint8_t secondary_count_state = 0;
+  uint8_t directional_state;
+  int history_initialized;
+  int result = -1;
+
+  if (!state || !difference || !setup_map || !normalized_live || !contrast_mask ||
+      !broken_mask || !mode || !apply_mask || rows < 3 || columns < 3 ||
+      columns > SIZE_MAX / rows || rows * columns > GOODIX_MILAN_SENSOR_PIXELS)
+    return -1;
+  count = rows * columns;
+  for (size_t i = 0; i < count; i++)
+    active_count += contrast_mask[i] != 0;
+  prepared = malloc (count * sizeof (*prepared));
+  valid = malloc (count);
+  history_qualified = calloc (count, 1);
+  blurred = malloc (count * sizeof (*blurred));
+  gradient = calloc (count, sizeof (*gradient));
+  direction = malloc (count * sizeof (*direction));
+  scores = calloc (count, sizeof (*scores));
+  edge_blurred = malloc (count * sizeof (*edge_blurred));
+  edge_map = calloc (count, sizeof (*edge_map));
+  adaptive = malloc (count);
+  class2_scores = calloc (count, sizeof (*class2_scores));
+  if (!prepared || !valid || !history_qualified || !blurred || !gradient ||
+      !direction || !scores || !edge_blurred || !edge_map || !adaptive ||
+      !class2_scores)
+    goto out;
+
+  if (setup_map[0] < 4096)
+    {
+      for (size_t i = 0; i < count; i++)
+        {
+          int value = (int) setup_map[i] - normalized_live[i] + 3000;
+
+          prepared[i] = value > 0 ? (uint16_t) value : 0;
+        }
+    }
+  else
+    {
+      memcpy (prepared, difference, count * sizeof (*prepared));
+    }
+  milan_profile9_erode_valid (contrast_mask, valid, rows, columns, 8);
+  history_initialized = milan_profile9_prepare_history (
+    state, prepared, contrast_mask, count);
+  milan_profile9_filter_q16 (
+    prepared, rows, columns, primary_kernel, 3, blurred);
+  primary_histogram_state = milan_profile9_histogram_state (
+    blurred, valid, count, 1);
+  milan_profile9_histogram_thresholds (blurred, valid, count, &low, &high);
+  milan_profile9_primary_path_scores (
+    blurred, valid, rows, columns, low, high, gradient, direction, scores);
+  size_t severe_count = milan_profile9_build_severe_mask (
+    scores, blurred, valid, rows, columns, edge_blurred, edge_map, broken_mask);
+
+  if (severe_count <= 300)
+    {
+      milan_profile9_adaptive_mask (
+        scores, blurred, valid, rows, columns, 300, 240, 640, 448, 150,
+        adaptive);
+      for (size_t i = 0; i < count; i++)
+        if (adaptive[i] != 0 && broken_mask[i] < 3)
+          broken_mask[i] = 1;
+      size_t selected = 0;
+      for (size_t i = 0; i < count; i++)
+        selected += broken_mask[i] != 0;
+      if (selected > 150)
+        milan_profile9_density_class1 (scores, rows, columns, broken_mask);
+    }
+
+  milan_profile9_component_class1 (
+    state, gradient, rows, columns, broken_mask,
+    active_count * 100 >= count * 75);
+
+  milan_profile9_admit_class2 (
+    valid, blurred, low, gradient, direction, rows, columns, class2_scores,
+    broken_mask);
+
+  if (primary_histogram_state < 2)
+    {
+      size_t classified_count = 0;
+
+      for (size_t i = 0; i < count; i++)
+        if (broken_mask[i] != 0)
+          classified_count++;
+
+      if (classified_count * 100 > active_count * 30)
+        primary_histogram_state = 2;
+    }
+  if (state->profile9_history_count > 20)
+    {
+      milan_profile9_build_history_qualified (
+        state, valid, rows, columns, history_qualified);
+      secondary_histogram_state = milan_profile9_histogram_state (
+        state->profile9_history_reference, history_qualified, count, 0);
+      secondary_count_state = milan_profile9_secondary_count_state (
+        state->profile9_history_reference, history_qualified, rows, columns);
+      if (secondary_histogram_state == 0 && secondary_count_state == 0 &&
+          !history_initialized)
+        {
+          secondary_histogram_state = milan_profile9_histogram_state (
+            state->calibration_map, history_qualified, count, 0);
+          secondary_count_state = milan_profile9_secondary_count_state (
+            state->calibration_map, history_qualified, rows, columns);
+        }
+      milan_profile9_temporal_class3 (
+        state, history_qualified, rows, columns, broken_mask);
+    }
+
+  for (size_t row = 3; row + 3 < rows; row++)
+    for (size_t column = 3; column + 3 < columns; column++)
+      {
+        size_t index = row * columns + column;
+
+        if (normalized_live[index] < 50)
+          broken_mask[index] = 3;
+      }
+
+  directional_state = milan_profile9_directional_state (
+    normalized_live, valid, rows, columns, active_count);
+
+  result = milan_profile9_publish_classification (
+    state, contrast_mask, count, active_count, broken_mask, class_plane,
+    primary_histogram_state, secondary_histogram_state, secondary_count_state,
+    directional_state, mode, apply_mask);
 
 out:
   free (class2_scores);
