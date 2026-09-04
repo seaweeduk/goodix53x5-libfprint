@@ -90,7 +90,6 @@ typedef enum {
   GOODIX_MILAN_EXTRACTION_INVALID,
 } GoodixMilanExtractionStatus;
 
-#ifdef GOODIX53X5_DEBUG
 #define GOODIX_MILAN_EXTRACTION_SHA256_SIZE 65
 
 typedef struct
@@ -103,7 +102,6 @@ typedef struct
   gchar                            nonzero_projection_sha256[
     GOODIX_MILAN_EXTRACTION_SHA256_SIZE];
 } GoodixMilanExtractionDiagnostics;
-#endif
 
 typedef enum {
   GOODIX_SIGFM_TEMPLATE_OK,
