@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "milan/feature/feature.h"
 #include "milan/milan.h"
 #include "milan/match/correspondence.h"
 

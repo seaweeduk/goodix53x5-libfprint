@@ -9,6 +9,7 @@
  */
 
 #include "milan/antifake/antifake.h"
+#include "milan/feature/feature.h"
 #include "milan/private.h"
 
 #include <stdint.h>

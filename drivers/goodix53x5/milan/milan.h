@@ -16,6 +16,7 @@
 
 #include "milan/antifake/antifake.h"
 #include "milan/capacity.h"
+#include "milan/feature/feature.h"
 #include "milan/preprocess/state.h"
 
 #define GOODIX_MILAN_TEMPLATE_MAX_SIZE (1024U * 1024U)
@@ -25,77 +26,6 @@ int goodix_milan_template_initialize_tail (const uint8_t *frame,
                                                    size_t         columns,
                                                    uint8_t       *tail_state,
                                                    size_t         tail_size);
-
-int goodix_milan_feature_base_maps (const uint8_t *frame,
-                                             size_t         rows,
-                                             size_t         columns,
-                                             uint8_t       *high_bitmap,
-                                             uint8_t       *low_bitmap,
-                                             uint8_t       *feature_mask,
-                                             uint8_t       *inline_mask);
-
-int goodix_milan_feature_enhance (const uint8_t *frame,
-                                          size_t         rows,
-                                          size_t         columns,
-                                          uint8_t       *orientation,
-                                          uint8_t       *output);
-
-int goodix_milan_feature_enhanced_bitmap (
-  const uint8_t *enhanced,
-  const uint8_t *feature_mask,
-  size_t         rows,
-  size_t         columns,
-  uint8_t       *bitmap,
-  uint8_t       *threshold);
-
-void goodix_milan_feature_transform_record (uint8_t *record,
-                                             int      reverse_bits);
-
-size_t goodix_milan_feature_partition_records (uint8_t *records,
-                                                 size_t   record_count);
-
-typedef struct
-{
-  int32_t x;
-  int32_t y;
-  int32_t scale;
-  int32_t response;
-} GoodixMilanFeatureExtremum;
-
-size_t goodix_milan_feature_collect_extrema (
-  const uint16_t             *scales,
-  size_t                      rows,
-  size_t                      columns,
-  GoodixMilanFeatureExtremum *extrema,
-  size_t                      capacity);
-
-typedef struct
-{
-  int32_t x;
-  int32_t y;
-  int32_t scale;
-  int32_t strength;
-  int16_t refined_x;
-  int16_t refined_y;
-  int32_t scale_value;
-} GoodixMilanFeatureCandidate;
-
-int goodix_milan_feature_refine_extremum (
-  const uint16_t             *scales,
-  size_t                      rows,
-  size_t                      columns,
-  GoodixMilanFeatureCandidate *candidate,
-  uint32_t                   *curvature);
-
-struct _GoodixMilanFeatureRecord
-{
-  uint16_t foreground;
-  int16_t refined_x;
-  int16_t refined_y;
-  int16_t orientation;
-  int32_t strength;
-  uint8_t payload[44];
-};
 
 typedef struct
 {
@@ -641,69 +571,3 @@ int goodix_milan_study_finalize (
   uint8_t       *packed,
   size_t         packed_capacity,
   size_t        *packed_size);
-
-typedef struct
-{
-  int32_t strength;
-  int32_t index;
-} GoodixMilanFeatureRank;
-
-typedef struct
-{
-  int32_t x;
-  int32_t y;
-  int32_t scale_value;
-  uint32_t peak;
-  uint32_t selected_peak;
-  uint16_t secondary_orientation;
-  uint16_t reserved;
-} GoodixMilanFeatureAux;
-
-size_t goodix_milan_feature_collect_materialized (
-  const uint8_t                  *feature_source,
-  const uint16_t                 *scales,
-  const uint32_t                 *magnitude,
-  const int16_t                  *orientation,
-  size_t                          rows,
-  size_t                          columns,
-  GoodixMilanFeatureRecord       *records,
-  GoodixMilanFeatureRank         *ranks,
-  GoodixMilanFeatureAux          *auxiliary,
-  size_t                          capacity);
-
-int goodix_milan_feature_should_retry_scale_space (
-  size_t       materialized_count,
-  unsigned int pass_marker,
-  int          configured_retry);
-
-void goodix_milan_feature_build_descriptor_samples (
-  int32_t         center_x,
-  int32_t         center_y,
-  int32_t         descriptor_scale,
-  int16_t         feature_orientation,
-  const uint32_t *magnitude,
-  const int16_t  *orientation,
-  size_t          rows,
-  size_t          columns,
-  int32_t         samples[128]);
-
-int goodix_milan_feature_extract_records_mode (
-  const uint8_t            *frame,
-  size_t                    rows,
-  size_t                    columns,
-  GoodixMilanFeatureRecord *records,
-  size_t                    capacity,
-  size_t                   *record_count,
-  size_t                   *zero_flag_count,
-  int                       expand_records);
-
-int goodix_milan_feature_extract_records_mode_configured (
-  const uint8_t            *frame,
-  size_t                    rows,
-  size_t                    columns,
-  GoodixMilanFeatureRecord *records,
-  size_t                    capacity,
-  size_t                   *record_count,
-  size_t                   *zero_flag_count,
-  int                       expand_records,
-  int                       configured_retry);
