@@ -26,6 +26,21 @@
 #define MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MIN_EXCLUSIVE UINT16_C(100)
 #define MILAN_PROFILE9_RAW_ADMISSION_SAMPLE_MAX_EXCLUSIVE UINT16_C(0x0ed8)
 
+enum
+{
+  MILAN_QUALITY_PERCENT_SCALE = 100,
+  MILAN_QUALITY_SCORE_BIN_COUNT = 101,
+  MILAN_QUALITY_Q8_ONE = 0x100,
+  MILAN_QUALITY_Q8_SHIFT = 8,
+  MILAN_QUALITY_Q16_ONE = 0x10000,
+  MILAN_QUALITY_Q16_SHIFT = 16,
+  MILAN_QUALITY_PATCH_REDUCTION_CEILING = 70,
+  MILAN_QUALITY_VALID_COVERAGE_DELTA = 0x3333,
+  MILAN_QUALITY_GRADIENT_WINDOW_RECIPROCAL_Q16 = 291,
+  MILAN_QUALITY_COVERAGE_THRESHOLD = 0x78,
+  MILAN_QUALITY_SELECTION_THRESHOLD = 100,
+};
+
 static const uint16_t milan_update_kernel[5] = {
   7869, 15328, 19142, 15328, 7869,
 };
@@ -1180,15 +1195,17 @@ quality_combine_core (int  raw_coverage,
     return -1;
 
   result = patch_score;
-  if (mask_fraction < fraction_cutoff && patch_score < 70)
+  if (mask_fraction < fraction_cutoff &&
+      patch_score < MILAN_QUALITY_PATCH_REDUCTION_CEILING)
     {
-      int factor = mask_fraction * 256 / fraction_cutoff;
+      int factor = mask_fraction * MILAN_QUALITY_Q8_ONE / fraction_cutoff;
 
-      result = result * factor >> 8;
-      result = result * factor >> 8;
+      result = result * factor >> MILAN_QUALITY_Q8_SHIFT;
+      result = result * factor >> MILAN_QUALITY_Q8_SHIFT;
     }
 
-  if (valid_score - raw_coverage > 0x3333 && valid_score != 0)
+  if (valid_score - raw_coverage > MILAN_QUALITY_VALID_COVERAGE_DELTA &&
+      valid_score != 0)
     {
       result = raw_coverage * result / valid_score;
       result = result * raw_coverage / valid_score;
@@ -1198,11 +1215,12 @@ quality_combine_core (int  raw_coverage,
     result += final_adjustment;
   if (result < 0)
     result = 0;
-  else if (result > 100)
-    result = 100;
+  else if (result > MILAN_QUALITY_PERCENT_SCALE)
+    result = MILAN_QUALITY_PERCENT_SCALE;
 
   *quality = result;
-  *coverage = raw_coverage * 100 >> 16;
+  *coverage = raw_coverage * MILAN_QUALITY_PERCENT_SCALE >>
+              MILAN_QUALITY_Q16_SHIFT;
   return 0;
 }
 
@@ -1357,7 +1375,9 @@ quality_coverage_mask_core (const uint8_t *frame,
                 }
             }
 
-          uint16_t average = (uint16_t) ((sum * UINT32_C(291)) >> 16);
+          uint16_t average = (uint16_t) (
+            (sum * (uint32_t) MILAN_QUALITY_GRADIENT_WINDOW_RECIPROCAL_Q16) >>
+            MILAN_QUALITY_Q16_SHIFT);
           size_t index = row * columns + column;
 
           mask[index] = average > threshold ? mask_value : 0;
@@ -1365,7 +1385,8 @@ quality_coverage_mask_core (const uint8_t *frame,
         }
     }
 
-  *raw_coverage = (int) ((selected * UINT32_C(0x10000)) / count);
+  *raw_coverage = (int) ((selected * (uint32_t) MILAN_QUALITY_Q16_ONE) /
+                         count);
   free (gradient);
   free (sobel_y);
   free (sobel_x);
@@ -1389,8 +1410,9 @@ goodix_milan_preprocess_quality_coverage_mask (const uint8_t *frame,
                                            uint8_t       *mask,
                                            int           *raw_coverage)
 {
-  return quality_coverage_mask_core (frame, rows, columns, 0x78, UINT8_MAX,
-                                     mask, raw_coverage);
+  return quality_coverage_mask_core (
+    frame, rows, columns, MILAN_QUALITY_COVERAGE_THRESHOLD, UINT8_MAX,
+    mask, raw_coverage);
 }
 
 int
@@ -1401,8 +1423,9 @@ goodix_milan_preprocess_selection_mask (const uint8_t *frame,
 {
   int ignored_coverage;
 
-  return quality_coverage_mask_core (frame, rows, columns, 100, UINT8_MAX,
-                                     mask, &ignored_coverage);
+  return quality_coverage_mask_core (
+    frame, rows, columns, MILAN_QUALITY_SELECTION_THRESHOLD, UINT8_MAX,
+    mask, &ignored_coverage);
 }
 
 static int
@@ -1419,7 +1442,7 @@ quality_patch_score_core (const uint8_t *frame,
   int32_t *gradient_y = NULL;
   int32_t *magnitude = NULL;
   int32_t *patch_scores = NULL;
-  int score_histogram[101] = { 0 };
+  int score_histogram[MILAN_QUALITY_SCORE_BIN_COUNT] = { 0 };
   int64_t score_sum = 0;
   int scored_patches = 0;
 
@@ -1549,17 +1572,18 @@ quality_patch_score_core (const uint8_t *frame,
           int64_t cross = (rounding + cross_sum) / selected_count;
           int64_t average_square = (x_square + y_square) / 2;
           int64_t anisotropy =
-            ((x_square * y_square - cross * cross) * UINT32_C(0x10000)) /
+            ((x_square * y_square - cross * cross) * MILAN_QUALITY_Q16_ONE) /
             (average_square * average_square + 1);
 
           if (anisotropy < 0)
             anisotropy = 0;
-          int64_t score = UINT32_C(0x10000) - anisotropy;
+          int64_t score = MILAN_QUALITY_Q16_ONE - anisotropy;
           if (score < 0)
             score = 0;
-          int score_percent = (int) ((score * 100) >> 16);
-          if (score_percent > 100)
-            score_percent = 100;
+          int score_percent = (int) (
+            (score * MILAN_QUALITY_PERCENT_SCALE) >> MILAN_QUALITY_Q16_SHIFT);
+          if (score_percent > MILAN_QUALITY_PERCENT_SCALE)
+            score_percent = MILAN_QUALITY_PERCENT_SCALE;
           patch_scores[center] = (int32_t) score;
           score_histogram[score_percent]++;
           score_sum += score;
@@ -1569,7 +1593,8 @@ quality_patch_score_core (const uint8_t *frame,
 
   *patch_score = scored_patches != 0
                    ? (int) (((((scored_patches / 2) + score_sum) /
-                               scored_patches) * 100) >> 16)
+                               scored_patches) * MILAN_QUALITY_PERCENT_SCALE) >>
+                             MILAN_QUALITY_Q16_SHIFT)
                    : 0;
   if (!fixed_threshold)
     *patch_score += 5;
@@ -1578,7 +1603,7 @@ quality_patch_score_core (const uint8_t *frame,
       int cumulative = 0;
       int median_score = 0;
 
-      for (; median_score <= 100; median_score++)
+      for (; median_score <= MILAN_QUALITY_PERCENT_SCALE; median_score++)
         {
           cumulative += score_histogram[median_score];
           if (cumulative >= scored_patches / 2)
@@ -1592,7 +1617,9 @@ quality_patch_score_core (const uint8_t *frame,
             size_t center = center_row * columns + center_column;
             int32_t score = patch_scores[center];
 
-            if (score < 0 || ((score * 100) >> 16) > median_score)
+            if (score < 0 ||
+                ((score * MILAN_QUALITY_PERCENT_SCALE) >>
+                 MILAN_QUALITY_Q16_SHIFT) > median_score)
               continue;
             for (size_t row = center_row - 12; row < center_row + 12; row++)
               for (size_t column = center_column - 12;
@@ -1672,7 +1699,9 @@ quality_mask_fraction_core (const uint8_t *source,
         histogram[classes[i]]++;
         classified += classes[i] < 9;
       }
-  *mask_fraction = classified != 0 ? histogram[4] * 100 / classified : 0;
+  *mask_fraction = classified != 0 ?
+                     histogram[4] * MILAN_QUALITY_PERCENT_SCALE / classified :
+                     0;
   free (classes);
   return 0;
 }
