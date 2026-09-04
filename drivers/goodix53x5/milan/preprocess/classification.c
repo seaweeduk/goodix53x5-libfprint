@@ -26,6 +26,14 @@ enum
   MILAN_HISTOGRAM_INTERIOR_LAST_BIN = 245,
   MILAN_PERCENT_SCALE = 100,
   MILAN_PERMILLE_SCALE = 1000,
+  MILAN_PRIMARY_HISTOGRAM_SHIFT = 4,
+  MILAN_SECONDARY_HISTOGRAM_SHIFT = 5,
+  MILAN_PRIMARY_WIDTH_FLOOR_PERCENT = 20,
+  MILAN_PRIMARY_EXCLUSION_NUMERATOR = 51200,
+  MILAN_SECONDARY_EXCLUSION_NUMERATOR = 128000,
+  MILAN_HISTOGRAM_VALLEY_CANDIDATE_PERCENT = 85,
+  MILAN_HISTOGRAM_VALLEY_GLOBAL_PERCENT = 60,
+  MILAN_HISTOGRAM_MODE_LIMIT = 8192,
 };
 
 static void
@@ -345,9 +353,10 @@ milan_profile9_primary_histogram_state (
       clipped->range <= 0)
     return 0;
   milan_profile9_smooth_histogram (
-    clipped->histogram, 4, smooth, box);
+    clipped->histogram, MILAN_PRIMARY_HISTOGRAM_SHIFT, smooth, box);
   int global_peak = milan_profile9_histogram_global_peak (box);
-  int width_floor = smooth[global_peak] * 20 / MILAN_PERCENT_SCALE;
+  int width_floor = smooth[global_peak] * MILAN_PRIMARY_WIDTH_FLOOR_PERCENT /
+                    MILAN_PERCENT_SCALE;
   int upper = global_peak;
   int lower = global_peak;
 
@@ -394,7 +403,7 @@ milan_profile9_primary_histogram_state (
         state = 1;
     }
 
-  int exclusion = 51200 / clipped->range;
+  int exclusion = MILAN_PRIMARY_EXCLUSION_NUMERATOR / clipped->range;
   for (int bin = MILAN_HISTOGRAM_SMOOTH_RADIUS;
        bin <= MILAN_HISTOGRAM_INTERIOR_LAST_BIN; bin++)
     {
@@ -412,9 +421,9 @@ milan_profile9_primary_histogram_state (
       int32_t valley = milan_profile9_histogram_valley (
         box, bin, global_peak);
       if ((int64_t) valley * MILAN_PERCENT_SCALE <=
-            (int64_t) box[bin] * 85 &&
+            (int64_t) box[bin] * MILAN_HISTOGRAM_VALLEY_CANDIDATE_PERCENT &&
           (int64_t) valley * MILAN_PERCENT_SCALE <=
-            (int64_t) box[global_peak] * 60)
+            (int64_t) box[global_peak] * MILAN_HISTOGRAM_VALLEY_GLOBAL_PERCENT)
         return 2;
     }
   return state;
@@ -432,13 +441,13 @@ milan_profile9_secondary_histogram_state (
       clipped->range <= 0)
     return 0;
   milan_profile9_smooth_histogram (
-    clipped->histogram, 5, smooth, box);
+    clipped->histogram, MILAN_SECONDARY_HISTOGRAM_SHIFT, smooth, box);
   int global_peak = milan_profile9_histogram_global_peak (box);
   if ((int64_t) box[global_peak] * MILAN_PERCENT_SCALE >
       (clipped->total_weight >> 5) * 35)
     return 0;
 
-  int exclusion = 128000 / clipped->range;
+  int exclusion = MILAN_SECONDARY_EXCLUSION_NUMERATOR / clipped->range;
   for (int bin = MILAN_HISTOGRAM_SMOOTH_RADIUS;
        bin <= MILAN_HISTOGRAM_INTERIOR_LAST_BIN; bin++)
     {
@@ -460,9 +469,9 @@ milan_profile9_secondary_histogram_state (
       int32_t valley = milan_profile9_histogram_valley (
         box, bin, global_peak);
       if ((int64_t) valley * MILAN_PERCENT_SCALE <=
-            (int64_t) box[bin] * 85 &&
+            (int64_t) box[bin] * MILAN_HISTOGRAM_VALLEY_CANDIDATE_PERCENT &&
           (int64_t) valley * MILAN_PERCENT_SCALE <=
-            (int64_t) box[global_peak] * 60)
+            (int64_t) box[global_peak] * MILAN_HISTOGRAM_VALLEY_GLOBAL_PERCENT)
         return 1;
     }
   return 0;
@@ -563,8 +572,8 @@ milan_profile9_histogram_thresholds (const uint16_t *image,
   int mode_limit = (range * mode_bin + MILAN_HISTOGRAM_MIDPOINT_BIN) /
                    MILAN_HISTOGRAM_LAST_BIN + minimum;
 
-  if (mode_limit > 8192)
-    mode_limit = 8192;
+  if (mode_limit > MILAN_HISTOGRAM_MODE_LIMIT)
+    mode_limit = MILAN_HISTOGRAM_MODE_LIMIT;
   *low = (range * low_bin + MILAN_HISTOGRAM_MIDPOINT_BIN) /
          MILAN_HISTOGRAM_LAST_BIN + minimum;
   *high = (range * high_bin + MILAN_HISTOGRAM_MIDPOINT_BIN) /
