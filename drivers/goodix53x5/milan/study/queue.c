@@ -118,10 +118,10 @@ goodix_milan_study_queue_validate (const GoodixStudyQueue *queue)
 }
 
 GoodixStudyQueueEnqueueResult
-goodix_milan_study_queue_enqueue (GoodixStudyQueue           *queue,
-                            const GoodixMatchInfo      *incoming,
-                            GoodixStudyQueueMetricFunc  metric_func,
-                            gpointer                    user_data)
+goodix_milan_study_queue_enqueue (GoodixStudyQueue          *queue,
+                                  const GoodixMatchInfo     *incoming,
+                                  GoodixStudyQueueMetricFunc metric_func,
+                                  gpointer                   user_data)
 {
   gsize occupied;
   gsize newest_slot = SIZE_MAX;
@@ -176,11 +176,11 @@ goodix_milan_study_queue_enqueue (GoodixStudyQueue           *queue,
 }
 
 gboolean
-goodix_milan_study_queue_process (GoodixStudyQueue             *queue,
-                            gsize                         primary_selected_index,
-                            GoodixStudyQueueFollowupFunc  followup_func,
-                            gpointer                      user_data,
-                            gboolean                     *mutated)
+goodix_milan_study_queue_process (GoodixStudyQueue            *queue,
+                                  gsize                        primary_selected_index,
+                                  GoodixStudyQueueFollowupFunc followup_func,
+                                  gpointer                     user_data,
+                                  gboolean                    *mutated)
 {
   gsize continuation[GOODIX_STUDY_QUEUE_CAPACITY];
   gsize head = 0;

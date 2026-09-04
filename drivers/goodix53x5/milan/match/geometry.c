@@ -697,10 +697,10 @@ goodix_milan_match_record_metrics_internal (
 
       if (transformed_x < 0x600 ||
           transformed_x >=
-            (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS - 7) * 0x100 ||
+          (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS - 7) * 0x100 ||
           transformed_y < 0x600 ||
           transformed_y >=
-            (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS - 7) * 0x100)
+          (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS - 7) * 0x100)
         continue;
       valid_topology_records++;
 
@@ -1015,19 +1015,19 @@ milan_fill_record_index_map (const GoodixMilanFeatureRecord *records,
                              int16_t                         map[GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS])
 {
   memset (map, 0xff,
-          GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS * sizeof(*map));
+          GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS * sizeof (*map));
   for (size_t index = begin; index < end; index++)
     {
       int32_t x = ((uint16_t) records[index].refined_x + 0x80) >> 8;
       int32_t y = ((uint16_t) records[index].refined_y + 0x80) >> 8;
       int32_t left = x > radius ? x - radius : 0;
-      int32_t right = x + radius < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS
-                        ? x + radius
-                        : GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS - 1;
+      int32_t right = x + radius < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS ?
+                      x + radius :
+                      GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS - 1;
       int32_t top = y > radius ? y - radius : 0;
-      int32_t bottom = y + radius < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS
-                         ? y + radius
-                         : GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS - 1;
+      int32_t bottom = y + radius < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS ?
+                       y + radius :
+                       GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS - 1;
 
       for (int32_t row = top; row <= bottom; row++)
         for (int32_t column = left; column <= right; column++)

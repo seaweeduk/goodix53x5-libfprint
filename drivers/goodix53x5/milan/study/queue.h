@@ -57,17 +57,15 @@ gboolean goodix_milan_study_queue_validate (const GoodixStudyQueue *queue);
 gsize    goodix_milan_study_queue_occupied (const GoodixStudyQueue *queue);
 gsize    goodix_milan_study_queue_allocated (const GoodixStudyQueue *queue);
 
-GoodixStudyQueueEnqueueResult goodix_milan_study_queue_enqueue (
-  GoodixStudyQueue           *queue,
-  const GoodixMatchInfo      *incoming,
-  GoodixStudyQueueMetricFunc  metric_func,
-  gpointer                    user_data);
+GoodixStudyQueueEnqueueResult goodix_milan_study_queue_enqueue (GoodixStudyQueue          *queue,
+                                                                const GoodixMatchInfo     *incoming,
+                                                                GoodixStudyQueueMetricFunc metric_func,
+                                                                gpointer                   user_data);
 
-gboolean goodix_milan_study_queue_process (
-  GoodixStudyQueue             *queue,
-  gsize                         primary_selected_index,
-  GoodixStudyQueueFollowupFunc  followup_func,
-  gpointer                      user_data,
-  gboolean                     *mutated);
+gboolean goodix_milan_study_queue_process (GoodixStudyQueue            *queue,
+                                           gsize                        primary_selected_index,
+                                           GoodixStudyQueueFollowupFunc followup_func,
+                                           gpointer                     user_data,
+                                           gboolean                    *mutated);
 
 void goodix_milan_study_queue_disable (GoodixStudyQueue *queue);

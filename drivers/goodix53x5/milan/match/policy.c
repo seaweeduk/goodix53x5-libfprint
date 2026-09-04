@@ -1119,7 +1119,7 @@ goodix_milan_matcher_policy_apply_late_veto (
 {
   if (policy->configuration[GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE] > 0 &&
       policy->configuration[GOODIX_MILAN_POLICY_CONFIG_SUBTYPE] ==
-        GOODIX_MILAN_PRINT_SENSOR_TYPE &&
+      GOODIX_MILAN_PRINT_SENSOR_TYPE &&
       ((metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 9 &&
         metrics[GOODIX_MILAN_POLICY_METRIC_GEOMETRY] < 12) ||
        (metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 8 &&
@@ -1340,7 +1340,7 @@ overlap_status_type12 (int32_t area,
 {
   return area * 100 >
          (100 - margin) * GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS *
-           GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS;
+         GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS;
 }
 
 static int
@@ -1349,7 +1349,7 @@ overlap_clears_match_flag_type12 (int32_t area,
 {
   return area * 100 >
          (95 - margin) * GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS *
-           GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS;
+         GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS;
 }
 
 int

@@ -168,8 +168,8 @@ goodix_milan_match_study_feature_internal (
         &probe_view) != 0)
     goto invalid;
   finalize_current_study = finalize_study &&
-    (enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE ||
-     match_result->study_control.study_finalization_gate != 0);
+                           (enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE ||
+                            match_result->study_control.study_finalization_gate != 0);
   if (match_result->study_control.study_action_gate == 0)
     {
       g_free (packed);
@@ -356,11 +356,11 @@ goodix_milan_match_set_live_feature (GoodixStudyFollowupContext *context,
 }
 
 static GoodixSigfmTemplateStatus
-goodix_milan_match_live_gallery_result (GoodixMatchInfo                 *probe,
-                                   GoodixStudyFollowupContext      *context,
-                                   gsize                            triggering_index,
-                                   GoodixMilanMatchResult          *match_result,
-                                  GBytes                         **updated_feature)
+goodix_milan_match_live_gallery_result (GoodixMatchInfo            *probe,
+                                        GoodixStudyFollowupContext *context,
+                                        gsize                       triggering_index,
+                                        GoodixMilanMatchResult     *match_result,
+                                        GBytes                    **updated_feature)
 {
   const GoodixMilanFeatureRecord *live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
   size_t live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };

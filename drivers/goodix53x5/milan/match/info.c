@@ -189,25 +189,27 @@ goodix_milan_match_update_extraction_classification (
       current_classes[i] = 2;
 
   if (state->retained_count == 3)
-    for (guint class_value = 1; class_value <= 2; class_value++)
-      {
-        for (guint i = 0;
-             i < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS;
-             i++)
-          component_mask[i] =
-            current_classes[i] == class_value &&
-            state->retained_class_planes[0][i] == class_value &&
-            state->retained_class_planes[1][i] == class_value &&
-            state->retained_class_planes[2][i] == class_value
-              ? UINT8_MAX : 0;
-        goodix_milan_match_retain_class_components (
-          component_mask, 31, 350, labels, queue);
-        for (guint i = 0;
-             i < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS;
-             i++)
-          if (component_mask[i] != 0 && stable_classes[i] == 0)
-            stable_classes[i] = (guint8) class_value;
-      }
+    {
+      for (guint class_value = 1; class_value <= 2; class_value++)
+        {
+          for (guint i = 0;
+               i < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS;
+               i++)
+            component_mask[i] =
+              current_classes[i] == class_value &&
+              state->retained_class_planes[0][i] == class_value &&
+              state->retained_class_planes[1][i] == class_value &&
+              state->retained_class_planes[2][i] == class_value ?
+              UINT8_MAX : 0;
+          goodix_milan_match_retain_class_components (
+            component_mask, 31, 350, labels, queue);
+          for (guint i = 0;
+               i < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS;
+               i++)
+            if (component_mask[i] != 0 && stable_classes[i] == 0)
+              stable_classes[i] = (guint8) class_value;
+        }
+    }
 
   for (guint i = 0; i < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS; i++)
     {
@@ -317,20 +319,19 @@ goodix_milan_match_decode_entry_classes (const guint8 *image,
     }
 }
 
-static GoodixMilanExtractionStatus goodix_milan_match_extract_planes (
-  const guint8  *image,
-  const guint8  *primary_contrast_plane,
-  GoodixMilanExtractionClassificationState *classification_state,
-  const GoodixMilanExtractionAuxiliaryState *auxiliary_state,
-  const guint16 *calibration,
-  const guint16 *raw_frame,
-  guint16        t_code,
-  guint16        dac_high,
-  guint16        dac_low,
-  guint16        sensor_subtype,
-  gint32         calibration_scalar,
-  GoodixMatchInfo **result,
-  GoodixMilanExtractionDiagnostics *diagnostics);
+static GoodixMilanExtractionStatus goodix_milan_match_extract_planes (const guint8                              *image,
+                                                                      const guint8                              *primary_contrast_plane,
+                                                                      GoodixMilanExtractionClassificationState  *classification_state,
+                                                                      const GoodixMilanExtractionAuxiliaryState *auxiliary_state,
+                                                                      const guint16                             *calibration,
+                                                                      const guint16                             *raw_frame,
+                                                                      guint16                                    t_code,
+                                                                      guint16                                    dac_high,
+                                                                      guint16                                    dac_low,
+                                                                      guint16                                    sensor_subtype,
+                                                                      gint32                                     calibration_scalar,
+                                                                      GoodixMatchInfo                          **result,
+                                                                      GoodixMilanExtractionDiagnostics          *diagnostics);
 
 GoodixMatchInfo *
 goodix_milan_match_extract_native (const guint8               *image,
@@ -411,19 +412,19 @@ goodix_milan_match_extract_native_result_debug (
 #endif
 
 static GoodixMilanExtractionStatus
-goodix_milan_match_extract_planes (const guint8  *image,
-                             const guint8  *primary_contrast_plane,
-                             GoodixMilanExtractionClassificationState *classification_state,
-                             const GoodixMilanExtractionAuxiliaryState *auxiliary_state,
-                             const guint16 *calibration,
-                             const guint16 *raw_frame,
-                             guint16        t_code,
-                             guint16        dac_high,
-                             guint16        dac_low,
-                             guint16        sensor_subtype,
-                              gint32         calibration_scalar,
-                              GoodixMatchInfo **result,
-                              GoodixMilanExtractionDiagnostics *diagnostics)
+goodix_milan_match_extract_planes (const guint8                              *image,
+                                   const guint8                              *primary_contrast_plane,
+                                   GoodixMilanExtractionClassificationState  *classification_state,
+                                   const GoodixMilanExtractionAuxiliaryState *auxiliary_state,
+                                   const guint16                             *calibration,
+                                   const guint16                             *raw_frame,
+                                   guint16                                    t_code,
+                                   guint16                                    dac_high,
+                                   guint16                                    dac_low,
+                                   guint16                                    sensor_subtype,
+                                   gint32                                     calibration_scalar,
+                                   GoodixMatchInfo                          **result,
+                                   GoodixMilanExtractionDiagnostics          *diagnostics)
 {
   GoodixMatchInfo *info = NULL;
   guint8 *cropped = NULL;

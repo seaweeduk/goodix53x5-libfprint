@@ -8,6 +8,10 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
+/* Produces profile-9/type-12 processed images, quality, and retained state.
+ * Native owners are preprocessor, FUN_18006d540, FUN_180067500, and
+ * FUN_180069820. */
+
 #include "milan/milan.h"
 #include "milan/private.h"
 #include "milan/preprocess/gain.h"
@@ -320,7 +324,7 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
     }
   else
     {
-      /* Rejection suppresses map evolution, not application of persisted gain. */
+      /* Native quirk: rejection suppresses map evolution, not persisted gain. */
       profile9_update_source (normalized_live, setup_map, count, working);
       for (size_t i = 0; i < count; i++)
         {
@@ -525,7 +529,7 @@ profile9_normalize_outer_edges (uint16_t *frame,
     if (frame[i] > MILAN_ADC_MAX)
       frame[i] = MILAN_ADC_MAX;
 
-  /* Validated profile-9 frames copy outer edges but preserve inner-edge data. */
+  /* Native quirk: validated frames copy outer edges but preserve inner edges. */
   memcpy (frame, frame + columns, columns * sizeof(*frame));
   memcpy (frame + (rows - 1) * columns, frame + (rows - 2) * columns,
           columns * sizeof(*frame));
@@ -1749,12 +1753,12 @@ quality_patch_score_core (const uint8_t *frame,
     return -1;
 
   count = rows * columns;
-  if (count > SIZE_MAX / sizeof(*gradient_x))
+  if (count > SIZE_MAX / sizeof (*gradient_x))
     return -1;
-  gradient_x = calloc (count, sizeof(*gradient_x));
-  gradient_y = calloc (count, sizeof(*gradient_y));
-  magnitude = calloc (count, sizeof(*magnitude));
-  patch_scores = malloc (count * sizeof(*patch_scores));
+  gradient_x = calloc (count, sizeof (*gradient_x));
+  gradient_y = calloc (count, sizeof (*gradient_y));
+  magnitude = calloc (count, sizeof (*magnitude));
+  patch_scores = malloc (count * sizeof (*patch_scores));
   if (!gradient_x || !gradient_y || !magnitude || !patch_scores)
     goto allocation_failed;
   for (size_t i = 0; i < count; i++)
@@ -2336,11 +2340,11 @@ milan_render_local_contrast (const uint16_t *source,
 
 static int
 milan_contrast_core (const uint16_t *source,
-                      const uint8_t  *mask,
-                      size_t          rows,
-                      size_t          columns,
-                      uint8_t         *output,
-                      int              refine_diagonals)
+                     const uint8_t  *mask,
+                     size_t          rows,
+                     size_t          columns,
+                     uint8_t        *output,
+                     int             refine_diagonals)
 {
   size_t count;
   uint16_t *horizontal_min;
@@ -2352,13 +2356,13 @@ milan_contrast_core (const uint16_t *source,
     return -1;
 
   count = rows * columns;
-  if (count > SIZE_MAX / sizeof(uint16_t))
+  if (count > SIZE_MAX / sizeof (uint16_t))
     return -1;
 
-  horizontal_min = malloc (count * sizeof(*horizontal_min));
-  horizontal_max = malloc (count * sizeof(*horizontal_max));
-  vertical_min = malloc (count * sizeof(*vertical_min));
-  vertical_max = malloc (count * sizeof(*vertical_max));
+  horizontal_min = malloc (count * sizeof (*horizontal_min));
+  horizontal_max = malloc (count * sizeof (*horizontal_max));
+  vertical_min = malloc (count * sizeof (*vertical_min));
+  vertical_max = malloc (count * sizeof (*vertical_max));
   if (!horizontal_min || !horizontal_max || !vertical_min || !vertical_max)
     goto allocation_failed;
 
