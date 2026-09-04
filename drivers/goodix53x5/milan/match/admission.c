@@ -12,8 +12,7 @@
 
 #include <string.h>
 
-enum
-{
+enum {
   AFFINE_XX,
   AFFINE_XY,
   AFFINE_X_OFFSET,
@@ -26,6 +25,50 @@ enum
 #define AFFINE_Q8_ONE 0x100
 #define PROXIMITY_PRIMARY_SENSOR_MASK UINT32_C (0x472010)
 #define PROXIMITY_ALTERNATE_SENSOR_MASK UINT64_C (0xc000000000001ec5)
+
+enum {
+  METRIC_PRIMARY_COUNT = 0,
+  METRIC_FILTERED_COUNT = 1,
+  METRIC_OVERLAP_SCORE = 4,
+  METRIC_DETAIL = 5,
+  METRIC_COVERAGE = 9,
+  METRIC_TOPOLOGY = 10,
+  METRIC_GEOMETRY = 11,
+  METRIC_SCALE_PENALTY = 12,
+  METRIC_ORTHOGONALITY_PENALTY = 13,
+};
+
+enum {
+  CONFIG_DETAIL_BASELINE = 0,
+  CONFIG_COUNT_SHIFT = 1,
+  CONFIG_SENSOR_TYPE = 15,
+  CONFIG_AFFINE_PENALTY = 16,
+};
+
+#define ADMISSION_SENSOR_TYPE_12 12
+#define ADMISSION_THRESHOLD_FAMILY_SIZE 8
+#define ADMISSION_FILTERED_FAMILY 0
+#define ADMISSION_PRIMARY_FAMILY ADMISSION_THRESHOLD_FAMILY_SIZE
+#define ADMISSION_FILTERED_CONFIG_FAMILY (2 * ADMISSION_THRESHOLD_FAMILY_SIZE)
+#define ADMISSION_COUNT_BAND_BASE 7
+#define ADMISSION_COUNT_BAND_MAX 7
+#define ADMISSION_TOPOLOGY_BASELINE 60
+#define ADMISSION_TOPOLOGY_STEP 5
+#define ADMISSION_COVERAGE_BASELINE 128
+#define ADMISSION_COVERAGE_STEP 10
+#define ADMISSION_AFFINE_PENALTY_SCALE 4
+
+static int32_t
+admission_count_band (int32_t count)
+{
+  int32_t index = count - ADMISSION_COUNT_BAND_BASE;
+
+  if (index < 0)
+    return 0;
+  if (index > ADMISSION_COUNT_BAND_MAX)
+    return ADMISSION_COUNT_BAND_MAX;
+  return index;
+}
 
 int
 goodix_milan_match_fallback_candidate_eligible (
@@ -124,8 +167,8 @@ goodix_milan_match_initial_flags (
 
   if (!metrics || !configuration || !match_flag || !candidate_flag)
     return -1;
-  memcpy (policy_thresholds, thresholds, sizeof(policy_thresholds));
-  if (configuration[15] == 12)
+  memcpy (policy_thresholds, thresholds, sizeof (policy_thresholds));
+  if (configuration[CONFIG_SENSOR_TYPE] == ADMISSION_SENSOR_TYPE_12)
     {
       policy_thresholds[2] = 0xdc;
       policy_thresholds[3] = 0xd8;
@@ -135,67 +178,67 @@ goodix_milan_match_initial_flags (
       policy_thresholds[7] = 0xd2;
     }
 
-  primary_count = metrics[0];
-  filtered_count = metrics[1];
-  detail = metrics[5];
-  coverage = metrics[9];
-  topology = metrics[10];
-  detail_delta = detail - configuration[0];
+  primary_count = metrics[METRIC_PRIMARY_COUNT];
+  filtered_count = metrics[METRIC_FILTERED_COUNT];
+  detail = metrics[METRIC_DETAIL];
+  coverage = metrics[METRIC_COVERAGE];
+  topology = metrics[METRIC_TOPOLOGY];
+  detail_delta = detail - configuration[CONFIG_DETAIL_BASELINE];
   adjusted_detail = detail - (primary_count < 5 ? 4 : 0);
-  if (topology > 60 && primary_count > 4)
+  if (topology > ADMISSION_TOPOLOGY_BASELINE && primary_count > 4)
     {
-      adjustment = 1 + (topology - 60) / 5;
+      adjustment = 1 + (topology - ADMISSION_TOPOLOGY_BASELINE) /
+                   ADMISSION_TOPOLOGY_STEP;
       primary_count += adjustment;
       filtered_count += adjustment;
     }
-  if (coverage < 128)
+  if (coverage < ADMISSION_COVERAGE_BASELINE)
     {
-      adjustment = 1 + (128 - coverage) / 10;
+      adjustment = 1 + (ADMISSION_COVERAGE_BASELINE - coverage) /
+                   ADMISSION_COVERAGE_STEP;
       primary_count -= adjustment;
       filtered_count -= adjustment;
     }
 
-  filtered_index = filtered_count - 7;
-  if (filtered_index < 0)
-    filtered_index = 0;
-  else if (filtered_index > 7)
-    filtered_index = 7;
-  primary_threshold_index = primary_count - configuration[1] - 7;
-  if (primary_threshold_index < 0)
-    primary_threshold_index = 0;
-  else if (primary_threshold_index > 7)
-    primary_threshold_index = 7;
-  int32_t filtered_threshold_index = filtered_count - configuration[1] - 7;
-  if (filtered_threshold_index < 0)
-    filtered_threshold_index = 0;
-  else if (filtered_threshold_index > 7)
-    filtered_threshold_index = 7;
+  filtered_index = admission_count_band (filtered_count);
+  primary_threshold_index = admission_count_band (
+    primary_count - configuration[CONFIG_COUNT_SHIFT]);
+  int32_t filtered_threshold_index = admission_count_band (
+    filtered_count - configuration[CONFIG_COUNT_SHIFT]);
 
-  if (configuration[16] != 0 && filtered_count < 11)
+  if (configuration[CONFIG_AFFINE_PENALTY] != 0 && filtered_count < 11)
     {
-      int32_t penalty = (metrics[12] + metrics[13]) * 4;
+      int32_t penalty =
+        (metrics[METRIC_SCALE_PENALTY] +
+         metrics[METRIC_ORTHOGONALITY_PENALTY]) *
+        ADMISSION_AFFINE_PENALTY_SCALE;
 
       detail_delta -= penalty;
       adjusted_detail -= penalty;
     }
   *candidate_flag = 1;
-  if (detail_delta <= policy_thresholds[primary_threshold_index + 8] &&
-      detail_delta <= policy_thresholds[filtered_threshold_index + 16] &&
+  if (detail_delta <=
+      policy_thresholds[primary_threshold_index + ADMISSION_PRIMARY_FAMILY] &&
+      detail_delta <=
+      policy_thresholds[filtered_threshold_index +
+                        ADMISSION_FILTERED_CONFIG_FAMILY] &&
       primary_count < 14)
     *candidate_flag = 0;
 
-  if (configuration[15] == 7)
+  if (configuration[CONFIG_SENSOR_TYPE] == 7)
     {
       int32_t first_adjust = filtered_count > primary_count && primary_count <= 7 &&
-                             metrics[13] != 0;
+                             metrics[METRIC_ORTHOGONALITY_PENALTY] != 0;
       int32_t second_adjust = coverage <= 100 && filtered_count <= 11 &&
                               topology <= 65;
 
       adjusted_detail -= (first_adjust * 3 + second_adjust) * 2;
     }
   if (*candidate_flag == 0 || image_quality < 16 || image_coverage < 65 ||
-      ((primary_count < 5 && metrics[4] < 235 && adjusted_detail < 217)) ||
-      (((adjusted_detail <= policy_thresholds[filtered_index] &&
+      ((primary_count < 5 && metrics[METRIC_OVERLAP_SCORE] < 235 &&
+        adjusted_detail < 217)) ||
+      (((adjusted_detail <=
+         policy_thresholds[filtered_index + ADMISSION_FILTERED_FAMILY] &&
          (adjusted_detail < 195 || primary_count < 16) &&
          (adjusted_detail < 190 || primary_count < 18) &&
          (filtered_count < 19 || primary_count < 11 || adjusted_detail < 197) &&
@@ -208,14 +251,19 @@ goodix_milan_match_initial_flags (
   if (optional_flag)
     {
       if ((primary_count < 21 || detail_delta < 185) && detail_delta < 205 &&
-          detail_delta < policy_thresholds[primary_threshold_index + 8] + 10 &&
-          detail_delta < policy_thresholds[filtered_threshold_index + 16] + 10)
+          detail_delta <
+          policy_thresholds[primary_threshold_index +
+                            ADMISSION_PRIMARY_FAMILY] + 10 &&
+          detail_delta <
+          policy_thresholds[filtered_threshold_index +
+                            ADMISSION_FILTERED_CONFIG_FAMILY] + 10)
         *optional_flag = 1;
       else
         *optional_flag = 0;
     }
-  if (*match_flag == 1 && metrics[0] >= 8 && metrics[1] >= 12 &&
-      metrics[11] >= 36)
+  if (*match_flag == 1 && metrics[METRIC_PRIMARY_COUNT] >= 8 &&
+      metrics[METRIC_FILTERED_COUNT] >= 12 &&
+      metrics[METRIC_GEOMETRY] >= 36)
     (*match_flag)++;
   return 0;
 }
