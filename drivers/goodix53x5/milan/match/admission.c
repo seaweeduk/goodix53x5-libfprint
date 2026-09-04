@@ -12,6 +12,21 @@
 
 #include <string.h>
 
+enum
+{
+  AFFINE_XX,
+  AFFINE_XY,
+  AFFINE_X_OFFSET,
+  AFFINE_YX,
+  AFFINE_YY,
+  AFFINE_Y_OFFSET,
+  AFFINE_WORDS,
+};
+
+#define AFFINE_Q8_ONE 0x100
+#define PROXIMITY_PRIMARY_SENSOR_MASK UINT32_C (0x472010)
+#define PROXIMITY_ALTERNATE_SENSOR_MASK UINT64_C (0xc000000000001ec5)
+
 int
 goodix_milan_match_fallback_candidate_eligible (
   int32_t composite_score,
@@ -23,51 +38,58 @@ goodix_milan_match_fallback_candidate_eligible (
 
 int
 goodix_milan_match_transform_proximity (const int32_t transform[6],
-                                                int32_t       mode,
-                                                uint32_t      sensor_type)
+                                        int32_t       mode,
+                                        uint32_t      sensor_type)
 {
-  static const int32_t identity[6] = { 0x100, 0, 0, 0, 0x100, 0 };
-  int32_t thresholds[6] = { 15, 11, 0x400, 11, 15, 0x400 };
+  static const int32_t identity[AFFINE_WORDS] = {
+    [AFFINE_XX] = AFFINE_Q8_ONE,
+    [AFFINE_YY] = AFFINE_Q8_ONE,
+  };
+  static const int32_t default_limits[AFFINE_WORDS] = {
+    15, 11, 0x400, 11, 15, 0x400,
+  };
+  static const int32_t mode4_limits[AFFINE_WORDS] = {
+    38, 38, 0xc00, 38, 38, 0xc00,
+  };
+  static const int32_t mode5_limits[AFFINE_WORDS] = {
+    45, 40, 0xf00, 40, 45, 0xf00,
+  };
+  static const int32_t alternate_sensor_limits[AFFINE_WORDS] = {
+    25, 21, 0x700, 21, 25, 0x700,
+  };
+  int32_t limits[AFFINE_WORDS];
   int32_t multiplier = 1;
 
-  if (!transform || mode < 1 || mode > 5)
+  if (mode < 1 || mode > 5)
     return 0;
+  memcpy (limits, default_limits, sizeof (limits));
   if (mode == 3)
     multiplier = 2;
   else if (mode == 4)
-    {
-      const int32_t values[6] = { 38, 38, 0xc00, 38, 38, 0xc00 };
-
-      memcpy (thresholds, values, sizeof (thresholds));
-    }
+    memcpy (limits, mode4_limits, sizeof (limits));
   else if (mode == 5)
-    {
-      const int32_t values[6] = { 45, 40, 0xf00, 40, 45, 0xf00 };
-
-      memcpy (thresholds, values, sizeof (thresholds));
-    }
-  if (sensor_type < 23 && ((UINT32_C (0x472010) >> sensor_type) & 1) != 0)
+    memcpy (limits, mode5_limits, sizeof (limits));
+  if (sensor_type < 23 &&
+      ((PROXIMITY_PRIMARY_SENSOR_MASK >> sensor_type) & 1) != 0)
     {
       if (mode == 2)
         multiplier = 2;
     }
   else
     {
-      static const int32_t alternate[6] = {
-        25, 21, 0x700, 21, 25, 0x700,
-      };
-
       if (sensor_type >= 64 ||
-          ((UINT64_C (0xc000000000001ec5) >> sensor_type) & 1) == 0)
+          ((PROXIMITY_ALTERNATE_SENSOR_MASK >> sensor_type) & 1) == 0)
         return 0;
-      memcpy (thresholds, alternate, sizeof (thresholds));
+      /* Preserve current mode-1 limits for alternate-family modes 4/5. Native
+       * uses their wider tables, but profile-9/type-12 cannot reach them. */
+      memcpy (limits, alternate_sensor_limits, sizeof (limits));
       multiplier = 1;
     }
-  for (size_t i = 0; i < 6; i++)
+  for (size_t i = 0; i < AFFINE_WORDS; i++)
     {
       int32_t delta = transform[i] - identity[i];
 
-      if ((delta < 0 ? -delta : delta) > thresholds[i] * multiplier)
+      if ((delta < 0 ? -delta : delta) > limits[i] * multiplier)
         return 0;
     }
   return 1;
