@@ -179,8 +179,7 @@ feature_build_scale_space_pass (const uint8_t *blurred,
   const MilanFeatureKernel *kernels;
   size_t count;
 
-  if (!blurred || !scales || rows == 0 || columns == 0 ||
-      columns > SIZE_MAX / rows ||
+  if ((rows != 0 && columns > SIZE_MAX / rows) ||
       (pass_marker != 0 && pass_marker != 100))
     return -1;
   kernels = milan_feature_kernels[pass_marker == 100];
@@ -220,8 +219,7 @@ feature_build_gradients_pass (const uint8_t *enhanced,
   uint16_t *second = NULL;
   int result = -1;
 
-  if (!enhanced || !gradient_input || !magnitude || !orientation || rows < 2 ||
-      columns < 2 || columns > SIZE_MAX / rows ||
+  if ((rows != 0 && columns > SIZE_MAX / rows) ||
       (pass_marker != 0 && pass_marker != 100))
     return -1;
   kernels = milan_feature_kernels[pass_marker == 100];
