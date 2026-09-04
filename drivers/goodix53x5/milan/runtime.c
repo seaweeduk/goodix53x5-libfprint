@@ -443,15 +443,15 @@ goodix_milan_runtime_match_gallery (const GoodixMilanRuntimeInput *input,
       if (!template_valid)
         {
           output->invalid_gallery_count++;
-          goodix_study_queue_free (queue);
+          goodix_milan_study_queue_free (queue);
           continue;
         }
       result->valid = TRUE;
       output->valid_gallery_count++;
-      queue = goodix_study_queue_new (
+      queue = goodix_milan_study_queue_new (
         result->template_info.queue_state,
         result->template_info.queue_transaction_counter);
-      if (!queue || !goodix_study_queue_validate (queue))
+      if (!queue || !goodix_milan_study_queue_validate (queue))
         {
           result->valid = FALSE;
           output->valid_gallery_count--;
@@ -460,14 +460,14 @@ goodix_milan_runtime_match_gallery (const GoodixMilanRuntimeInput *input,
                                GOODIX_MILAN_PRINT_ERROR,
                                GOODIX_MILAN_PRINT_ERROR_INVALID,
                                "Milan gallery queue state is invalid");
-          goodix_study_queue_free (queue);
+          goodix_milan_study_queue_free (queue);
           continue;
         }
 #ifdef GOODIX53X5_DEBUG
       result->queue_before_match_observed = TRUE;
       result->queue_state_before_match = queue->enabled_state;
       result->queue_counter_before_match = queue->transaction_counter;
-      result->queue_occupied_before_match = goodix_study_queue_occupied (queue);
+      result->queue_occupied_before_match = goodix_milan_study_queue_occupied (queue);
 #endif
       feature = g_bytes_get_data (gallery->template_bytes, &feature_len);
       status = goodix_milan_runtime_match (
@@ -476,7 +476,7 @@ goodix_milan_runtime_match_gallery (const GoodixMilanRuntimeInput *input,
       result->evaluated = TRUE;
 #ifdef GOODIX53X5_DEBUG
       result->queue_after_match_observed = TRUE;
-      result->queue_occupied_after_match = goodix_study_queue_occupied (queue);
+      result->queue_occupied_after_match = goodix_milan_study_queue_occupied (queue);
 #endif
       output->evaluated_gallery_count++;
       if (status != GOODIX_SIGFM_TEMPLATE_OK || !after_match)
@@ -488,7 +488,7 @@ goodix_milan_runtime_match_gallery (const GoodixMilanRuntimeInput *input,
                                GOODIX_MILAN_PRINT_ERROR,
                                GOODIX_MILAN_PRINT_ERROR_INVALID,
                                "Native Milan gallery matching failed");
-          goodix_study_queue_free (queue);
+          goodix_milan_study_queue_free (queue);
           continue;
         }
 #ifdef GOODIX53X5_DEBUG
@@ -505,12 +505,12 @@ goodix_milan_runtime_match_gallery (const GoodixMilanRuntimeInput *input,
             input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_AFTER_GALLERY,
             position))
         {
-          goodix_study_queue_free (queue);
+          goodix_milan_study_queue_free (queue);
           return FALSE;
         }
       if (result->score <= 0)
         {
-          goodix_study_queue_free (queue);
+          goodix_milan_study_queue_free (queue);
           continue;
         }
 
@@ -568,14 +568,14 @@ goodix_milan_runtime_study_winner (const GoodixMilanRuntimeInput *input,
   winner_result->queue_state_after_study = winner_queue->enabled_state;
   winner_result->queue_counter_after_study = winner_queue->transaction_counter;
   winner_result->queue_occupied_after_study =
-    goodix_study_queue_occupied (winner_queue);
+    goodix_milan_study_queue_occupied (winner_queue);
 #endif
   if (study_status != GOODIX_SIGFM_TEMPLATE_OK)
     {
       g_set_error_literal (&output->learning_error, GOODIX_MILAN_PRINT_ERROR,
                            GOODIX_MILAN_PRINT_ERROR_INVALID,
                            "Native Milan study failed after a positive match");
-      goodix_study_queue_free (winner_queue);
+      goodix_milan_study_queue_free (winner_queue);
       goodix_match_free_info (probe);
       return;
     }
@@ -586,7 +586,7 @@ goodix_milan_runtime_study_winner (const GoodixMilanRuntimeInput *input,
         input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_AFTER_STUDY,
         winner_position))
     {
-      goodix_study_queue_free (winner_queue);
+      goodix_milan_study_queue_free (winner_queue);
       goodix_match_free_info (probe);
       return;
     }
@@ -600,7 +600,7 @@ goodix_milan_runtime_study_winner (const GoodixMilanRuntimeInput *input,
                                GOODIX_MILAN_PRINT_ERROR_INVALID,
                                "Action 0 unexpectedly produced a candidate");
         }
-      goodix_study_queue_free (winner_queue);
+      goodix_milan_study_queue_free (winner_queue);
       goodix_match_free_info (probe);
       return;
     }
@@ -615,7 +615,7 @@ goodix_milan_runtime_study_winner (const GoodixMilanRuntimeInput *input,
                                GOODIX_MILAN_PRINT_ERROR_INVALID,
                                "Native Milan study returned an invalid action");
         }
-      goodix_study_queue_free (winner_queue);
+      goodix_milan_study_queue_free (winner_queue);
       goodix_match_free_info (probe);
       return;
     }
@@ -626,12 +626,12 @@ goodix_milan_runtime_study_winner (const GoodixMilanRuntimeInput *input,
       g_set_error_literal (&output->learning_error, GOODIX_MILAN_PRINT_ERROR,
                            GOODIX_MILAN_PRINT_ERROR_NONCANONICAL,
                            "Positive Milan study candidate did not change bytes");
-      goodix_study_queue_free (winner_queue);
+      goodix_milan_study_queue_free (winner_queue);
       goodix_match_free_info (probe);
       return;
     }
   output->final_candidate = g_steal_pointer (&after_study);
-  goodix_study_queue_free (winner_queue);
+  goodix_milan_study_queue_free (winner_queue);
   goodix_match_free_info (probe);
 }
 
@@ -686,7 +686,7 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
         input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_BEFORE_STUDY,
         winner_position))
     {
-      goodix_study_queue_free (winner_queue);
+      goodix_milan_study_queue_free (winner_queue);
       goodix_match_free_info (probe);
       return output;
     }

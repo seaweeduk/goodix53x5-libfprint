@@ -36,7 +36,7 @@ goodix_match_queue_matches_template (const GoodixStudyQueue *queue,
   GoodixMilanUnpackedTemplate *unpacked;
   gboolean matches = FALSE;
 
-  if (!queue || !goodix_study_queue_validate (queue))
+  if (!queue || !goodix_milan_study_queue_validate (queue))
     return FALSE;
   if (!feature || feature_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE)
     return FALSE;
@@ -76,7 +76,7 @@ goodix_match_serialized_feature_result_internal (
 
   if (!probe_info || !probe_info->template || !feature || !match_result)
     return GOODIX_SIGFM_TEMPLATE_INVALID;
-  if (queue && !goodix_study_queue_validate (queue))
+  if (queue && !goodix_milan_study_queue_validate (queue))
     return GOODIX_SIGFM_TEMPLATE_INVALID;
   gsize enrolled_milan_len = feature_len;
   const guint8 *enrolled_milan = feature;

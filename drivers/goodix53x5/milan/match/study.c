@@ -56,7 +56,7 @@ static GoodixStudyQueueEnqueueResult
 goodix_match_enqueue_queue_candidate (GoodixStudyQueue      *queue,
                                       const GoodixMatchInfo *probe_info)
 {
-  return goodix_study_queue_enqueue (
+  return goodix_milan_study_queue_enqueue (
     queue, probe_info, goodix_match_queue_duplicate_metric, NULL);
 }
 
@@ -525,7 +525,7 @@ goodix_match_finalize_study (GBytes                 *feature,
 
   template_data = g_bytes_get_data (feature, &template_size);
   if (template_size > GOODIX_MILAN_TEMPLATE_MAX_SIZE || !queue ||
-      !goodix_study_queue_validate (queue))
+      !goodix_milan_study_queue_validate (queue))
     return NULL;
   packed = g_malloc (template_size);
   if (goodix_milan_study_finalize (
@@ -584,7 +584,7 @@ goodix_match_study_feature_queued (
     *action = GOODIX_MILAN_STUDY_NONE;
   if (!goodix_match_info_is_complete (probe_info) || !feature ||
       !match_result || !queue || !updated_feature || !action ||
-      !goodix_study_queue_validate (queue) ||
+      !goodix_milan_study_queue_validate (queue) ||
       !goodix_match_queue_matches_template (queue, feature, feature_len))
     return GOODIX_SIGFM_TEMPLATE_INVALID;
   if (!goodix_match_initialize_study_overlap_counts (
@@ -606,7 +606,7 @@ goodix_match_study_feature_queued (
       GoodixStudyQueueEnqueueResult enqueue_result;
 
       if (transient.valid && goodix_match_template_at_capacity (original))
-        goodix_study_queue_disable (queue);
+        goodix_milan_study_queue_disable (queue);
       g_bytes_unref (original);
       if (transient.valid && selected_index == SIZE_MAX &&
           queue->enabled_state == 0 &&
@@ -614,7 +614,7 @@ goodix_match_study_feature_queued (
           probe_info->extraction_metadata.quality > 15 &&
           probe_info->extraction_metadata.coverage > 65)
         {
-          enqueue_result = goodix_study_queue_enqueue (
+          enqueue_result = goodix_milan_study_queue_enqueue (
             queue, probe_info, goodix_match_queue_duplicate_metric, NULL);
           if (enqueue_result == GOODIX_STUDY_QUEUE_INVALID)
             {
@@ -643,7 +643,7 @@ goodix_match_study_feature_queued (
       status = GOODIX_SIGFM_TEMPLATE_INVALID;
       goto out;
     }
-  if (queue->enabled_state == 0 && !goodix_study_queue_process (
+  if (queue->enabled_state == 0 && !goodix_milan_study_queue_process (
         queue, selected_index, goodix_match_study_followup, &context,
         &queued_mutation))
     {
@@ -651,7 +651,7 @@ goodix_match_study_feature_queued (
       goto out;
     }
   if (goodix_match_template_at_capacity (context.current))
-    goodix_study_queue_disable (queue);
+    goodix_milan_study_queue_disable (queue);
 
   final_update = goodix_match_finalize_study (
     context.current, queue,

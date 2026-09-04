@@ -985,7 +985,7 @@ test_generated_production_replay (void)
 
   for (size_t iteration = 0; iteration < 2; iteration++)
     {
-      GoodixStudyQueue *match_queue = goodix_study_queue_new (
+      GoodixStudyQueue *match_queue = goodix_milan_study_queue_new (
         combined_info.queue_state, combined_info.queue_transaction_counter);
       GoodixMilanMatchResult result;
       g_autoptr(GBytes) after_match = NULL;
@@ -998,7 +998,7 @@ test_generated_production_replay (void)
       GoodixMilanStudyAction negative_action = GOODIX_MILAN_STUDY_APPEND;
 
       g_assert_nonnull (match_queue);
-      g_assert_true (goodix_study_queue_validate (match_queue));
+      g_assert_true (goodix_milan_study_queue_validate (match_queue));
       combined_data = g_bytes_get_data (combined, &combined_size);
       g_assert_cmpint (goodix_match_serialized_feature_result_queued (
                          info, combined_data, combined_size, &result,
@@ -1020,8 +1020,8 @@ test_generated_production_replay (void)
       g_assert_cmpint (result.study_control.study_finalization_gate, ==, 0);
       g_assert_cmpint (result.study_control.study_action_gate, ==, 0);
       g_assert_cmpint (result.study_control.queue_candidate_eligible, ==, 0);
-      g_assert_true (goodix_study_queue_validate (match_queue));
-      g_assert_cmpuint (goodix_study_queue_occupied (match_queue), ==, 0);
+      g_assert_true (goodix_milan_study_queue_validate (match_queue));
+      g_assert_cmpuint (goodix_milan_study_queue_occupied (match_queue), ==, 0);
       g_assert_true (goodix_milan_print_validate_template (
         after_match, &after_match_info, &error));
       g_assert_no_error (error);
@@ -1038,15 +1038,15 @@ test_generated_production_replay (void)
                        GOODIX_SIGFM_TEMPLATE_INVALID);
       g_assert_null (negative_update);
       g_assert_cmpint (negative_action, ==, GOODIX_MILAN_STUDY_NONE);
-      g_assert_true (goodix_study_queue_validate (match_queue));
-      g_assert_cmpuint (goodix_study_queue_occupied (match_queue), ==, 0);
-      goodix_study_queue_free (match_queue);
+      g_assert_true (goodix_milan_study_queue_validate (match_queue));
+      g_assert_cmpuint (goodix_milan_study_queue_occupied (match_queue), ==, 0);
+      goodix_milan_study_queue_free (match_queue);
 
       /* Independent generic action-0 transient subcase. With no retained
        * evidence the identity relation is not consumed, but keeps the
        * publication coherent and fully defined. */
       {
-        GoodixStudyQueue *action0_queue = goodix_study_queue_new (
+        GoodixStudyQueue *action0_queue = goodix_milan_study_queue_new (
           after_match_info.queue_state,
           after_match_info.queue_transaction_counter);
         GoodixMilanMatchResult generic_action0_result = {
@@ -1072,20 +1072,20 @@ test_generated_production_replay (void)
                          GOODIX_SIGFM_TEMPLATE_OK);
         g_assert_null (action0_update);
         g_assert_cmpint (action0_action, ==, GOODIX_MILAN_STUDY_NONE);
-        g_assert_true (goodix_study_queue_validate (action0_queue));
+        g_assert_true (goodix_milan_study_queue_validate (action0_queue));
         g_assert_cmpuint (action0_queue->enabled_state, ==, 0);
         g_assert_cmpuint (action0_queue->transaction_counter,
                           ==, after_match_info.queue_transaction_counter);
-        g_assert_cmpuint (goodix_study_queue_allocated (action0_queue),
+        g_assert_cmpuint (goodix_milan_study_queue_allocated (action0_queue),
                           ==, GOODIX_STUDY_QUEUE_CAPACITY);
-        g_assert_cmpuint (goodix_study_queue_occupied (action0_queue), ==, 1);
-        goodix_study_queue_free (action0_queue);
+        g_assert_cmpuint (goodix_milan_study_queue_occupied (action0_queue), ==, 1);
+        goodix_milan_study_queue_free (action0_queue);
       }
 
       /* Independent generic action-1 append API subcase, not a matcher
        * result handoff. */
       {
-        GoodixStudyQueue *append_queue = goodix_study_queue_new (
+        GoodixStudyQueue *append_queue = goodix_milan_study_queue_new (
           after_match_info.queue_state,
           after_match_info.queue_transaction_counter);
         GoodixMilanMatchResult generic_append_result = {
@@ -1109,8 +1109,8 @@ test_generated_production_replay (void)
                            &generic_append_result, TRUE, append_queue,
                            &append_update, &append_action), ==,
                          GOODIX_SIGFM_TEMPLATE_OK);
-        g_assert_true (goodix_study_queue_validate (append_queue));
-        g_assert_cmpuint (goodix_study_queue_occupied (append_queue), ==, 0);
+        g_assert_true (goodix_milan_study_queue_validate (append_queue));
+        g_assert_cmpuint (goodix_milan_study_queue_occupied (append_queue), ==, 0);
         g_assert_nonnull (append_update);
         g_assert_cmpint (append_action, ==, GOODIX_MILAN_STUDY_APPEND);
         g_assert_true (goodix_milan_print_validate_template (
@@ -1129,7 +1129,7 @@ test_generated_production_replay (void)
           first_append_update = g_bytes_ref (append_update);
         else
           g_assert_true (g_bytes_equal (append_update, first_append_update));
-        goodix_study_queue_free (append_queue);
+        goodix_milan_study_queue_free (append_queue);
       }
 
       if (iteration == 0)

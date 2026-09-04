@@ -129,38 +129,38 @@ planned_metric (const GoodixMatchInfo *incoming,
 static void
 test_queue_lifecycle (void)
 {
-  g_autofree GoodixStudyQueue *invalid = goodix_study_queue_new (2, 0);
-  GoodixStudyQueue *disabled = goodix_study_queue_new (1, 17);
-  GoodixStudyQueue *queue = goodix_study_queue_new (0, 17);
+  g_autofree GoodixStudyQueue *invalid = goodix_milan_study_queue_new (2, 0);
+  GoodixStudyQueue *disabled = goodix_milan_study_queue_new (1, 17);
+  GoodixStudyQueue *queue = goodix_milan_study_queue_new (0, 17);
   GoodixMatchInfo *incoming = synthetic_match_info (0);
   GoodixMatchInfo *snapshot = goodix_match_info_new_empty ();
   GoodixMatchInfo *incomplete = goodix_match_info_new_empty ();
   MetricPlan metric = { 0 };
 
   g_assert_null (invalid);
-  g_assert_true (goodix_study_queue_validate (disabled));
-  g_assert_cmpuint (goodix_study_queue_allocated (disabled), ==, 0);
-  g_assert_cmpint (goodix_study_queue_enqueue (
+  g_assert_true (goodix_milan_study_queue_validate (disabled));
+  g_assert_cmpuint (goodix_milan_study_queue_allocated (disabled), ==, 0);
+  g_assert_cmpint (goodix_milan_study_queue_enqueue (
                      disabled, incoming, NULL, NULL), ==,
                    GOODIX_STUDY_QUEUE_DISABLED);
-  goodix_study_queue_disable (disabled);
-  g_assert_true (goodix_study_queue_validate (disabled));
-  goodix_study_queue_free (disabled);
+  goodix_milan_study_queue_disable (disabled);
+  g_assert_true (goodix_milan_study_queue_validate (disabled));
+  goodix_milan_study_queue_free (disabled);
 
-  g_assert_true (goodix_study_queue_validate (queue));
-  g_assert_cmpuint (goodix_study_queue_allocated (queue), ==,
+  g_assert_true (goodix_milan_study_queue_validate (queue));
+  g_assert_cmpuint (goodix_milan_study_queue_allocated (queue), ==,
                     GOODIX_STUDY_QUEUE_CAPACITY);
-  g_assert_cmpint (goodix_study_queue_enqueue (
+  g_assert_cmpint (goodix_milan_study_queue_enqueue (
                      queue, incomplete, NULL, NULL), ==,
                    GOODIX_STUDY_QUEUE_INVALID);
   goodix_match_free_info (incomplete);
   queue->entries[0].rank = 0;
-  g_assert_false (goodix_study_queue_validate (queue));
+  g_assert_false (goodix_milan_study_queue_validate (queue));
   queue->entries[0].rank = -1;
-  g_assert_true (goodix_study_queue_validate (queue));
+  g_assert_true (goodix_milan_study_queue_validate (queue));
 
   g_assert_true (goodix_match_info_copy (snapshot, incoming));
-  g_assert_cmpint (goodix_study_queue_enqueue (
+  g_assert_cmpint (goodix_milan_study_queue_enqueue (
                      queue, incoming, NULL, NULL), ==,
                    GOODIX_STUDY_QUEUE_ENQUEUED);
   assert_match_info_equal (incoming, snapshot);
@@ -173,13 +173,13 @@ test_queue_lifecycle (void)
 
   incoming = synthetic_match_info (1);
   metric = (MetricPlan) { 1, 0, 191, 0 };
-  g_assert_cmpint (goodix_study_queue_enqueue (
+  g_assert_cmpint (goodix_milan_study_queue_enqueue (
                      queue, incoming, planned_metric, &metric), ==,
                    GOODIX_STUDY_QUEUE_DUPLICATE);
   g_assert_cmpuint (metric.calls, ==, 1);
-  g_assert_cmpuint (goodix_study_queue_occupied (queue), ==, 1);
+  g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==, 1);
   metric.metric = 190;
-  g_assert_cmpint (goodix_study_queue_enqueue (
+  g_assert_cmpint (goodix_milan_study_queue_enqueue (
                      queue, incoming, planned_metric, &metric), ==,
                    GOODIX_STUDY_QUEUE_ENQUEUED);
   g_assert_cmpuint (metric.calls, ==, 2);
@@ -189,13 +189,13 @@ test_queue_lifecycle (void)
     {
       incoming = synthetic_match_info (seed);
       metric = (MetricPlan) { seed, seed - 1, 0, 0 };
-      g_assert_cmpint (goodix_study_queue_enqueue (
+      g_assert_cmpint (goodix_milan_study_queue_enqueue (
                          queue, incoming, planned_metric, &metric), ==,
                        GOODIX_STUDY_QUEUE_ENQUEUED);
       g_assert_cmpuint (metric.calls, ==, 1);
       goodix_match_free_info (incoming);
     }
-  g_assert_cmpuint (goodix_study_queue_occupied (queue), ==,
+  g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==,
                     GOODIX_STUDY_QUEUE_CAPACITY);
   for (guint rank = 0; rank < GOODIX_STUDY_QUEUE_CAPACITY; rank++)
     g_assert_cmpint (queue_entry_at_rank (queue, (gint) rank)
@@ -205,7 +205,7 @@ test_queue_lifecycle (void)
   metric = (MetricPlan) {
     GOODIX_STUDY_QUEUE_CAPACITY, GOODIX_STUDY_QUEUE_CAPACITY - 1, 0, 0
   };
-  g_assert_cmpint (goodix_study_queue_enqueue (
+  g_assert_cmpint (goodix_milan_study_queue_enqueue (
                      queue, incoming, planned_metric, &metric), ==,
                    GOODIX_STUDY_QUEUE_ENQUEUED);
   goodix_match_free_info (incoming);
@@ -213,13 +213,13 @@ test_queue_lifecycle (void)
     g_assert_cmpint (queue_entry_at_rank (queue, (gint) rank)
                        ->extraction_metadata.optional_c7, ==, (gint) rank + 1);
 
-  goodix_study_queue_disable (queue);
-  g_assert_true (goodix_study_queue_validate (queue));
-  g_assert_cmpuint (goodix_study_queue_occupied (queue), ==, 0);
-  g_assert_cmpuint (goodix_study_queue_allocated (queue), ==, 0);
-  goodix_study_queue_disable (queue);
-  g_assert_true (goodix_study_queue_validate (queue));
-  goodix_study_queue_free (queue);
+  goodix_milan_study_queue_disable (queue);
+  g_assert_true (goodix_milan_study_queue_validate (queue));
+  g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==, 0);
+  g_assert_cmpuint (goodix_milan_study_queue_allocated (queue), ==, 0);
+  goodix_milan_study_queue_disable (queue);
+  g_assert_true (goodix_milan_study_queue_validate (queue));
+  goodix_milan_study_queue_free (queue);
 }
 
 typedef struct
@@ -261,14 +261,14 @@ static GoodixStudyQueue *
 queue_with_seeds (const guint *seeds,
                   gsize        seed_count)
 {
-  GoodixStudyQueue *queue = goodix_study_queue_new (0, 9);
+  GoodixStudyQueue *queue = goodix_milan_study_queue_new (0, 9);
 
   for (gsize i = 0; i < seed_count; i++)
     {
       GoodixMatchInfo *info = synthetic_match_info (seeds[i]);
       MetricPlan metric = { seeds[i], i == 0 ? 0 : seeds[i - 1], 0, 0 };
 
-      g_assert_cmpint (goodix_study_queue_enqueue (
+      g_assert_cmpint (goodix_milan_study_queue_enqueue (
                          queue, info, i == 0 ? NULL : planned_metric,
                          i == 0 ? NULL : &metric), ==,
                        GOODIX_STUDY_QUEUE_ENQUEUED);
@@ -294,13 +294,13 @@ test_queue_process (void)
   FollowupPlan plan = { success_steps, G_N_ELEMENTS (success_steps), 0 };
   gboolean mutated = FALSE;
 
-  g_assert_true (goodix_study_queue_process (
+  g_assert_true (goodix_milan_study_queue_process (
     queue, 50, planned_followup, &plan, &mutated));
   g_assert_true (mutated);
   g_assert_cmpuint (plan.next_step, ==, plan.step_count);
-  g_assert_cmpuint (goodix_study_queue_occupied (queue), ==, 0);
-  g_assert_true (goodix_study_queue_validate (queue));
-  goodix_study_queue_free (queue);
+  g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==, 0);
+  g_assert_true (goodix_milan_study_queue_validate (queue));
+  goodix_milan_study_queue_free (queue);
 
   {
     static const guint failure_seed[] = { 7 };
@@ -311,21 +311,21 @@ test_queue_process (void)
     failure_steps, G_N_ELEMENTS (failure_steps), 0
   };
   mutated = TRUE;
-  g_assert_false (goodix_study_queue_process (
+  g_assert_false (goodix_milan_study_queue_process (
     queue, 5, planned_followup, &plan, &mutated));
   g_assert_false (mutated);
-  g_assert_cmpuint (goodix_study_queue_occupied (queue), ==, 1);
-  g_assert_true (goodix_study_queue_validate (queue));
-  goodix_study_queue_free (queue);
+  g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==, 1);
+  g_assert_true (goodix_milan_study_queue_validate (queue));
+  goodix_milan_study_queue_free (queue);
 
-  queue = goodix_study_queue_new (1, 9);
+  queue = goodix_milan_study_queue_new (1, 9);
   plan = (FollowupPlan) { NULL, 0, 0 };
   mutated = TRUE;
-  g_assert_false (goodix_study_queue_process (
+  g_assert_false (goodix_milan_study_queue_process (
     queue, 5, planned_followup, &plan, &mutated));
   g_assert_false (mutated);
-  g_assert_true (goodix_study_queue_validate (queue));
-  goodix_study_queue_free (queue);
+  g_assert_true (goodix_milan_study_queue_validate (queue));
+  goodix_milan_study_queue_free (queue);
 }
 
 typedef struct
@@ -896,7 +896,7 @@ run_study_action_case (const StudyActionCase *test_case)
 {
   g_autoptr(GBytes) gallery = study_gallery (test_case->action, FALSE);
   GoodixMatchInfo *probe = study_match_info (9, FALSE, 0);
-  GoodixStudyQueue *queue = goodix_study_queue_new (0, 7);
+  GoodixStudyQueue *queue = goodix_milan_study_queue_new (0, 7);
   GoodixMilanMatchResult result = study_primary_result (
     test_case->retained_flag);
   GoodixMilanStudyAction action = GOODIX_MILAN_STUDY_NONE;
@@ -917,16 +917,16 @@ run_study_action_case (const StudyActionCase *test_case)
   g_assert_cmpint (action, ==, test_case->action);
   g_assert_nonnull (updated);
   g_assert_false (g_bytes_equal (gallery, updated));
-  g_assert_true (goodix_study_queue_validate (queue));
-  g_assert_cmpuint (goodix_study_queue_occupied (queue), ==, 0);
-  g_assert_cmpuint (goodix_study_queue_allocated (queue), ==, 0);
+  g_assert_true (goodix_milan_study_queue_validate (queue));
+  g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==, 0);
+  g_assert_cmpuint (goodix_milan_study_queue_allocated (queue), ==, 0);
   assert_study_template (
     updated, test_case->relation_count, &info, &unpacked);
   assert_replacement_semantics (
     &before, &unpacked, &probe_unpacked, test_case->action,
     test_case->selected_index, 1, 0, FALSE);
 
-  goodix_study_queue_free (queue);
+  goodix_milan_study_queue_free (queue);
   goodix_match_free_info (probe);
   return updated;
 }
@@ -972,8 +972,8 @@ run_queued_study_case (void)
     GOODIX_MILAN_STUDY_REPLACE_NO_RELATION, FALSE);
   GoodixMatchInfo *primary = study_match_info (9, TRUE, primary_marker);
   GoodixMatchInfo *queued = study_match_info (9, TRUE, queued_marker);
-  GoodixStudyQueue *baseline_queue = goodix_study_queue_new (0, 7);
-  GoodixStudyQueue *queue = goodix_study_queue_new (0, 7);
+  GoodixStudyQueue *baseline_queue = goodix_milan_study_queue_new (0, 7);
+  GoodixStudyQueue *queue = goodix_milan_study_queue_new (0, 7);
   GoodixMilanMatchResult primary_result = study_primary_result (0);
   GoodixMilanMatchResult queued_primary_result = study_primary_result (0);
   GoodixMilanMatchResult followup = { 0 };
@@ -1065,7 +1065,7 @@ run_queued_study_case (void)
   g_assert_cmpint (followup.study_control.study_action_gate, ==, 1);
   g_assert_cmpuint (followup.lifecycle_update_feature_mask, ==, UINT64_C (2));
 
-  g_assert_cmpint (goodix_study_queue_enqueue (
+  g_assert_cmpint (goodix_milan_study_queue_enqueue (
                      queue, queued, NULL, NULL), ==,
                    GOODIX_STUDY_QUEUE_ENQUEUED);
   action = GOODIX_MILAN_STUDY_NONE;
@@ -1078,9 +1078,9 @@ run_queued_study_case (void)
   g_assert_nonnull (updated);
   g_assert_false (g_bytes_equal (queued_gallery, updated));
   g_assert_false (g_bytes_equal (baseline, updated));
-  g_assert_true (goodix_study_queue_validate (queue));
-  g_assert_cmpuint (goodix_study_queue_occupied (queue), ==, 0);
-  g_assert_cmpuint (goodix_study_queue_allocated (queue), ==, 0);
+  g_assert_true (goodix_milan_study_queue_validate (queue));
+  g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==, 0);
+  g_assert_cmpuint (goodix_milan_study_queue_allocated (queue), ==, 0);
   assert_study_template (
     updated, GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT - 2,
     &info, &unpacked);
@@ -1099,8 +1099,8 @@ run_queued_study_case (void)
                    primary_marker);
 
   g_bytes_unref (baseline);
-  goodix_study_queue_free (queue);
-  goodix_study_queue_free (baseline_queue);
+  goodix_milan_study_queue_free (queue);
+  goodix_milan_study_queue_free (baseline_queue);
   goodix_match_free_info (queued);
   goodix_match_free_info (primary);
   return updated;
@@ -1129,7 +1129,7 @@ run_production_match_study_handoff (void)
     GOODIX_MILAN_STUDY_REPLACE_NO_RELATION, TRUE);
   g_autoptr(GError) error = NULL;
   GoodixMatchInfo *probe = study_match_info (9, TRUE, 0);
-  GoodixStudyQueue *queue = goodix_study_queue_new (0, 7);
+  GoodixStudyQueue *queue = goodix_milan_study_queue_new (0, 7);
   GoodixMilanMatchResult result;
   GoodixMilanStudyAction action = GOODIX_MILAN_STUDY_NONE;
   GBytes *after_match = NULL;
@@ -1172,8 +1172,8 @@ run_production_match_study_handoff (void)
   g_assert_cmpint (result.study_control.study_finalization_gate, ==, 1);
   g_assert_cmpint (result.study_control.study_action_gate, ==, 1);
   g_assert_cmpint (result.study_control.queue_candidate_eligible, ==, 0);
-  g_assert_true (goodix_study_queue_validate (queue));
-  g_assert_cmpuint (goodix_study_queue_occupied (queue), ==, 0);
+  g_assert_true (goodix_milan_study_queue_validate (queue));
+  g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==, 0);
   g_assert_true (goodix_milan_print_validate_template (
     after_match, &match_info, &error));
   g_assert_no_error (error);
@@ -1188,9 +1188,9 @@ run_production_match_study_handoff (void)
   g_assert_nonnull (after_study);
   g_assert_cmpint (action, ==, GOODIX_MILAN_STUDY_REPLACE);
   g_assert_false (g_bytes_equal (after_match, after_study));
-  g_assert_true (goodix_study_queue_validate (queue));
-  g_assert_cmpuint (goodix_study_queue_occupied (queue), ==, 0);
-  g_assert_cmpuint (goodix_study_queue_allocated (queue), ==, 0);
+  g_assert_true (goodix_milan_study_queue_validate (queue));
+  g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==, 0);
+  g_assert_cmpuint (goodix_milan_study_queue_allocated (queue), ==, 0);
   assert_study_template (
     after_study, GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT - 1,
     &study_info, &studied);
@@ -1199,7 +1199,7 @@ run_production_match_study_handoff (void)
     1, 1, 1, TRUE);
 
   g_bytes_unref (after_match);
-  goodix_study_queue_free (queue);
+  goodix_milan_study_queue_free (queue);
   goodix_match_free_info (probe);
   return after_study;
 }
