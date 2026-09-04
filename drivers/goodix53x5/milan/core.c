@@ -39,6 +39,20 @@ enum
   MILAN_QUALITY_GRADIENT_WINDOW_RECIPROCAL_Q16 = 291,
   MILAN_QUALITY_COVERAGE_THRESHOLD = 0x78,
   MILAN_QUALITY_SELECTION_THRESHOLD = 100,
+  MILAN_QUALITY_PATCH_WIDTH = 25,
+  MILAN_QUALITY_PATCH_RADIUS = 12,
+  MILAN_QUALITY_PATCH_STRIDE = 8,
+  MILAN_QUALITY_PATCH_GRADIENT_FLOOR = 25,
+  MILAN_QUALITY_PATCH_MINIMUM_VALID_DIVISOR = 2,
+  MILAN_QUALITY_PATCH_MINIMUM_SELECTED_DIVISOR = 6,
+  MILAN_QUALITY_REFINED_MASK_MARKER = 0x20,
+  MILAN_QUALITY_RING_SIZE = 8,
+  MILAN_QUALITY_RING_INDEX_MASK = 7,
+  MILAN_QUALITY_RING_CONTRAST_DELTA = 4,
+  MILAN_QUALITY_RING_TRANSITION_LIMIT = 3,
+  MILAN_QUALITY_RING_TARGET_CLASS = 4,
+  MILAN_QUALITY_RING_UNCLASSIFIED = 9,
+  MILAN_QUALITY_RING_HISTOGRAM_SIZE = 10,
 };
 
 static const uint16_t milan_update_kernel[5] = {
@@ -1446,7 +1460,8 @@ quality_patch_score_core (const uint8_t *frame,
   int64_t score_sum = 0;
   int scored_patches = 0;
 
-  if (!frame || !valid_mask || !patch_score || rows < 25 || columns < 25 ||
+  if (!frame || !valid_mask || !patch_score ||
+      rows < MILAN_QUALITY_PATCH_WIDTH || columns < MILAN_QUALITY_PATCH_WIDTH ||
       columns > SIZE_MAX / rows)
     return -1;
 
@@ -1495,11 +1510,13 @@ quality_patch_score_core (const uint8_t *frame,
         }
     }
 
-  for (size_t center_row = 12; center_row < rows - 12; center_row += 8)
+  for (size_t center_row = MILAN_QUALITY_PATCH_RADIUS;
+       center_row < rows - MILAN_QUALITY_PATCH_RADIUS;
+       center_row += MILAN_QUALITY_PATCH_STRIDE)
     {
-      for (size_t center_column = 12;
-           center_column < columns - 12;
-           center_column += 8)
+      for (size_t center_column = MILAN_QUALITY_PATCH_RADIUS;
+           center_column < columns - MILAN_QUALITY_PATCH_RADIUS;
+           center_column += MILAN_QUALITY_PATCH_STRIDE)
         {
           size_t center = center_row * columns + center_column;
           int64_t magnitude_sum = 0;
@@ -1507,10 +1524,11 @@ quality_patch_score_core (const uint8_t *frame,
 
           if (valid_mask[center] == 0)
             continue;
-          for (size_t row = center_row - 12; row <= center_row + 12; row++)
+          for (size_t row = center_row - MILAN_QUALITY_PATCH_RADIUS;
+               row <= center_row + MILAN_QUALITY_PATCH_RADIUS; row++)
             {
-              for (size_t column = center_column - 12;
-                   column <= center_column + 12;
+              for (size_t column = center_column - MILAN_QUALITY_PATCH_RADIUS;
+                   column <= center_column + MILAN_QUALITY_PATCH_RADIUS;
                    column++)
                 {
                   size_t index = row * columns + column;
@@ -1522,26 +1540,29 @@ quality_patch_score_core (const uint8_t *frame,
                     }
                 }
             }
-          if (valid_count < (25 * 25) / 2)
+          if (valid_count <
+              (MILAN_QUALITY_PATCH_WIDTH * MILAN_QUALITY_PATCH_WIDTH) /
+                MILAN_QUALITY_PATCH_MINIMUM_VALID_DIVISOR)
             continue;
 
-          int threshold = 25;
+          int threshold = MILAN_QUALITY_PATCH_GRADIENT_FLOOR;
           if (!fixed_threshold)
             {
               threshold =
                 (int) ((valid_count / 2 + magnitude_sum) / valid_count);
-              if (threshold < 25)
-                threshold = 25;
+              if (threshold < MILAN_QUALITY_PATCH_GRADIENT_FLOOR)
+                threshold = MILAN_QUALITY_PATCH_GRADIENT_FLOOR;
             }
 
           int selected_count = 0;
           int64_t x_square_sum = 0;
           int64_t y_square_sum = 0;
           int64_t cross_sum = 0;
-          for (size_t row = center_row - 12; row <= center_row + 12; row++)
+          for (size_t row = center_row - MILAN_QUALITY_PATCH_RADIUS;
+               row <= center_row + MILAN_QUALITY_PATCH_RADIUS; row++)
             {
-              for (size_t column = center_column - 12;
-                   column <= center_column + 12;
+              for (size_t column = center_column - MILAN_QUALITY_PATCH_RADIUS;
+                   column <= center_column + MILAN_QUALITY_PATCH_RADIUS;
                    column++)
                 {
                   size_t index = row * columns + column;
@@ -1558,7 +1579,9 @@ quality_patch_score_core (const uint8_t *frame,
                     }
                 }
             }
-          if (selected_count < (25 * 25) / 6)
+          if (selected_count <
+              (MILAN_QUALITY_PATCH_WIDTH * MILAN_QUALITY_PATCH_WIDTH) /
+                MILAN_QUALITY_PATCH_MINIMUM_SELECTED_DIVISOR)
             {
               patch_scores[center] = 0;
               score_histogram[0]++;
@@ -1609,10 +1632,12 @@ quality_patch_score_core (const uint8_t *frame,
           if (cumulative >= scored_patches / 2)
             break;
         }
-      for (size_t center_row = 12; center_row < rows - 12; center_row += 8)
-        for (size_t center_column = 12;
-             center_column < columns - 12;
-             center_column += 8)
+      for (size_t center_row = MILAN_QUALITY_PATCH_RADIUS;
+           center_row < rows - MILAN_QUALITY_PATCH_RADIUS;
+           center_row += MILAN_QUALITY_PATCH_STRIDE)
+        for (size_t center_column = MILAN_QUALITY_PATCH_RADIUS;
+             center_column < columns - MILAN_QUALITY_PATCH_RADIUS;
+             center_column += MILAN_QUALITY_PATCH_STRIDE)
           {
             size_t center = center_row * columns + center_column;
             int32_t score = patch_scores[center];
@@ -1621,19 +1646,21 @@ quality_patch_score_core (const uint8_t *frame,
                 ((score * MILAN_QUALITY_PERCENT_SCALE) >>
                  MILAN_QUALITY_Q16_SHIFT) > median_score)
               continue;
-            for (size_t row = center_row - 12; row < center_row + 12; row++)
-              for (size_t column = center_column - 12;
-                   column < center_column + 12;
+            for (size_t row = center_row - MILAN_QUALITY_PATCH_RADIUS;
+                 row < center_row + MILAN_QUALITY_PATCH_RADIUS; row++)
+              for (size_t column = center_column - MILAN_QUALITY_PATCH_RADIUS;
+                   column < center_column + MILAN_QUALITY_PATCH_RADIUS;
                    column++)
                 {
                   size_t index = row * columns + column;
 
                   if (refined_mask[index] != 0)
-                    refined_mask[index] = 0x20;
+                    refined_mask[index] = MILAN_QUALITY_REFINED_MASK_MARKER;
                 }
           }
       for (size_t i = 0; i < count; i++)
-        refined_mask[i] = refined_mask[i] == 0x20 ? UINT8_MAX : 0;
+        refined_mask[i] =
+          refined_mask[i] == MILAN_QUALITY_REFINED_MASK_MARKER ? UINT8_MAX : 0;
     }
   free (patch_scores);
   free (magnitude);
@@ -1658,11 +1685,11 @@ quality_mask_fraction_core (const uint8_t *source,
 {
   size_t count = rows * columns;
   uint8_t *classes = malloc (count);
-  int histogram[10] = { 0 };
+  int histogram[MILAN_QUALITY_RING_HISTOGRAM_SIZE] = { 0 };
 
   if (!classes)
     return -1;
-  memset (classes, 9, count);
+  memset (classes, MILAN_QUALITY_RING_UNCLASSIFIED, count);
   for (size_t row = 1; row + 1 < rows; row++)
     for (size_t column = 1; column + 1 < columns; column++)
       {
@@ -1671,25 +1698,25 @@ quality_mask_fraction_core (const uint8_t *source,
         if (valid_mask[index] == 0)
           continue;
         int center = source[index];
-        int ring[8] = {
-          source[index - columns - 1] - center > 4,
-          source[index - columns] - center > 4,
-          source[index - columns + 1] - center > 4,
-          source[index + 1] - center > 4,
-          source[index + columns + 1] - center > 4,
-          source[index + columns] - center > 4,
-          source[index + columns - 1] - center > 4,
-          source[index - 1] - center > 4,
+        int ring[MILAN_QUALITY_RING_SIZE] = {
+          source[index - columns - 1] - center > MILAN_QUALITY_RING_CONTRAST_DELTA,
+          source[index - columns] - center > MILAN_QUALITY_RING_CONTRAST_DELTA,
+          source[index - columns + 1] - center > MILAN_QUALITY_RING_CONTRAST_DELTA,
+          source[index + 1] - center > MILAN_QUALITY_RING_CONTRAST_DELTA,
+          source[index + columns + 1] - center > MILAN_QUALITY_RING_CONTRAST_DELTA,
+          source[index + columns] - center > MILAN_QUALITY_RING_CONTRAST_DELTA,
+          source[index + columns - 1] - center > MILAN_QUALITY_RING_CONTRAST_DELTA,
+          source[index - 1] - center > MILAN_QUALITY_RING_CONTRAST_DELTA,
         };
         int transitions = 0;
         int neighbors = 0;
 
-        for (size_t i = 0; i < 8; i++)
+        for (size_t i = 0; i < MILAN_QUALITY_RING_SIZE; i++)
           {
-            transitions += ring[i] != ring[(i + 1) & 7];
+            transitions += ring[i] != ring[(i + 1) & MILAN_QUALITY_RING_INDEX_MASK];
             neighbors += ring[i];
           }
-        if (transitions < 3)
+        if (transitions < MILAN_QUALITY_RING_TRANSITION_LIMIT)
           classes[index] = (uint8_t) neighbors;
       }
   int classified = 0;
@@ -1697,10 +1724,11 @@ quality_mask_fraction_core (const uint8_t *source,
     if (valid_mask[i] != 0)
       {
         histogram[classes[i]]++;
-        classified += classes[i] < 9;
+        classified += classes[i] < MILAN_QUALITY_RING_UNCLASSIFIED;
       }
   *mask_fraction = classified != 0 ?
-                     histogram[4] * MILAN_QUALITY_PERCENT_SCALE / classified :
+                     histogram[MILAN_QUALITY_RING_TARGET_CLASS] *
+                       MILAN_QUALITY_PERCENT_SCALE / classified :
                      0;
   free (classes);
   return 0;
