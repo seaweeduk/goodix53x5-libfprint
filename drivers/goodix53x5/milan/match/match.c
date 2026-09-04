@@ -39,6 +39,33 @@ typedef enum
 enum
 {
   MILAN_PROBE_PRIMARY_HISTOGRAM_CLASS_UNAVAILABLE = -1,
+  MILAN_MATCH_Q8_ONE = 0x100,
+  MILAN_MATCH_OVERLAP_COVERAGE_SCALE_Q8 = 246,
+  MILAN_MATCH_REFINEMENT_OVERLAP_THRESHOLD = 207,
+  MILAN_MATCH_FALLBACK_OVERLAP_THRESHOLD = 207,
+  MILAN_MATCH_LARGE_TRANSLATION_Q8 = 51 * MILAN_MATCH_Q8_ONE,
+};
+
+enum
+{
+  GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET = 0,
+  GOODIX_MILAN_POLICY_CONFIG_RETENTION_GATE = 4,
+  GOODIX_MILAN_POLICY_CONFIG_OVERLAP_COVERAGE_SCALE_Q8 = 12,
+  GOODIX_MILAN_POLICY_CONFIG_FEATURE_MODE = 13,
+  GOODIX_MILAN_POLICY_CONFIG_FEATURE_INDEX = 14,
+  GOODIX_MILAN_POLICY_CONFIG_SUBTYPE = 15,
+  GOODIX_MILAN_POLICY_CONFIG_ALTERNATE_PENALTY = 16,
+  GOODIX_MILAN_POLICY_CONFIG_FINAL_SCORE_ALTERNATE_POLICY = 17,
+  GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE = 18,
+  GOODIX_MILAN_POLICY_CONFIG_RECOGNITION_MODE = 19,
+};
+
+enum
+{
+  MILAN_MATCH_RELATION_SENTINEL = 0,
+  MILAN_MATCH_RELATION_AFFINE_FIRST = 1,
+  MILAN_MATCH_RELATION_AFFINE_XX = 1,
+  MILAN_MATCH_RELATION_AFFINE_YY = 5,
 };
 
 typedef struct
@@ -102,7 +129,7 @@ typedef struct
   int32_t                   topology_percent;
   int32_t                   geometric_percent;
   int32_t                   topology_bonus;
-  int32_t                   metrics[77];
+  int32_t                   metrics[GOODIX_MILAN_CANDIDATE_WORDS];
   int32_t                   match_flag;
   int32_t                   candidate_flag;
   int32_t                   fallback_enabled;
@@ -188,7 +215,7 @@ milan_match_forward_overlap_result_init (
     return;
 
   result->scaled_percent = milan_match_scale_q8_s32 (
-    result->raw_percent, 246);
+    result->raw_percent, MILAN_MATCH_OVERLAP_COVERAGE_SCALE_Q8);
   result->valid = 1;
 }
 
@@ -332,7 +359,8 @@ milan_match_publish_candidate (
           candidate->words[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] =
             ranked->detail;
           candidate->words[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8] =
-            milan_match_scale_q8_s32 (ranked->coverage, 246);
+            milan_match_scale_q8_s32 (
+              ranked->coverage, MILAN_MATCH_OVERLAP_COVERAGE_SCALE_Q8);
         }
     }
   if (topology && topology->valid)
@@ -654,7 +682,7 @@ milan_match_apply_secondary (
                   candidate->words[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] =
                     sibling_detail;
                   candidate->words[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8] =
-                    sibling_coverage * 246 >> 8;
+                    sibling_coverage * MILAN_MATCH_OVERLAP_COVERAGE_SCALE_Q8 >> 8;
                   candidate->words[GOODIX_MILAN_CANDIDATE_SCALE_PENALTY] =
                     sibling_scale_penalty;
                   candidate->words[GOODIX_MILAN_CANDIDATE_ORTHOGONALITY_PENALTY] =
@@ -780,7 +808,7 @@ milan_match_build_feature_candidate (
         {
           fallback_workspace->enabled =
             feature_result->candidate.words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] >= 3 &&
-            matcher_policy->configuration[13] == 1 &&
+            matcher_policy->configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_MODE] == 1 &&
             match_selection->acceptance_evidence == 0;
           return 1;
         }
@@ -817,22 +845,26 @@ milan_match_build_feature_candidate (
 
   if (sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
-      feature_result->metrics[0] =
+      feature_result->metrics[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT] =
         (int32_t) feature_result->primary_filtered_count;
-      feature_result->metrics[1] = (int32_t) feature_result->filtered_count;
+      feature_result->metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] =
+        (int32_t) feature_result->filtered_count;
       memcpy (feature_result->metrics + 6, low_bitmap_metrics,
               sizeof (low_bitmap_metrics));
     }
-  feature_result->metrics[4] = overlap_score;
-  feature_result->metrics[5] = overlap_detail;
-  feature_result->metrics[9] = overlap_coverage * 246 >> 8;
-  feature_result->metrics[10] = feature_result->topology_percent;
-  feature_result->metrics[11] = feature_result->geometric_percent;
+  feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE] = overlap_score;
+  feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] = overlap_detail;
+  feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8] =
+    overlap_coverage * MILAN_MATCH_OVERLAP_COVERAGE_SCALE_Q8 >> 8;
+  feature_result->metrics[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT] =
+    feature_result->topology_percent;
+  feature_result->metrics[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT] =
+    feature_result->geometric_percent;
   if (sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
-      (abs (feature_result->transform[2]) > 51 * 0x100 ||
-       abs (feature_result->transform[5]) > 51 * 0x100) &&
-      feature_result->metrics[11] < 36)
-    feature_result->metrics[11] = 36;
+      (abs (feature_result->transform[2]) > MILAN_MATCH_LARGE_TRANSLATION_Q8 ||
+       abs (feature_result->transform[5]) > MILAN_MATCH_LARGE_TRANSLATION_Q8) &&
+      feature_result->metrics[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT] < 36)
+    feature_result->metrics[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT] = 36;
 #ifdef GOODIX53X5_DEBUG
   if (diagnostics && feature_index < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
     {
@@ -852,16 +884,21 @@ milan_match_build_feature_candidate (
   if (feature_result->descriptor_score > *probe_policy_descriptor)
     {
       *probe_policy_descriptor = feature_result->descriptor_score;
-      probe_policy_metrics[0] = feature_result->metrics[0];
-      probe_policy_metrics[1] = feature_result->metrics[1];
+      probe_policy_metrics[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT] =
+        feature_result->metrics[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT];
+      probe_policy_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] =
+        feature_result->metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT];
       *probe_policy_index = feature_index;
     }
   if (overlap_score > *probe_policy_overlap)
     {
       *probe_policy_overlap = overlap_score;
-      probe_policy_metrics[4] = feature_result->metrics[4];
-      probe_policy_metrics[5] = feature_result->metrics[5];
-      probe_policy_metrics[9] = feature_result->metrics[9];
+      probe_policy_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE] =
+        feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE];
+      probe_policy_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] =
+        feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL];
+      probe_policy_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8] =
+        feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8];
     }
 #endif
   if (goodix_milan_match_initial_flags (
@@ -870,18 +907,24 @@ milan_match_build_feature_candidate (
         &feature_result->candidate_flag, NULL) != 0)
     return 1;
   feature_result->fallback_enabled = feature_result->candidate_flag;
-  if (sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE && feature_result->metrics[0] > 4 &&
-      feature_result->metrics[5] > 195)
+  if (sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
+      feature_result->metrics[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT] > 4 &&
+      feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] > 195)
     {
       *rejection_candidate_seen = 1;
-      *rejection_count_sum += feature_result->metrics[0];
-      if (feature_result->metrics[5] > *rejection_best_detail)
+      *rejection_count_sum +=
+        feature_result->metrics[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT];
+      if (feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] >
+          *rejection_best_detail)
         {
-          *rejection_best_detail = feature_result->metrics[5];
-          *rejection_best_coverage = feature_result->metrics[9];
+          *rejection_best_detail =
+            feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL];
+          *rejection_best_coverage =
+            feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8];
         }
     }
-  if ((feature_result->metrics[4] < 207 ||
+  if ((feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE] <
+       MILAN_MATCH_REFINEMENT_OVERLAP_THRESHOLD ||
        feature_result->match_flag == 0 ||
        feature_result->candidate_flag == 0))
     {
@@ -903,20 +946,24 @@ milan_match_build_feature_candidate (
             &refined_overlap_coverage, &refined_overlap_detail,
             refined_low_metrics, (int32_t) feature_result->filtered_count) == 0 &&
           goodix_milan_match_post_admission_replaces (
-            feature_result->metrics[4], feature_result->metrics[5],
+            feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE],
+            feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL],
             refined_overlap_score, refined_overlap_detail))
         {
           memcpy (feature_result->transform, refined_transform,
                   sizeof (refined_transform));
-          feature_result->metrics[4] = refined_overlap_score;
-          feature_result->metrics[5] = refined_overlap_detail;
+          feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE] =
+            refined_overlap_score;
+          feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] =
+            refined_overlap_detail;
           if (sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
             memcpy (low_bitmap_metrics, refined_low_metrics,
                     sizeof (low_bitmap_metrics));
           else
             memcpy (feature_result->metrics + 6, refined_low_metrics,
                     sizeof (refined_low_metrics));
-          feature_result->metrics[9] = refined_overlap_coverage * 246 >> 8;
+          feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8] =
+            refined_overlap_coverage * MILAN_MATCH_OVERLAP_COVERAGE_SCALE_Q8 >> 8;
           goodix_milan_match_record_metrics_internal (
             enrolled_records, enrolled_record_count, probe_records,
             probe_record_count, feature_result->transform,
@@ -925,23 +972,29 @@ milan_match_build_feature_candidate (
             &feature_result->geometric_percent,
             &feature_result->topology_bonus, &refined_topology_distance,
             &refined_valid_count, &refined_matched_count);
-          feature_result->metrics[10] = feature_result->topology_percent;
-          feature_result->metrics[11] = feature_result->geometric_percent;
+          feature_result->metrics[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT] =
+            feature_result->topology_percent;
+          feature_result->metrics[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT] =
+            feature_result->geometric_percent;
           if (sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
             {
               goodix_milan_match_candidate_set_record_metrics (
                 &feature_result->candidate, refined_valid_count,
                 refined_matched_count, feature_result->topology_percent,
                 feature_result->geometric_percent, refined_topology_distance);
-              memcpy (feature_result->metrics + 66,
-                      feature_result->candidate.words + 66,
+              memcpy (
+                feature_result->metrics + GOODIX_MILAN_CANDIDATE_VALID_RECORD_COUNT,
+                feature_result->candidate.words +
+                GOODIX_MILAN_CANDIDATE_VALID_RECORD_COUNT,
                       5 * sizeof (*feature_result->metrics));
             }
           if (sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
-              (abs (feature_result->transform[2]) > 51 * 0x100 ||
-               abs (feature_result->transform[5]) > 51 * 0x100) &&
-              feature_result->metrics[11] < 36)
-            feature_result->metrics[11] = 36;
+              (abs (feature_result->transform[2]) >
+               MILAN_MATCH_LARGE_TRANSLATION_Q8 ||
+               abs (feature_result->transform[5]) >
+               MILAN_MATCH_LARGE_TRANSLATION_Q8) &&
+              feature_result->metrics[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT] < 36)
+            feature_result->metrics[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT] = 36;
 #ifdef GOODIX53X5_DEBUG
           if (diagnostics &&
               feature_index < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
@@ -964,8 +1017,9 @@ milan_match_build_feature_candidate (
               sizeof (feature_result->transform));
       goodix_milan_match_candidate_materialize_dispatch (
         &feature_result->candidate);
-      memcpy (feature_result->metrics + 15,
-              feature_result->candidate.words + 15,
+      memcpy (feature_result->metrics + GOODIX_MILAN_CANDIDATE_TRANSFORM_FIRST,
+              feature_result->candidate.words +
+              GOODIX_MILAN_CANDIDATE_TRANSFORM_FIRST,
               6 * sizeof (*feature_result->metrics));
       if (feature_result->match_flag != 2 ||
           late_policy_context->accumulated_high_class > 1)
@@ -1033,7 +1087,8 @@ milan_match_publish_feature_candidate (
     {
       contributes = goodix_milan_match_selection_contribute (
         match_selection, feature_result->metrics, feature_result->transform,
-        feature_index, matcher_policy->configuration[0],
+        feature_index,
+        matcher_policy->configuration[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET],
         feature_result->match_flag, feature_result->candidate_flag,
         &contribution_event);
       if (contributes < 0)
@@ -1063,7 +1118,8 @@ milan_match_publish_feature_candidate (
             match_selection, enrolled->metadata.sensor_type,
             comparison_metrics, texture_delta, mean_delta, threshold_delta,
             goodix_milan_antifake_pair_score (feature->antifake),
-            feature_result->metrics[9], &contribution_event);
+            feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8],
+            &contribution_event);
           if (blocked < 0)
             return -1;
         }
@@ -1081,7 +1137,8 @@ milan_match_publish_feature_candidate (
   if (retained > 0 && contribution_event.direct_published &&
       feature->fields.tagged_values[0] == 1 &&
       goodix_milan_active_relation_winner_would_update (
-        active_relation_winner, feature_result->metrics[1]))
+        active_relation_winner,
+        feature_result->metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT]))
     {
       int32_t routed[7];
       int relation_status = goodix_milan_match_reference_transform (
@@ -1089,15 +1146,20 @@ milan_match_publish_feature_candidate (
 
       if (relation_status == 0)
         goodix_milan_active_relation_winner_update (
-          active_relation_winner, 1, feature_result->metrics[1],
-          (int32_t) feature_index, feature_result->transform, routed + 1);
+          active_relation_winner, 1,
+          feature_result->metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT],
+          (int32_t) feature_index, feature_result->transform,
+          routed + MILAN_MATCH_RELATION_AFFINE_FIRST);
     }
 #ifdef GOODIX53X5_DEBUG
   int outer_eligible =
-    feature_result->metrics[1] > 4 && feature_result->metrics[10] > 30 &&
+    feature_result->metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] > 4 &&
+    feature_result->metrics[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT] > 30 &&
     (feature_result->candidate_flag == 1 ||
      goodix_milan_match_fallback_candidate_eligible (
-       feature_result->metrics[4], 207, feature_result->metrics[5]));
+       feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE],
+       MILAN_MATCH_FALLBACK_OVERLAP_THRESHOLD,
+       feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL]));
 
   if (diagnostics &&
       diagnostics->candidate_count < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
@@ -1115,7 +1177,8 @@ milan_match_publish_feature_candidate (
       candidate->final_flags[0] = feature_result->match_flag;
       candidate->final_flags[1] = feature_result->candidate_flag;
       candidate->recognition_mode_before = recognition_mode_before;
-      candidate->recognition_mode_after = matcher_policy->configuration[19];
+      candidate->recognition_mode_after =
+        matcher_policy->configuration[GOODIX_MILAN_POLICY_CONFIG_RECOGNITION_MODE];
       candidate->outer_eligible = outer_eligible;
       candidate->contributes = contributes;
       candidate->q8_contribution = contribution_event.q8_term;
@@ -1126,9 +1189,12 @@ milan_match_publish_feature_candidate (
   if (blocked)
     return 1;
 #ifdef GOODIX53X5_DEBUG
-  if (feature_result->metrics[1] > policy_aggregate[1] ||
-      (feature_result->metrics[1] == policy_aggregate[1] &&
-       feature_result->metrics[5] > policy_aggregate[5]))
+  if (feature_result->metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] >
+      policy_aggregate[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] ||
+      (feature_result->metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] ==
+       policy_aggregate[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] &&
+       feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] >
+       policy_aggregate[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL]))
     {
       memcpy (policy_aggregate, feature_result->metrics,
               15 * sizeof (*policy_aggregate));
@@ -1142,14 +1208,17 @@ milan_match_publish_feature_candidate (
 }
 
 static int
-milan_match_validate_winner (const int32_t metrics[77],
+milan_match_validate_winner (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                              void         *user_data,
                              int32_t      *score)
 {
   const GoodixMilanMatcherPolicy *policy = user_data;
 
   return goodix_milan_match_final_score (
-    metrics, (uint32_t) policy->configuration[15], policy->configuration[17] != 0, score);
+    metrics,
+    (uint32_t) policy->configuration[GOODIX_MILAN_POLICY_CONFIG_SUBTYPE],
+    policy->configuration[GOODIX_MILAN_POLICY_CONFIG_FINAL_SCORE_ALTERNATE_POLICY] != 0,
+    score);
 }
 
 static int
@@ -1257,12 +1326,12 @@ milan_match_prepared_probe (
   *matched_feature_index = SIZE_MAX;
   *score = -7;
   memset (match_transform, 0, 6 * sizeof(*match_transform));
-  match_transform[0] = 0x100;
-  match_transform[4] = 0x100;
+  match_transform[0] = MILAN_MATCH_Q8_ONE;
+  match_transform[4] = MILAN_MATCH_Q8_ONE;
   *relation_count = 0;
   memset (relation_values, 0, 7 * sizeof(*relation_values));
-  relation_values[1] = 0x100;
-  relation_values[5] = 0x100;
+  relation_values[MILAN_MATCH_RELATION_AFFINE_XX] = MILAN_MATCH_Q8_ONE;
+  relation_values[MILAN_MATCH_RELATION_AFFINE_YY] = MILAN_MATCH_Q8_ONE;
   *direct_positive_feature_mask = 0;
   *contributor_feature_mask = 0;
   *lifecycle_update_feature_mask = 0;
@@ -1291,7 +1360,8 @@ milan_match_prepared_probe (
       goodix_milan_template_unpack (
         enrolled_template, enrolled_template_size, enrolled) != 0)
     goto out;
-  matcher_policy.configuration[15] = (int32_t) enrolled->metadata.sensor_type;
+  matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_SUBTYPE] =
+    (int32_t) enrolled->metadata.sensor_type;
   if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       if (probe_feature->fields.tagged_values[2] < 0 ||
@@ -1306,13 +1376,15 @@ milan_match_prepared_probe (
         {
           if (triggering_index >= enrolled->feature_count)
             goto out;
-          matcher_policy.configuration[13] = 0;
-          matcher_policy.configuration[14] = (int32_t) triggering_index;
+          matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_MODE] = 0;
+          matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_INDEX] =
+            (int32_t) triggering_index;
         }
       goodix_milan_matcher_late_context_init (
         &late_policy_context, probe_feature->fields.optional_c7,
         probe_primary_histogram_class);
-      retention_gate = matcher_policy.configuration[4] != 0 &&
+      retention_gate =
+        matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_RETENTION_GATE] != 0 &&
                        (((uint32_t) probe_feature->fields.optional_c7 >> 8) &
                         7) != 5;
       sibling_tail_hamming_limit =
@@ -1328,7 +1400,8 @@ milan_match_prepared_probe (
     }
 #ifdef GOODIX53X5_DEBUG
   if (diagnostics)
-    diagnostics->initial_packed_policy_mode = matcher_policy.configuration[18];
+    diagnostics->initial_packed_policy_mode =
+      matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE];
 #endif
   goodix_milan_match_selection_reset (&match_selection);
   goodix_milan_active_relation_winner_reset (&active_relation_winner);
@@ -1353,7 +1426,8 @@ milan_match_prepared_probe (
       GoodixMilanMatchFallbackWorkspace *fallback_workspace = NULL;
       int32_t late_policy_state[3] = { 0 };
 #ifdef GOODIX53X5_DEBUG
-      int32_t recognition_mode_before = matcher_policy.configuration[19];
+      int32_t recognition_mode_before =
+        matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_RECOGNITION_MODE];
 #endif
       size_t enrolled_partition_count;
 
@@ -1425,7 +1499,8 @@ milan_match_prepared_probe (
               retention_gate = 0;
             }
           if (goodix_milan_match_candidate_skip_pre_primary (
-                matcher_policy.configuration[13], matcher_policy.configuration[14],
+                matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_MODE],
+                matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_INDEX],
                 feature_index, enrolled->feature_count,
                 (int32_t) enrolled->metadata.maximum_features,
                 match_selection.rejection_evidence,
@@ -1472,44 +1547,51 @@ milan_match_prepared_probe (
       int32_t candidate_flag = feature_result.candidate_flag;
       int32_t fallback_enabled = feature_result.fallback_enabled;
       if (enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
-          direct_metrics[1] > 4 &&
-          direct_metrics[10] > 30 &&
+          direct_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] > 4 &&
+          direct_metrics[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT] > 30 &&
           (candidate_flag == 1 ||
            goodix_milan_match_fallback_candidate_eligible (
-             direct_metrics[4], 207, direct_metrics[5])) &&
+             direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE],
+             MILAN_MATCH_FALLBACK_OVERLAP_THRESHOLD,
+             direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL])) &&
           (match_flag > direct_is_candidate ||
            (match_flag == direct_is_candidate &&
-             (direct_metrics[5] > direct_quality ||
-              (direct_metrics[5] == direct_quality &&
-                direct_metrics[1] > direct_count) ||
-               (direct_metrics[5] == direct_quality &&
-                direct_metrics[1] == direct_count &&
-                direct_metrics[9] > direct_coverage)))))
+             (direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] > direct_quality ||
+              (direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] == direct_quality &&
+               direct_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] > direct_count) ||
+              (direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] == direct_quality &&
+               direct_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] == direct_count &&
+               direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8] >
+                 direct_coverage)))))
         {
           memcpy (direct_aggregate, direct_metrics, sizeof(direct_aggregate));
           direct_index = feature_index;
-          direct_quality = direct_metrics[5];
-          direct_count = direct_metrics[1];
-          direct_coverage = direct_metrics[9];
+          direct_quality = direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL];
+          direct_count = direct_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT];
+          direct_coverage =
+            direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8];
           direct_is_candidate = match_flag;
           direct_positive = candidate_flag == 1;
           memcpy (direct_transform, transform, sizeof(direct_transform));
         }
       if (enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE &&
-          direct_metrics[1] > 4 &&
-          direct_metrics[10] > 30 &&
+          direct_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] > 4 &&
+          direct_metrics[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT] > 30 &&
           (candidate_flag == 1 ||
-        goodix_milan_match_fallback_candidate_eligible (
-              direct_metrics[4], 207, direct_metrics[5])))
+         goodix_milan_match_fallback_candidate_eligible (
+              direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE],
+              MILAN_MATCH_FALLBACK_OVERLAP_THRESHOLD,
+              direct_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL])))
         {
           direct_score_sum +=
-            ((direct_metrics[1] * 0x100 + (score_denominator >> 1)) /
+            ((direct_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] *
+                MILAN_MATCH_Q8_ONE + (score_denominator >> 1)) /
              score_denominator);
           direct_candidate_count++;
         }
       int32_t reverse_transform[6];
       int32_t reverse_forward_transform[6];
-      int32_t reverse_metrics[77] = { 0 };
+      int32_t reverse_metrics[GOODIX_MILAN_CANDIDATE_WORDS] = { 0 };
       int32_t reverse_low_metrics[3];
       size_t reverse_correspondence_count;
       size_t reverse_primary_filtered_count;
@@ -1561,25 +1643,32 @@ milan_match_prepared_probe (
                         sizeof(diagnostics->transform));
             }
 #endif
-          reverse_metrics[0] = (int32_t) reverse_primary_filtered_count;
-          reverse_metrics[1] = (int32_t) reverse_filtered_count;
+          reverse_metrics[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT] =
+            (int32_t) reverse_primary_filtered_count;
+          reverse_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] =
+            (int32_t) reverse_filtered_count;
           if (goodix_milan_match_overlap_metrics_with_context (
                 probe_feature, &feature, reverse_transform,
                 &reverse_overlap_score, &reverse_overlap_coverage,
                 &reverse_overlap_detail, reverse_low_metrics,
                 (int32_t) reverse_filtered_count) == 0)
             {
-              reverse_metrics[4] = reverse_overlap_score;
-              reverse_metrics[5] = reverse_overlap_detail;
+              reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE] =
+                reverse_overlap_score;
+              reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] =
+                reverse_overlap_detail;
               memcpy (reverse_metrics + 6, reverse_low_metrics,
                       sizeof(reverse_low_metrics));
-              reverse_metrics[9] = reverse_overlap_coverage * 246 >> 8;
-              reverse_metrics[10] = reverse_topology_percent;
-              reverse_metrics[11] = reverse_geometric_percent;
-              if ((abs (reverse_transform[2]) > 51 * 0x100 ||
-                   abs (reverse_transform[5]) > 51 * 0x100) &&
-                  reverse_metrics[11] < 36)
-                  reverse_metrics[11] = 36;
+              reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8] =
+                reverse_overlap_coverage * MILAN_MATCH_OVERLAP_COVERAGE_SCALE_Q8 >> 8;
+              reverse_metrics[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT] =
+                reverse_topology_percent;
+              reverse_metrics[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT] =
+                reverse_geometric_percent;
+              if ((abs (reverse_transform[2]) > MILAN_MATCH_LARGE_TRANSLATION_Q8 ||
+                   abs (reverse_transform[5]) > MILAN_MATCH_LARGE_TRANSLATION_Q8) &&
+                  reverse_metrics[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT] < 36)
+                reverse_metrics[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT] = 36;
 #ifdef GOODIX53X5_DEBUG
               if (diagnostics &&
                   feature_index < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY)
@@ -1604,51 +1693,70 @@ milan_match_prepared_probe (
                   if (reverse_descriptor_score > probe_policy_descriptor)
                     {
                       probe_policy_descriptor = reverse_descriptor_score;
-                      probe_policy_metrics[0] = reverse_metrics[0];
-                      probe_policy_metrics[1] = reverse_metrics[1];
+                      probe_policy_metrics[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT] =
+                        reverse_metrics[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT];
+                      probe_policy_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] =
+                        reverse_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT];
                       probe_policy_index = feature_index;
                     }
-                  if (reverse_metrics[1] > policy_aggregate[1] ||
-                      (reverse_metrics[1] == policy_aggregate[1] &&
-                       reverse_metrics[5] > policy_aggregate[5]))
+                  if (reverse_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] >
+                        policy_aggregate[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] ||
+                      (reverse_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] ==
+                         policy_aggregate[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] &&
+                       reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] >
+                         policy_aggregate[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL]))
                     {
                       memcpy (policy_aggregate, reverse_metrics,
                               sizeof(policy_aggregate));
                       policy_index = feature_index;
                     }
 #endif
-                  if (reverse_metrics[1] > 4 &&
-                      reverse_metrics[10] > 30 &&
+                  if (reverse_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] > 4 &&
+                      reverse_metrics[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT] > 30 &&
                       (reverse_match_flag == 1 ||
                        goodix_milan_match_fallback_candidate_eligible (
-                         reverse_metrics[4], 207, reverse_metrics[5])) &&
+                         reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE],
+                         MILAN_MATCH_FALLBACK_OVERLAP_THRESHOLD,
+                         reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL])) &&
                       (reverse_candidate_flag > direct_is_candidate ||
                        (reverse_candidate_flag == direct_is_candidate &&
-                        (reverse_metrics[5] > direct_quality ||
-                         (reverse_metrics[5] == direct_quality &&
-                           reverse_metrics[1] > direct_count) ||
-                          (reverse_metrics[5] == direct_quality &&
-                           reverse_metrics[1] == direct_count &&
-                           reverse_metrics[9] > direct_coverage)))))
+                        (reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] >
+                           direct_quality ||
+                         (reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] ==
+                            direct_quality &&
+                          reverse_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] >
+                            direct_count) ||
+                         (reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] ==
+                            direct_quality &&
+                          reverse_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] ==
+                            direct_count &&
+                          reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8] >
+                            direct_coverage)))))
                     {
                       memcpy (direct_aggregate, reverse_metrics,
                               sizeof(direct_aggregate));
                       direct_index = feature_index;
-                      direct_quality = reverse_metrics[5];
-                      direct_count = reverse_metrics[1];
-                      direct_coverage = reverse_metrics[9];
+                      direct_quality =
+                        reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL];
+                      direct_count =
+                        reverse_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT];
+                      direct_coverage = reverse_metrics[
+                        GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8];
                       direct_is_candidate = reverse_candidate_flag;
                       memcpy (direct_transform, reverse_forward_transform,
                               sizeof(direct_transform));
                     }
-                  if (reverse_metrics[1] > 4 &&
-                      reverse_metrics[10] > 30 &&
+                  if (reverse_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] > 4 &&
+                      reverse_metrics[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT] > 30 &&
                       (reverse_match_flag == 1 ||
                        goodix_milan_match_fallback_candidate_eligible (
-                         reverse_metrics[4], 207, reverse_metrics[5])))
+                         reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE],
+                         MILAN_MATCH_FALLBACK_OVERLAP_THRESHOLD,
+                         reverse_metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL])))
                     {
                       direct_score_sum +=
-                        ((reverse_metrics[1] * 0x100 +
+                        ((reverse_metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] *
+                            MILAN_MATCH_Q8_ONE +
                           (score_denominator >> 1)) /
                          score_denominator);
                       direct_candidate_count++;
@@ -1658,7 +1766,7 @@ milan_match_prepared_probe (
         }
       if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
         fallback_workspace->enabled =
-          matcher_policy.configuration[13] == 1 &&
+          matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_MODE] == 1 &&
           match_selection.acceptance_evidence == 0;
       if (fallback_enabled && enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE)
         {
@@ -1688,13 +1796,15 @@ milan_match_prepared_probe (
                 &relaxed_overlap_detail, relaxed_low_metrics,
                 (int32_t) relaxed_filtered_count) != 0 ||
               !goodix_milan_match_fallback_candidate_eligible (
-                relaxed_overlap_score, 207, relaxed_overlap_detail))
+                relaxed_overlap_score, MILAN_MATCH_FALLBACK_OVERLAP_THRESHOLD,
+                relaxed_overlap_detail))
             continue;
 #ifdef GOODIX53X5_DEBUG
           if (diagnostics)
             diagnostics->fallback_count += 2;
 #endif
-          int32_t scaled_coverage = relaxed_overlap_coverage * 246 >> 8;
+          int32_t scaled_coverage =
+            relaxed_overlap_coverage * MILAN_MATCH_OVERLAP_COVERAGE_SCALE_Q8 >> 8;
 
           if (relaxed_overlap_detail > fallback_quality ||
               (relaxed_overlap_detail == fallback_quality &&
@@ -1703,13 +1813,18 @@ milan_match_prepared_probe (
                (int32_t) relaxed_filtered_count == fallback_count &&
                scaled_coverage > fallback_coverage))
             {
-              aggregate[0] = (int32_t) relaxed_filtered_count;
-              aggregate[1] = (int32_t) relaxed_filtered_count;
-              aggregate[4] = relaxed_overlap_score;
-              aggregate[5] = relaxed_overlap_detail;
+              aggregate[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT] =
+                (int32_t) relaxed_filtered_count;
+              aggregate[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] =
+                (int32_t) relaxed_filtered_count;
+              aggregate[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE] =
+                relaxed_overlap_score;
+              aggregate[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] =
+                relaxed_overlap_detail;
               memcpy (aggregate + 6, relaxed_low_metrics,
                       sizeof(relaxed_low_metrics));
-              aggregate[9] = scaled_coverage;
+              aggregate[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8] =
+                scaled_coverage;
               fallback_quality = relaxed_overlap_detail;
               fallback_count = (int32_t) relaxed_filtered_count;
               fallback_coverage = scaled_coverage;
@@ -1764,7 +1879,8 @@ milan_match_prepared_probe (
   if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       *queue_candidate_eligible =
-        effective_rejection == 0 && matcher_policy.configuration[13] == 1 &&
+        effective_rejection == 0 &&
+        matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_MODE] == 1 &&
         late_policy_context.probe_low_class == 0 && image_coverage > 65 &&
         image_quality > 15 && late_policy_context.accumulated_high_class < 4 &&
         late_policy_context.probe_primary_histogram_class < 3 &&
@@ -1773,7 +1889,8 @@ milan_match_prepared_probe (
       if (diagnostics)
         {
           diagnostics->queue_study_evidence = effective_rejection;
-          diagnostics->queue_configuration_enabled = matcher_policy.configuration[13];
+          diagnostics->queue_configuration_enabled =
+            matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_MODE];
           diagnostics->queue_probe_low_class = late_policy_context.probe_low_class;
           diagnostics->queue_accumulated_high_class =
             late_policy_context.accumulated_high_class;
@@ -1831,8 +1948,9 @@ milan_match_prepared_probe (
   if (active_relation_winner.valid)
     {
       *relation_count = active_relation_winner.count;
-      relation_values[0] = 0;
-      memcpy (relation_values + 1, active_relation_winner.routed,
+      relation_values[MILAN_MATCH_RELATION_SENTINEL] = 0;
+      memcpy (relation_values + MILAN_MATCH_RELATION_AFFINE_FIRST,
+              active_relation_winner.routed,
               sizeof(active_relation_winner.routed));
     }
 
@@ -1863,7 +1981,7 @@ milan_match_prepared_probe (
     }
   if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
       !match_selection.score_latched &&
-      matcher_policy.configuration[13] == 0)
+      matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_MODE] == 0)
     {
       *score = 0;
       result = 0;
@@ -1872,7 +1990,8 @@ milan_match_prepared_probe (
 
   if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
       goodix_milan_match_selection_finalize (
-        &match_selection, matcher_policy.configuration[18],
+        &match_selection,
+        matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE],
         match_selection.postloop_blocking_count,
         milan_match_validate_winner, &matcher_policy))
     {
@@ -1940,7 +2059,8 @@ milan_match_prepared_probe (
                 workspace->pair_count, fallback_candidate_transform,
                 &filtered_count, &residual) != 0)
             continue;
-          int32_t decoded_high = (matcher_policy.configuration[18] >> 8) & 7;
+          int32_t decoded_high =
+            (matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE] >> 8) & 7;
 
           decoded_high = decoded_high == 0 ? 0
                          : decoded_high <= 2 ? decoded_high
@@ -1960,9 +2080,15 @@ milan_match_prepared_probe (
             &absolute_dot_q16);
           int32_t accumulated = goodix_milan_match_fallback_consider (
             &match_fallback, workspace->feature, (int32_t) filtered_count,
-            transform_classifier, overlap, matcher_policy.configuration[0] + 207,
-            detail, coverage * matcher_policy.configuration[12] >> 8,
-            matcher_policy.configuration[16] != 0, average_scale, absolute_dot_q16,
+            transform_classifier, overlap,
+            matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET] +
+            MILAN_MATCH_FALLBACK_OVERLAP_THRESHOLD,
+            detail,
+            coverage * matcher_policy.configuration[
+              GOODIX_MILAN_POLICY_CONFIG_OVERLAP_COVERAGE_SCALE_Q8] >> 8,
+            matcher_policy.configuration[
+              GOODIX_MILAN_POLICY_CONFIG_ALTERNATE_PENALTY] != 0,
+            average_scale, absolute_dot_q16,
             fallback_candidate_transform);
           (void) accumulated;
         }
@@ -1982,17 +2108,26 @@ milan_match_prepared_probe (
                 probe_feature->low_bitmap, probe_feature->inline_mask,
                 match_fallback.winner.transform, metrics + 6) != 0)
             goto out;
-          metrics[0] = match_fallback.winner.filtered_count;
-          metrics[1] = match_fallback.winner.filtered_count;
-          metrics[4] = match_fallback.winner.overlap;
-          metrics[5] = match_fallback.winner.raw_detail;
-          metrics[9] = match_fallback.winner.coverage;
+          metrics[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT] =
+            match_fallback.winner.filtered_count;
+          metrics[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] =
+            match_fallback.winner.filtered_count;
+          metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE] =
+            match_fallback.winner.overlap;
+          metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] =
+            match_fallback.winner.raw_detail;
+          metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8] =
+            match_fallback.winner.coverage;
           goodix_milan_match_affine_penalties (
-            match_fallback.winner.transform, metrics + 12, metrics + 13,
-            metrics + 14);
+            match_fallback.winner.transform,
+            metrics + GOODIX_MILAN_CANDIDATE_SCALE_PENALTY,
+            metrics + GOODIX_MILAN_CANDIDATE_ORTHOGONALITY_PENALTY,
+            metrics + GOODIX_MILAN_CANDIDATE_STRONG_ORTHOGONALITY_PENALTY);
           if (goodix_milan_match_final_score (
                 metrics, enrolled->metadata.sensor_type,
-                matcher_policy.configuration[17] != 0, &fallback_score) != 0)
+                matcher_policy.configuration[
+                  GOODIX_MILAN_POLICY_CONFIG_FINAL_SCORE_ALTERNATE_POLICY] != 0,
+                &fallback_score) != 0)
             goto out;
           if (fallback_score > 0)
             {
@@ -2082,9 +2217,11 @@ out:
   *retained_evidence_flag = match_selection.retained_active_evidence;
   *study_finalization_gate = match_selection.acceptance_evidence != 0 ||
                              (rescue_applied && rescue_result.set_acceptance);
-  *study_action_gate = matcher_policy.configuration[15] == GOODIX_MILAN_PRINT_SENSOR_TYPE
-                         ? effective_rejection
-                         : match_selection.rejection_evidence != 0 ||
+  *study_action_gate =
+    matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_SUBTYPE] ==
+    GOODIX_MILAN_PRINT_SENSOR_TYPE ?
+    effective_rejection :
+    match_selection.rejection_evidence != 0 ||
                              (rescue_applied && rescue_result.set_rejection);
   free (enrolled_records_storage);
   free (enrolled);
@@ -2129,10 +2266,12 @@ milan_match_probe_result_internal (
   memset (match_result, 0, sizeof(*match_result));
   match_result->matched_feature_index = SIZE_MAX;
   match_result->score = -7;
-  match_result->match_transform[0] = 0x100;
-  match_result->match_transform[4] = 0x100;
-  match_result->relation.relation_values[1] = 0x100;
-  match_result->relation.relation_values[5] = 0x100;
+  match_result->match_transform[0] = MILAN_MATCH_Q8_ONE;
+  match_result->match_transform[4] = MILAN_MATCH_Q8_ONE;
+  match_result->relation.relation_values[MILAN_MATCH_RELATION_AFFINE_XX] =
+    MILAN_MATCH_Q8_ONE;
+  match_result->relation.relation_values[MILAN_MATCH_RELATION_AFFINE_YY] =
+    MILAN_MATCH_Q8_ONE;
   probe_feature.high_bitmap = probe_high_bitmap;
   probe_feature.enhanced_bitmap = probe_enhanced_bitmap;
   probe_feature.low_bitmap = probe_low_bitmap;
