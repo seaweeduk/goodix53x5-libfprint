@@ -517,7 +517,7 @@ profile9_normalize_outer_edges (uint16_t *frame,
 {
   size_t count;
 
-  if (!frame || rows < 3 || columns < 2 || columns > SIZE_MAX / rows)
+  if (rows < 3 || columns < 2 || columns > SIZE_MAX / rows)
     return -1;
 
   count = rows * columns;
@@ -551,8 +551,7 @@ goodix_milan_preprocess_make_setup_map (const uint16_t *frame,
   uint64_t count64;
   uint64_t sum = 0;
 
-  if (!frame || !setup_map || !rounded_mean || columns == 0 ||
-      rows > SIZE_MAX / columns)
+  if (columns == 0 || rows > SIZE_MAX / columns)
     return -1;
 
   count = rows * columns;
@@ -590,8 +589,7 @@ goodix_milan_preprocess_build_mask (const uint16_t *normalized_live,
   int invalid_count = 0;
   int selected_threshold = 50;
 
-  if (!normalized_live || !setup_map || !mask || !threshold ||
-      !valid_percent || rows == 0 || columns == 0 ||
+  if (rows == 0 || columns == 0 ||
       columns > SIZE_MAX / rows)
     return -1;
 
@@ -653,8 +651,7 @@ goodix_milan_preprocess_no_update_frame (const uint16_t *normalized_live,
 {
   size_t count;
 
-  if (!normalized_live || !setup_map || !output || rows == 0 || columns == 0 ||
-      columns > SIZE_MAX / rows)
+  if (rows != 0 && columns > SIZE_MAX / rows)
     return -1;
 
   count = rows * columns;
@@ -1111,11 +1108,10 @@ first_update_frame_core (const uint16_t *normalized_live,
   uint16_t *application_gaussian = NULL;
   uint16_t *median = NULL;
 
-  if (!normalized_live || !setup_map || !gain_map || !output ||
-      gain_map == output || optional_plane0 == gain_map ||
-      optional_plane0 == output || rows < 2 || columns < 2 ||
+  if (gain_map == output || optional_plane0 == gain_map ||
+      optional_plane0 == output ||
       rows > PTRDIFF_MAX || columns > PTRDIFF_MAX ||
-      columns > SIZE_MAX / rows)
+      (rows != 0 && columns > SIZE_MAX / rows))
     return -1;
 
   count = rows * columns;
@@ -1190,10 +1186,6 @@ preprocess_refine_core (const uint16_t *source,
                         uint16_t       *centered,
                         uint8_t        *output)
 {
-  if (!source || !mask || !centered || !output || rows == 0 || columns == 0 ||
-      columns > SIZE_MAX / rows)
-    return -1;
-
   for (size_t row = 0; row < rows; row++)
     {
       uint32_t sum = 0;
@@ -2356,8 +2348,7 @@ milan_contrast_core (const uint16_t *source,
   uint16_t *vertical_min;
   uint16_t *vertical_max;
 
-  if (!source || !mask || !output || rows == 0 || columns == 0 ||
-      columns > SIZE_MAX / rows)
+  if (rows != 0 && columns > SIZE_MAX / rows)
     return -1;
 
   count = rows * columns;
