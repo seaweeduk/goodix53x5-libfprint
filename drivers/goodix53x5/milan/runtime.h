@@ -13,6 +13,7 @@
 #include <glib.h>
 
 #include "milan/match/match.h"
+#include "milan/preprocess/state.h"
 #include "milan/print.h"
 
 typedef struct _GoodixMilanRuntimeGalleryInput GoodixMilanRuntimeGalleryInput;
