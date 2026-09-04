@@ -40,8 +40,6 @@ goodix_milan_feature_transform_record (uint8_t *record,
   uint8_t first[8];
   uint8_t second[8];
 
-  if (!record)
-    return;
   for (size_t i = 0; i < 8; i++)
     {
       uint8_t left = record[16 + i * 2];
@@ -67,7 +65,7 @@ goodix_milan_feature_partition_records (uint8_t *records,
   size_t left = 0;
   size_t right;
 
-  if (!records || record_count == 0)
+  if (record_count == 0)
     return 0;
   right = record_count - 1;
   while (left < right)
