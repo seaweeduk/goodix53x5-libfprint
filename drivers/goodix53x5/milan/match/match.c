@@ -302,15 +302,20 @@ milan_match_publish_candidate (
   if (primary->filtered_count >= 3 ||
       ranked->owner == MILAN_MATCH_RANK_OWNER_ALTERNATE)
     {
-      candidate->words[12] = ranked->scale_penalty;
-      candidate->words[13] = ranked->orthogonality_penalty;
-      candidate->words[14] = ranked->strong_orthogonality_penalty;
+      candidate->words[GOODIX_MILAN_CANDIDATE_SCALE_PENALTY] =
+        ranked->scale_penalty;
+      candidate->words[GOODIX_MILAN_CANDIDATE_ORTHOGONALITY_PENALTY] =
+        ranked->orthogonality_penalty;
+      candidate->words[GOODIX_MILAN_CANDIDATE_STRONG_ORTHOGONALITY_PENALTY] =
+        ranked->strong_orthogonality_penalty;
       if (ranked->overlap_valid)
         {
-          candidate->words[4] = ranked->score;
-          candidate->words[5] = ranked->detail;
-          candidate->words[9] = milan_match_scale_q8_s32 (
-            ranked->coverage, 246);
+          candidate->words[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE] =
+            ranked->score;
+          candidate->words[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] =
+            ranked->detail;
+          candidate->words[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8] =
+            milan_match_scale_q8_s32 (ranked->coverage, 246);
         }
     }
   if (topology && topology->valid)
@@ -561,7 +566,8 @@ milan_match_apply_secondary (
             enrolled_records, enrolled_record_count, enrolled_partition_count,
             probe_records, probe_record_count, probe_partition_count,
             cross_counts, cross_transforms, &selected_count,
-            pair_capacity == 42 && candidate ? &candidate->words[0] : NULL,
+            pair_capacity == 42 && candidate ?
+              &candidate->words[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT] : NULL,
             selected_transform, &alternate_count, alternate_transform,
             sibling_tail_hamming_limit, pair_capacity) != 0)
         goto bonus;
@@ -619,17 +625,25 @@ milan_match_apply_secondary (
                 sibling_low_metrics, (int32_t) alternate_count) == 0)
             {
               select_transform = goodix_milan_match_candidate_rank_alternate (
-                candidate->words[5], candidate->words[12],
-                candidate->words[13], sibling_score, sibling_detail,
+                candidate->words[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL],
+                candidate->words[GOODIX_MILAN_CANDIDATE_SCALE_PENALTY],
+                candidate->words[GOODIX_MILAN_CANDIDATE_ORTHOGONALITY_PENALTY],
+                sibling_score, sibling_detail,
                 sibling_scale_penalty, sibling_orthogonality);
               if (select_transform)
                 {
-                  candidate->words[4] = sibling_score;
-                  candidate->words[5] = sibling_detail;
-                  candidate->words[9] = sibling_coverage * 246 >> 8;
-                  candidate->words[12] = sibling_scale_penalty;
-                  candidate->words[13] = sibling_orthogonality;
-                  candidate->words[14] = sibling_strong_orthogonality;
+                  candidate->words[GOODIX_MILAN_CANDIDATE_OVERLAP_SCORE] =
+                    sibling_score;
+                  candidate->words[GOODIX_MILAN_CANDIDATE_OVERLAP_DETAIL] =
+                    sibling_detail;
+                  candidate->words[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8] =
+                    sibling_coverage * 246 >> 8;
+                  candidate->words[GOODIX_MILAN_CANDIDATE_SCALE_PENALTY] =
+                    sibling_scale_penalty;
+                  candidate->words[GOODIX_MILAN_CANDIDATE_ORTHOGONALITY_PENALTY] =
+                    sibling_orthogonality;
+                  candidate->words[GOODIX_MILAN_CANDIDATE_STRONG_ORTHOGONALITY_PENALTY] =
+                    sibling_strong_orthogonality;
                   memcpy (candidate->transform, alternate_transform,
                           sizeof(candidate->transform));
                 }
@@ -661,12 +675,13 @@ milan_match_apply_secondary (
 bonus:
   if (pair_capacity == 42 && candidate)
     {
-      if (candidate->words[10] > 30 && candidate->words[70] < 10)
+      if (candidate->words[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT] > 30 &&
+          candidate->words[GOODIX_MILAN_CANDIDATE_TOPOLOGY_DISTANCE] < 10)
         {
-          if (candidate->words[0] < 42)
-            candidate->words[0]++;
-          if (candidate->words[1] < 42)
-            candidate->words[1]++;
+          if (candidate->words[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT] < 42)
+            candidate->words[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT]++;
+          if (candidate->words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] < 42)
+            candidate->words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT]++;
         }
       return;
     }
@@ -1012,7 +1027,7 @@ milan_match_prepared_probe (
           if (!goodix_milan_match_candidate_admit (&direct_candidate))
             {
               fallback_workspace->enabled =
-                direct_candidate.words[1] >= 3 &&
+                direct_candidate.words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT] >= 3 &&
                 matcher_policy.configuration[13] == 1 &&
                 match_selection.acceptance_evidence == 0;
               continue;
@@ -1020,10 +1035,14 @@ milan_match_prepared_probe (
           memcpy (direct_metrics, direct_candidate.words,
                   sizeof(direct_metrics));
           memcpy (transform, direct_candidate.transform, sizeof(transform));
-          primary_filtered_count = (size_t) direct_candidate.words[0];
-          filtered_count = (size_t) direct_candidate.words[1];
-          topology_percent = direct_candidate.words[10];
-          geometric_percent = direct_candidate.words[11];
+          primary_filtered_count = (size_t)
+            direct_candidate.words[GOODIX_MILAN_CANDIDATE_PRIMARY_COUNT];
+          filtered_count = (size_t)
+            direct_candidate.words[GOODIX_MILAN_CANDIDATE_RETAINED_COUNT];
+          topology_percent =
+            direct_candidate.words[GOODIX_MILAN_CANDIDATE_TOPOLOGY_PERCENT];
+          geometric_percent =
+            direct_candidate.words[GOODIX_MILAN_CANDIDATE_GEOMETRIC_PERCENT];
         }
       descriptor_score = (int32_t) filtered_count * 100 /
                          (enrolled->metadata.sensor_type == 12 ? 42 : 31);
