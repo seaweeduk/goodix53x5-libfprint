@@ -18,6 +18,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+enum
+{
+  MILAN_AFFINE_Q8_ONE = 0x100,
+  MILAN_AFFINE_Q8_HALF = 0x80,
+  MILAN_AFFINE_Q8_SHIFT = 8,
+  MILAN_AFFINE_SOLVE_SHIFT = 10,
+  MILAN_AFFINE_SOLVE_SCALE = 1024,
+  MILAN_ORIENTATION_HALF_PERIOD = 0x1922,
+  MILAN_ORIENTATION_PERIOD = 0x3244,
+  MILAN_ORIENTATION_FULL_PERIOD = 0x6488,
+  MILAN_TRIANGLE_ORIENTATION_TOLERANCE = 0x400,
+  MILAN_TRIANGLE_AFFINE_SYMMETRY_TOLERANCE = 0x32,
+  MILAN_TRIANGLE_AFFINE_COEFFICIENT_LIMIT = 300,
+};
+
 static void
 milan_affine_from_three_points (const int32_t source[6],
                                 const int32_t target[6],
@@ -40,15 +55,15 @@ milan_affine_from_three_points (const int32_t source[6],
   else
     {
       raw_a =
-        ((int64_t) (target[0] - target[2]) * 1024 *
+        ((int64_t) (target[0] - target[2]) * MILAN_AFFINE_SOLVE_SCALE *
            (source[3] - source[5]) -
-         (int64_t) (target[2] - target[4]) * 1024 *
+         (int64_t) (target[2] - target[4]) * MILAN_AFFINE_SOLVE_SCALE *
            (source[1] - source[3])) /
         determinant;
       raw_b =
-        ((int64_t) (target[0] - target[2]) * 1024 *
+        ((int64_t) (target[0] - target[2]) * MILAN_AFFINE_SOLVE_SCALE *
            (source[2] - source[4]) -
-         (int64_t) (target[2] - target[4]) * 1024 *
+         (int64_t) (target[2] - target[4]) * MILAN_AFFINE_SOLVE_SCALE *
            (source[0] - source[2])) /
         -determinant;
     }
@@ -56,8 +71,9 @@ milan_affine_from_three_points (const int32_t source[6],
   raw_b = (int32_t) raw_b;
   affine[0] = (int32_t) raw_a >> 2;
   affine[1] = (int32_t) raw_b >> 2;
-  affine[2] = (int32_t) ((((int64_t) target[0] << 10) -
-                          raw_b * source[1] - raw_a * source[0]) >> 10);
+  affine[2] = (int32_t) ((((int64_t) target[0] << MILAN_AFFINE_SOLVE_SHIFT) -
+                           raw_b * source[1] - raw_a * source[0]) >>
+                          MILAN_AFFINE_SOLVE_SHIFT);
 
   determinant =
     (int64_t) (source[2] - source[0]) * (source[5] - source[1]) -
@@ -70,15 +86,15 @@ milan_affine_from_three_points (const int32_t source[6],
   else
     {
       raw_c =
-        ((int64_t) (target[3] - target[1]) * 1024 *
+        ((int64_t) (target[3] - target[1]) * MILAN_AFFINE_SOLVE_SCALE *
            (source[5] - source[1]) -
-         (int64_t) (target[5] - target[1]) * 1024 *
+         (int64_t) (target[5] - target[1]) * MILAN_AFFINE_SOLVE_SCALE *
            (source[3] - source[1])) /
         determinant;
       raw_d =
-        ((int64_t) (target[3] - target[1]) * 1024 *
+        ((int64_t) (target[3] - target[1]) * MILAN_AFFINE_SOLVE_SCALE *
            (source[4] - source[0]) -
-         (int64_t) (target[5] - target[1]) * 1024 *
+         (int64_t) (target[5] - target[1]) * MILAN_AFFINE_SOLVE_SCALE *
            (source[2] - source[0])) /
         -determinant;
     }
@@ -86,8 +102,9 @@ milan_affine_from_three_points (const int32_t source[6],
   raw_d = (int32_t) raw_d;
   affine[3] = (int32_t) raw_c >> 2;
   affine[4] = (int32_t) raw_d >> 2;
-  affine[5] = (int32_t) ((((int64_t) target[5] << 10) -
-                          raw_d * source[5] - raw_c * source[4]) >> 10);
+  affine[5] = (int32_t) ((((int64_t) target[5] << MILAN_AFFINE_SOLVE_SHIFT) -
+                           raw_d * source[5] - raw_c * source[4]) >>
+                          MILAN_AFFINE_SOLVE_SHIFT);
 }
 
 static int
@@ -189,9 +206,9 @@ milan_normalize_orientation_difference (int32_t difference,
 static int
 milan_triangle_orientations_are_consistent (int32_t differences[3])
 {
-  const int32_t half_period = 0x1922;
-  const int32_t period = 0x3244;
-  const int32_t tolerance = 0x400;
+  const int32_t half_period = MILAN_ORIENTATION_HALF_PERIOD;
+  const int32_t period = MILAN_ORIENTATION_PERIOD;
+  const int32_t tolerance = MILAN_TRIANGLE_ORIENTATION_TOLERANCE;
 
   for (size_t retry = 0; retry < 2; retry++)
     {
@@ -214,10 +231,14 @@ milan_triangle_orientations_are_consistent (int32_t differences[3])
 static int
 milan_triangle_affine_is_consistent (const int32_t affine[6])
 {
-  return abs (affine[0] - affine[4]) < 0x32 &&
-         abs (affine[3] + affine[1]) < 0x32 &&
-         abs (affine[0]) < 300 && abs (affine[3]) < 300 &&
-         abs (affine[4]) < 300 && abs (affine[1]) < 300;
+  return abs (affine[0] - affine[4]) <
+           MILAN_TRIANGLE_AFFINE_SYMMETRY_TOLERANCE &&
+         abs (affine[3] + affine[1]) <
+           MILAN_TRIANGLE_AFFINE_SYMMETRY_TOLERANCE &&
+         abs (affine[0]) < MILAN_TRIANGLE_AFFINE_COEFFICIENT_LIMIT &&
+         abs (affine[3]) < MILAN_TRIANGLE_AFFINE_COEFFICIENT_LIMIT &&
+         abs (affine[4]) < MILAN_TRIANGLE_AFFINE_COEFFICIENT_LIMIT &&
+         abs (affine[1]) < MILAN_TRIANGLE_AFFINE_COEFFICIENT_LIMIT;
 }
 
 static int32_t
@@ -290,7 +311,7 @@ milan_refine_affine_least_squares (
       int64_t source[3] = {
         (uint16_t) probe_records[probe_index].refined_x,
         (uint16_t) probe_records[probe_index].refined_y,
-        0x100,
+        MILAN_AFFINE_Q8_ONE,
       };
       int64_t target[2] = {
         (uint16_t) enrolled_records[enrolled_index].refined_x,
@@ -311,9 +332,13 @@ milan_refine_affine_least_squares (
   for (size_t row = 0; row < 3; row++)
     {
       for (size_t column = 0; column < 3; column++)
-        matrix[row][column] = (matrix[row][column] + 0x80) >> 8;
+        matrix[row][column] =
+          (matrix[row][column] + MILAN_AFFINE_Q8_HALF) >>
+          MILAN_AFFINE_Q8_SHIFT;
       for (size_t column = 0; column < 2; column++)
-        right[row][column] = (right[row][column] + 0x80) >> 8;
+        right[row][column] =
+          (right[row][column] + MILAN_AFFINE_Q8_HALF) >>
+          MILAN_AFFINE_Q8_SHIFT;
     }
 
   int64_t cofactors[3][3] = {
@@ -356,8 +381,9 @@ milan_refine_affine_least_squares (
       milan_wrapped_multiply (matrix[0][0], cofactors[0][0]),
       milan_wrapped_multiply (matrix[0][1], cofactors[0][1])),
     milan_wrapped_multiply (matrix[0][2], cofactors[0][2]));
-  int64_t rounded_determinant = milan_wrapped_add (determinant, 0x80);
-  int64_t denominator = rounded_determinant >> 8;
+  int64_t rounded_determinant = milan_wrapped_add (
+    determinant, MILAN_AFFINE_Q8_HALF);
+  int64_t denominator = rounded_determinant >> MILAN_AFFINE_Q8_SHIFT;
   int64_t half_denominator = rounded_determinant >> 9;
 
   if (denominator == 0)
@@ -391,10 +417,12 @@ milan_refine_affine_least_squares (
       int32_t x = (uint16_t) probe_records[probe_index].refined_x;
       int32_t y = (uint16_t) probe_records[probe_index].refined_y;
       int64_t transformed_x =
-        (((int64_t) refined[0] * x + (int64_t) refined[1] * y + 0x80) >> 8) +
+        (((int64_t) refined[0] * x + (int64_t) refined[1] * y +
+          MILAN_AFFINE_Q8_HALF) >> MILAN_AFFINE_Q8_SHIFT) +
         refined[2];
       int64_t transformed_y =
-        (((int64_t) refined[3] * x + (int64_t) refined[4] * y + 0x80) >> 8) +
+        (((int64_t) refined[3] * x + (int64_t) refined[4] * y +
+          MILAN_AFFINE_Q8_HALF) >> MILAN_AFFINE_Q8_SHIFT) +
         refined[5];
       int64_t dx = transformed_x -
         (uint16_t) enrolled_records[enrolled_index].refined_x;
@@ -442,14 +470,14 @@ milan_filter_affine_orientation (
   if (average_length == 0)
     return 0;
 
-  int32_t cosine = ((affine[4] + affine[0]) / 2 * 0x100) /
-                   average_length;
-  int32_t sine = ((affine[3] - affine[1]) / 2 * 0x100) /
-                 average_length;
+  int32_t cosine = ((affine[4] + affine[0]) / 2 * MILAN_AFFINE_Q8_ONE) /
+                    average_length;
+  int32_t sine = ((affine[3] - affine[1]) / 2 * MILAN_AFFINE_Q8_ONE) /
+                  average_length;
   int32_t affine_angle = feature_atan2 (cosine, sine);
 
   if (affine_angle < 0)
-    affine_angle += 0x6488;
+    affine_angle += MILAN_ORIENTATION_FULL_PERIOD;
   for (size_t i = 0; i < pair_count; i++)
     {
       if (inliers[i])
@@ -460,20 +488,20 @@ milan_filter_affine_orientation (
             enrolled_records[enrolled_index].orientation -
             probe_records[probe_index].orientation + affine_angle;
           int32_t direct = difference;
-          int32_t opposite = difference + 0x3244;
+          int32_t opposite = difference + MILAN_ORIENTATION_PERIOD;
 
           if (direct < 0)
-            direct += 0x6488;
-          if (direct > 0x6488)
-            direct -= 0x6488;
-          if (0x6488 - direct < direct)
-            direct = 0x6488 - direct;
+            direct += MILAN_ORIENTATION_FULL_PERIOD;
+          if (direct > MILAN_ORIENTATION_FULL_PERIOD)
+            direct -= MILAN_ORIENTATION_FULL_PERIOD;
+          if (MILAN_ORIENTATION_FULL_PERIOD - direct < direct)
+            direct = MILAN_ORIENTATION_FULL_PERIOD - direct;
           if (opposite < 0)
-            opposite += 0x6488;
-          if (opposite > 0x6488)
-            opposite -= 0x6488;
-          if (0x6488 - opposite < opposite)
-            opposite = 0x6488 - opposite;
+            opposite += MILAN_ORIENTATION_FULL_PERIOD;
+          if (opposite > MILAN_ORIENTATION_FULL_PERIOD)
+            opposite -= MILAN_ORIENTATION_FULL_PERIOD;
+          if (MILAN_ORIENTATION_FULL_PERIOD - opposite < opposite)
+            opposite = MILAN_ORIENTATION_FULL_PERIOD - opposite;
           if (opposite < direct)
             direct = opposite;
           if (direct > 0x506)
@@ -536,7 +564,7 @@ goodix_milan_filter_recognition_pairs_internal (
                   milan_normalize_orientation_difference (
                     enrolled_records[enrolled_index].orientation -
                       probe_records[probe_index].orientation,
-                    0x1922, 0x3244);
+                     MILAN_ORIENTATION_HALF_PERIOD, MILAN_ORIENTATION_PERIOD);
               }
             if (!milan_triangle_edge_is_consistent (
                   milan_triangle_distance_shift_then_add (
