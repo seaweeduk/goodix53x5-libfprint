@@ -200,8 +200,7 @@ goodix_milan_feature_collect_materialized (
   uint8_t *visited = calloc (rows * columns, 1);
   size_t count = 0;
 
-  if (!feature_source || !scales || !magnitude || !orientation ||
-      !records || !ranks || !auxiliary || !extrema || !visited)
+  if (!extrema || !visited)
     {
       free (visited);
       free (extrema);
