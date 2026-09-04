@@ -26,6 +26,7 @@
 #include "milan/match/lifecycle-private.h"
 #include "milan/match/rescue.h"
 #include "milan/milan.h"
+#include "milan/print.h"
 #include "milan/private.h"
 #include "milan/study/queue.h"
 
@@ -167,7 +168,7 @@ goodix_match_study_feature_internal (
         &probe_view) != 0)
     goto invalid;
   finalize_current_study = finalize_study &&
-    (enrolled->metadata.sensor_type != 12 ||
+    (enrolled->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE ||
      match_result->study_control.study_finalization_gate != 0);
   if (match_result->study_control.study_action_gate == 0)
     {
@@ -179,7 +180,7 @@ goodix_match_study_feature_internal (
     }
   if (match_result->matched_feature_index == SIZE_MAX)
     {
-      if (enrolled->metadata.sensor_type == 12 && transient_state &&
+      if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE && transient_state &&
           goodix_milan_study_action0_transient (
             enrolled_milan, enrolled_milan_len,
             match_result->relation.relation_values,
@@ -204,7 +205,7 @@ goodix_match_study_feature_internal (
   if (probe_view.fields.tagged_values[3] <= 15 ||
       probe_view.fields.tagged_values[4] <= 65)
     {
-      if (enrolled->metadata.sensor_type == 12 && transient_state &&
+      if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE && transient_state &&
           (goodix_milan_study_action0_transient (
              enrolled_milan, enrolled_milan_len,
              match_result->relation.relation_values,
@@ -322,7 +323,7 @@ goodix_match_initialize_study_overlap_counts (
           GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY * sizeof(*overlap_counts));
   unpacked = g_malloc (sizeof(*unpacked));
   if (goodix_milan_template_unpack (feature, feature_len, unpacked) == 0 &&
-      unpacked->metadata.sensor_type == 12 &&
+      unpacked->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
       goodix_milan_template_normalize_unpacked (
         unpacked, feature_copies, overlap_counts) == 0)
     result = TRUE;

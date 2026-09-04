@@ -9,6 +9,7 @@
  */
 
 #include "milan/antifake/antifake.h"
+#include "milan/preprocess/state.h"
 #include "milan/transform-private.h"
 
 #include <stdint.h>
@@ -94,8 +95,8 @@ goodix_milan_antifake_pair_metrics (
   int32_t                        metrics[5])
 {
   enum {
-    rows = 88,
-    columns = 104,
+    rows = GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS,
+    columns = GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS,
   };
   int32_t inverse[6];
   uint8_t overlap[rows * columns] = { 0 };

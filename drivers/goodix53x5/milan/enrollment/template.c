@@ -346,7 +346,9 @@ goodix_enrollment_metrics (
   size_t                       current,
   GoodixMilanEnrollmentResult *result)
 {
-  const int32_t total_area = 104 * 88;
+  const int32_t total_area =
+    GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS *
+    GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS;
   int32_t residual = total_area;
 
   result->previous_overlap = 0;

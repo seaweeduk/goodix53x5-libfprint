@@ -9,6 +9,7 @@
  */
 
 #include "milan/milan.h"
+#include "milan/print.h"
 #include "milan/template/codec-private.h"
 
 #include <limits.h>
@@ -572,7 +573,9 @@ goodix_milan_template_pack (
     return -1;
 
   const uint32_t header_values[MILAN_TEMPLATE_HEADER_FIELD_COUNT] = {
-    0x11f248ea, metadata->sensor_type, 88, 104, (uint32_t) feature_count,
+    0x11f248ea, metadata->sensor_type,
+    GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS,
+    GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS, (uint32_t) feature_count,
     metadata->maximum_features, metadata->registration_count,
     metadata->maximum_records, metadata->maximum_records, 1, 1,
     metadata->queue_state, metadata->queue_transaction_counter,
@@ -712,8 +715,10 @@ goodix_milan_template_unpack (
       cursor += 5;
     }
   if (header_values[0] != 0x11f248ea ||
-      (header_values[1] != 0 && header_values[1] != 12) ||
-      header_values[2] != 88 || header_values[3] != 104 ||
+      (header_values[1] != 0 &&
+       header_values[1] != GOODIX_MILAN_PRINT_SENSOR_TYPE) ||
+      header_values[2] != GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS ||
+      header_values[3] != GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS ||
       header_values[4] == 0 ||
       header_values[4] > GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY ||
       header_values[7] != header_values[8] || header_values[9] != 1 ||
@@ -790,7 +795,7 @@ goodix_milan_template_unpack (
     }
   if (!milan_template_metadata_valid (&unpacked->metadata,
                                       unpacked->feature_count) ||
-      (unpacked->metadata.sensor_type == 12 &&
+      (unpacked->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
        unpacked->metadata.graph_established == 0 &&
        unpacked->relation_count != 0))
     return -1;
@@ -865,7 +870,10 @@ goodix_milan_template_pack_one_feature (
     MILAN_TEMPLATE_TAG_QUEUE_COUNTER,
   };
   static const uint32_t header_values[MILAN_TEMPLATE_HEADER_FIELD_COUNT] = {
-    0x11f248ea, 12, 88, 104, 1, 1, 1, 150, 150, 1, 1, 0, 0,
+    0x11f248ea, GOODIX_MILAN_PRINT_SENSOR_TYPE,
+    GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS,
+    GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS,
+    1, 1, 1, 150, 150, 1, 1, 0, 0,
   };
   const size_t fixed_size = MILAN_TEMPLATE_FIXED_SIZE;
   size_t total_size;

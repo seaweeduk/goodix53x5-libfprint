@@ -15,6 +15,7 @@
 #include "milan/match/info-private.h"
 #include "milan/match/rescue.h"
 #include "milan/milan.h"
+#include "milan/print.h"
 #include "milan/private.h"
 
 #include <string.h>
@@ -40,7 +41,7 @@ goodix_match_record_limit (guint16 sensor_subtype,
                            int     coverage,
                            size_t  configured_limit)
 {
-  if (sensor_subtype == 12)
+  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       size_t limit = (size_t) coverage * configured_limit / 100;
 
@@ -382,7 +383,7 @@ goodix_match_extract_native_result (
       !preprocess_state->primary_contrast_valid || !info)
     return GOODIX_MILAN_EXTRACTION_INVALID;
 
-  if (sensor_subtype == 12)
+  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     goodix_match_snapshot_extraction_classification (preprocess_state);
 
   return goodix_match_extract_planes (
@@ -418,7 +419,7 @@ goodix_match_extract_native_result_debug (
       !preprocess_state->primary_contrast_valid || !info)
     return GOODIX_MILAN_EXTRACTION_INVALID;
 
-  if (sensor_subtype == 12)
+  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     goodix_match_snapshot_extraction_classification (preprocess_state);
 
   return goodix_match_extract_planes (
@@ -508,7 +509,7 @@ goodix_match_extract_planes (const guint8  *image,
               image + row * GOODIX_MILAN_SENSOR_COLUMNS + 2,
               GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS);
     }
-  if (sensor_subtype == 12)
+  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     goodix_match_decode_entry_classes (
       image, &fields.optional_c7, &entry_low_class, &entry_high_class,
       &broken_mask);
@@ -521,12 +522,15 @@ goodix_match_extract_planes (const guint8  *image,
         image, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS,
         high, low, feature_mask, inline_mask, validity_mask) != 0 ||
       goodix_milan_feature_enhance (
-        cropped, 88, 104, orientation, enhanced) != 0 ||
+        cropped, GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS,
+        GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS, orientation,
+        enhanced) != 0 ||
       goodix_milan_feature_enhanced_bitmap (
-        enhanced, feature_mask, 88, 104, enhanced_bitmap,
+        enhanced, feature_mask, GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS,
+        GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS, enhanced_bitmap,
         &enhanced_threshold) != 0)
     goto out;
-  if (sensor_subtype == 12)
+  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       /* Native commits history before record extraction, anti-fake, or packing
        * failures. */

@@ -9,6 +9,7 @@
  */
 
 #include "milan/milan.h"
+#include "milan/print.h"
 
 #include <string.h>
 
@@ -45,7 +46,6 @@ enum {
   CONFIG_AFFINE_PENALTY = 16,
 };
 
-#define ADMISSION_SENSOR_TYPE_12 12
 #define ADMISSION_THRESHOLD_FAMILY_SIZE 8
 #define ADMISSION_FILTERED_FAMILY 0
 #define ADMISSION_PRIMARY_FAMILY ADMISSION_THRESHOLD_FAMILY_SIZE
@@ -168,7 +168,7 @@ goodix_milan_match_initial_flags (
   if (!metrics || !configuration || !match_flag || !candidate_flag)
     return -1;
   memcpy (policy_thresholds, thresholds, sizeof (policy_thresholds));
-  if (configuration[CONFIG_SENSOR_TYPE] == ADMISSION_SENSOR_TYPE_12)
+  if (configuration[CONFIG_SENSOR_TYPE] == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       policy_thresholds[2] = 0xdc;
       policy_thresholds[3] = 0xd8;

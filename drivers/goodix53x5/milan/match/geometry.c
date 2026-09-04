@@ -10,6 +10,7 @@
 
 #include "milan/match/geometry.h"
 #include "milan/match/correspondence.h"
+#include "milan/preprocess/state.h"
 #include "milan/private.h"
 #include "milan/relations.h"
 
@@ -694,8 +695,12 @@ goodix_milan_match_record_metrics_internal (
                                 ? -(int32_t) ((0x80 - raw_y) >> 8)
                                 : (int32_t) ((raw_y + 0x80) >> 8);
 
-      if (transformed_x < 0x600 || transformed_x >= (104 - 7) * 0x100 ||
-          transformed_y < 0x600 || transformed_y >= (88 - 7) * 0x100)
+      if (transformed_x < 0x600 ||
+          transformed_x >=
+            (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS - 7) * 0x100 ||
+          transformed_y < 0x600 ||
+          transformed_y >=
+            (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS - 7) * 0x100)
         continue;
       valid_topology_records++;
 
@@ -1007,21 +1012,27 @@ milan_fill_record_index_map (const GoodixMilanFeatureRecord *records,
                              size_t                          begin,
                              size_t                          end,
                              int32_t                         radius,
-                             int16_t                         map[104 * 88])
+                             int16_t                         map[GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS])
 {
-  memset (map, 0xff, 104 * 88 * sizeof(*map));
+  memset (map, 0xff,
+          GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS * sizeof(*map));
   for (size_t index = begin; index < end; index++)
     {
       int32_t x = ((uint16_t) records[index].refined_x + 0x80) >> 8;
       int32_t y = ((uint16_t) records[index].refined_y + 0x80) >> 8;
       int32_t left = x > radius ? x - radius : 0;
-      int32_t right = x + radius < 104 ? x + radius : 103;
+      int32_t right = x + radius < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS
+                        ? x + radius
+                        : GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS - 1;
       int32_t top = y > radius ? y - radius : 0;
-      int32_t bottom = y + radius < 88 ? y + radius : 87;
+      int32_t bottom = y + radius < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS
+                         ? y + radius
+                         : GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS - 1;
 
       for (int32_t row = top; row <= bottom; row++)
         for (int32_t column = left; column <= right; column++)
-          map[row * 104 + column] = (int16_t) index;
+          map[row * GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS + column] =
+            (int16_t) index;
     }
 }
 
@@ -1039,7 +1050,7 @@ goodix_milan_refine_record_similarity (
 {
   int32_t inverse[6];
   int32_t pairs[300];
-  int16_t index_map[104 * 88];
+  int16_t index_map[GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS];
   size_t pair_count = 0;
   uint64_t source_x_sum = 0;
   uint64_t source_y_sum = 0;
@@ -1076,9 +1087,14 @@ goodix_milan_refine_record_similarity (
           int32_t pixel_x = (mapped_x + 0x80) >> 8;
           int32_t pixel_y = (mapped_y + 0x80) >> 8;
 
-          if (pixel_x < 0 || pixel_x >= 104 || pixel_y < 0 || pixel_y >= 88)
+          if (pixel_x < 0 ||
+              pixel_x >= GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS ||
+              pixel_y < 0 ||
+              pixel_y >= GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS)
             continue;
-          int32_t probe_index = index_map[pixel_y * 104 + pixel_x];
+          int32_t probe_index =
+            index_map[pixel_y * GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS +
+                      pixel_x];
           if (probe_index < 0 || pair_count == 150)
             continue;
           pairs[pair_count * 2] = (int32_t) index;
