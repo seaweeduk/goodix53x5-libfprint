@@ -9,6 +9,7 @@
  */
 
 #include "milan/match/rescue.h"
+#include "milan/print.h"
 
 #include <limits.h>
 #include <stdlib.h>
@@ -78,7 +79,8 @@ rescue_remove_transform (uint8_t       *mask,
 static int32_t
 rescue_score_denominator (uint32_t type)
 {
-  return type == 12 || type == 13 || type == 16 || type == 22 ? 42 : 31;
+  return type == GOODIX_MILAN_PRINT_SENSOR_TYPE || type == 13 ||
+         type == 16 || type == 22 ? 42 : 31;
 }
 
 int

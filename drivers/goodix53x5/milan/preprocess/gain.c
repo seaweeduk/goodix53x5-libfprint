@@ -15,8 +15,6 @@ goodix_milan_profile9_update_gain_ready (uint32_t  update_state,
                                          uint32_t  update_counter,
                                          uint32_t *ready)
 {
-  if (!ready)
-    return;
   if (update_state == 0 && update_counter > 5)
     *ready = 1;
   if (update_state > 14)

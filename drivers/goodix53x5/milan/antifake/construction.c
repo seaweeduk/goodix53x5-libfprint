@@ -8,7 +8,8 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
-#include "milan/milan.h"
+#include "milan/antifake/antifake.h"
+#include "milan/print.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -99,7 +100,6 @@ milan_antifake_build_class (
   uint16_t *residual = NULL;
   uint8_t *mask = NULL;
   uint8_t *classes = NULL;
-  uint8_t *thinned = NULL;
   int32_t vector[51];
   int32_t threshold;
   int32_t texture;
@@ -121,8 +121,7 @@ milan_antifake_build_class (
   residual = malloc (count * sizeof(*residual));
   mask = malloc (count);
   classes = malloc (count);
-  thinned = malloc (count);
-  if (!residual || !mask || !classes || !thinned)
+  if (!residual || !mask || !classes)
     goto out;
 
   memset (goodix_milan_antifake_data (antifake), 0, sizeof(*antifake));
@@ -143,7 +142,7 @@ milan_antifake_build_class (
 
   if (milan_antifake_collect_candidates (
         antifake, antifake_size, residual, rows, columns,
-        chip_type == 12 ? 0 : -2) != 0)
+        chip_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ? 0 : -2) != 0)
     goto out;
 
   if (goodix_milan_antifake_statistics (
@@ -153,7 +152,7 @@ milan_antifake_build_class (
       goodix_milan_antifake_class_map (
         classification_plane, mask, rows, columns, classes) != 0 ||
       goodix_milan_antifake_boundary_score (
-        residual, classes, rows, columns, thinned, &boundary) != 0 ||
+        residual, classes, rows, columns, &boundary) != 0 ||
       goodix_milan_antifake_model_vector (
         residual, mask, rows, columns, 2, vector) != 0 ||
       goodix_milan_antifake_model_score (vector, &model) != 0)
@@ -164,7 +163,7 @@ milan_antifake_build_class (
   goodix_milan_antifake_set_boundary (antifake, boundary);
   goodix_milan_antifake_set_model (antifake, model);
 
-  if (chip_type == 12)
+  if (chip_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
     {
       if (columns != 0 && rows > SIZE_MAX / columns)
         goto out;
@@ -186,7 +185,6 @@ milan_antifake_build_class (
   result = 0;
 
 out:
-  free (thinned);
   free (classes);
   free (mask);
   free (residual);
@@ -221,7 +219,9 @@ goodix_milan_antifake_build_with_boundary (
     calibration, raw_frame, classification_plane, feature_mask,
     feature_mask_size, rows, columns, t_code, dac_high, dac_low, chip_type,
     calibration_scalar, antifake, antifake_size);
-  if (result != 0 || chip_type != 12 || rows != 88 || columns != 108 ||
+  if (result != 0 || chip_type != GOODIX_MILAN_PRINT_SENSOR_TYPE ||
+      rows != GOODIX_MILAN_SENSOR_ROWS ||
+      columns != GOODIX_MILAN_SENSOR_COLUMNS ||
       feature_mask_size != 52 * 44)
     return result;
 

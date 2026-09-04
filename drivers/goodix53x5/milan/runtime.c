@@ -8,29 +8,15 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
+/* Runs profile-9/type-12 extraction, ordered gallery arbitration, and study.
+ * Native owners are identifyImage, FUN_18005edb0, and FUN_18005d330. */
+
 #include "milan/runtime.h"
 
+#include "milan/debug-hooks.h"
 #include "milan/study/queue.h"
 
 #include <string.h>
-
-#if defined(GOODIX53X5_DEBUG) || defined(GOODIX53X5_PARITY)
-static void
-goodix_milan_runtime_hash_bytes (GBytes *bytes,
-                                 gchar   digest[65])
-{
-  gconstpointer data;
-  gsize size;
-  g_autofree gchar *checksum = NULL;
-
-  digest[0] = '\0';
-  if (!bytes)
-    return;
-  data = g_bytes_get_data (bytes, &size);
-  checksum = g_compute_checksum_for_data (G_CHECKSUM_SHA256, data, size);
-  g_strlcpy (digest, checksum ? checksum : "", 65);
-}
-#endif
 
 struct _GoodixMilanRuntimeGalleryInput
 {
@@ -63,10 +49,7 @@ goodix_milan_runtime_gallery_result_free (
 {
   if (!result)
     return;
-#ifdef GOODIX53X5_DEBUG
-  g_clear_pointer (&result->input_template, g_bytes_unref);
-  g_clear_pointer (&result->after_match_template, g_bytes_unref);
-#endif
+  goodix_milan_debug_runtime_gallery_result_free (result);
   g_clear_error (&result->validation_error);
   g_free (result);
 }
@@ -235,7 +218,7 @@ goodix_milan_runtime_match (const GoodixMilanRuntimeInput *input,
                             GoodixStudyQueue              *queue)
 {
   (void) input;
-  return goodix_match_serialized_feature_result_queued (
+  return goodix_milan_match_serialized_feature_result_queued (
     probe, feature, feature_len, match_result, after_match, queue);
 }
 
@@ -250,27 +233,15 @@ goodix_milan_runtime_study (const GoodixMilanRuntimeInput *input,
                             GoodixMilanStudyAction        *action)
 {
   (void) input;
-  return goodix_match_study_feature_queued (
+  return goodix_milan_match_study_feature_queued (
     probe, feature, feature_len, match_result, TRUE, queue, after_study, action);
 }
 
-GoodixMilanRuntimeOutput *
-goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
+static GoodixMilanRuntimeOutput *
+goodix_milan_runtime_output_new (const GoodixMilanRuntimeInput *input)
 {
-  g_autofree guint8 *processed = NULL;
-  g_autoptr(GBytes) probe_template = NULL;
-  g_autoptr(GBytes) winner_after_match = NULL;
-  g_autoptr(GBytes) after_study = NULL;
-  GoodixStudyQueue *winner_queue = NULL;
-  GoodixMatchInfo *probe = NULL;
-  GoodixMilanRuntimeOutput *output;
-  GoodixMilanPrintTemplateInfo probe_info;
-  gsize winner_position = G_MAXSIZE;
-  gint32 setup_status;
-  gint32 preprocess_status;
+  GoodixMilanRuntimeOutput *output = g_new0 (GoodixMilanRuntimeOutput, 1);
 
-  g_return_val_if_fail (input != NULL, NULL);
-  output = g_new0 (GoodixMilanRuntimeOutput, 1);
   output->status = GOODIX_MILAN_RUNTIME_INVALID_DATA;
   output->action_epoch = input->action_epoch;
   output->generation_id = input->generation_id;
@@ -285,19 +256,31 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
   output->cancellation.cancelled_gallery_position = G_MAXSIZE;
   output->gallery_results = g_ptr_array_new_with_free_func (
     (GDestroyNotify) goodix_milan_runtime_gallery_result_free);
-  if (input->sensor_subtype != GOODIX_MILAN_PRINT_SENSOR_TYPE ||
-      (input->purpose != GOODIX_MILAN_PURPOSE_IDENTIFY &&
-       input->purpose != GOODIX_MILAN_PURPOSE_ENROLL))
-    {
-      g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
-                           GOODIX_MILAN_PRINT_ERROR_INCOMPATIBLE,
-                           "Runtime Milan profile or subtype is incompatible");
-      return output;
-    }
-  if (goodix_milan_runtime_cancelled (
-        input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_BEFORE_PREPROCESS,
-        G_MAXSIZE))
-    return output;
+  return output;
+}
+
+static gboolean
+goodix_milan_runtime_validate_input (const GoodixMilanRuntimeInput *input,
+                                     GoodixMilanRuntimeOutput      *output)
+{
+  if (input->sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
+      (input->purpose == GOODIX_MILAN_PURPOSE_IDENTIFY ||
+       input->purpose == GOODIX_MILAN_PURPOSE_ENROLL))
+    return TRUE;
+
+  g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
+                       GOODIX_MILAN_PRINT_ERROR_INCOMPATIBLE,
+                       "Runtime Milan profile or subtype is incompatible");
+  return FALSE;
+}
+
+static gboolean
+goodix_milan_runtime_preprocess_input (const GoodixMilanRuntimeInput *input,
+                                       GoodixMilanRuntimeOutput      *output,
+                                       guint8                       **processed)
+{
+  gint32 setup_status;
+  gint32 preprocess_status;
 
   output->preprocess_state = input->preprocess_state;
   output->profile_state = input->profile_state;
@@ -305,31 +288,22 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
     &output->profile_state, input->setup_tx_on);
   if (setup_status != 0)
     {
-#ifdef GOODIX53X5_DEBUG
-      output->preprocess_attempted = TRUE;
-      output->preprocess_status = setup_status;
-      output->preprocess_status_available = TRUE;
-#endif
+      goodix_milan_debug_runtime_setup_failed (output, setup_status);
       output->preprocess_state_valid = TRUE;
       output->status = GOODIX_MILAN_RUNTIME_RETRY;
       g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
                            GOODIX_MILAN_PRINT_ERROR_INVALID,
                            "Native Milan setup initialization failed");
-      return output;
+      return FALSE;
     }
 
-  processed = g_malloc (GOODIX_MILAN_SENSOR_PIXELS);
-#ifdef GOODIX53X5_DEBUG
-  output->preprocess_attempted = TRUE;
-#endif
+  *processed = g_malloc (GOODIX_MILAN_SENSOR_PIXELS);
+  goodix_milan_debug_runtime_preprocess_started (output);
   preprocess_status = goodix_milan_preprocess (
     &output->preprocess_state, &output->profile_state,
     input->setup_tx_on, input->live_raw,
-    input->purpose, processed, &output->quality, &output->coverage);
-#ifdef GOODIX53X5_DEBUG
-  output->preprocess_status = preprocess_status;
-  output->preprocess_status_available = TRUE;
-#endif
+    input->purpose, *processed, &output->quality, &output->coverage);
+  goodix_milan_debug_runtime_preprocess_status (output, preprocess_status);
   if (preprocess_status != 0 &&
       preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY &&
       preprocess_status != GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION &&
@@ -339,14 +313,10 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
       g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
                            GOODIX_MILAN_PRINT_ERROR_INVALID,
                            "Native Milan preprocessing failed");
-      return output;
+      return FALSE;
     }
-#ifdef GOODIX53X5_DEBUG
-  output->preprocess_completed = preprocess_status == 0;
-  if (output->preprocess_completed ||
-      preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
-    output->processed_image = g_bytes_new (processed, GOODIX_MILAN_SENSOR_PIXELS);
-#endif
+  goodix_milan_debug_runtime_preprocess_finished (
+    output, preprocess_status, *processed);
   output->preprocess_state_valid = TRUE;
   if (preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY ||
       preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION ||
@@ -356,46 +326,53 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
       g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
                            GOODIX_MILAN_PRINT_ERROR_INVALID,
                            "Native Milan preprocessing requested retry");
-      return output;
+      return FALSE;
     }
-  if (goodix_milan_runtime_cancelled (
-        input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_AFTER_PREPROCESS,
-        G_MAXSIZE))
-    return output;
+  return TRUE;
+}
 
-#ifdef GOODIX53X5_DEBUG
-  output->extraction_attempted = TRUE;
-#endif
-  probe = goodix_match_extract_native (
+static gboolean
+goodix_milan_runtime_build_probe (const GoodixMilanRuntimeInput *input,
+                                  GoodixMilanRuntimeOutput      *output,
+                                  const guint8                  *processed,
+                                  GoodixMatchInfo              **probe,
+                                  GBytes                       **probe_template)
+{
+  GoodixMilanPrintTemplateInfo probe_info;
+
+  goodix_milan_debug_runtime_extraction_started (output);
+  *probe = goodix_milan_match_extract_native (
     processed, &output->preprocess_state, input->live_raw, input->tcode,
     input->dac_high, input->dac_low, input->sensor_subtype);
-  probe_template = probe ? goodix_match_serialize_template (probe) : NULL;
-  if (!probe || !probe_template ||
-      !goodix_milan_runtime_inspect_probe (probe_template, &probe_info))
+  *probe_template = *probe ? goodix_milan_match_serialize_template (*probe) : NULL;
+  if (!*probe || !*probe_template ||
+      !goodix_milan_runtime_inspect_probe (*probe_template, &probe_info))
     {
       output->status = GOODIX_MILAN_RUNTIME_RETRY;
       output->error = g_error_new_literal (GOODIX_MILAN_PRINT_ERROR,
                                            GOODIX_MILAN_PRINT_ERROR_INVALID,
                                            "Native Milan extraction failed");
-      goodix_match_free_info (probe);
-      return output;
+      goodix_milan_match_free_info (*probe);
+      *probe = NULL;
+      return FALSE;
     }
-#ifdef GOODIX53X5_DEBUG
-  output->extraction_completed = TRUE;
-#endif
-  output->probe_template = g_bytes_ref (probe_template);
+  goodix_milan_debug_runtime_extraction_finished (output);
+  output->probe_template = g_bytes_ref (*probe_template);
   output->probe_record_count = probe_info.partition0_count +
                                probe_info.partition1_count;
   output->probe_partition0_count = probe_info.partition0_count;
   output->probe_partition1_count = probe_info.partition1_count;
-  if (goodix_milan_runtime_cancelled (
-        input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_AFTER_EXTRACT,
-        G_MAXSIZE))
-    {
-      goodix_match_free_info (probe);
-      return output;
-    }
+  return TRUE;
+}
 
+static gboolean
+goodix_milan_runtime_match_gallery (const GoodixMilanRuntimeInput *input,
+                                    GoodixMilanRuntimeOutput      *output,
+                                    GoodixMatchInfo               *probe,
+                                    gsize                         *winner_position,
+                                    GBytes                       **winner_after_match,
+                                    GoodixStudyQueue             **winner_queue)
+{
   for (gsize position = 0; position < input->gallery->len; position++)
     {
       GoodixMilanRuntimeGalleryInput *gallery =
@@ -411,38 +388,30 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
 
       result->gallery_position = position;
       result->gallery_index = gallery->gallery_index;
-#ifdef GOODIX53X5_DEBUG
-      result->input_template = g_bytes_ref (gallery->template_bytes);
-      goodix_milan_runtime_hash_bytes (
-        gallery->template_bytes, result->input_template_sha256);
-#endif
+      goodix_milan_debug_runtime_gallery_input (
+        result, gallery->template_bytes);
       g_ptr_array_add (output->gallery_results, result);
       if (goodix_milan_runtime_cancelled (
             input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_BEFORE_GALLERY,
             position))
-        {
-          goodix_match_free_info (probe);
-          return output;
-        }
+        return FALSE;
 
       template_valid = goodix_milan_print_validate_template (
         gallery->template_bytes, &result->template_info,
         &result->validation_error);
-#ifdef GOODIX53X5_DEBUG
-      result->validation_observed = TRUE;
-#endif
+      goodix_milan_debug_runtime_gallery_validated (result);
       if (!template_valid)
         {
           output->invalid_gallery_count++;
-          goodix_study_queue_free (queue);
+          goodix_milan_study_queue_free (queue);
           continue;
         }
       result->valid = TRUE;
       output->valid_gallery_count++;
-      queue = goodix_study_queue_new (
+      queue = goodix_milan_study_queue_new (
         result->template_info.queue_state,
         result->template_info.queue_transaction_counter);
-      if (!queue || !goodix_study_queue_validate (queue))
+      if (!queue || !goodix_milan_study_queue_validate (queue))
         {
           result->valid = FALSE;
           output->valid_gallery_count--;
@@ -451,24 +420,16 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
                                GOODIX_MILAN_PRINT_ERROR,
                                GOODIX_MILAN_PRINT_ERROR_INVALID,
                                "Milan gallery queue state is invalid");
-          goodix_study_queue_free (queue);
+          goodix_milan_study_queue_free (queue);
           continue;
         }
-#ifdef GOODIX53X5_DEBUG
-      result->queue_before_match_observed = TRUE;
-      result->queue_state_before_match = queue->enabled_state;
-      result->queue_counter_before_match = queue->transaction_counter;
-      result->queue_occupied_before_match = goodix_study_queue_occupied (queue);
-#endif
+      goodix_milan_debug_runtime_queue_before_match (result, queue);
       feature = g_bytes_get_data (gallery->template_bytes, &feature_len);
       status = goodix_milan_runtime_match (
         input, probe, feature, feature_len, &result->match_result, &after_match,
         queue);
       result->evaluated = TRUE;
-#ifdef GOODIX53X5_DEBUG
-      result->queue_after_match_observed = TRUE;
-      result->queue_occupied_after_match = goodix_study_queue_occupied (queue);
-#endif
+      goodix_milan_debug_runtime_queue_after_match (result, queue);
       output->evaluated_gallery_count++;
       if (status != GOODIX_SIGFM_TEMPLATE_OK || !after_match)
         {
@@ -479,16 +440,11 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
                                GOODIX_MILAN_PRINT_ERROR,
                                GOODIX_MILAN_PRINT_ERROR_INVALID,
                                "Native Milan gallery matching failed");
-          goodix_study_queue_free (queue);
+          goodix_milan_study_queue_free (queue);
           continue;
         }
-#ifdef GOODIX53X5_DEBUG
-      result->after_match_template = g_bytes_ref (after_match);
-#endif
-#if defined(GOODIX53X5_DEBUG) || defined(GOODIX53X5_PARITY)
-      goodix_milan_runtime_hash_bytes (
-        after_match, result->after_match_sha256);
-#endif
+      goodix_milan_debug_runtime_after_match (result, after_match);
+      goodix_milan_debug_runtime_hash_after_match (result, after_match);
       result->score = result->match_result.score;
       result->accepted = result->score > 0;
       output->score = result->score;
@@ -496,13 +452,12 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
             input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_AFTER_GALLERY,
             position))
         {
-          goodix_study_queue_free (queue);
-          goodix_match_free_info (probe);
-          return output;
+          goodix_milan_study_queue_free (queue);
+          return FALSE;
         }
       if (result->score <= 0)
         {
-          goodix_study_queue_free (queue);
+          goodix_milan_study_queue_free (queue);
           continue;
         }
 
@@ -510,102 +465,91 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
       output->winner_index = gallery->gallery_index;
       output->winner_position = position;
       output->match_result = result->match_result;
-      winner_position = position;
-      winner_after_match = g_steal_pointer (&after_match);
-      winner_queue = queue;
-      break;
+      *winner_position = position;
+      *winner_after_match = g_steal_pointer (&after_match);
+      *winner_queue = queue;
+      return TRUE;
     }
 
-  if (winner_position == G_MAXSIZE)
+  if (input->gallery->len != 0 && output->valid_gallery_count == 0)
     {
-      if (input->gallery->len != 0 && output->valid_gallery_count == 0)
-        {
-          output->status = GOODIX_MILAN_RUNTIME_INVALID_DATA;
-          g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
-                               GOODIX_MILAN_PRINT_ERROR_INVALID,
-                               "All Milan gallery entries are invalid");
-        }
-      else
-        output->status = GOODIX_MILAN_RUNTIME_NO_MATCH;
-      goodix_match_free_info (probe);
-      return output;
+      output->status = GOODIX_MILAN_RUNTIME_INVALID_DATA;
+      g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
+                           GOODIX_MILAN_PRINT_ERROR_INVALID,
+                           "All Milan gallery entries are invalid");
     }
+  else
+    {
+      output->status = GOODIX_MILAN_RUNTIME_NO_MATCH;
+    }
+  return FALSE;
+}
 
-  if (goodix_milan_runtime_cancelled (
-        input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_BEFORE_STUDY,
-        winner_position))
-    {
-      goodix_study_queue_free (winner_queue);
-      goodix_match_free_info (probe);
-      return output;
-    }
+static void
+goodix_milan_runtime_study_winner (const GoodixMilanRuntimeInput *input,
+                                   GoodixMilanRuntimeOutput      *output,
+                                   GoodixMatchInfo               *probe,
+                                   gsize                          winner_position,
+                                   GBytes                        *winner_after_match,
+                                   GoodixStudyQueue              *winner_queue)
+{
+  g_autoptr(GBytes) after_study = NULL;
   const guint8 *after_match_data;
   gsize after_match_size;
   GoodixSigfmTemplateStatus study_status;
-#ifdef GOODIX53X5_DEBUG
-  GoodixMilanRuntimeGalleryResult *winner_result;
-#endif
-
   after_match_data = g_bytes_get_data (winner_after_match, &after_match_size);
-#ifdef GOODIX53X5_DEBUG
-  output->study_attempted = TRUE;
-#endif
+  goodix_milan_debug_runtime_study_started (output);
   study_status = goodix_milan_runtime_study (
     input, probe, after_match_data, after_match_size, &output->match_result,
     winner_queue, &after_study, &output->study_action);
-#ifdef GOODIX53X5_DEBUG
-  winner_result = g_ptr_array_index (output->gallery_results, winner_position);
-
-  winner_result->queue_after_study_observed = TRUE;
-  winner_result->queue_state_after_study = winner_queue->enabled_state;
-  winner_result->queue_counter_after_study = winner_queue->transaction_counter;
-  winner_result->queue_occupied_after_study =
-    goodix_study_queue_occupied (winner_queue);
-#endif
+  goodix_milan_debug_runtime_queue_after_study (
+    output, winner_position, winner_queue);
   if (study_status != GOODIX_SIGFM_TEMPLATE_OK)
     {
       g_set_error_literal (&output->learning_error, GOODIX_MILAN_PRINT_ERROR,
                            GOODIX_MILAN_PRINT_ERROR_INVALID,
                            "Native Milan study failed after a positive match");
-      goodix_study_queue_free (winner_queue);
-      goodix_match_free_info (probe);
-      return output;
+      goodix_milan_study_queue_free (winner_queue);
+      goodix_milan_match_free_info (probe);
+      return;
     }
-#ifdef GOODIX53X5_DEBUG
-  output->study_completed = TRUE;
-#endif
+  goodix_milan_debug_runtime_study_finished (output);
   if (goodix_milan_runtime_cancelled (
         input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_AFTER_STUDY,
         winner_position))
     {
-      goodix_study_queue_free (winner_queue);
-      goodix_match_free_info (probe);
-      return output;
+      goodix_milan_study_queue_free (winner_queue);
+      goodix_milan_match_free_info (probe);
+      return;
     }
 
   if (output->study_action == GOODIX_MILAN_STUDY_NONE)
     {
       if (after_study)
-        g_set_error_literal (&output->learning_error,
-                             GOODIX_MILAN_PRINT_ERROR,
-                             GOODIX_MILAN_PRINT_ERROR_INVALID,
-                             "Action 0 unexpectedly produced a candidate");
-      goodix_study_queue_free (winner_queue);
-      goodix_match_free_info (probe);
-      return output;
+        {
+          g_set_error_literal (&output->learning_error,
+                               GOODIX_MILAN_PRINT_ERROR,
+                               GOODIX_MILAN_PRINT_ERROR_INVALID,
+                               "Action 0 unexpectedly produced a candidate");
+        }
+      goodix_milan_study_queue_free (winner_queue);
+      goodix_milan_match_free_info (probe);
+      return;
     }
   if (output->study_action > GOODIX_MILAN_STUDY_QUEUED || !after_study ||
       !goodix_milan_print_validate_template (
         after_study, &output->final_candidate_info, &output->learning_error))
     {
       if (!output->learning_error)
-        g_set_error_literal (&output->learning_error,
-                             GOODIX_MILAN_PRINT_ERROR,
-                             GOODIX_MILAN_PRINT_ERROR_INVALID,
-                             "Native Milan study returned an invalid action");
-      goodix_study_queue_free (winner_queue);
-      goodix_match_free_info (probe);
-      return output;
+        {
+          g_set_error_literal (&output->learning_error,
+                               GOODIX_MILAN_PRINT_ERROR,
+                               GOODIX_MILAN_PRINT_ERROR_INVALID,
+                               "Native Milan study returned an invalid action");
+        }
+      goodix_milan_study_queue_free (winner_queue);
+      goodix_milan_match_free_info (probe);
+      return;
     }
   GoodixMilanRuntimeGalleryInput *winner =
     g_ptr_array_index (input->gallery, winner_position);
@@ -614,13 +558,73 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
       g_set_error_literal (&output->learning_error, GOODIX_MILAN_PRINT_ERROR,
                            GOODIX_MILAN_PRINT_ERROR_NONCANONICAL,
                            "Positive Milan study candidate did not change bytes");
-      goodix_study_queue_free (winner_queue);
-      goodix_match_free_info (probe);
-      return output;
+      goodix_milan_study_queue_free (winner_queue);
+      goodix_milan_match_free_info (probe);
+      return;
     }
   output->final_candidate = g_steal_pointer (&after_study);
-  goodix_study_queue_free (winner_queue);
-  goodix_match_free_info (probe);
+  goodix_milan_study_queue_free (winner_queue);
+  goodix_milan_match_free_info (probe);
+}
+
+GoodixMilanRuntimeOutput *
+goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
+{
+  g_autofree guint8 *processed = NULL;
+
+  g_autoptr(GBytes) probe_template = NULL;
+  g_autoptr(GBytes) winner_after_match = NULL;
+  GoodixStudyQueue *winner_queue = NULL;
+  GoodixMatchInfo *probe = NULL;
+  GoodixMilanRuntimeOutput *output;
+  gsize winner_position = G_MAXSIZE;
+
+  g_return_val_if_fail (input != NULL, NULL);
+  output = goodix_milan_runtime_output_new (input);
+  if (!goodix_milan_runtime_validate_input (input, output))
+    return output;
+  if (goodix_milan_runtime_cancelled (
+        input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_BEFORE_PREPROCESS,
+        G_MAXSIZE))
+    return output;
+
+  if (!goodix_milan_runtime_preprocess_input (input, output, &processed))
+    return output;
+  if (goodix_milan_runtime_cancelled (
+        input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_AFTER_PREPROCESS,
+        G_MAXSIZE))
+    return output;
+
+  if (!goodix_milan_runtime_build_probe (
+        input, output, processed, &probe, &probe_template))
+    return output;
+  if (goodix_milan_runtime_cancelled (
+        input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_AFTER_EXTRACT,
+        G_MAXSIZE))
+    {
+      goodix_milan_match_free_info (probe);
+      return output;
+    }
+
+  if (!goodix_milan_runtime_match_gallery (
+        input, output, probe, &winner_position, &winner_after_match,
+        &winner_queue))
+    {
+      goodix_milan_match_free_info (probe);
+      return output;
+    }
+
+  if (goodix_milan_runtime_cancelled (
+        input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_BEFORE_STUDY,
+        winner_position))
+    {
+      goodix_milan_study_queue_free (winner_queue);
+      goodix_milan_match_free_info (probe);
+      return output;
+    }
+
+  goodix_milan_runtime_study_winner (
+    input, output, probe, winner_position, winner_after_match, winner_queue);
   return output;
 }
 
@@ -630,9 +634,7 @@ goodix_milan_runtime_output_free (GoodixMilanRuntimeOutput *output)
   if (!output)
     return;
   g_clear_pointer (&output->final_candidate, g_bytes_unref);
-#ifdef GOODIX53X5_DEBUG
-  g_clear_pointer (&output->processed_image, g_bytes_unref);
-#endif
+  goodix_milan_debug_runtime_output_free (output);
   g_clear_pointer (&output->probe_template, g_bytes_unref);
   g_clear_pointer (&output->gallery_results, g_ptr_array_unref);
   g_clear_error (&output->error);

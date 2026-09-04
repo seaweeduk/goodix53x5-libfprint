@@ -8,12 +8,10 @@
 
 #include "milan/match/policy.h"
 #include "milan/match/candidate.h"
+#include "milan/print.h"
 
 #include <limits.h>
 #include <string.h>
-
-#define GOODIX_MILAN_MATCH_ROWS 88
-#define GOODIX_MILAN_MATCH_COLUMNS 104
 
 enum
 {
@@ -34,6 +32,8 @@ enum
     GOODIX_MILAN_CANDIDATE_ORTHOGONALITY_PENALTY,
   GOODIX_MILAN_POLICY_METRIC_PENALTY_THIRD =
     GOODIX_MILAN_CANDIDATE_STRONG_ORTHOGONALITY_PENALTY,
+  GOODIX_MILAN_POLICY_METRIC_TOPOLOGY_DISTANCE =
+    GOODIX_MILAN_CANDIDATE_TOPOLOGY_DISTANCE,
 };
 
 enum
@@ -92,7 +92,7 @@ normalized_quality (int32_t quality,
 }
 
 static void
-initial_classifier (const int32_t metrics[77],
+initial_classifier (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                     int32_t       image_quality,
                     int32_t       image_coverage,
                     const int32_t config[20],
@@ -160,7 +160,7 @@ initial_classifier (const int32_t metrics[77],
 }
 
 static void
-fallback_classifier (const int32_t metrics[77],
+fallback_classifier (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                      const int32_t config[20],
                      int32_t       output[2])
 {
@@ -215,7 +215,7 @@ fallback_classifier (const int32_t metrics[77],
 }
 
 static int
-first_veto_type12 (const int32_t metrics[77],
+first_veto_type12 (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                    GoodixMilanMatcherPolicy *policy)
 {
   int32_t noise = metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_FIRST] +
@@ -402,7 +402,7 @@ first_veto_type12 (const int32_t metrics[77],
 }
 
 static int
-first_veto (const int32_t metrics[77],
+first_veto (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORDS],
             GoodixMilanMatcherPolicy *policy,
             int32_t      *flag)
 {
@@ -551,7 +551,7 @@ first_veto (const int32_t metrics[77],
 }
 
 static int
-post_veto_type12 (const int32_t metrics[77],
+post_veto_type12 (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                    const int32_t config[20])
 {
   int32_t noise = metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_FIRST] +
@@ -749,7 +749,7 @@ post_veto_type12 (const int32_t metrics[77],
 }
 
 static void
-post_veto (const int32_t metrics[77],
+post_veto (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORDS],
            GoodixMilanMatcherPolicy *policy,
            int32_t       flags[2])
 {
@@ -774,28 +774,35 @@ post_veto (const int32_t metrics[77],
                      policy->configuration[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET] -
                      noise * 4;
 
-  if ((policy->configuration[18] >> 8) > 1 &&
+  if ((policy->configuration[GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE] >> 8) > 1 &&
       ((detail < 206 && low_detail < 205 && coverage > 100 && geometry < 45) ||
        (detail < 200 && low_detail < 208 && coverage > 110 && geometry < 45) ||
        (detail < 209 && low_detail < 195 && coverage > 120 && geometry < 45)))
     {
       flags[0] = flags[1] = 0;
-      policy->configuration[19] = 0;
+      policy->configuration[GOODIX_MILAN_POLICY_CONFIG_RECOGNITION_MODE] = 0;
       return;
     }
-  if ((metrics[13] == 1 || metrics[0] < 7) && combined < 385 && filtered < 10)
+  if ((metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_SECOND] == 1 ||
+       metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 7) &&
+      combined < 385 && filtered < 10)
     flags[0] = flags[1] = 0;
-  if (metrics[4] == 128 && metrics[8] < 175 &&
-      (metrics[0] < 6 || metrics[13] != 0 ||
-       (metrics[0] < 13 && coverage < 180)))
+  if (metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] == 128 &&
+      metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 175 &&
+      (metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 6 ||
+       metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_SECOND] != 0 ||
+       (metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 13 && coverage < 180)))
     flags[0] = flags[1] = 0;
-  if (metrics[14] == 1 && primary < 12 &&
+  if (metrics[GOODIX_MILAN_POLICY_METRIC_PENALTY_THIRD] == 1 && primary < 12 &&
       (combined < 385 || (combined < 395 && coverage < 100)))
     flags[0] = flags[1] = 0;
-  if (flags[1] != 0 && policy->configuration[18] != 0 && coverage > 200 &&
+  if (flags[1] != 0 &&
+      policy->configuration[GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE] != 0 &&
+      coverage > 200 &&
       combined < 405 &&
-      ((metrics[10] < 45 && geometry < 15 && metrics[70] > 16) ||
-       metrics[4] == 128))
+      ((metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] < 45 && geometry < 15 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY_DISTANCE] > 16) ||
+       metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] == 128))
     flags[0] = flags[1] = 0;
   if (flags[1] != 0 &&
       ((filtered < 22 && combined < 371) ||
@@ -825,13 +832,14 @@ post_veto (const int32_t metrics[77],
 }
 
 static void
-late_eligibility (const int32_t metrics[77],
+late_eligibility (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                   int32_t       image_quality,
                   int32_t       image_coverage,
                   int32_t       output[2])
 {
   int32_t quality = normalized_quality (image_quality, image_coverage);
-  int32_t primary = metrics[0] > 12 ? 12 : metrics[0];
+  int32_t primary = metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] > 12 ?
+                    12 : metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY];
   int32_t quality_band = (quality - 1) / 10;
   int strict = 0;
   int broad = 0;
@@ -841,42 +849,84 @@ late_eligibility (const int32_t metrics[77],
       switch (primary)
         {
         case 6:
-          strict = quality_band < 6 && metrics[4] > 229 && metrics[5] > 210 &&
-                   metrics[10] > 40 && metrics[9] > 115;
+          strict = quality_band < 6 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 229 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 210 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 40 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 115;
           break;
         case 7:
-          strict = (quality_band < 6 && metrics[4] > 224 && metrics[5] > 206 &&
-                    metrics[10] > 35 && metrics[9] > 149) ||
-                   (quality_band < 5 && metrics[10] > 50 && metrics[5] > 212 &&
-                    metrics[8] > 195 && metrics[9] > 55 && metrics[4] > 210);
+          strict =
+            (quality_band < 6 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 224 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 206 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 35 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 149) ||
+            (quality_band < 5 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 50 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 212 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] > 195 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 55 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 210);
           break;
         case 8:
-          strict = quality_band < 6 && metrics[4] > 224 && metrics[5] > 206 &&
-                   metrics[10] > 34 && metrics[9] > 153;
+          strict = quality_band < 6 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 224 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 206 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 34 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 153;
           break;
         case 9:
-          strict = (quality_band < 7 && metrics[4] > 230 && metrics[5] > 206 &&
-                    metrics[10] > 35 && metrics[9] > 110) ||
-                   (quality_band < 5 && metrics[4] > 218 && metrics[5] > 202 &&
-                    metrics[10] > 29 && metrics[9] > 152 && metrics[8] > 182);
+          strict =
+            (quality_band < 7 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 230 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 206 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 35 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 110) ||
+            (quality_band < 5 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 218 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 202 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 29 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 152 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] > 182);
           break;
         case 10:
-          strict = (quality_band < 7 && metrics[4] > 221 && metrics[5] > 206 &&
-                    metrics[10] > 30 && metrics[9] > 111) ||
-                   (quality_band < 6 && metrics[4] > 218 && metrics[5] > 203 &&
-                    metrics[10] > 42 && metrics[9] > 143);
+          strict =
+            (quality_band < 7 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 221 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 206 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 30 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 111) ||
+            (quality_band < 6 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 218 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 203 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 42 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 143);
           break;
         case 11:
-          strict = (quality_band < 3 && metrics[4] > 219 && metrics[5] > 195 &&
-                    metrics[10] > 35 && metrics[9] > 119) ||
-                   (quality_band < 6 && metrics[4] > 219 && metrics[5] > 201 &&
-                    metrics[10] > 36 && metrics[9] > 150) ||
-                   (quality_band < 7 && metrics[4] > 219 && metrics[5] > 203 &&
-                    metrics[10] > 37 && metrics[9] > 135);
+          strict =
+            (quality_band < 3 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 219 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 195 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 35 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 119) ||
+            (quality_band < 6 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 219 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 201 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 36 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 150) ||
+            (quality_band < 7 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 219 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 203 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 37 &&
+             metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 135);
           break;
         case 12:
-          strict = quality_band < 6 && metrics[4] > 215 && metrics[5] > 203 &&
-                   metrics[10] > 33 && metrics[9] > 135;
+          strict = quality_band < 6 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 215 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 203 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 33 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 135;
           break;
         }
     }
@@ -885,43 +935,51 @@ late_eligibility (const int32_t metrics[77],
       switch (primary)
         {
         case 5:
-          broad = (quality_band <= 4 && metrics[10] >= 48 && metrics[5] >= 213 && metrics[9] >= 52) ||
-                  (quality_band <= 3 && metrics[10] >= 41 && metrics[5] >= 210 && metrics[9] >= 52) ||
-                  (quality_band <= 2 && metrics[10] >= 36 && metrics[5] >= 209 && metrics[9] >= 65);
+          broad =
+            (quality_band <= 4 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 48 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 213 && metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] >= 52) ||
+            (quality_band <= 3 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 41 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 210 && metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] >= 52) ||
+            (quality_band <= 2 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 36 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 209 && metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] >= 65);
           break;
         case 6:
-          broad = (quality_band <= 4 && metrics[10] >= 46 && metrics[5] >= 211 && metrics[9] >= 51) ||
-                  (quality_band <= 3 && metrics[10] >= 41 && metrics[5] >= 207 && metrics[9] >= 51) ||
-                  (quality_band <= 2 && metrics[10] >= 36 && metrics[5] >= 206 && metrics[9] >= 50);
+          broad =
+            (quality_band <= 4 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 46 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 211 && metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] >= 51) ||
+            (quality_band <= 3 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 41 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 207 && metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] >= 51) ||
+            (quality_band <= 2 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 36 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 206 && metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] >= 50);
           break;
         case 7:
-          broad = (quality_band <= 4 && metrics[10] >= 46 && metrics[5] >= 204 && metrics[9] >= 65 && metrics[1] >= 8) ||
-                  (quality_band <= 3 && metrics[10] >= 41 && metrics[5] >= 204 && metrics[9] >= 50);
+          broad =
+            (quality_band <= 4 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 46 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 204 && metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] >= 65 && metrics[GOODIX_MILAN_POLICY_METRIC_FILTERED] >= 8) ||
+            (quality_band <= 3 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 41 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 204 && metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] >= 50);
           break;
         case 8:
-          broad = (quality_band <= 4 && metrics[10] >= 46 && metrics[5] >= 204 && metrics[9] >= 61) ||
-                  (quality_band <= 3 && metrics[10] >= 41 && metrics[5] >= 203 && metrics[9] >= 51) ||
-                  (quality_band <= 2 && metrics[10] >= 36 && metrics[5] >= 201 && metrics[9] >= 50);
+          broad =
+            (quality_band <= 4 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 46 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 204 && metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] >= 61) ||
+            (quality_band <= 3 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 41 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 203 && metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] >= 51) ||
+            (quality_band <= 2 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 36 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 201 && metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] >= 50);
           break;
         case 9:
-          broad = (quality_band <= 4 && metrics[10] >= 46 && metrics[5] >= 201) ||
-                  (quality_band <= 3 && metrics[10] >= 41 && metrics[5] >= 196) ||
-                  (quality_band <= 2 && metrics[10] >= 36 && metrics[5] >= 195);
+          broad =
+            (quality_band <= 4 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 46 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 201) ||
+            (quality_band <= 3 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 41 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 196) ||
+            (quality_band <= 2 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 36 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 195);
           break;
         case 10:
-          broad = (quality_band <= 4 && metrics[10] >= 51 && metrics[5] >= 194) ||
-                  (quality_band <= 3 && metrics[10] >= 47 && metrics[5] >= 193) ||
-                  (quality_band <= 2 && metrics[10] >= 36 && metrics[5] >= 194);
+          broad =
+            (quality_band <= 4 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 51 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 194) ||
+            (quality_band <= 3 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 47 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 193) ||
+            (quality_band <= 2 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 36 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 194);
           break;
         case 11:
-          broad = (quality_band <= 4 && metrics[10] >= 47 && metrics[5] >= 187) ||
-                  (quality_band <= 3 && metrics[10] >= 47 && metrics[5] >= 192) ||
-                  (quality_band <= 2 && metrics[10] >= 47 && metrics[5] >= 191);
+          broad =
+            (quality_band <= 4 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 47 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 187) ||
+            (quality_band <= 3 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 47 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 192) ||
+            (quality_band <= 2 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 47 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 191);
           break;
         case 12:
-          broad = (quality_band <= 4 && metrics[10] >= 52 && metrics[5] >= 186) ||
-                  (quality_band <= 3 && metrics[10] >= 49 && metrics[5] >= 193) ||
-                  (quality_band <= 2 && metrics[10] >= 36 && metrics[5] >= 196);
+          broad =
+            (quality_band <= 4 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 52 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 186) ||
+            (quality_band <= 3 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 49 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 193) ||
+            (quality_band <= 2 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] >= 36 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] >= 196);
           break;
         }
     }
@@ -935,17 +993,17 @@ goodix_milan_matcher_policy_init (GoodixMilanMatcherPolicy *policy,
 {
   static const int32_t profile9_type12[20] = {
     0, 0, 5, 218, 1, 1, 23, 47, 40, 38,
-    -1, 16, 246, 1, 0, 12, 0, 1, 0, 1,
+    -1, 16, 246, 1, 0, GOODIX_MILAN_PRINT_SENSOR_TYPE, 0, 1, 0, 1,
   };
 
   memcpy (policy->configuration, profile9_type12, sizeof(profile9_type12));
-  policy->configuration[18] = packed_mode;
+  policy->configuration[GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE] = packed_mode;
 }
 
 void
 goodix_milan_matcher_policy_evaluate (
   GoodixMilanMatcherPolicy      *policy,
-  const int32_t                  metrics[77],
+  const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORDS],
   int32_t                        image_quality,
   int32_t                        image_coverage,
   int32_t                        accumulated_high_class,
@@ -974,7 +1032,8 @@ goodix_milan_matcher_policy_evaluate (
         first_veto (metrics, policy, &flags[0]);
       if (flags[1] != 0 && flags[0] == 0)
         post_veto (metrics, policy, flags);
-      if (flags[0] == 0 && policy->configuration[19] == 1)
+      if (flags[0] == 0 &&
+          policy->configuration[GOODIX_MILAN_POLICY_CONFIG_RECOGNITION_MODE] == 1)
         {
           output[0] = output[1] = 0;
           late_eligibility (metrics, image_quality, image_coverage, output);
@@ -989,7 +1048,7 @@ goodix_milan_matcher_policy_evaluate (
 
 void
 goodix_milan_matcher_policy_apply_final (
-  const int32_t metrics[77],
+  const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
   int32_t       probe_coverage,
   int32_t       accumulated_high_class,
   int32_t       probe_low_class,
@@ -1006,34 +1065,47 @@ goodix_milan_matcher_policy_apply_final (
     return;
 
   scaled = policy_arithmetic_shift_8 (
-    policy_wrap_multiply (metrics[11], metrics[9]));
+    policy_wrap_multiply (metrics[GOODIX_MILAN_POLICY_METRIC_GEOMETRY],
+                          metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE]));
   entry_guard =
     (accumulated_high_class >= 3 && probe_low_class >= 4 &&
-     probe_coverage < 80 && metrics[10] < 70) ||
+     probe_coverage < 80 && metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] < 70) ||
     (accumulated_high_class >= 2 && probe_low_class >= 2 &&
      probe_coverage < 55 && scaled < 20);
   weak_metric =
-    (metrics[0] < 19 && metrics[5] < 201 && metrics[8] < 200 &&
+    (metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 19 &&
+     metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 201 &&
+     metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 200 &&
      scaled < 15) ||
-    (metrics[0] < 13 &&
-     ((accumulated_high_class >= 4 && metrics[5] < 201 &&
-       metrics[8] < 200) ||
-      (metrics[5] < 216 && metrics[8] < 210 && scaled < 18))) ||
-    (metrics[0] < 11 &&
-     ((metrics[5] < 211 && metrics[8] < 215 && scaled < 15) ||
-      (metrics[5] < 201 && metrics[8] < 200)));
+    (metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 13 &&
+     ((accumulated_high_class >= 4 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 201 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 200) ||
+      (metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 216 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 210 && scaled < 18))) ||
+    (metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 11 &&
+     ((metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 211 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 215 && scaled < 15) ||
+      (metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 201 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 200)));
   if (*candidate_flag == 1 && entry_guard && weak_metric)
     *match_flag = *candidate_flag = 0;
 
   if ((accumulated_high_class >= 4 && probe_low_class == 1 &&
        probe_coverage < 50 && support_ratio_q8 > 219) ||
       (accumulated_high_class >= 3 && probe_low_class >= 2 &&
-       probe_coverage < 50 && metrics[0] < 8 && metrics[5] < 203 &&
-       metrics[8] < 200 && scaled < 17 && metrics[9] < 170) ||
+       probe_coverage < 50 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 8 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 203 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 200 && scaled < 17 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] < 170) ||
       (accumulated_high_class >= 2 &&
        ((probe_low_class >= 3 && support_ratio_q8 > 149 &&
-         metrics[5] < 201 && metrics[8] < 200 && scaled < 17) ||
-        (probe_coverage < 35 && metrics[5] < 208 && metrics[8] < 197 &&
+         metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 201 &&
+         metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 200 && scaled < 17) ||
+        (probe_coverage < 35 &&
+         metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 208 &&
+         metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 197 &&
          scaled < 20))))
     *match_flag = 0;
 }
@@ -1041,16 +1113,23 @@ goodix_milan_matcher_policy_apply_final (
 void
 goodix_milan_matcher_policy_apply_late_veto (
   const GoodixMilanMatcherPolicy *policy,
-  const int32_t                   metrics[77],
+  const int32_t                   metrics[GOODIX_MILAN_CANDIDATE_WORDS],
   int32_t                        *match_flag,
   int32_t                        *candidate_flag)
 {
-  if (policy->configuration[18] > 0 && policy->configuration[15] == 12 &&
-      ((metrics[0] < 9 && metrics[11] < 12) ||
-       (metrics[0] < 8 && metrics[11] < 14) ||
-       (metrics[0] < 7 && metrics[11] < 16) ||
-       (metrics[0] < 6 && metrics[11] < 18) ||
-       (metrics[0] < 5 && metrics[11] < 20)))
+  if (policy->configuration[GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE] > 0 &&
+      policy->configuration[GOODIX_MILAN_POLICY_CONFIG_SUBTYPE] ==
+      GOODIX_MILAN_PRINT_SENSOR_TYPE &&
+      ((metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 9 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_GEOMETRY] < 12) ||
+       (metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 8 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_GEOMETRY] < 14) ||
+       (metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 7 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_GEOMETRY] < 16) ||
+       (metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 6 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_GEOMETRY] < 18) ||
+       (metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 5 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_GEOMETRY] < 20)))
     *match_flag = *candidate_flag = 0;
 }
 
@@ -1156,7 +1235,7 @@ goodix_milan_matcher_late_context_derive (
 static int32_t
 overlap_margin_type12 (int32_t       accumulated_high_class,
                        int32_t       primary_histogram_class,
-                       const int32_t metrics[77],
+                       const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                        int32_t       context_record_count,
                        int32_t       image_quality)
 {
@@ -1166,7 +1245,8 @@ overlap_margin_type12 (int32_t       accumulated_high_class,
     margin = 10;
   else if (accumulated_high_class < 4)
     {
-      if (metrics[5] < 197 && metrics[8] < 195)
+      if (metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 197 &&
+          metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 195)
         margin = 20;
       else if (primary_histogram_class > 1)
         margin = 15;
@@ -1179,7 +1259,8 @@ overlap_margin_type12 (int32_t       accumulated_high_class,
     /* The caller caps accumulated_high_class at five. */
     margin = 20;
 
-  if (metrics[0] < 9 && image_quality < 65 && margin < 15)
+  if (metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] < 9 &&
+      image_quality < 65 && margin < 15)
     margin = 15;
 
   int32_t normalized = context_record_count * 100 / 120;
@@ -1192,43 +1273,54 @@ overlap_margin_type12 (int32_t       accumulated_high_class,
 
 static int
 overlap_eligible_type12 (const int32_t state[3],
-                         const int32_t metrics[77],
+                         const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                          int32_t       image_quality,
                          int32_t       image_coverage)
 {
-  int64_t primary_filtered_delta = (int64_t) metrics[0] - metrics[1];
+  int64_t primary_filtered_delta =
+    (int64_t) metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] -
+    metrics[GOODIX_MILAN_POLICY_METRIC_FILTERED];
 
   if (primary_filtered_delta < 0)
     primary_filtered_delta = -primary_filtered_delta;
   if (state[0] >= 4 || state[2] >= 4 ||
       (state[0] >= 2 && state[1] >= 1) ||
-      (state[0] >= 2 && metrics[5] < 230 && metrics[8] < 215 &&
+      (state[0] >= 2 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 230 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 215 &&
        image_coverage <= 60) ||
-      (state[0] >= 2 && metrics[5] < 215 && metrics[8] < 215 &&
+      (state[0] >= 2 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 215 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 215 &&
        image_coverage < 87) ||
-      (state[0] >= 1 && metrics[5] < 208 && metrics[8] < 214 &&
+      (state[0] >= 1 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 208 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 214 &&
        image_coverage < 85) ||
-      (state[0] >= 0 && metrics[5] <= 195 && metrics[8] <= 195 &&
+      (state[0] >= 0 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] <= 195 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] <= 195 &&
        image_coverage <= 85) ||
-      (state[0] >= 0 && metrics[5] <= 200 && metrics[8] <= 203 &&
+      (state[0] >= 0 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] <= 200 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] <= 203 &&
        image_coverage <= 50) ||
-      (state[0] >= 0 && metrics[5] <= 205 && metrics[8] <= 208 &&
+      (state[0] >= 0 && metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] <= 205 &&
+       metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] <= 208 &&
        image_coverage <= 40))
     return 1;
 
   return primary_filtered_delta < 7 && image_coverage < 46 &&
-         image_quality < 45 && metrics[0] > 5;
+         image_quality < 45 &&
+         metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] > 5;
 }
 
 static int32_t
 transformed_in_bounds_area_type12 (const int32_t transform[6])
 {
-  const int32_t maximum_x = (GOODIX_MILAN_MATCH_COLUMNS - 1) * 256;
-  const int32_t maximum_y = (GOODIX_MILAN_MATCH_ROWS - 1) * 256;
+  const int32_t maximum_x =
+    (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS - 1) * 256;
+  const int32_t maximum_y =
+    (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS - 1) * 256;
   int32_t area = 0;
 
-  for (int32_t y = 0; y < GOODIX_MILAN_MATCH_ROWS; y++)
-    for (int32_t x = 0; x < GOODIX_MILAN_MATCH_COLUMNS; x++)
+  for (int32_t y = 0; y < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS; y++)
+    for (int32_t x = 0; x < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS; x++)
       {
         int64_t source_x = (int64_t) x * transform[0] +
                            (int64_t) y * transform[1] + transform[2];
@@ -1247,7 +1339,8 @@ overlap_status_type12 (int32_t area,
                        int32_t margin)
 {
   return area * 100 >
-         (100 - margin) * GOODIX_MILAN_MATCH_ROWS * GOODIX_MILAN_MATCH_COLUMNS;
+         (100 - margin) * GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS *
+         GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS;
 }
 
 static int
@@ -1255,12 +1348,13 @@ overlap_clears_match_flag_type12 (int32_t area,
                               int32_t margin)
 {
   return area * 100 >
-         (95 - margin) * GOODIX_MILAN_MATCH_ROWS * GOODIX_MILAN_MATCH_COLUMNS;
+         (95 - margin) * GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS *
+         GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS;
 }
 
 int
 goodix_milan_matcher_policy_apply_status (
-  const int32_t metrics[77],
+  const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
   const int32_t transform[6],
   const int32_t state[3],
   int32_t       context_record_count,
@@ -1276,97 +1370,147 @@ goodix_milan_matcher_policy_apply_status (
     {
       if (state[0] >= 4)
         status = 1;
-      else if (state[0] >= 2 && metrics[0] > 6 && metrics[10] < 66 &&
+      else if (state[0] >= 2 &&
+               metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] > 6 &&
+               metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] < 66 &&
                image_coverage < 85 &&
-               ((metrics[5] < 201 && metrics[8] < 215) ||
-                (metrics[5] < 215 && metrics[8] < 210)))
+               ((metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 201 &&
+                 metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 215) ||
+                (metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 215 &&
+                 metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 210)))
         status = 1;
-      else if (state[0] == 1 && metrics[0] > 6 && metrics[10] < 66 &&
+      else if (state[0] == 1 &&
+               metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] > 6 &&
+               metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] < 66 &&
                image_coverage < 85 &&
-               ((metrics[5] < 210 && metrics[8] < 200) ||
-                (metrics[5] < 205 && metrics[8] < 210)))
+               ((metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 210 &&
+                 metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 200) ||
+                (metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 205 &&
+                 metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 210)))
         status = 1;
     }
 
   if (state[0] > 1)
     {
       if (mode_transform_close_type12 (transform, 5) &&
-          metrics[5] < 201 && metrics[8] < 190)
+          metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 201 &&
+          metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 190)
         *match_flag = 0;
       if (mode_transform_close_type12 (transform, 4) &&
-          metrics[5] < 210 && metrics[8] < 207)
+          metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 210 &&
+          metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 207)
         status = 1;
-      if (image_coverage < 61 && metrics[0] > 6)
+      if (image_coverage < 61 &&
+          metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] > 6)
         {
           if (transform_class_close_type12 (transform, 0) &&
-              metrics[5] < 240 && metrics[8] < 237)
+              metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 240 &&
+              metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 237)
             status = 1;
           else if (transform_class_close_type12 (transform, 1) &&
-                   metrics[5] < 235 && metrics[8] < 236)
+                   metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 235 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 236)
             status = 1;
           else if (transform_class_close_type12 (transform, 2) &&
-                   metrics[5] < 226 && metrics[8] < 228)
+                   metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 226 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 228)
             status = 1;
           else if (transform_class_close_type12 (transform, 3) &&
-                   metrics[5] < 216 && metrics[8] < 218)
+                   metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 216 &&
+                   metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 218)
             status = 1;
         }
     }
 
-  if (state[0] > 0 && image_coverage < 61 && metrics[0] > 6)
+  if (state[0] > 0 && image_coverage < 61 &&
+      metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] > 6)
     {
       if (transform_class_close_type12 (transform, 0) &&
-          metrics[5] < 234 && metrics[8] < 233)
+          metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 234 &&
+          metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 233)
         status = 1;
       else if (transform_class_close_type12 (transform, 1) &&
-               metrics[5] < 230 && metrics[8] < 233)
+               metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 230 &&
+               metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 233)
         status = 1;
       else if (transform_class_close_type12 (transform, 2) &&
-               metrics[5] < 216 && metrics[8] < 221)
+               metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 216 &&
+               metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 221)
         status = 1;
       else if (transform_class_close_type12 (transform, 3) &&
-               metrics[5] < 206 && metrics[8] < 208)
+               metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 206 &&
+               metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 208)
         status = 1;
     }
 
   /* Profile-9/subtype-12 callers provide only nonnegative state classes. */
   if (transform_class_close_type12 (transform, 3) && image_coverage < 76 &&
-      metrics[5] < 205 && metrics[8] < 200)
+      metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 205 &&
+      metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 200)
     *match_flag = 0;
 
   if (transform_class_close_type12 (transform, 0) && image_coverage < 72 &&
-      ((metrics[5] < 211 && metrics[8] < 215) ||
-       (image_coverage < 31 && metrics[5] < 218 && metrics[8] < 220) ||
-       (image_coverage < 16 && metrics[5] < 223 && metrics[8] < 220)))
+      ((metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 211 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 215) ||
+       (image_coverage < 31 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 218 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 220) ||
+       (image_coverage < 16 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 223 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 220)))
     status = 1;
 
   if (transform_class_close_type12 (transform, 1) &&
-      ((image_coverage < 76 && metrics[5] < 205 && metrics[8] < 202) ||
-       (image_coverage < 79 && metrics[5] < 202 && metrics[8] < 201) ||
+      ((image_coverage < 76 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 205 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 202) ||
+       (image_coverage < 79 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 202 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 201) ||
        /* coverage<78,m5<198,m8<196 is dominated by the preceding tuple. */
-       (image_coverage < 83 && metrics[5] < 195 && metrics[8] < 192) ||
-       (image_coverage < 32 && metrics[5] < 218 && metrics[8] < 220) ||
-       (image_coverage < 37 && metrics[5] < 201 && metrics[8] < 206)))
+       (image_coverage < 83 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 195 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 192) ||
+       (image_coverage < 32 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 218 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 220) ||
+       (image_coverage < 37 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 201 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 206)))
     status = 1;
 
   if (transform_class_close_type12 (transform, 2) &&
-      ((image_coverage < 65 && metrics[5] < 212 && metrics[8] < 203) ||
-       (image_coverage < 84 && metrics[5] < 194 && metrics[8] < 189) ||
-       (image_coverage < 82 && metrics[5] < 202 && metrics[8] < 193) ||
-       (image_coverage < 33 && metrics[5] < 212 && metrics[8] < 215) ||
-       (image_coverage < 78 && metrics[5] < 198 && metrics[8] < 197)))
+      ((image_coverage < 65 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 212 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 203) ||
+       (image_coverage < 84 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 194 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 189) ||
+       (image_coverage < 82 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 202 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 193) ||
+       (image_coverage < 33 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 212 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 215) ||
+       (image_coverage < 78 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 198 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 197)))
     status = 1;
 
   if (transform_class_close_type12 (transform, 3) &&
-      ((image_coverage < 76 && metrics[5] < 194 && metrics[8] < 195) ||
-       (image_coverage < 17 && metrics[5] < 199 && metrics[8] < 199)))
+      ((image_coverage < 76 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 194 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 195) ||
+       (image_coverage < 17 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] < 199 &&
+        metrics[GOODIX_MILAN_POLICY_METRIC_COMBINED] < 199)))
     status = 1;
 
   if (status)
     goto status_return;
 
   if (state[0] >= 4 && context_record_count < 50 && image_quality > 80 &&
-      metrics[9] < 50)
+      metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] < 50)
     {
       status = 1;
       goto status_return;

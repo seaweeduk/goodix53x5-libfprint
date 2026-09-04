@@ -13,16 +13,15 @@
 #include "milan/match/match.h"
 #include "milan/study/queue.h"
 
-gboolean goodix_match_queue_matches_template (const GoodixStudyQueue *queue,
+gboolean goodix_milan_match_queue_matches_template (const GoodixStudyQueue *queue,
                                                const guint8           *feature,
                                                gsize                   feature_len);
 
-GoodixSigfmTemplateStatus goodix_match_serialized_feature_result_internal (
-  GoodixMatchInfo             *probe_info,
-  const guint8                *feature,
-  gsize                        feature_len,
-  GoodixMilanMatchResult      *match_result,
-  GBytes                     **updated_feature,
+GoodixSigfmTemplateStatus goodix_milan_match_serialized_feature_result_internal (GoodixMatchInfo                *probe_info,
+                                                                                 const guint8                   *feature,
+                                                                                 gsize                           feature_len,
+                                                                                 GoodixMilanMatchResult         *match_result,
+                                                                                 GBytes                        **updated_feature,
 #ifdef GOODIX53X5_DEBUG
   GoodixMilanMatchDiagnostics *diagnostics,
 #endif

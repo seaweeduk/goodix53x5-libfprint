@@ -38,7 +38,8 @@ mapfile -t sources < <(
     milan/match/geometry.c milan/match/info.c milan/match/lifecycle.c \
     milan/match/overlap.c milan/match/policy.c milan/match/rescue.c \
     milan/match/score.c milan/match/selection.c milan/match/study.c \
-    milan/match/match.c milan/core.c milan/preprocess/classification.c \
+    milan/match/match.c milan/core.c milan/debug-hooks.c \
+    milan/preprocess/classification.c \
     milan/preprocess/gain.c milan/preprocess/selection.c \
     milan/preprocess/validity.c milan/print.c milan/relations.c milan/runtime.c \
     milan/study/policy.c milan/study/queue.c milan/study/study.c \

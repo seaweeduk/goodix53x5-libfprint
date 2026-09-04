@@ -9,6 +9,7 @@
  */
 
 #include "milan/match/correspondence.h"
+#include "milan/preprocess/state.h"
 #include "milan/relations.h"
 #include "milan/transform-private.h"
 
@@ -555,8 +556,10 @@ goodix_milan_match_alternate_correspondences_internal (
           int second_distance = 192;
           int best_index = -1;
 
-          if (inverse_x <= 5 || inverse_x >= 104 - 5 ||
-              inverse_y <= 5 || inverse_y >= 88 - 5)
+          if (inverse_x <= 5 ||
+              inverse_x >= GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS - 5 ||
+              inverse_y <= 5 ||
+              inverse_y >= GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS - 5)
             continue;
           for (size_t probe_index = probe_begin; probe_index < probe_end;
                probe_index++)
@@ -587,8 +590,10 @@ goodix_milan_match_alternate_correspondences_internal (
                     transformed_x, (uint32_t) enrolled_x) ||
                   !milan_match_scan_residual_within (
                     transformed_y, (uint32_t) enrolled_y) ||
-                  pixel_x <= 5 || pixel_x > 104 - 5 ||
-                  pixel_y <= 5 || pixel_y > 88 - 5)
+                  pixel_x <= 5 ||
+                  pixel_x > GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS - 5 ||
+                  pixel_y <= 5 ||
+                  pixel_y > GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS - 5)
                 continue;
               if (distance < best_distance)
                 {
@@ -918,8 +923,10 @@ goodix_milan_match_cross_class_alternate_correspondences (
       int second_distance = 192;
       int best_index = -1;
 
-      if (inverse_x <= 5 || inverse_x >= 104 - 5 ||
-          inverse_y <= 5 || inverse_y >= 88 - 5)
+      if (inverse_x <= 5 ||
+          inverse_x >= GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS - 5 ||
+          inverse_y <= 5 ||
+          inverse_y >= GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS - 5)
         continue;
       for (size_t probe_index = probe_begin; probe_index < probe_end;
            probe_index++)
@@ -949,8 +956,10 @@ goodix_milan_match_cross_class_alternate_correspondences (
                 transformed_x, (uint32_t) enrolled_x) ||
               !milan_match_scan_residual_within (
                 transformed_y, (uint32_t) enrolled_y) ||
-              pixel_x <= 5 || pixel_x > 104 - 5 ||
-              pixel_y <= 5 || pixel_y > 88 - 5)
+              pixel_x <= 5 ||
+              pixel_x > GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS - 5 ||
+              pixel_y <= 5 ||
+              pixel_y > GOODIX_MILAN_EXTRACTION_CLASSIFICATION_ROWS - 5)
             continue;
           if (distance < best_distance)
             {

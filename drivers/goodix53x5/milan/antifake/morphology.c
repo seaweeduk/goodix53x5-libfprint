@@ -17,7 +17,7 @@
  * must not be corrected.
  */
 
-#include "milan/milan.h"
+#include "milan/antifake/antifake.h"
 #include "milan/transform-private.h"
 
 #include <stdint.h>
@@ -457,25 +457,33 @@ goodix_milan_antifake_boundary_score (
   const uint8_t  *classes,
   size_t          rows,
   size_t          columns,
-  uint8_t        *thinned,
   int32_t        *score)
 {
+  uint8_t *thinned;
   uint32_t maximum;
   uint32_t difference_sum;
   uint32_t adjacent_count;
+  int result = -1;
 
-  if (!residual || !classes || !thinned || !score || rows < 7 ||
+  if (!residual || !classes || !score || rows < 7 ||
       columns < 7 || columns > SIZE_MAX / rows)
     return -1;
 
+  thinned = malloc (rows * columns);
+  if (!thinned)
+    return -1;
   for (size_t i = 0; i < rows * columns; i++)
     thinned[i] = classes[i] == ANTIFAKE_CLASS_DARK ? ANTIFAKE_CLASS_DARK : 0;
 
   maximum = boundary_maximum_residual (residual, classes, rows, columns);
   if (zhang_suen_thin (thinned, rows, columns, THINNING_MAX_ITERATIONS) != 0)
-    return -1;
+    goto out;
   boundary_adjacent_differences (residual, thinned, rows, columns,
                                  &difference_sum, &adjacent_count);
-  return boundary_rounded_ratio (difference_sum, adjacent_count, maximum,
-                                 score);
+  result = boundary_rounded_ratio (difference_sum, adjacent_count, maximum,
+                                   score);
+
+out:
+  free (thinned);
+  return result;
 }

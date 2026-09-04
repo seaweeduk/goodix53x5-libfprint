@@ -9,6 +9,7 @@
  */
 
 #include "milan/match/selection.h"
+#include "milan/print.h"
 #include "milan/relations.h"
 
 #include <limits.h>
@@ -365,7 +366,7 @@ goodix_milan_match_selection_block_candidate (
       event->blocking_recorded = 0;
       event->blocking_metric = 0;
     }
-  if (type != 12)
+  if (type != GOODIX_MILAN_PRINT_SENSOR_TYPE)
     return 0;
 
   if (feature_boundary_score != -1)

@@ -49,25 +49,23 @@ typedef gboolean (*GoodixStudyQueueFollowupFunc) (GoodixMatchInfo *queued,
                                                   gsize           *selected_index,
                                                   gpointer         user_data);
 
-GoodixStudyQueue *goodix_study_queue_new (uint32_t enabled_state,
+GoodixStudyQueue *goodix_milan_study_queue_new (uint32_t enabled_state,
                                           uint32_t transaction_counter);
-void              goodix_study_queue_free (GoodixStudyQueue *queue);
+void              goodix_milan_study_queue_free (GoodixStudyQueue *queue);
 
-gboolean goodix_study_queue_validate (const GoodixStudyQueue *queue);
-gsize    goodix_study_queue_occupied (const GoodixStudyQueue *queue);
-gsize    goodix_study_queue_allocated (const GoodixStudyQueue *queue);
+gboolean goodix_milan_study_queue_validate (const GoodixStudyQueue *queue);
+gsize    goodix_milan_study_queue_occupied (const GoodixStudyQueue *queue);
+gsize    goodix_milan_study_queue_allocated (const GoodixStudyQueue *queue);
 
-GoodixStudyQueueEnqueueResult goodix_study_queue_enqueue (
-  GoodixStudyQueue           *queue,
-  const GoodixMatchInfo      *incoming,
-  GoodixStudyQueueMetricFunc  metric_func,
-  gpointer                    user_data);
+GoodixStudyQueueEnqueueResult goodix_milan_study_queue_enqueue (GoodixStudyQueue          *queue,
+                                                                const GoodixMatchInfo     *incoming,
+                                                                GoodixStudyQueueMetricFunc metric_func,
+                                                                gpointer                   user_data);
 
-gboolean goodix_study_queue_process (
-  GoodixStudyQueue             *queue,
-  gsize                         primary_selected_index,
-  GoodixStudyQueueFollowupFunc  followup_func,
-  gpointer                      user_data,
-  gboolean                     *mutated);
+gboolean goodix_milan_study_queue_process (GoodixStudyQueue            *queue,
+                                           gsize                        primary_selected_index,
+                                           GoodixStudyQueueFollowupFunc followup_func,
+                                           gpointer                     user_data,
+                                           gboolean                    *mutated);
 
-void goodix_study_queue_disable (GoodixStudyQueue *queue);
+void goodix_milan_study_queue_disable (GoodixStudyQueue *queue);

@@ -8,7 +8,8 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
-#include "milan/milan.h"
+#include "milan/antifake/antifake.h"
+#include "milan/print.h"
 #include "milan/transform-private.h"
 
 #include <limits.h>
@@ -18,7 +19,6 @@
 /* Profile-9 anti-fake signal stages recovered from FUN_18003a150,
  * FUN_18003a9b0, FUN_18003aff0, and FUN_180039c10. */
 #define ANTIFAKE_RESIDUAL_BASELINE 0x1bb7
-#define ANTIFAKE_EDGE_REPLICATE_TYPE_12 0x0c
 #define ANTIFAKE_EDGE_REPLICATE_TYPE_17 0x11
 #define ANTIFAKE_NEIGHBORHOOD_SIZE 9
 #define ANTIFAKE_NEIGHBORHOOD_MEDIAN 4
@@ -65,7 +65,7 @@ goodix_milan_antifake_residual (
         residual[i] = (uint16_t) value;
       }
 
-  if (chip_type == ANTIFAKE_EDGE_REPLICATE_TYPE_12 ||
+  if (chip_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ||
       chip_type == ANTIFAKE_EDGE_REPLICATE_TYPE_17)
     {
       memcpy (residual, residual + columns,
