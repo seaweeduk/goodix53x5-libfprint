@@ -29,6 +29,11 @@
 #define ANTIFAKE_IMPULSE_CUTOFF_DENOMINATOR 10
 #define ANTIFAKE_ROUGHNESS_MEDIAN_SCALE 5
 #define ANTIFAKE_ROUGHNESS_CENTER_SCALE 2
+#define ANTIFAKE_TEXTURE_BORDER 4
+#define ANTIFAKE_TEXTURE_RADIUS 5
+#define ANTIFAKE_HIGHPASS_CENTER 0x2000
+#define ANTIFAKE_TEXTURE_SCALE 3
+#define ANTIFAKE_VARIATION_Q12_ONE 0x1000
 
 int
 goodix_milan_antifake_residual (
@@ -264,17 +269,26 @@ goodix_milan_antifake_statistics (
           0 :
           (int32_t) ((masked_sum + masked_count / 2) / masked_count);
 
-  if (rows > 8 && columns > 8)
+  if (rows > 2 * ANTIFAKE_TEXTURE_BORDER &&
+      columns > 2 * ANTIFAKE_TEXTURE_BORDER)
     {
-      for (size_t row = 4; row + 4 < rows; row++)
-        for (size_t column = 4; column + 4 < columns; column++)
+      for (size_t row = ANTIFAKE_TEXTURE_BORDER;
+           row + ANTIFAKE_TEXTURE_BORDER < rows;
+           row++)
+        for (size_t column = ANTIFAKE_TEXTURE_BORDER;
+             column + ANTIFAKE_TEXTURE_BORDER < columns;
+             column++)
           {
             size_t i = row * columns + column;
             uint32_t local_sum = 0;
-            size_t top = row > 5 ? row - 5 : 0;
-            size_t bottom = row + 5 < rows ? row + 5 : rows - 1;
-            size_t left = column > 5 ? column - 5 : 0;
-            size_t right = column + 5 < columns ? column + 5 : columns - 1;
+            size_t top = row > ANTIFAKE_TEXTURE_RADIUS ?
+                         row - ANTIFAKE_TEXTURE_RADIUS : 0;
+            size_t bottom = row + ANTIFAKE_TEXTURE_RADIUS < rows ?
+                            row + ANTIFAKE_TEXTURE_RADIUS : rows - 1;
+            size_t left = column > ANTIFAKE_TEXTURE_RADIUS ?
+                          column - ANTIFAKE_TEXTURE_RADIUS : 0;
+            size_t right = column + ANTIFAKE_TEXTURE_RADIUS < columns ?
+                           column + ANTIFAKE_TEXTURE_RADIUS : columns - 1;
             size_t area = (bottom - top + 1) * (right - left + 1);
 
             if (mask[i] == 0)
@@ -284,17 +298,20 @@ goodix_milan_antifake_statistics (
                 local_sum += residual[y * columns + x];
             uint16_t local_mean = (uint16_t) ((local_sum + area / 2) / area);
             int16_t highpass = (int16_t) ((int16_t) residual[i] -
-                                          (int16_t) local_mean + 0x2000);
+                                          (int16_t) local_mean +
+                                          ANTIFAKE_HIGHPASS_CENTER);
             uint16_t encoded = (uint16_t) highpass;
 
-            texture_sum += encoded > 0x2000 ? encoded - 0x2000 :
-                           0x2000 - encoded;
+            texture_sum += encoded > ANTIFAKE_HIGHPASS_CENTER ?
+                           encoded - ANTIFAKE_HIGHPASS_CENTER :
+                           ANTIFAKE_HIGHPASS_CENTER - encoded;
             texture_count++;
           }
     }
   *texture = texture_count == 0 ?
              0 :
-             (int32_t) (((texture_sum + texture_count / 2) * 3) /
+             (int32_t) (((texture_sum + texture_count / 2) *
+                         ANTIFAKE_TEXTURE_SCALE) /
                         texture_count);
   return 0;
 }
@@ -381,7 +398,8 @@ goodix_milan_antifake_block_variation (
   uint32_t variance = (uint32_t) mean_square - mean * mean;
   if ((int32_t) variance < 0)
     variance = 0;
-  uint32_t scaled = antifake_integer_sqrt (variance) * 0x1000;
+  uint32_t scaled =
+    antifake_integer_sqrt (variance) * ANTIFAKE_VARIATION_Q12_ONE;
 
   *variation = mean == 0 ? (int32_t) scaled :
                (int32_t) ((scaled + mean / 2) / mean);
