@@ -99,7 +99,6 @@ milan_antifake_build_class (
   uint16_t *residual = NULL;
   uint8_t *mask = NULL;
   uint8_t *classes = NULL;
-  uint8_t *thinned = NULL;
   int32_t vector[51];
   int32_t threshold;
   int32_t texture;
@@ -121,8 +120,7 @@ milan_antifake_build_class (
   residual = malloc (count * sizeof(*residual));
   mask = malloc (count);
   classes = malloc (count);
-  thinned = malloc (count);
-  if (!residual || !mask || !classes || !thinned)
+  if (!residual || !mask || !classes)
     goto out;
 
   memset (goodix_milan_antifake_data (antifake), 0, sizeof(*antifake));
@@ -153,7 +151,7 @@ milan_antifake_build_class (
       goodix_milan_antifake_class_map (
         classification_plane, mask, rows, columns, classes) != 0 ||
       goodix_milan_antifake_boundary_score (
-        residual, classes, rows, columns, thinned, &boundary) != 0 ||
+        residual, classes, rows, columns, &boundary) != 0 ||
       goodix_milan_antifake_model_vector (
         residual, mask, rows, columns, 2, vector) != 0 ||
       goodix_milan_antifake_model_score (vector, &model) != 0)
@@ -186,7 +184,6 @@ milan_antifake_build_class (
   result = 0;
 
 out:
-  free (thinned);
   free (classes);
   free (mask);
   free (residual);
