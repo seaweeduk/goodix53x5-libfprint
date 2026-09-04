@@ -22,7 +22,7 @@
 #include <string.h>
 
 GBytes *
-goodix_match_serialize_template (GoodixMatchInfo *info)
+goodix_milan_match_serialize_template (GoodixMatchInfo *info)
 {
   return info && info->template ? g_bytes_ref (info->template) : NULL;
 }
@@ -56,7 +56,7 @@ struct _GoodixMilanEnrollmentTransaction
 };
 
 static void
-goodix_match_set_feature_scalar (guint8 *element,
+goodix_milan_match_set_feature_scalar (guint8 *element,
                                  size_t  element_size,
                                  size_t  field,
                                  gint32  value)
@@ -180,7 +180,7 @@ goodix_enrollment_feature_pack (
 }
 
 static void
-goodix_match_update_antifake_score (GoodixMilanAntifakeBlob *antifake,
+goodix_milan_match_update_antifake_score (GoodixMilanAntifakeBlob *antifake,
                                     gint32                   score)
 {
   gint32 current = goodix_milan_antifake_pair_score (antifake);
@@ -403,7 +403,7 @@ goodix_enrollment_metrics (
 }
 
 GBytes *
-goodix_match_combine_templates (GPtrArray *templates)
+goodix_milan_match_combine_templates (GPtrArray *templates)
 {
   GoodixMilanUnpackedTemplate *unpacked = NULL;
   GoodixMilanRelationMatrix *relation_matrix = NULL;
@@ -480,15 +480,15 @@ goodix_match_combine_templates (GPtrArray *templates)
   memset (tail_state, 0xff, 200);
   for (guint i = 0; i < templates->len; i++)
     {
-      goodix_match_set_feature_scalar (
+      goodix_milan_match_set_feature_scalar (
         element_copies[i], element_sizes[i], 1,
         (gint32) metadata.registration_count);
-      goodix_match_set_feature_scalar (
+      goodix_milan_match_set_feature_scalar (
         element_copies[i], element_sizes[i], 7, (gint32) i);
       memcpy (tail_state + i * 4, &i, sizeof (i));
       if (i == 0)
         {
-          goodix_match_set_feature_scalar (
+          goodix_milan_match_set_feature_scalar (
             element_copies[i], element_sizes[i], 1, 0);
           continue;
         }
@@ -568,9 +568,9 @@ goodix_match_combine_templates (GPtrArray *templates)
                     current_view.antifake, GOODIX_MILAN_ANTIFAKE_SIZE,
                     candidate.values + 1, &pair_score) != 0)
                 goto out;
-              goodix_match_update_antifake_score (
+              goodix_milan_match_update_antifake_score (
                 mutable_antifakes[prior], pair_score);
-              goodix_match_update_antifake_score (
+              goodix_milan_match_update_antifake_score (
                 mutable_antifakes[i], pair_score);
             }
           if (candidate.values[0] > best_inliers)
@@ -647,7 +647,7 @@ goodix_match_combine_templates (GPtrArray *templates)
       goodix_milan_relation_matrix_close (relation_matrix, active) < 0)
     goto out;
   for (guint i = 0; i < templates->len; i++)
-    goodix_match_set_feature_scalar (
+    goodix_milan_match_set_feature_scalar (
       element_copies[i], element_sizes[i], 0, active[i] ? 1 : 0);
   if (goodix_milan_relation_matrix_project_reference_star (
         relation_matrix, relations, G_N_ELEMENTS (relations),
@@ -928,9 +928,9 @@ goodix_enrollment_transaction_insert (
                     GOODIX_MILAN_ANTIFAKE_SIZE, candidate.values + 1,
                     &pair_score) != 0)
                 return FALSE;
-              goodix_match_update_antifake_score (
+              goodix_milan_match_update_antifake_score (
                 &transaction->features[prior].antifake, pair_score);
-              goodix_match_update_antifake_score (
+              goodix_milan_match_update_antifake_score (
                 &transaction->features[current].antifake, pair_score);
             }
           if (candidate.values[0] > best_inliers)

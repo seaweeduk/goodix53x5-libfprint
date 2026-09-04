@@ -34,7 +34,7 @@ goodix_milan_study_queue_new (uint32_t enabled_state,
     }
   for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
     {
-      queue->entries[i].info = goodix_match_info_new_empty ();
+      queue->entries[i].info = goodix_milan_match_info_new_empty ();
       queue->entries[i].rank = -1;
     }
   return queue;
@@ -46,7 +46,7 @@ goodix_milan_study_queue_free (GoodixStudyQueue *queue)
   if (!queue)
     return;
   for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
-    goodix_match_free_info (queue->entries[i].info);
+    goodix_milan_match_free_info (queue->entries[i].info);
   g_free (queue);
 }
 
@@ -98,7 +98,7 @@ goodix_milan_study_queue_validate (const GoodixStudyQueue *queue)
   for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
     {
       gint rank = queue->entries[i].rank;
-      gboolean complete = goodix_match_info_is_complete (
+      gboolean complete = goodix_milan_match_info_is_complete (
         queue->entries[i].info);
 
       if (rank < -1 || rank >= GOODIX_STUDY_QUEUE_CAPACITY ||
@@ -127,7 +127,7 @@ goodix_milan_study_queue_enqueue (GoodixStudyQueue           *queue,
   gsize newest_slot = SIZE_MAX;
   gsize destination = SIZE_MAX;
 
-  if (!queue || !incoming || !goodix_match_info_is_complete (incoming) ||
+  if (!queue || !incoming || !goodix_milan_match_info_is_complete (incoming) ||
       !goodix_milan_study_queue_validate (queue))
     return GOODIX_STUDY_QUEUE_INVALID;
   if (queue->enabled_state != 0)
@@ -160,7 +160,7 @@ goodix_milan_study_queue_enqueue (GoodixStudyQueue           *queue,
           destination = i;
           break;
         }
-  if (destination == SIZE_MAX || !goodix_match_info_copy (
+  if (destination == SIZE_MAX || !goodix_milan_match_info_copy (
         queue->entries[destination].info, incoming))
     return GOODIX_STUDY_QUEUE_INVALID;
 
@@ -215,7 +215,7 @@ goodix_milan_study_queue_process (GoodixStudyQueue             *queue,
             continue;
 
           consumed_rank = queue->entries[slot].rank;
-          goodix_match_info_clear (queue->entries[slot].info);
+          goodix_milan_match_info_clear (queue->entries[slot].info);
           queue->entries[slot].rank = -1;
           for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
             if (queue->entries[i].rank > consumed_rank)
@@ -240,7 +240,7 @@ goodix_milan_study_queue_disable (GoodixStudyQueue *queue)
     return;
   for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
     {
-      g_clear_pointer (&queue->entries[i].info, goodix_match_free_info);
+      g_clear_pointer (&queue->entries[i].info, goodix_milan_match_free_info);
       queue->entries[i].rank = -1;
     }
   queue->enabled_state = 1;

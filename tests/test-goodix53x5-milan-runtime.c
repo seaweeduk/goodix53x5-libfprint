@@ -183,17 +183,17 @@ generate_template (guint pattern)
   g_assert_cmpint (goodix_milan_preprocess (
                      state, &profile, setup, live, GOODIX_MILAN_PURPOSE_ENROLL,
                      processed, &quality, &coverage), ==, 0);
-  g_assert_cmpint (goodix_match_extract_native_result (
+  g_assert_cmpint (goodix_milan_match_extract_native_result (
                      processed, state, live, (guint16) pattern,
                      (guint16) pattern, 0, GOODIX_MILAN_PRINT_SENSOR_TYPE,
                      &info), ==, GOODIX_MILAN_EXTRACTION_OK);
-  feature = goodix_match_serialize_template (info);
+  feature = goodix_milan_match_serialize_template (info);
   g_assert_nonnull (feature);
   g_ptr_array_add (features, g_bytes_ref (feature));
-  combined = goodix_match_combine_templates (features);
+  combined = goodix_milan_match_combine_templates (features);
   g_assert_nonnull (combined);
   g_assert_true (goodix_milan_print_validate_template (combined, NULL, NULL));
-  goodix_match_free_info (info);
+  goodix_milan_match_free_info (info);
   return combined;
 }
 

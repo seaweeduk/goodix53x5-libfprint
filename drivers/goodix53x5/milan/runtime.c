@@ -235,7 +235,7 @@ goodix_milan_runtime_match (const GoodixMilanRuntimeInput *input,
                             GoodixStudyQueue              *queue)
 {
   (void) input;
-  return goodix_match_serialized_feature_result_queued (
+  return goodix_milan_match_serialized_feature_result_queued (
     probe, feature, feature_len, match_result, after_match, queue);
 }
 
@@ -250,7 +250,7 @@ goodix_milan_runtime_study (const GoodixMilanRuntimeInput *input,
                             GoodixMilanStudyAction        *action)
 {
   (void) input;
-  return goodix_match_study_feature_queued (
+  return goodix_milan_match_study_feature_queued (
     probe, feature, feature_len, match_result, TRUE, queue, after_study, action);
 }
 
@@ -374,10 +374,10 @@ goodix_milan_runtime_build_probe (const GoodixMilanRuntimeInput *input,
 #ifdef GOODIX53X5_DEBUG
   output->extraction_attempted = TRUE;
 #endif
-  *probe = goodix_match_extract_native (
+  *probe = goodix_milan_match_extract_native (
     processed, &output->preprocess_state, input->live_raw, input->tcode,
     input->dac_high, input->dac_low, input->sensor_subtype);
-  *probe_template = *probe ? goodix_match_serialize_template (*probe) : NULL;
+  *probe_template = *probe ? goodix_milan_match_serialize_template (*probe) : NULL;
   if (!*probe || !*probe_template ||
       !goodix_milan_runtime_inspect_probe (*probe_template, &probe_info))
     {
@@ -385,7 +385,7 @@ goodix_milan_runtime_build_probe (const GoodixMilanRuntimeInput *input,
       output->error = g_error_new_literal (GOODIX_MILAN_PRINT_ERROR,
                                            GOODIX_MILAN_PRINT_ERROR_INVALID,
                                            "Native Milan extraction failed");
-      goodix_match_free_info (*probe);
+      goodix_milan_match_free_info (*probe);
       *probe = NULL;
       return FALSE;
     }
@@ -576,7 +576,7 @@ goodix_milan_runtime_study_winner (const GoodixMilanRuntimeInput *input,
                            GOODIX_MILAN_PRINT_ERROR_INVALID,
                            "Native Milan study failed after a positive match");
       goodix_milan_study_queue_free (winner_queue);
-      goodix_match_free_info (probe);
+      goodix_milan_match_free_info (probe);
       return;
     }
 #ifdef GOODIX53X5_DEBUG
@@ -587,7 +587,7 @@ goodix_milan_runtime_study_winner (const GoodixMilanRuntimeInput *input,
         winner_position))
     {
       goodix_milan_study_queue_free (winner_queue);
-      goodix_match_free_info (probe);
+      goodix_milan_match_free_info (probe);
       return;
     }
 
@@ -601,7 +601,7 @@ goodix_milan_runtime_study_winner (const GoodixMilanRuntimeInput *input,
                                "Action 0 unexpectedly produced a candidate");
         }
       goodix_milan_study_queue_free (winner_queue);
-      goodix_match_free_info (probe);
+      goodix_milan_match_free_info (probe);
       return;
     }
   if (output->study_action > GOODIX_MILAN_STUDY_QUEUED || !after_study ||
@@ -616,7 +616,7 @@ goodix_milan_runtime_study_winner (const GoodixMilanRuntimeInput *input,
                                "Native Milan study returned an invalid action");
         }
       goodix_milan_study_queue_free (winner_queue);
-      goodix_match_free_info (probe);
+      goodix_milan_match_free_info (probe);
       return;
     }
   GoodixMilanRuntimeGalleryInput *winner =
@@ -627,12 +627,12 @@ goodix_milan_runtime_study_winner (const GoodixMilanRuntimeInput *input,
                            GOODIX_MILAN_PRINT_ERROR_NONCANONICAL,
                            "Positive Milan study candidate did not change bytes");
       goodix_milan_study_queue_free (winner_queue);
-      goodix_match_free_info (probe);
+      goodix_milan_match_free_info (probe);
       return;
     }
   output->final_candidate = g_steal_pointer (&after_study);
   goodix_milan_study_queue_free (winner_queue);
-  goodix_match_free_info (probe);
+  goodix_milan_match_free_info (probe);
 }
 
 GoodixMilanRuntimeOutput *
@@ -670,7 +670,7 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
         input, output, GOODIX_MILAN_RUNTIME_CHECKPOINT_AFTER_EXTRACT,
         G_MAXSIZE))
     {
-      goodix_match_free_info (probe);
+      goodix_milan_match_free_info (probe);
       return output;
     }
 
@@ -678,7 +678,7 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
         input, output, probe, &winner_position, &winner_after_match,
         &winner_queue))
     {
-      goodix_match_free_info (probe);
+      goodix_milan_match_free_info (probe);
       return output;
     }
 
@@ -687,7 +687,7 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
         winner_position))
     {
       goodix_milan_study_queue_free (winner_queue);
-      goodix_match_free_info (probe);
+      goodix_milan_match_free_info (probe);
       return output;
     }
 
