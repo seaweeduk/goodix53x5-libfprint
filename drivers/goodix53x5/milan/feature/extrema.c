@@ -25,8 +25,6 @@ goodix_milan_feature_collect_extrema (
   size_t count;
   size_t result_count = 0;
 
-  if (!scales || rows < 13 || columns < 13 || columns > SIZE_MAX / rows)
-    return 0;
   count = rows * columns;
   for (size_t scale = 1; scale < 4; scale++)
     for (size_t row = 6; row + 6 < rows; row++)
@@ -37,7 +35,7 @@ goodix_milan_feature_collect_extrema (
             scales[(scale + 1) * count + pixel] -
             scales[scale * count + pixel]);
           int32_t absolute = response < 0 ? -response : response;
-          int extremum = absolute > 0x148 && response != 0;
+          int extremum = absolute > 0x148;
 
           for (ptrdiff_t adjacent = -1; extremum && adjacent <= 1; adjacent++)
             for (ptrdiff_t delta_row = -1;
@@ -266,8 +264,6 @@ goodix_milan_feature_refine_extremum (
   int32_t offset[3];
   int32_t x, y, scale;
 
-  if (!scales || !candidate || !curvature || rows < 3 || columns < 3)
-    return 0;
   x = candidate->x;
   y = candidate->y;
   scale = candidate->scale;
