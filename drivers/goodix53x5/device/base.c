@@ -361,8 +361,7 @@ goodix_milan_generation_prepare_setup (FpDevice              *dev,
   restored = g_new0 (GoodixMilanGeneration, 1);
   goodix_milan_generation_reset_preprocess (restored);
   goodix_milan_persistence_restore (dev, restored);
-  if (generation->profile_state.setup_initialized ||
-      generation->profile_state.setup_refresh_pending)
+  if (generation->profile_state.setup_initialized)
     goodix_milan_generation_transfer_process_state (restored, generation);
   generation->state = restored->state;
 }
