@@ -430,6 +430,7 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
             }
           data->capture_notified = TRUE;
           data->cpu_outstanding = TRUE;
+          goodix_milan_generation_prepare_setup (dev, self->milan_generation);
           data->capture_ready (dev, data->user_data);
         }
       break;
