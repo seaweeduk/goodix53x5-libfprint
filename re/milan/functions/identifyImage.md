@@ -33,6 +33,15 @@ auxiliary pointer is the preprocessor workspace in the normal API lifecycle; it
 is not candidate state or the processed image buffer. The extractor decodes its
 first three bytes through `FUN_180073830` for the later classification config.
 
+Only the first candidate supplies extraction configuration. For ordinary
+profile-9/type-12 enrollment, `FUN_180037c80` initializes its first seven dwords
+to `[12,104,88,1,1,150,150]`. `FUN_18004ae70` reads these configuration words,
+not gallery current-count `+0x1c` or maximum-feature-count `+0x20`. In identify
+mode, word 6 supplies the live record limit before coverage scaling. Different
+enrolled-feature counts therefore do not themselves change the first
+candidate's extraction configuration. See `FUN_180037c80.md` and
+`FUN_18004ae70.md`.
+
 ## Evidence And Confidence
 
 - Live extraction call and retained probe object: `0x180001c8a` calls
