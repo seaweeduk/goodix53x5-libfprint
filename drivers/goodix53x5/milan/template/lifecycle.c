@@ -87,6 +87,7 @@ goodix_milan_template_update_match_lifecycle (
   const uint8_t *current_template,
   size_t         current_template_size,
   uint64_t       feature_mask,
+  bool           sort_order,
   uint8_t       *packed,
   size_t         packed_capacity,
   size_t        *packed_size)
@@ -143,6 +144,12 @@ goodix_milan_template_update_match_lifecycle (
                        lifecycle_count + UINT32_C(1));
       current->feature_elements[feature_index] = feature_copies[feature_index];
     }
+  /* Match finalization sorts the incremented keys without advancing generation. */
+  if (sort_order &&
+      current->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
+      current->feature_count > 1 &&
+      goodix_milan_template_sort_type12_order (current) != 0)
+    goto out;
   result = goodix_milan_template_pack (
     current->feature_elements, current->feature_element_sizes,
     current->feature_count, current->relations, current->relation_count,

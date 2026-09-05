@@ -363,22 +363,25 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
           fpi_ssm_next_state (ssm);
           break;
         }
-      if (!fdt->initial_recovery_pending || !fdt->event.pending)
+      if (!fdt->initial_recovery_pending)
         {
           fpi_ssm_mark_failed (
             ssm, fpi_device_error_new_msg (
               FP_DEVICE_ERROR_GENERAL,
-              "Milan reference acquisition produced no generation or recovery event"));
+              "Milan reference acquisition produced no generation or recovery state"));
           return;
         }
 
       data->recovering_generation = TRUE;
-      if ((fdt->event.touch_flag & 0x0fff) != 0)
-        fpi_device_report_finger_status_changes (
-          dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
-      else
-        fpi_device_report_finger_status_changes (
-          dev, FP_FINGER_STATUS_NEEDED, FP_FINGER_STATUS_PRESENT);
+      if (fdt->event.pending)
+        {
+          if ((fdt->event.touch_flag & 0x0fff) != 0)
+            fpi_device_report_finger_status_changes (
+              dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
+          else
+            fpi_device_report_finger_status_changes (
+              dev, FP_FINGER_STATUS_NEEDED, FP_FINGER_STATUS_PRESENT);
+        }
       fpi_ssm_next_state (ssm);
       break;
 
@@ -427,6 +430,7 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
             }
           data->capture_notified = TRUE;
           data->cpu_outstanding = TRUE;
+          goodix_milan_generation_prepare_setup (dev, self->milan_generation);
           data->capture_ready (dev, data->user_data);
         }
       break;

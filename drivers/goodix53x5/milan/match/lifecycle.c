@@ -24,6 +24,8 @@
 #include "milan/match/info-private.h"
 #include "milan/match/lifecycle-private.h"
 #include "milan/milan.h"
+#include "milan/private.h"
+#include "milan/print.h"
 #include "milan/study/queue.h"
 
 #include <string.h>
@@ -70,6 +72,7 @@ goodix_milan_match_serialized_feature_result_internal (
   const guint8 *matched_milan;
   size_t normalized_milan_len = 0;
   size_t updated_milan_len = 0;
+  GoodixMilanUnpackedTemplate *unpacked;
 
   if (updated_feature)
     *updated_feature = NULL;
@@ -107,6 +110,55 @@ goodix_milan_match_serialized_feature_result_internal (
       g_free (normalized_milan);
       return GOODIX_SIGFM_TEMPLATE_INVALID;
     }
+  unpacked = g_malloc (sizeof (*unpacked));
+  if (goodix_milan_template_unpack (
+        normalized_milan, normalized_milan_len, unpacked) == 0 &&
+      unpacked->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
+    {
+      for (size_t i = 0; i < unpacked->feature_count; i++)
+        {
+          GoodixMilanFeatureView view;
+
+          if (goodix_milan_template_parse_feature_element (
+                unpacked->feature_elements[i], unpacked->feature_element_sizes[i],
+                &view) == 0 && view.record_count > 0 &&
+              view.record_count <= 150 &&
+              view.fields.tagged_values[2] == (int32_t) view.record_count)
+            {
+              /* Unpack borrows our writable gallery copy, never the probe. */
+              if (goodix_milan_template_patch_feature_scalar (
+                    (guint8 *) unpacked->feature_elements[i],
+                    unpacked->feature_element_sizes[i], 0xb7,
+                    (int32_t) view.record_count - 1) != 0)
+                {
+                  g_free (unpacked);
+                  g_free (updated_milan);
+                  g_free (normalized_milan);
+                  return GOODIX_SIGFM_TEMPLATE_INVALID;
+                }
+              if (!updated_milan)
+                updated_milan = g_malloc (normalized_milan_len);
+            }
+        }
+    }
+  if (updated_milan)
+    {
+      if (goodix_milan_template_pack (
+            unpacked->feature_elements, unpacked->feature_element_sizes,
+            unpacked->feature_count, unpacked->relations, unpacked->relation_count,
+            &unpacked->metadata, unpacked->tail_state, sizeof (unpacked->tail_state),
+            updated_milan, normalized_milan_len, &updated_milan_len) != 0 ||
+          updated_milan_len != normalized_milan_len)
+        {
+          g_free (unpacked);
+          g_free (updated_milan);
+          g_free (normalized_milan);
+          return GOODIX_SIGFM_TEMPLATE_INVALID;
+        }
+      g_free (normalized_milan);
+      normalized_milan = g_steal_pointer (&updated_milan);
+    }
+  g_free (unpacked);
   matched_milan = normalized_milan;
 
   if (goodix_milan_match_info_result (
@@ -128,7 +180,8 @@ goodix_milan_match_serialized_feature_result_internal (
           updated_milan = g_malloc (normalized_milan_len);
           if (goodix_milan_template_update_match_lifecycle (
                 matched_milan, normalized_milan_len,
-                match_result->lifecycle_update_feature_mask, updated_milan,
+                match_result->lifecycle_update_feature_mask,
+                match_result->direct_positive_feature_mask == 0, updated_milan,
                 normalized_milan_len, &updated_milan_len) != 0 ||
               updated_milan_len != normalized_milan_len)
             {
