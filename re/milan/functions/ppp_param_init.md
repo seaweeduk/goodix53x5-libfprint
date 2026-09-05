@@ -18,6 +18,11 @@
 - Profile 9's row at `0x1800e46b4` is
   `[1, 0, 0, 800, 88, 108, 12]`: runtime selection threshold `800`, dimensions
   `88x108`, subtype `12`, and packed bit 2 clear.
+- The configuration stores do not initialize calibration workspace or the
+  auxiliary-count, gain-initialization, and gain-ready globals. The attach path
+  `FUN_180030c40 -> FUN_18002b240` forwards engine-context profile field `+0x70`
+  to this export. Sample-carried setup refresh instead follows
+  `FUN_180031d00 -> FUN_18002bfa0` and does not call this export again.
 
 ## Evidence
 
