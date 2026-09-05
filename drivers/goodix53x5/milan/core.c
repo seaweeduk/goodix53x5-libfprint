@@ -1417,31 +1417,49 @@ quality_threshold_gradient_window (const uint16_t *gradient,
   size_t selected = 0;
 
   for (size_t row = 0; row < rows; row++)
-    for (size_t column = 0; column < columns; column++)
-      {
-        uint32_t sum = 0;
+    {
+      uint32_t sum = 0;
 
-        for (ptrdiff_t y_offset = -7; y_offset <= 7; y_offset++)
-          {
-            size_t y = goodix_milan_reflect101_index (
-              (ptrdiff_t) row + y_offset, rows);
+      for (ptrdiff_t y_offset = -7; y_offset <= 7; y_offset++)
+        {
+          size_t y = goodix_milan_reflect101_index (
+            (ptrdiff_t) row + y_offset, rows);
 
-            for (ptrdiff_t x_offset = -7; x_offset <= 7; x_offset++)
-              {
-                size_t x = goodix_milan_reflect101_index (
-                  (ptrdiff_t) column + x_offset, columns);
+          for (ptrdiff_t x_offset = -7; x_offset <= 7; x_offset++)
+            {
+              size_t x = goodix_milan_reflect101_index (x_offset, columns);
 
-                sum += gradient[y * columns + x];
-              }
-          }
-        uint16_t average = (uint16_t) (
-          (sum * (uint32_t) MILAN_QUALITY_GRADIENT_WINDOW_RECIPROCAL_Q16) >>
-          MILAN_QUALITY_Q16_SHIFT);
-        size_t index = row * columns + column;
+              sum += gradient[y * columns + x];
+            }
+        }
+      for (size_t column = 0; column < columns; column++)
+        {
+          uint16_t average = (uint16_t) (
+            (sum * (uint32_t) MILAN_QUALITY_GRADIENT_WINDOW_RECIPROCAL_Q16) >>
+            MILAN_QUALITY_Q16_SHIFT);
+          size_t index = row * columns + column;
 
-        mask[index] = average > threshold ? mask_value : 0;
-        selected += mask[index] != 0;
-      }
+          mask[index] = average > threshold ? mask_value : 0;
+          selected += mask[index] != 0;
+          if (column + 1 < columns)
+            {
+              size_t leaving = goodix_milan_reflect101_index (
+                (ptrdiff_t) column - 7, columns);
+              size_t entering = goodix_milan_reflect101_index (
+                (ptrdiff_t) column + 8, columns);
+
+              /* Keep reflected samples with their original multiplicities. */
+              for (ptrdiff_t y_offset = -7; y_offset <= 7; y_offset++)
+                {
+                  size_t y = goodix_milan_reflect101_index (
+                    (ptrdiff_t) row + y_offset, rows);
+
+                  sum -= gradient[y * columns + leaving];
+                  sum += gradient[y * columns + entering];
+                }
+            }
+        }
+    }
   return selected;
 }
 
