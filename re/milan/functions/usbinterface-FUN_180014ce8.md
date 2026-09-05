@@ -24,6 +24,12 @@ bool image_base_pair_valid(uint8_t rows, uint8_t columns,
 
 ## Evidence
 
+- `R12D` supplies the initial column 2 at `0x180014d3b`. Subsequent inner
+  iterations load the incremented column counter `DI` into `EAX` at
+  `0x180014d5c` and jump to `0x180014d3e`, after that initialization.
+  Each iteration therefore adds the row offset to the advancing column;
+  the loop does not repeatedly sample column 2.
+
 - Sole relevant production caller: `FUN_180015c60`, call at `0x180015e7c`.
 - At that call, Microsoft x64 argument storage is `CL=rows` from context
   `+0x1f0`, `DL=columns` from `+0x1f1`, `R8=first/TX-on image`,

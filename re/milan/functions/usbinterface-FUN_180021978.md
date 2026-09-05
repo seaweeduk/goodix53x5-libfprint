@@ -27,11 +27,20 @@
   other accepted biometric purposes call it with selector `1`.
 - Both routes register the same `CaptureFramedone` callback
   (`FUN_18001fb40`) and use the same HAL context.
+- The call to `FUN_18001f4c0` at `0x180021e47` is a no-op: its entire body
+  is `RET 0`. It leaves the caller-initialized completion byte at zero, so
+  the valid-request route continues through the initialization-event wait at
+  `0x180021ec3` to `FUN_18000ebcc` at `0x180021ee1`. It performs no cached
+  completion or sensor acquisition.
 - The request is retained at device-context `+0xf8` before `FUN_18000ebcc` is
-  called. Inside `FUN_18000ebcc`, first-activation byte `+0x154` selects
+  called. In `FUN_18000ebcc`'s enabled branch (global byte `0x18005f398`
+  nonzero), first-activation byte `+0x154` selects
   FDT-down; otherwise HAL wait state `+0x1fc == 0xf1` selects FDT-up and every
   other value selects FDT-down. The selected arm callback completes before
   `FUN_18000ebcc` stores `CaptureFramedone` at HAL context `+0x240`.
+- Global byte `0x18005f398` has image-initialized value one. A fresh enabled
+  request therefore takes this arm-selection branch without requiring a
+  preceding sensor IRQ or successful image-base admission.
 - Consequently, the first ordinary request after an initial acquisition that
   returned with no valid image reference arms FDT-down. Neither `OnCaptureData`
   nor `FUN_18000ebcc` derives an FDT-up base from the rejected acquisition's
@@ -42,6 +51,12 @@
   callback, but likewise does not acquire a new base. FDT down/up handlers may
   independently invoke the temperature-refresh path if their base comparison
   detects drift.
+- The request-start power-control call through `FUN_180017ef0` reaches
+  `FUN_18001afec`, which sends category `0x0a`, command 7. Its parameters are
+  the two power-control bytes plus a zero byte; it is not category-3 manual
+  FDT acquisition. Profile arm callback `+0xb0` sends down/up detection,
+  not manual detection. Neither call supplies replacement validation data
+  after an initial acquisition rejection.
 
 ## Pending And Completion Ownership
 

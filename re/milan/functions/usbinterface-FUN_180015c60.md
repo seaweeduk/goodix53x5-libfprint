@@ -90,6 +90,15 @@ The two image calls use:
 
 ## Common Postlude And Validation Rejection
 
+The FDT validator `FUN_180014c98` (`0x180014c98..0x180014ce6`) reads
+12 unsigned words from each sample, shifts each operand right by one before
+subtraction, and rejects as soon as
+`abs((first[i] >> 1) - (second[i] >> 1)) > context_word_31c`.
+Equality is admitted; it is not a difference-then-shift comparison. The helper
+is read-only and returns a Boolean in `AL`. The first comparison calls it at
+`0x180015de2`; a false result branches through `0x180015fcb` to the common
+postlude without capturing the TX-off image or another TX-on FDT sample.
+
 The image-pair predicate controls whether the second TX-on FDT read occurs. Both
 image-pair rejection and rejection of that final TX-on FDT comparison bypass
 the successful image/validity block at `0x180015f45..0x180015fc9` and enter the
