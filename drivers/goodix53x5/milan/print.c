@@ -172,7 +172,6 @@ goodix_milan_print_parse_data (GVariant *data,
 {
   g_autoptr(GVariant) payload = NULL;
   g_autoptr(GBytes) parsed = NULL;
-  const guint8 *bytes;
   gsize size;
   guint32 schema;
   guint32 profile;
@@ -222,12 +221,12 @@ goodix_milan_print_parse_data (GVariant *data,
       error, GOODIX_MILAN_PRINT_ERROR_INCOMPATIBLE,
       "Milan print envelope fields are incompatible");
 
-  bytes = g_variant_get_fixed_array (payload, &size, sizeof(*bytes));
+  size = g_variant_get_size (payload);
   if (size > GOODIX_MILAN_PRINT_MAX_SIZE)
     return goodix_milan_print_fail (
       error, GOODIX_MILAN_PRINT_ERROR_TOO_LARGE,
       "Milan print envelope payload is too large");
-  parsed = g_bytes_new (bytes, size);
+  parsed = g_variant_get_data_as_bytes (payload);
   if (!goodix_milan_print_validate_template (parsed, NULL, error))
     return FALSE;
   *template_bytes = g_steal_pointer (&parsed);
