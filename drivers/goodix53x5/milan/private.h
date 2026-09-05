@@ -78,6 +78,7 @@ int goodix_milan_template_read_feature_scalar (const uint8_t *feature_element,
                                size_t         feature_element_size,
                                uint8_t        tag,
                                int32_t       *value);
+int goodix_milan_template_sort_type12_order (GoodixMilanUnpackedTemplate *unpacked);
 int goodix_milan_template_reference_transform (
   const GoodixMilanUnpackedTemplate *unpacked,
   size_t                              feature_index,

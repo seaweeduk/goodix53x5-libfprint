@@ -255,8 +255,8 @@ milan_sort_legacy_template_order (GoodixMilanUnpackedTemplate *unpacked)
   return 0;
 }
 
-static int
-milan_sort_type12_template_order (GoodixMilanUnpackedTemplate *unpacked)
+int
+goodix_milan_template_sort_type12_order (GoodixMilanUnpackedTemplate *unpacked)
 {
   GoodixMilanStudyOrderKey keys[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY];
   uint32_t order[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY];
@@ -294,7 +294,7 @@ static int
 milan_finalize_template_study_order (GoodixMilanUnpackedTemplate *unpacked)
 {
   if (unpacked->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
-    return milan_sort_type12_template_order (unpacked);
+    return goodix_milan_template_sort_type12_order (unpacked);
   return milan_sort_legacy_template_order (unpacked);
 }
 
