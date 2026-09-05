@@ -345,6 +345,27 @@ goodix_milan_replace_raw_frame (guint16 **owner,
 #include "device/persistence.h"
 #include "device/transport.h"
 
+void
+goodix_milan_generation_prepare_setup (FpDevice              *dev,
+                                       GoodixMilanGeneration *generation)
+{
+  g_autofree GoodixMilanGeneration *restored = NULL;
+
+  g_return_if_fail (generation != NULL);
+  if (generation->profile_state.setup_initialized &&
+      !generation->profile_state.setup_refresh_pending)
+    return;
+
+  /* Select disk workspace at sample delivery, retaining process-owned state
+   * across a refresh. Setup admission and its flags remain runtime-owned. */
+  restored = g_new0 (GoodixMilanGeneration, 1);
+  goodix_milan_generation_reset_preprocess (restored);
+  goodix_milan_persistence_restore (dev, restored);
+  if (generation->profile_state.setup_initialized)
+    goodix_milan_generation_transfer_process_state (restored, generation);
+  generation->state = restored->state;
+}
+
 typedef enum
 {
   GOODIX_BASE_UPLOAD_CONFIG = 0,
@@ -762,7 +783,6 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
             return;
           }
 
-        goodix_milan_persistence_restore (dev, generation);
         if (data->forced_refresh && self->milan_generation)
           goodix_milan_generation_transfer_process_state (
             generation, self->milan_generation);

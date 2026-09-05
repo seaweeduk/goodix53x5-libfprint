@@ -162,6 +162,8 @@ gboolean goodix_milan_base_attempt_publish (GoodixMilanBaseAttempt  *attempt,
                                              GError                 **error);
 
 void goodix_milan_generation_reset_preprocess (GoodixMilanGeneration *generation);
+void goodix_milan_generation_prepare_setup (FpDevice              *dev,
+                                            GoodixMilanGeneration *generation);
 void goodix_milan_generation_free (GoodixMilanGeneration *generation);
 void goodix_milan_generation_invalidate (GoodixMilanGeneration **generation);
 guint64 goodix_milan_generation_note_use (GoodixMilanGeneration *generation);
