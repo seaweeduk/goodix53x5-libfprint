@@ -1352,23 +1352,23 @@ test_template_state (void)
       g_assert_cmpmem (repacked, repacked_size, packed, packed_size);
 
       g_assert_cmpint (goodix_milan_template_update_match_lifecycle (
-                         packed, packed_size, 0, updated, capacity,
+                         packed, packed_size, 0, false, updated, capacity,
                          &updated_size), ==, 0);
       g_assert_cmpuint (updated_size, ==, packed_size);
       g_assert_cmpmem (updated, updated_size, packed, packed_size);
       g_assert_cmpmem (packed, packed_size, input_before, packed_size);
       g_assert_cmpint (goodix_milan_template_update_match_lifecycle (
-                         packed, packed_size, shape->lifecycle_mask, updated,
+                         packed, packed_size, shape->lifecycle_mask, false, updated,
                          capacity, &updated_size), ==, 0);
       g_assert_cmpint (goodix_milan_template_update_match_lifecycle (
                          updated, updated_size, shape->lifecycle_mask,
-                         updated_twice, capacity, &updated_twice_size), ==, 0);
+                         false, updated_twice, capacity, &updated_twice_size), ==, 0);
       g_assert_cmpuint (updated_size, ==, packed_size);
       g_assert_cmpuint (updated_twice_size, ==, packed_size);
       g_assert_cmpmem (packed, packed_size, input_before, packed_size);
       g_assert_cmpint (goodix_milan_template_update_match_lifecycle (
                          packed, packed_size,
-                         UINT64_C (1) << shape->feature_count, repacked,
+                         UINT64_C (1) << shape->feature_count, false, repacked,
                          capacity, &rejected_size), ==, -1);
       g_assert_cmpmem (packed, packed_size, input_before, packed_size);
       memset (unpacked, 0, sizeof(*unpacked));

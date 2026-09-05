@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -501,6 +502,7 @@ int goodix_milan_template_update_match_lifecycle (
   const uint8_t *current_template,
   size_t         current_template_size,
   uint64_t       feature_mask,
+  bool           sort_order,
   uint8_t       *packed,
   size_t         packed_capacity,
   size_t        *packed_size);

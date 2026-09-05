@@ -404,7 +404,8 @@ goodix_milan_match_live_gallery_result (GoodixMatchInfo            *probe,
       updated_milan = g_malloc (current_milan_size);
       if (goodix_milan_template_update_match_lifecycle (
             current_milan, current_milan_size,
-            match_result->lifecycle_update_feature_mask, updated_milan,
+            match_result->lifecycle_update_feature_mask,
+            match_result->direct_positive_feature_mask == 0, updated_milan,
             current_milan_size, &updated_milan_size) != 0 ||
           updated_milan_size != current_milan_size)
         {

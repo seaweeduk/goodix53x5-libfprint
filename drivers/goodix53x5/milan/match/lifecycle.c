@@ -180,7 +180,8 @@ goodix_milan_match_serialized_feature_result_internal (
           updated_milan = g_malloc (normalized_milan_len);
           if (goodix_milan_template_update_match_lifecycle (
                 matched_milan, normalized_milan_len,
-                match_result->lifecycle_update_feature_mask, updated_milan,
+                match_result->lifecycle_update_feature_mask,
+                match_result->direct_positive_feature_mask == 0, updated_milan,
                 normalized_milan_len, &updated_milan_len) != 0 ||
               updated_milan_len != normalized_milan_len)
             {
