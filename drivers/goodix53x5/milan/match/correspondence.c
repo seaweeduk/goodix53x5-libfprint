@@ -149,9 +149,31 @@ goodix_milan_match_feature_records (const GoodixMilanFeatureRecord *prior,
 }
 
 static int
+milan_descriptor_hamming64 (const uint8_t *source,
+                            const uint8_t *target)
+{
+  uint64_t a, b;
+
+  memcpy (&a, source, sizeof (a));
+  memcpy (&b, target, sizeof (b));
+  return __builtin_popcountll (a ^ b);
+}
+
+static int
+milan_descriptor_hamming32 (const uint8_t *source,
+                            const uint8_t *target)
+{
+  uint32_t a, b;
+
+  memcpy (&a, source, sizeof (a));
+  memcpy (&b, target, sizeof (b));
+  return __builtin_popcount (a ^ b);
+}
+
+static int
 milan_recognition_descriptor_details (const GoodixMilanFeatureRecord *enrolled,
                                       const GoodixMilanFeatureRecord *probe,
-                                      int                           *normal_layout)
+                                      int                            *normal_layout)
 {
   const uint8_t *source = (const uint8_t *) enrolled;
   const uint8_t *target = (const uint8_t *) probe;
@@ -160,13 +182,11 @@ milan_recognition_descriptor_details (const GoodixMilanFeatureRecord *enrolled,
   int normal_tail = 0;
   int shifted_tail = 0;
 
-  for (size_t i = 0; i < 8; i++)
-    first += __builtin_popcount ((unsigned) (source[16 + i] ^ target[16 + i]));
+  first = milan_descriptor_hamming64 (source + 16, target + 16);
   if (first > 23)
     return -1;
 
-  for (size_t i = 0; i < 8; i++)
-    second += __builtin_popcount ((unsigned) (source[24 + i] ^ target[24 + i]));
+  second = milan_descriptor_hamming64 (source + 24, target + 24);
 
   int shifted = first - second + 64;
   if (first + second > 47)
@@ -177,25 +197,15 @@ milan_recognition_descriptor_details (const GoodixMilanFeatureRecord *enrolled,
     }
   else
     {
-      for (size_t i = 0; i < 4; i++)
-        {
-          normal_tail += __builtin_popcount (
-            (unsigned) (source[32 + i] ^ target[32 + i]));
-          normal_tail += __builtin_popcount (
-            (unsigned) (source[40 + i] ^ target[40 + i]));
-        }
+      normal_tail = milan_descriptor_hamming32 (source + 32, target + 32) +
+                    milan_descriptor_hamming32 (source + 40, target + 40);
       if (shifted > 47)
         shifted_tail = 192;
     }
 
   if (shifted_tail != 192)
-    for (size_t i = 0; i < 4; i++)
-      {
-        shifted_tail += __builtin_popcount (
-          (unsigned) (source[32 + i] ^ target[36 + i]));
-        shifted_tail += __builtin_popcount (
-          (unsigned) (source[40 + i] ^ target[48 + i]));
-      }
+    shifted_tail = milan_descriptor_hamming32 (source + 32, target + 36) +
+                   milan_descriptor_hamming32 (source + 40, target + 48);
 
   int normal_distance = first + second + normal_tail;
   int shifted_distance = shifted + shifted_tail;
