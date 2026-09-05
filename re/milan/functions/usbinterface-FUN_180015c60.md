@@ -32,6 +32,14 @@ image buffers and performs:
 9. On complete admission, retain only the first TX-on image at `+0x248`, set
    base-valid bytes `+0x232/+0x233`, and set image-valid byte `+0x237`.
 
+Entry does not test persisted-base byte `+0x231`, base-valid byte `+0x232`,
+or image-valid byte `+0x237` to skip acquisition. With a non-null context and
+both temporary allocations successful, mode 4 is attempted regardless of
+those bytes; only its successful return permits the first TX-on FDT read.
+The first and final TX-on FDT
+readings are separate sensor commands; the final reading is not a copy of
+the first.
+
 The final TX-on manual response's touch-flag word is not an output of callback
 slot `+0x160` and is not retained by this function. Only its 12 FDT words reach
 the validation at `0x180015efa`. A present-finger vector that fails this final
@@ -43,6 +51,74 @@ software touch snapshot or an FDT-up recovery state.
 `FUN_18001aed8` retries one unsuccessful category-9 configuration download, for
 at most two command attempts. Final failure returns `-1` before FDT/image
 acquisition.
+
+### Optional Sensor Check
+
+After the TX-off FDT read, before its comparison, nonzero context byte
+`+0x2e1` adds `FUN_180012d38` (`gf_broken_check_prepare_image`).
+`FUN_18000450c` sets this byte exactly when configuration byte `+0x424`
+returned by `FUN_180009c50(0)` equals one.
+That accessor returns the configuration object at `0x18005e340` without
+reloading it when its argument is zero. The compiled byte at `0x18005e764`
+is one; this is the stored default, not a guarantee that configuration loading
+leaves the runtime value unchanged.
+
+`FUN_180009c6c` loads `SensorBrokenCheckSwitch` from
+`HKLM\Software\Goodix\FP`. A successful value read supplies its first byte
+to `0x18005e764`; a missing key or missing value leaves the existing byte
+unchanged. `FUN_180009c50` invokes this loader only for a nonzero argument.
+The profile-open consumer uses exact equality to one, not general nonzero
+configuration truthiness, when publishing HAL byte `+0x2e1`.
+`DriverEntry` (`FUN_18002409c`) calls `FUN_18001dd34`, which calls
+`FUN_180009c50(1)`, before creating the framework driver. Thus configuration
+loading precedes device creation and the profile-open callback. With no
+registry override in a fresh process the compiled one survives this load;
+an override whose first byte differs from one selects the disabled route.
+
+After publishing that byte, `FUN_1800162ac` calls `FUN_1800121a4`
+(`gf_broken_check_init`) when it is nonzero. With successful allocations,
+this initializes a 0x44-byte context at `DAT_1800615d8`, a 0x58-byte history
+record at `DAT_1800615e0`, and a 0xea64-byte image workspace at
+`DAT_1800615e8`. It zeroes all three, stores the HAL pointer in the first
+context word, copies sensor dimensions, creates/signals the HAL `+0x300`
+event, and calls `FUN_180012498` to load the history array. The history-load
+return is not propagated: absent history does not disable the initialized
+workspace. The HAL initialization caller also does not inspect this helper's
+return. Allocation failure is not an alternate valid workspace producer.
+
+For profile 9 with an initialized sensor-check context, `FUN_180012d38`
+captures two additional TX-on, HV-enabled, no-finger images through `+0x158`,
+with adjustment disabled. The first uses DAC word `+0x2f6` and mode 2;
+if it does not return `-1`, the second uses `+0x2f6 - +0x2fe` and mode 3.
+Their destinations are the sensor-check workspace and that workspace plus
+30000 bytes, not the two base-image temporaries. This helper adds no fixed
+sleep on its profile-9 branch.
+
+Following complete base admission, if `+0x2e1 != 0`, preparation returned
+zero, and `+0x2e0 == 0`, the owner calls `FUN_180012c1c`
+(`gf_broken_check_on_bootup`) and sets `+0x2e0` to one. Thus the five primary
+acquisitions describe the sensor-check-disabled route; enabling this option
+adds sensor-check acquisition and processing, not replacement base samples.
+
+The boot helper computes the broken-pixel count with `FUN_180013578`, fills
+the 30-word history array at sensor-check context `+8` with its low 16 bits,
+stores those bits in `DAT_1800615d0`, and calls `FUN_180013130`. The latter
+writes a 0x58-byte `broken_check_record.dat` containing the count/complement,
+sensor identity, version, and checksum. Its return is ignored by the boot
+helper, which returns zero; `update_allbase` likewise does not use the boot
+helper's return to change its base-admission result.
+
+This count is not solely a log value. The later profile-9 up procedure
+`FUN_180015aa0` calls `FUN_180011b9c` with HAL status storage `+0x30c`
+when `+0x2e1 != 0` and image-valid `+0x237 == 1`. That helper acquires a
+new sensor-check pair and passes the new count, the history array, and
+`&DAT_1800615d0` to `FUN_1800138bc`. Its resulting health assessment writes
+the next-enrollment and study status bytes at HAL `+0x30d/+0x30e`.
+The up procedure does not propagate a nonzero sensor-check return as its
+own failure; it signals `+0x300` and continues to FDT-down rearming.
+These are later health-state consumers, not boot-time OPEN rejection:
+`FUN_180012c1c` itself does not write those two status bytes or gate OPEN
+completion on the measured count.
 
 ## Capture ABI And Settings
 
@@ -76,6 +152,48 @@ The two image calls use:
   mean absolute difference.
 - The TX-off image is validation input only. It is never averaged into or
   retained as the image reference.
+
+### Image Command Producer
+
+`FUN_18000450c` installs `FUN_1800055d0` at slot `+0x158` and
+`FUN_180005420` at slot `+0x160`. The image callback calls
+`FUN_1800074bc`, which issues one category-2, command-0 request through
+`FUN_180017ec0` with a 500 ms response timeout. The four payload bytes are:
+
+- Byte 0: `0x01` for TX enabled or `0x81` for TX disabled, with `0x40` added
+  only for a finger image. Both base calls use no-finger mode.
+- Byte 1: the configured HV byte from configuration offset `+0x426` when HV
+  is enabled, or `0x10` when disabled.
+- Bytes 2 and 3: the little-endian DAC word supplied by the caller.
+
+Command failure or raw-data status `DAT_180060cc0 == -1` sets the image
+callback result to `-1`. On success, the producer copies the decoded frame
+from `DAT_180060708` to the caller's image buffer, then invokes
+`FUN_180007c84` with the adjustment flag and DAC pointer. The base calls pass
+adjustment flag zero. There is no second image command in this producer.
+`FUN_180007c84` returns without reading the image or changing the DAC when
+that flag is zero.
+
+### Command Waits
+
+The image branch of `FUN_180019ec8` (`ChangeMode`) calls `FUN_180018dd8`
+once with ACK timeout 500 ms, response timeout 500 ms, and response-event
+selector 8. The configuration producer uses selector 1 with the same timeouts
+and retries only a failed attempt. Manual FDT uses selector 10 and likewise
+retries only failure; see `usbinterface-FUN_180005420.md`.
+
+`FUN_180018dd8` resets the selected response event before sending and, after
+successful send/ACK handling, waits in 50 ms `WaitForSingleObject` calls until
+a result other than `WAIT_TIMEOUT` or expiration of the response timeout.
+These are interruptible response waits, not fixed inter-acquisition delays.
+`MilanHV_update_allbase` itself inserts no sleep between the five acquisitions.
+
+Before the response-event wait, `FUN_180018a8c` sends the framed command and
+polls its ACK byte in `DAT_180068920`, indexed by
+`(category * 8 + command) * 0x18`. It returns immediately when bit zero is
+set. Only an unset ACK causes `timeBeginPeriod(1)`, `Sleep(1)`, and
+`timeEndPeriod(1)` before the next poll, bounded by the supplied ACK count.
+This is ACK polling, not a mandatory settling delay after a received ACK.
 
 ## Ownership
 
