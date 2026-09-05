@@ -361,8 +361,6 @@ typedef enum
   GOODIX_BASE_CAPTURE_TX_OFF_DONE,
   GOODIX_BASE_FDT_TX_ON_AFTER,
   GOODIX_BASE_FDT_TX_ON_AFTER_DONE,
-  GOODIX_BASE_RECOVERY_FDT_TX_ON,
-  GOODIX_BASE_RECOVERY_FDT_TX_ON_DONE,
   GOODIX_BASE_CLEANUP_SLEEP,
   GOODIX_BASE_CLEANUP_EC_POWER_OFF,
   GOODIX_BASE_CLEANUP_EC_POWER_OFF_DONE,
@@ -375,11 +373,9 @@ typedef struct
   FpiSsm                *parent_ssm;
   guint8                 fdt_tx_on_before[GOODIX_FDT_BASE_LEN];
   guint8                 fdt_tx_off[GOODIX_FDT_BASE_LEN];
-  guint8                 recovery_fdt_tx_on[GOODIX_FDT_BASE_LEN];
   guint8                 candidate_base_down[GOODIX_FDT_BASE_LEN];
   guint8                 candidate_base_up[GOODIX_FDT_BASE_LEN];
   guint8                 candidate_base_manual[GOODIX_FDT_BASE_LEN];
-  guint16                recovery_touch_flag;
   guint                  config_attempts;
   gboolean               forced_refresh;
   gboolean               leave_powered;
@@ -502,10 +498,14 @@ goodix_base_complete_recovery (FpiSsm              *ssm,
     }
 
   goodix_milan_generation_invalidate (&self->milan_generation);
-  self->profile9_fdt.event.irq = 0;
-  self->profile9_fdt.event.touch_flag = touch_flag;
-  memcpy (self->profile9_fdt.event.raw, fdt_tx_on, GOODIX_FDT_BASE_LEN);
-  self->profile9_fdt.event.pending = TRUE;
+  memset (&self->profile9_fdt.event, 0, sizeof (self->profile9_fdt.event));
+  if (fdt_tx_on)
+    {
+      self->profile9_fdt.event.touch_flag = touch_flag;
+      memcpy (self->profile9_fdt.event.raw, fdt_tx_on, GOODIX_FDT_BASE_LEN);
+      self->profile9_fdt.event.pending = TRUE;
+    }
+  /* Rejection admits recovery without manufacturing a sensor event. */
   self->profile9_fdt.initial_recovery_pending = TRUE;
   data->leave_powered = FALSE;
 
@@ -670,8 +670,8 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
                                              GOODIX_FDT_BASE_LEN,
                                              self->calib.delta_fdt))
         {
-          goodix_milan_base_attempt_reset (&data->attempt);
-          fpi_ssm_jump_to_state (ssm, GOODIX_BASE_RECOVERY_FDT_TX_ON);
+          goodix_base_complete_recovery (
+            ssm, dev, data, NULL, 0, "fdt-tx-on/tx-off");
           return;
         }
       fpi_ssm_next_state (ssm);
@@ -705,30 +705,9 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
           {
             if (error)
               fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            else if (data->attempt.mad >= GOODIX_MILAN_BASE_MAD_LIMIT)
-              {
-                goodix_device_generate_fdt_base (
-                  data->fdt_tx_on_before, GOODIX_FDT_BASE_LEN,
-                  self->profile9_fdt.base_down);
-                memcpy (self->profile9_fdt.base_up,
-                        self->profile9_fdt.base_down, GOODIX_FDT_BASE_LEN);
-                memcpy (self->profile9_fdt.base_manual,
-                        self->profile9_fdt.base_down, GOODIX_FDT_BASE_LEN);
-                if (data->forced_refresh)
-                  goodix_base_complete_recovery (
-                    ssm, dev, data, data->fdt_tx_on_before, 0, "tx-on/tx-off");
-                else
-                  {
-                    goodix_milan_base_attempt_reset (&data->attempt);
-                    fpi_ssm_jump_to_state (
-                      ssm, GOODIX_BASE_RECOVERY_FDT_TX_ON);
-                  }
-              }
             else
-              {
-                goodix_milan_base_attempt_reset (&data->attempt);
-                fpi_ssm_jump_to_state (ssm, GOODIX_BASE_RECOVERY_FDT_TX_ON);
-              }
+              goodix_base_complete_recovery (
+                ssm, dev, data, NULL, 0, "tx-on/tx-off");
             return;
           }
         fpi_ssm_next_state (ssm);
@@ -813,23 +792,6 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
         goodix_base_timing_done (self, dev, "base_generation");
         fpi_ssm_mark_completed (ssm);
       }
-      break;
-
-    case GOODIX_BASE_RECOVERY_FDT_TX_ON:
-      goodix_cmd_fdt_manual (ssm, dev, TRUE,
-                             self->profile9_fdt.base_manual);
-      break;
-
-    case GOODIX_BASE_RECOVERY_FDT_TX_ON_DONE:
-      if (!goodix_base_parse_fdt (dev, data->recovery_fdt_tx_on,
-                                  &data->recovery_touch_flag, &error))
-        {
-          fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-          return;
-        }
-      goodix_base_complete_recovery (
-        ssm, dev, data, data->recovery_fdt_tx_on,
-        data->recovery_touch_flag, "tx-on/tx-off");
       break;
 
     case GOODIX_BASE_CLEANUP_SLEEP:
