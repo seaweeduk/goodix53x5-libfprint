@@ -46,12 +46,41 @@
 
 ## Resume Branch
 
-- When device-context byte `+0x110 == 1`, the worker does not call
-  `device_enable`, action `0x0a`, or action `0x0c`.
-- For a prior power state greater than one it retries the GTLS handshake, but
-  there is no image-base invalidation or refresh in this branch.
-- Therefore a D0 resume retains the existing HAL-context base unless some
-  independent FDT/temperature path invalidates it.
+- The byte comparison at `0x180020a1b` selects resume only for exactly
+  `device_context +0x110 == 1`. This branch skips the firmware-version loop,
+  `device_enable`, sensor check action `9`, persisted-base action `0x0a`,
+  refresh action `0x0c`, the final version query, and mode-2 action `0x0e`.
+  It performs no sensor reset, profile discovery, configuration upload,
+  power-mode restoration, FDT-store installation, or image-base validation.
+- At `0x180020e62`, a signed dword comparison of context `+0x168` against two
+  controls GTLS initialization. Values below two go directly to completion.
+  This is the stored system-power state after D0-entry normalization, not an
+  unmodified callback argument; see `usbinterface-FUN_180022d70.md`.
+- Values at least two invoke `FUN_180007ee0` with the retained ring pointer
+  at context `+0x190` and handshake-complete dword at `+0x198`. On nonzero
+  return, the worker calls `FUN_18001b94c` only when the 32-bit absolute error
+  is `0x700003`, then invokes `FUN_180007ee0` once more for any first error.
+  The cache-clear helper zeros its two protocol cache buffers and counts;
+  it is not a sensor reset or HAL/base teardown.
+- `FUN_180007ee0` serializes on the GTLS critical section, requires a non-null
+  ring and completion pointer, clears the completion dword and ring bytes
+  `+0x0c..+0x13`, and initializes/handshakes the client. It sets completion to
+  one only on success. Thus this route retains the resource allocation but
+  reinitializes the session rather than merely validating an old session.
+- Success, or the below-two route, signals global event `0x180084860`.
+  A second nonzero handshake return exits without signalling that event.
+  Neither route rewrites `+0x110`, signals context event `+0x108`, destroys
+  resources, or falls back to full initialization. All exits restore the
+  init-thread sentinel to `-1` and return thread result one; that result alone
+  is not a handshake-success indication.
+- HAL allocation, callback table, calibration, retained image/FDT buffers,
+  and base-valid bytes remain as they were. In particular, resume does not
+  establish that an already-clear image-valid byte became valid. Hardware
+  configuration continuity is not measured by a readback here. A later
+  operation-start callback separately requests mode 4, rebuilding and uploading
+  configuration from retained calibration before arming FDT-down; that is not
+  part of resume completion and does not refresh the bases. See the direct-mode
+  contract in `usbinterface-FUN_18000e1f0.md`.
 
 ## Scheduling
 

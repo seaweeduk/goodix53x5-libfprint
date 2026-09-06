@@ -66,3 +66,37 @@ requested live reads succeed. A live read returning `-1` reaches neither route.
   first valid image reference after an initial rejection.
 - Screen-off/on actions `0x17`, `0x11`, `0x15`, `0x16`, D0 power callbacks,
   and normal capture completion do not select slot `+0x180`.
+
+## Profile-9 Direct Mode
+
+Action `0x0e` passes its non-null argument to HAL callback `+0x40`, under the
+dispatcher's enabled-context check and critical section. `FUN_18000450c`
+installs `FUN_1800059c0` (`Milan_SetMode`) in this slot for profile 9. The
+callback consumes a 32-bit mode at argument `+0` and a 16-bit timeout at `+4`:
+
+- A null argument returns `-1`.
+- Mode 2 sends category 6, command 0 with no payload through
+  `FUN_180017ec0`, using the supplied timeout. It discards the transport
+  return, writes HAL dword `+0x1e0 = 2`, and returns zero. The stored mode
+  therefore records the request, not confirmed hardware success.
+- Mode 4 calls `FUN_180005094` (`Milan_DlCfg`) and returns its status; it does
+  not use the supplied timeout or write `+0x1e0`. The helper builds the
+  profile-selected 256-byte configuration, applies retained OTP/calibration
+  patches, and downloads it through `thunk_FUN_18001aed8` with timeout 500.
+  The download makes at most two category-9 command attempts, returning zero
+  on transport success or `-1` on final failure. The helper's assembly
+  preserves that return through its epilogue.
+- Other mode values return zero without issuing a command or changing mode.
+
+Mode 4 does not reset the sensor, rediscover its profile, reread OTP, initialize
+GTLS, acquire an image/FDT base, install retained FDT stores through `+0x68`,
+or validate the retained image. It restores configuration from the existing
+profile/calibration objects rather than proving those objects still describe
+the current sensor instance.
+
+Operation-start callback `FUN_180015710` (HAL `+0x1a0`, action 3) requests
+mode 4 but discards its return, then calls FDT callback `+0xb0(1)` and returns
+that callback's result. In contrast, `MilanHV_update_allbase` checks mode 4's
+return before its first acquisition; see `usbinterface-FUN_180015c60.md`.
+The initialized `deviceInit` resume route invokes neither mode; its event
+completion does not certify that configuration has been downloaded.

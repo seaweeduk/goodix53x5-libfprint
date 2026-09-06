@@ -9,10 +9,17 @@
 ## Findings
 
 - Records the current system power state in device context `+0x168`.
-- Sends device action `0x13` and, for deeper states, action `0x0e` to put the
-  sensor to sleep.
-- Sets the nested HAL stop byte at `+0x68e0` and stops the continuous USB read
-  pipe.
+- Only when Modern Standby capability byte `0x1800e2120 != 1`, sends action
+  `0x13` with wait-FDT state `0xf2` and sets nested stop byte `+0x68e0 = 1`.
+  Within that branch, context byte `+0x151 != 1` and signed power state
+  `+0x168 >= 2` select action `0x0e` with mode 2 and timeout 200. Otherwise,
+  exact context byte `+0x152 == 1` is cleared and action `0x11` is called with
+  zeroed power-isolation fields and timeout 200. The action returns are not
+  checked. With the capability byte equal to one, all these actions and the
+  stop-byte write are skipped.
+- Stops the continuous USB read pipe when its handle at context `+0x18` is
+  non-null, independently of the capability byte. A recorded system-power
+  state greater than one resets global completion event `0x180084860`.
 - It does not call `device_disable`, `milan_HVseries_disable`, or
   `MilanHV_update_allbase`.
 - It does not clear HAL validity bytes `+0x232/+0x237`, one-shot refresh byte
@@ -20,18 +27,11 @@
 
 ## Lifetime Consequence
 
-The normal D0 exit/entry pair preserves hardware image-base state. Whether a
+The normal D0 exit/entry pair preserves host-side image-base state. Whether a
 particular suspend/hibernate/removal also causes `ReleaseHardware` is decided by
 UMDF/Windows scheduling outside this callback.
-
-## Linux Parity Status
-
-The Linux suspend callback cancels an active transfer or state machine and
-marks the sensor for reinitialization. It does not currently send the native
-D0-exit sleep action or an EC power-isolation command before completing an
-active-operation suspend.
-
-Observed suspend/resume behavior is reliable on the profile-9/type-12 sensor,
-including lock-screen use. Adding asynchronous sleep/EC cleanup is deferred
-unless hardware evidence shows a suspend-entry or resume failure, because it
-would need to sequence new USB transfers after cancelling an in-flight one.
+Neither callback measures sensor-configuration continuity or validates the
+retained base. D0 entry can normalize the recorded power state before the
+worker's handshake decision; see `usbinterface-FUN_180022d70.md` and
+`usbinterface-FUN_180020970.md`. The mode callback's return and configuration
+effects are documented in `usbinterface-FUN_18000e1f0.md`.
