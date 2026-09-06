@@ -221,7 +221,10 @@ def locked_state(path_value: str | None) -> Iterator[Path]:
 def source_identity(repo: Path) -> str:
     repo = repo.expanduser().resolve()
     roots = [repo / "drivers" / "goodix53x5"]
-    fixed = [repo / "meson-integration.patch", repo / "scripts" / "build-local.sh"]
+    fixed = [repo / "meson-integration.patch", repo / "scripts" / "build-local.sh",
+             repo / "patches" / "libfprint" / "libfprint-update-result.patch",
+             repo / "patches" / "libfprint" / "libfprint-goodix53x5-usb-persist.patch",
+             repo / "patches" / "libfprint" / "libfprint-idle-suspend-notify.patch"]
     paths = sorted(path for root in roots for path in root.rglob("*") if path.is_file())
     paths.extend(fixed)
     digest = hashlib.sha256()

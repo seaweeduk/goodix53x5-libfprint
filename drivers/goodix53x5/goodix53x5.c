@@ -107,6 +107,12 @@ goodix_suspend (FpDevice *dev)
 }
 
 static void
+goodix_suspend_idle_notify (FpDevice *dev)
+{
+  FPI_DEVICE_GOODIX53X5 (dev)->needs_reinit = TRUE;
+}
+
+static void
 goodix_resume (FpDevice *dev)
 {
   goodix_session_resume (dev);
@@ -171,4 +177,5 @@ fpi_device_goodix53x5_class_init (FpiDeviceGoodix53x5Class *klass)
   dev_class->cancel = goodix_cancel;
   dev_class->suspend = goodix_suspend;
   dev_class->resume  = goodix_resume;
+  dev_class->suspend_idle_notify = goodix_suspend_idle_notify;
 }

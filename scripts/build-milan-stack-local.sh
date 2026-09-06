@@ -62,6 +62,7 @@ fi
 milan_verify_git_pristine "$fprintd_pristine" "$MILAN_FPRINTD_REVISION" "fprintd"
 "$repo_dir/patches/libfprint/verify-update-result-patch.sh" "$libfprint_pristine"
 "$repo_dir/patches/libfprint/verify-goodix53x5-usb-persist-patch.sh" "$libfprint_pristine"
+"$repo_dir/patches/libfprint/verify-idle-suspend-notify-patch.sh" "$libfprint_pristine"
 "$repo_dir/patches/fprintd/verify-update-save-patch.sh" "$fprintd_pristine"
 
 mkdir -p "$MILAN_STACK_ROOT/builds"
@@ -93,6 +94,8 @@ git -C "$libfprint_source" apply --reverse --check \
   "$repo_dir/patches/libfprint/libfprint-update-result.patch"
 git -C "$libfprint_source" apply --reverse --check \
   "$repo_dir/patches/libfprint/libfprint-goodix53x5-usb-persist.patch"
+git -C "$libfprint_source" apply --reverse --check \
+  "$repo_dir/patches/libfprint/libfprint-idle-suspend-notify.patch"
 milan_run_stage "configure paired shadow libfprint" meson setup "$libfprint_build" \
   "$libfprint_source" --reconfigure --prefix="$MILAN_PREFIX" --libdir=lib \
   -Ddrivers=goodix53x5 -Dudev_hwdb=disabled -Dudev_rules=disabled \
@@ -146,6 +149,7 @@ FPRINTD_REVISION=$MILAN_FPRINTD_REVISION
 FPRINTD_SOURCE_TREE=$(git -C "$fprintd_pristine" rev-parse HEAD^{tree})
 LIBFPRINT_PATCH_SHA256=$MILAN_LIBFPRINT_PATCH_SHA256
 LIBFPRINT_USB_PERSIST_PATCH_SHA256=$MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256
+LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256=$MILAN_LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256
 FPRINTD_PATCH_SHA256=$MILAN_FPRINTD_PATCH_SHA256
 OVERLAY_REVISION=$overlay_revision
 OVERLAY_INPUT_SHA256=$overlay_input_sha256

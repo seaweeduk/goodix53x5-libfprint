@@ -31,3 +31,30 @@ Regenerate it deterministically from a modified worktree at the pinned commit:
 The generator writes a base-revision header into the patch. The verifier
 enforces that revision before running `git apply --check`; `git apply` alone
 does not enforce patch metadata.
+
+## Idle Suspend Notification
+
+`libfprint-idle-suspend-notify.patch` targets the same exact revision and adds
+the nullable internal `FpDeviceClass.suspend_idle_notify` callback. Core calls
+it synchronously only for an accepted suspend of an open, idle device, before
+completing suspend. The callback may only invalidate driver-owned memory: no
+I/O, asynchronous work, blocking, main-loop reentrancy, action start or
+completion calls. It has no paired resume callback.
+
+Goodix opts in only to set `needs_reinit`; its existing next-action SSM performs
+reinitialization. Closed devices and drivers that do not opt in retain their
+existing behavior. Interactive hooks and the short-action suspend path are
+unchanged. This does not establish physical S3, s2idle or S4 recovery.
+
+Both local build routes verify and apply the patch, and include it in overlay
+and production source identities. The stack manifest also seals its digest.
+All drivers must be rebuilt against the changed internal class layout. Check
+the patch against a pristine checkout with:
+
+```sh
+./patches/libfprint/verify-idle-suspend-notify-patch.sh /path/to/pristine/libfprint
+```
+
+One additional `fpi-device` case, `/driver/identify/suspend_idle_notify`, checks
+notification ordering/counts, repeated cycles, and closed/non-opted-in controls.
+The existing idle and interactive suspend compatibility cases are unchanged.
