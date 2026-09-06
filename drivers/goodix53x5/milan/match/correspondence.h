@@ -23,6 +23,13 @@ typedef struct
   int32_t second_distance;
 } MilanFeatureMatch;
 
+typedef struct
+{
+  int32_t best_distance;
+  int32_t second_distance;
+  int32_t best_index;
+} MilanMatchDistanceReduction;
+
 size_t goodix_milan_match_feature_records (
   const GoodixMilanFeatureRecord *prior,
   size_t                          prior_count,
@@ -30,25 +37,25 @@ size_t goodix_milan_match_feature_records (
   size_t                          current_count,
   MilanFeatureMatch              matches[31]);
 
-int goodix_milan_match_correspondences_partitioned (
-  const GoodixMilanFeatureRecord *enrolled_records,
-  size_t                          enrolled_record_count,
-  size_t                          enrolled_partition_count,
-  const GoodixMilanFeatureRecord *probe_records,
-  size_t                          probe_record_count,
-  size_t                          probe_partition_count,
-  int32_t                        *pairs,
-  size_t                          pair_capacity,
-  size_t                         *pair_count);
+int goodix_milan_match_correspondences_partitioned (const GoodixMilanFeatureRecord    *enrolled_records,
+                                                    size_t                             enrolled_record_count,
+                                                    size_t                             enrolled_partition_count,
+                                                    const GoodixMilanFeatureRecord    *probe_records,
+                                                    size_t                             probe_record_count,
+                                                    size_t                             probe_partition_count,
+                                                    int32_t                           *pairs,
+                                                    size_t                             pair_capacity,
+                                                    size_t                            *pair_count,
+                                                    const MilanMatchDistanceReduction *primary_reductions);
 
-size_t goodix_milan_match_relaxed_correspondences (
-  const GoodixMilanFeatureRecord *enrolled_records,
-  size_t                          enrolled_record_count,
-  size_t                          enrolled_partition_count,
-  const GoodixMilanFeatureRecord *probe_records,
-  size_t                          probe_record_count,
-  size_t                          probe_partition_count,
-  int32_t                         pairs[62]);
+size_t goodix_milan_match_relaxed_correspondences (const GoodixMilanFeatureRecord *enrolled_records,
+                                                   size_t                          enrolled_record_count,
+                                                   size_t                          enrolled_partition_count,
+                                                   const GoodixMilanFeatureRecord *probe_records,
+                                                   size_t                          probe_record_count,
+                                                   size_t                          probe_partition_count,
+                                                   int32_t                         pairs[62],
+                                                   MilanMatchDistanceReduction    *primary_reductions);
 
 int goodix_milan_match_alternate_correspondences_internal (
   const GoodixMilanFeatureRecord *enrolled_records,

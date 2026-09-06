@@ -152,6 +152,7 @@ typedef struct
 typedef struct
 {
   MilanMatchDirection                direction;
+  const MilanMatchDistanceReduction *primary_reductions;
   uint32_t                           sensor_type;
   int32_t                            image_quality;
   int32_t                            image_coverage;
@@ -522,10 +523,11 @@ milan_match_publish_candidate (
 
 static int
 milan_match_score_counts (
-  const MilanMatchDirection *direction,
-  size_t                     pair_capacity,
-  MilanMatchFeatureResult   *result,
-  GoodixMilanMatchCandidate *candidate)
+  const MilanMatchDirection         *direction,
+  size_t                             pair_capacity,
+  MilanMatchFeatureResult           *result,
+  GoodixMilanMatchCandidate         *candidate,
+  const MilanMatchDistanceReduction *primary_reductions)
 {
   int32_t pairs[MILAN_MATCH_MAX_PAIRS * 2];
   int32_t initial_transform[6];
@@ -546,7 +548,7 @@ milan_match_score_counts (
         direction->enrolled_records, direction->enrolled_record_count,
         direction->enrolled_partition_count, direction->probe_records,
         direction->probe_record_count, direction->probe_partition_count,
-        pairs, pair_capacity, &match_count) != 0)
+        pairs, pair_capacity, &match_count, primary_reductions) != 0)
     return -1;
   memcpy (initial_transform, result->transform, sizeof (initial_transform));
   goodix_milan_match_fit_affine_state (
@@ -897,7 +899,8 @@ milan_match_build_feature_candidate (
         direction,
         sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ? 42 : 31,
         feature_result,
-        sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ? &feature_result->candidate : NULL) != 0)
+        sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ? &feature_result->candidate : NULL,
+        context->primary_reductions) != 0)
     return 1;
   milan_match_apply_secondary (
     direction, feature_result,
@@ -1354,7 +1357,7 @@ milan_match_reverse_feature (const MilanMatchReverseContext *context)
   int32_t match_flag;
   int32_t candidate_flag;
 
-  if (milan_match_score_counts (&context->direction, 31, &reverse, NULL) != 0)
+  if (milan_match_score_counts (&context->direction, 31, &reverse, NULL, NULL) != 0)
     return;
   milan_match_apply_secondary (
     &context->direction, &reverse, 31,
@@ -1514,7 +1517,7 @@ milan_match_relaxed_feature (const MilanMatchDirection     *direction,
   pair_count = goodix_milan_match_relaxed_correspondences (
     direction->enrolled_records, direction->enrolled_record_count,
     direction->enrolled_partition_count, direction->probe_records,
-    direction->probe_record_count, direction->probe_partition_count, pairs);
+    direction->probe_record_count, direction->probe_partition_count, pairs, NULL);
   if (pair_count < 3 ||
       goodix_milan_filter_recognition_pairs (
         direction->enrolled_records, direction->probe_records, pairs,
@@ -2172,6 +2175,7 @@ milan_match_prepared_probe (
 
       GoodixMilanFeatureView feature;
       MilanMatchFeatureResult feature_result;
+      MilanMatchDistanceReduction primary_reductions[150];
       GoodixMilanMatchFallbackWorkspace *fallback_workspace = NULL;
       int32_t late_policy_state[3] = { 0 };
 #ifdef GOODIX53X5_DEBUG
@@ -2225,7 +2229,7 @@ milan_match_prepared_probe (
           fallback_pair_count = goodix_milan_match_relaxed_correspondences (
             enrolled_records, feature.record_count, enrolled_partition_count,
             probe_records, probe_record_count, probe_partition_count,
-            fallback_pairs);
+            fallback_pairs, primary_reductions);
           if (goodix_milan_match_fallback_store (
                 &match_fallback, (int32_t) feature_index, 0, fallback_pairs,
                 fallback_pair_count) != 0)
@@ -2258,6 +2262,9 @@ milan_match_prepared_probe (
             continue;
         }
       MilanMatchFeatureContext feature_context = {
+        .primary_reductions =
+          enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE ?
+          primary_reductions : NULL,
         .direction = {
           .enrolled_records = enrolled_records,
           .enrolled_record_count = feature.record_count,
