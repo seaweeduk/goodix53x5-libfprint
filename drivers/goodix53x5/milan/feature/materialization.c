@@ -435,11 +435,22 @@ feature_normalize_descriptor (const int32_t *samples,
         : (int16_t) clipped);
 }
 
-static int
-feature_hadamard_sign (size_t row,
-                       size_t column)
+static void
+feature_hadamard32 (const int16_t *normalized,
+                    int32_t        transformed[32])
 {
-  return __builtin_parityll (row & column) ? -1 : 1;
+  for (size_t i = 0; i < 32; i++)
+    transformed[i] = normalized[i];
+  for (size_t stride = 1; stride < 32; stride *= 2)
+    for (size_t base = 0; base < 32; base += stride * 2)
+      for (size_t i = 0; i < stride; i++)
+        {
+          int32_t a = transformed[base + i];
+          int32_t b = transformed[base + i + stride];
+
+          transformed[base + i] = a + b;
+          transformed[base + i + stride] = a - b;
+        }
 }
 
 static int16_t
@@ -474,24 +485,25 @@ feature_encode_descriptor_first (const int16_t normalized[128],
   };
   uint32_t transform[4] = { 0 };
   uint32_t median_bits = 0;
+  int16_t partial[4][32];
+
+  for (size_t block = 0; block < 4; block++)
+    {
+      int32_t transformed[32];
+
+      feature_hadamard32 (normalized + block * 32, transformed);
+      /* Narrow each block before the existing four-block combination. */
+      for (size_t bit = 0; bit < 32; bit++)
+        partial[block][bit] = (int16_t) transformed[bit];
+    }
 
   for (size_t bit = 0; bit < 32; bit++)
     {
-      int16_t partial[4];
-
-      for (size_t block = 0; block < 4; block++)
-        {
-          int32_t sum = 0;
-          for (size_t sample = 0; sample < 32; sample++)
-            sum += normalized[block * 32 + sample] *
-                   feature_hadamard_sign (bit, sample);
-          partial[block] = (int16_t) sum;
-        }
       for (size_t output = 0; output < 4; output++)
         {
           int32_t sum = 0;
           for (size_t block = 0; block < 4; block++)
-            sum += coefficients[output][block] * partial[block];
+            sum += coefficients[output][block] * partial[block][bit];
           if (sum > 0)
             transform[output] |= 1U << bit;
         }
@@ -512,13 +524,13 @@ feature_encode_descriptor_second (const int16_t normalized[32],
   uint32_t transform = 0;
   uint32_t median_bits = 0;
   int16_t median = feature_descriptor_median (normalized, 32);
+  int32_t transformed[32];
+
+  feature_hadamard32 (normalized, transformed);
 
   for (size_t bit = 0; bit < 32; bit++)
     {
-      int32_t sum = 0;
-      for (size_t sample = 0; sample < 32; sample++)
-        sum += normalized[sample] * feature_hadamard_sign (bit, sample);
-      if (sum > 0)
+      if (transformed[bit] > 0)
         transform |= 1U << bit;
       if (median < normalized[bit])
         median_bits |= 1U << bit;
