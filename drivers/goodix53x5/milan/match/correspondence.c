@@ -223,15 +223,16 @@ milan_recognition_descriptor_distance (const GoodixMilanFeatureRecord *enrolled,
 
 int
 goodix_milan_match_correspondences_partitioned (
-  const GoodixMilanFeatureRecord *enrolled_records,
-  size_t                          enrolled_record_count,
-  size_t                          enrolled_partition_count,
-  const GoodixMilanFeatureRecord *probe_records,
-  size_t                          probe_record_count,
-  size_t                          probe_partition_count,
-  int32_t                        *pairs,
-  size_t                          pair_capacity,
-  size_t                         *pair_count)
+  const GoodixMilanFeatureRecord    *enrolled_records,
+  size_t                             enrolled_record_count,
+  size_t                             enrolled_partition_count,
+  const GoodixMilanFeatureRecord    *probe_records,
+  size_t                             probe_record_count,
+  size_t                             probe_partition_count,
+  int32_t                           *pairs,
+  size_t                             pair_capacity,
+  size_t                            *pair_count,
+  const MilanMatchDistanceReduction *primary_reductions)
 {
   MilanFeatureMatch matches[MILAN_MATCH_MAX_PAIRS];
   size_t match_count = 0;
@@ -257,22 +258,33 @@ goodix_milan_match_correspondences_partitioned (
       int second_distance = 192;
       int best_index = -1;
 
-      for (size_t probe_index = probe_begin; probe_index < probe_end;
-           probe_index++)
+      if (primary_reductions)
         {
-          int distance = milan_recognition_descriptor_distance (
-            &enrolled_records[enrolled_index], &probe_records[probe_index]);
-
-          if (distance < 0)
-            continue;
-          if (distance < best_distance)
+          best_distance = primary_reductions[enrolled_index].best_distance;
+          second_distance = primary_reductions[enrolled_index].second_distance;
+          best_index = primary_reductions[enrolled_index].best_index;
+        }
+      else
+        {
+          for (size_t probe_index = probe_begin; probe_index < probe_end;
+               probe_index++)
             {
-              second_distance = best_distance;
-              best_distance = distance;
-              best_index = (int) probe_index;
+              int distance = milan_recognition_descriptor_distance (
+                &enrolled_records[enrolled_index], &probe_records[probe_index]);
+
+              if (distance < 0)
+                continue;
+              if (distance < best_distance)
+                {
+                  second_distance = best_distance;
+                  best_distance = distance;
+                  best_index = (int) probe_index;
+                }
+              else if (distance < second_distance)
+                {
+                  second_distance = distance;
+                }
             }
-          else if (distance < second_distance)
-            second_distance = distance;
         }
       if (best_index < 0 || best_distance * 40 >= second_distance * 38)
         continue;
@@ -366,10 +378,15 @@ goodix_milan_match_relaxed_correspondences (
   const GoodixMilanFeatureRecord *probe_records,
   size_t                          probe_record_count,
   size_t                          probe_partition_count,
-  int32_t                         pairs[62])
+  int32_t                         pairs[62],
+  MilanMatchDistanceReduction    *primary_reductions)
 {
   MilanFeatureMatch matches[31];
   size_t match_count = 0;
+
+  if (primary_reductions)
+    for (size_t i = 0; i < enrolled_record_count; i++)
+      primary_reductions[i] = (MilanMatchDistanceReduction){ 192, 192, -1 };
 
   for (size_t probe_index = 0; probe_index < probe_record_count; probe_index++)
     {
@@ -391,6 +408,23 @@ goodix_milan_match_relaxed_correspondences (
 
           if (distance < 0)
             continue;
+          /* Each enrolled record still sees probe indices in ascending order. */
+          if (primary_reductions)
+            {
+              MilanMatchDistanceReduction *primary =
+                &primary_reductions[enrolled_index];
+
+              if (distance < primary->best_distance)
+                {
+                  primary->second_distance = primary->best_distance;
+                  primary->best_distance = distance;
+                  primary->best_index = (int32_t) probe_index;
+                }
+              else if (distance < primary->second_distance)
+                {
+                  primary->second_distance = distance;
+                }
+            }
           if (distance < best_distance)
             {
               second_distance = best_distance;
