@@ -124,6 +124,7 @@ overlay_input_sha256="$(
     sha256sum meson-integration.patch scripts/build-local.sh \
       patches/libfprint/libfprint-update-result.patch \
       patches/libfprint/libfprint-goodix53x5-usb-persist.patch \
+      patches/libfprint/libfprint-idle-suspend-notify.patch \
       patches/fprintd/1.94.5-milan-update-save.patch
   ) | sha256sum | cut -d ' ' -f 1
 )"
@@ -137,6 +138,7 @@ FPRINTD_REVISION=b54a007ccf58ac0ae074c7151b223f35cbd17306
 FPRINTD_SOURCE_TREE=ff82f8c3c2ab936ddafec9e88e650c04cd6f4f1d
 LIBFPRINT_PATCH_SHA256=fa9a4a89df02894a01013dc787d06cdbb74a4908b8e3cdc5da745e0265fb2f72
 LIBFPRINT_USB_PERSIST_PATCH_SHA256=743c13782228869b8b5ea834caa096abadd38e5542303d7af8bc7acb4c925ae0
+LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256=ec357fef155b2b6a0be6d91e697e4c4cbd3f5f4cec5218cd95b94008d7e7e548
 FPRINTD_PATCH_SHA256=5d87cd806587fa5f035847a38ba3155b38f9a612a3070d9abfa6f83114e58db8
 OVERLAY_REVISION=fixture
 OVERLAY_INPUT_SHA256=$overlay_input_sha256

@@ -1,0 +1,160 @@
+Libfprint-Idle-Suspend-Notify-Patch: 1
+Base-Revision: 0c97a47d8ef405cd577b87058c1e89cae9d242e7
+Base-Tag: v1.94.10
+
+diff --git a/libfprint/fpi-device.h b/libfprint/fpi-device.h
+--- a/libfprint/fpi-device.h
++++ b/libfprint/fpi-device.h
+@@ -112,6 +112,13 @@
+  *    IDENTIFY or CAPTURE) and the system is about to go into suspend.
+  * @resume: Called to resume an ongoing interactive action after the system has
+  *    resumed from suspend.
++ * @suspend_idle_notify: Optional synchronous notification when an open device
++ *    has no current action and a system suspend request has been accepted.
++ *    Called before core completes suspend, allowing drivers to invalidate
++ *    retained state for the next action. Must only update driver-owned memory:
++ *    no I/O, asynchronous work, blocking or main-loop reentrancy is permitted.
++ *    Must not start an action or call a completion function; core owns suspend
++ *    completion. Closed devices are not notified. There is no paired callback.
+  *
+  * NOTE: If your driver is image based, then you should subclass #FpImageDevice
+  * instead. #FpImageDevice based drivers use a different way of interacting
+@@ -173,6 +180,7 @@ struct _FpDeviceClass
+   void (*cancel)   (FpDevice *device);
+   void (*suspend)  (FpDevice *device);
+   void (*resume)   (FpDevice *device);
++  void (*suspend_idle_notify) (FpDevice *device);
+ };
+ 
+ void fpi_device_class_auto_initialize_features (FpDeviceClass *device_class);
+diff --git a/libfprint/fpi-device.c b/libfprint/fpi-device.c
+--- a/libfprint/fpi-device.c
++++ b/libfprint/fpi-device.c
+@@ -1615,6 +1615,8 @@ fpi_device_suspend (FpDevice *device)
+   switch (priv->current_action)
+     {
+     case FPI_DEVICE_ACTION_NONE:
++      if (priv->is_open && FP_DEVICE_GET_CLASS (device)->suspend_idle_notify)
++        FP_DEVICE_GET_CLASS (device)->suspend_idle_notify (device);
+       fpi_device_suspend_complete (device, NULL);
+       break;
+ 
+diff --git a/tests/test-fpi-device.c b/tests/test-fpi-device.c
+--- a/tests/test-fpi-device.c
++++ b/tests/test-fpi-device.c
+@@ -2330,5 +2330,107 @@ test_driver_identify_suspend_while_idle (void)
+ }
+ 
++typedef struct
++{
++  guint notifications;
++  guint expected_notifications;
++  guint suspend_completions;
++  guint resume_completions;
++} IdleSuspendNotifyData;
++
++static void
++fake_device_suspend_idle_notify (FpDevice *device)
++{
++  IdleSuspendNotifyData *data = FPI_DEVICE_FAKE (device)->user_data;
++
++  g_assert_true (fp_device_is_open (device));
++  g_assert_cmpint (fpi_device_get_current_action (device), ==, FPI_DEVICE_ACTION_NONE);
++  g_assert_cmpuint (data->suspend_completions, ==, data->resume_completions);
++  data->notifications++;
++  g_assert_cmpuint (data->notifications, ==, data->expected_notifications);
++}
++
++static void
++idle_suspend_notify_suspend_cb (GObject      *source,
++                                GAsyncResult *result,
++                                gpointer      user_data)
++{
++  IdleSuspendNotifyData *data = user_data;
++
++  g_autoptr(GError) error = NULL;
++
++  g_assert_true (fp_device_suspend_finish (FP_DEVICE (source), result, &error));
++  g_assert_no_error (error);
++  g_assert_cmpuint (data->notifications, ==, data->expected_notifications);
++  data->suspend_completions++;
++}
++
++static void
++idle_suspend_notify_resume_cb (GObject      *source,
++                               GAsyncResult *result,
++                               gpointer      user_data)
++{
++  IdleSuspendNotifyData *data = user_data;
++
++  g_autoptr(GError) error = NULL;
++
++  g_assert_true (fp_device_resume_finish (FP_DEVICE (source), result, &error));
++  g_assert_no_error (error);
++  data->resume_completions++;
++}
++
++static void
++test_driver_identify_suspend_idle_notify (void)
++{
++  g_autoptr(FpAutoResetClass) dev_class = auto_reset_device_class ();
++  g_autoptr(FpAutoCloseDevice) device = g_object_new (FPI_TYPE_DEVICE_FAKE, NULL);
++  FpiDeviceFake *fake_dev = FPI_DEVICE_FAKE (device);
++  IdleSuspendNotifyData data = {0};
++
++  g_assert_null (dev_class->suspend_idle_notify);
++  fake_dev->user_data = &data;
++  dev_class->suspend_idle_notify = fake_device_suspend_idle_notify;
++
++  /* Closed opt-in, open default, then two open opt-in sleep cycles. */
++  for (guint i = 0; i < 4; i++)
++    {
++      if (i == 1)
++        {
++          g_assert_true (fp_device_open_sync (device, NULL, NULL));
++          dev_class->suspend_idle_notify = NULL;
++        }
++      else if (i == 2)
++        {
++          dev_class->suspend_idle_notify = fake_device_suspend_idle_notify;
++        }
++
++      fake_dev->last_called_function = NULL;
++      while (g_main_context_iteration (NULL, FALSE))
++        continue;
++      g_assert_cmpuint (data.notifications, ==, data.expected_notifications);
++      g_assert_null (fake_dev->last_called_function);
++
++      if (i >= 2)
++        data.expected_notifications++;
++      fp_device_suspend (device, NULL, idle_suspend_notify_suspend_cb, &data);
++      g_assert_cmpuint (data.notifications, ==, data.expected_notifications);
++      g_assert_cmpuint (data.suspend_completions, ==, i);
++      while (g_main_context_iteration (NULL, FALSE))
++        continue;
++      g_assert_cmpuint (data.suspend_completions, ==, i + 1);
++      g_assert_null (fake_dev->last_called_function);
++
++      fp_device_resume (device, NULL, idle_suspend_notify_resume_cb, &data);
++      while (g_main_context_iteration (NULL, FALSE))
++        continue;
++      g_assert_cmpuint (data.resume_completions, ==, i + 1);
++      g_assert_cmpuint (data.suspend_completions, ==, i + 1);
++      g_assert_cmpuint (data.notifications, ==, data.expected_notifications);
++      g_assert_null (fake_dev->last_called_function);
++      g_assert_cmpint (fp_device_is_open (device), ==, i > 0);
++      g_assert_cmpint (fpi_device_get_current_action (device), ==, FPI_DEVICE_ACTION_NONE);
++    }
++}
++
+ static void
+ test_driver_identify_warmup_cooldown (void)
+ {
+@@ -3465,6 +3567,7 @@ main (int argc, char *argv[])
+   g_test_add_func ("/driver/identify/suspend_succeeds", test_driver_identify_suspend_succeeds);
+   g_test_add_func ("/driver/identify/suspend_busy_error", test_driver_identify_suspend_busy_error);
+   g_test_add_func ("/driver/identify/suspend_while_idle", test_driver_identify_suspend_while_idle);
++  g_test_add_func ("/driver/identify/suspend_idle_notify", test_driver_identify_suspend_idle_notify);
+ 
+   g_test_add_func ("/driver/identify/warmup_cooldown", test_driver_identify_warmup_cooldown);
+ 

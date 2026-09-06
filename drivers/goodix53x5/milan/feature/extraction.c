@@ -68,37 +68,42 @@ feature_filter_q16 (const uint16_t          *source,
 
   if (!horizontal)
     return -1;
-  for (size_t row = 0; row < rows; row++)
-    for (size_t column = 0; column < columns; column++)
-      {
-        uint64_t sum = 0;
+  for (size_t column = 0; rows != 0 && column < columns; column++)
+    {
+      size_t reflected[15];
 
-        for (size_t tap = 0; tap < kernel->length; tap++)
-          {
-            size_t x = goodix_milan_reflect101_index (
-              (ptrdiff_t) column + (ptrdiff_t) tap - (ptrdiff_t) radius,
-              columns);
+      for (size_t tap = 0; tap < kernel->length; tap++)
+        reflected[tap] = goodix_milan_reflect101_index (
+          (ptrdiff_t) column + (ptrdiff_t) tap - (ptrdiff_t) radius,
+          columns);
+      for (size_t row = 0; row < rows; row++)
+        {
+          uint64_t sum = 0;
 
-            sum += (uint64_t) source[row * columns + x] *
+          for (size_t tap = 0; tap < kernel->length; tap++)
+            sum += (uint64_t) source[row * columns + reflected[tap]] *
                    kernel->coefficients[tap];
-          }
-        horizontal[row * columns + column] = (uint16_t) (sum >> 16);
-      }
-  for (size_t row = 0; row < rows; row++)
-    for (size_t column = 0; column < columns; column++)
-      {
-        uint64_t sum = 0;
+          horizontal[row * columns + column] = (uint16_t) (sum >> 16);
+        }
+    }
+  for (size_t row = 0; columns != 0 && row < rows; row++)
+    {
+      size_t reflected[15];
 
-        for (size_t tap = 0; tap < kernel->length; tap++)
-          {
-            size_t y = goodix_milan_reflect101_index (
-              (ptrdiff_t) row + (ptrdiff_t) tap - (ptrdiff_t) radius, rows);
+      for (size_t tap = 0; tap < kernel->length; tap++)
+        reflected[tap] = goodix_milan_reflect101_index (
+          (ptrdiff_t) row + (ptrdiff_t) tap - (ptrdiff_t) radius, rows) *
+                         columns;
+      for (size_t column = 0; column < columns; column++)
+        {
+          uint64_t sum = 0;
 
-            sum += (uint64_t) horizontal[y * columns + column] *
+          for (size_t tap = 0; tap < kernel->length; tap++)
+            sum += (uint64_t) horizontal[reflected[tap] + column] *
                    kernel->coefficients[tap];
-          }
-        output[row * columns + column] = (uint16_t) (sum >> 16);
-      }
+          output[row * columns + column] = (uint16_t) (sum >> 16);
+        }
+    }
   free (horizontal);
   return 0;
 }

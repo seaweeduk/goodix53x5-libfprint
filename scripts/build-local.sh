@@ -71,10 +71,13 @@ git -C "$libfprint_dir" reset --hard --quiet "$libfprint_ref"
 # The verifier rejects both the wrong commit and any context drift.
 "$repo_dir/patches/libfprint/verify-update-result-patch.sh" "$libfprint_dir"
 "$repo_dir/patches/libfprint/verify-goodix53x5-usb-persist-patch.sh" "$libfprint_dir"
+"$repo_dir/patches/libfprint/verify-idle-suspend-notify-patch.sh" "$libfprint_dir"
 git -C "$libfprint_dir" apply \
   "$repo_dir/patches/libfprint/libfprint-update-result.patch"
 git -C "$libfprint_dir" apply \
   "$repo_dir/patches/libfprint/libfprint-goodix53x5-usb-persist.patch"
+git -C "$libfprint_dir" apply \
+  "$repo_dir/patches/libfprint/libfprint-idle-suspend-notify.patch"
 
 rm -rf "$libfprint_dir/libfprint/drivers/goodix53x5"
 mkdir -p "$libfprint_dir/libfprint/drivers/goodix53x5"
