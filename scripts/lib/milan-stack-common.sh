@@ -6,6 +6,7 @@ MILAN_LIBFPRINT_SOURCE_TREE="2d08bc33d953cd17b315c5f5199aa7a0d0504506"
 MILAN_FPRINTD_SOURCE_TREE="ff82f8c3c2ab936ddafec9e88e650c04cd6f4f1d"
 MILAN_LIBFPRINT_PATCH_SHA256="fa9a4a89df02894a01013dc787d06cdbb74a4908b8e3cdc5da745e0265fb2f72"
 MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256="743c13782228869b8b5ea834caa096abadd38e5542303d7af8bc7acb4c925ae0"
+MILAN_LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256="ec357fef155b2b6a0be6d91e697e4c4cbd3f5f4cec5218cd95b94008d7e7e548"
 MILAN_FPRINTD_PATCH_SHA256="5d87cd806587fa5f035847a38ba3155b38f9a612a3070d9abfa6f83114e58db8"
 MILAN_PREFIX="/opt/goodix53x5-milan"
 MILAN_SYSTEMD_DIR="/etc/systemd/system/fprintd.service.d"
@@ -144,6 +145,7 @@ milan_overlay_input_sha256() {
     sha256sum meson-integration.patch scripts/build-local.sh \
       patches/libfprint/libfprint-update-result.patch \
       patches/libfprint/libfprint-goodix53x5-usb-persist.patch \
+      patches/libfprint/libfprint-idle-suspend-notify.patch \
       patches/fprintd/1.94.5-milan-update-save.patch
   ) | sha256sum | cut -d ' ' -f 1
 }
@@ -160,12 +162,15 @@ milan_verify_repo_inputs() {
   local repo_dir="$1"
   local lib_patch="$repo_dir/patches/libfprint/libfprint-update-result.patch"
   local persist_patch="$repo_dir/patches/libfprint/libfprint-goodix53x5-usb-persist.patch"
+  local idle_suspend_patch="$repo_dir/patches/libfprint/libfprint-idle-suspend-notify.patch"
   local daemon_patch="$repo_dir/patches/fprintd/1.94.5-milan-update-save.patch"
 
   [[ "$(milan_sha256 "$lib_patch")" == "$MILAN_LIBFPRINT_PATCH_SHA256" ]] ||
     milan_die "libfprint patch digest mismatch"
   [[ "$(milan_sha256 "$persist_patch")" == "$MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256" ]] ||
     milan_die "libfprint USB persist patch digest mismatch"
+  [[ "$(milan_sha256 "$idle_suspend_patch")" == "$MILAN_LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256" ]] ||
+    milan_die "libfprint idle suspend notification patch digest mismatch"
   [[ "$(milan_sha256 "$daemon_patch")" == "$MILAN_FPRINTD_PATCH_SHA256" ]] ||
     milan_die "fprintd patch digest mismatch"
   (cd "$(dirname "$daemon_patch")" && sha256sum --check "$(basename "$daemon_patch").sha256" >/dev/null) ||
@@ -247,6 +252,7 @@ milan_verify_manifest() {
   [[ "$(milan_manifest_value "$manifest" FPRINTD_SOURCE_TREE)" == "$MILAN_FPRINTD_SOURCE_TREE" ]] || milan_die "fprintd source tree mismatch"
   [[ "$(milan_manifest_value "$manifest" LIBFPRINT_PATCH_SHA256)" == "$MILAN_LIBFPRINT_PATCH_SHA256" ]] || milan_die "libfprint patch manifest mismatch"
   [[ "$(milan_manifest_value "$manifest" LIBFPRINT_USB_PERSIST_PATCH_SHA256)" == "$MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256" ]] || milan_die "libfprint USB persist patch manifest mismatch"
+  [[ "$(milan_manifest_value "$manifest" LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256)" == "$MILAN_LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256" ]] || milan_die "libfprint idle suspend notification patch manifest mismatch"
   [[ "$(milan_manifest_value "$manifest" FPRINTD_PATCH_SHA256)" == "$MILAN_FPRINTD_PATCH_SHA256" ]] || milan_die "fprintd patch manifest mismatch"
   [[ "$(milan_manifest_value "$manifest" OVERLAY_INPUT_SHA256)" == "$(milan_overlay_input_sha256 "$repo_dir")" ]] || milan_die "overlay input mismatch"
   debug="$(milan_manifest_value "$manifest" GOODIX53X5_DEBUG)"
