@@ -17,6 +17,13 @@ The function copies the retained manual-base store at
 `0x0d` when the TX-enable argument is nonzero and `0x8d` when it is zero; byte
 one is `0x01`, followed by the 24 retained base bytes.
 
+The callback's temporary input to `ChangeMode` is only 25 bytes: operation at
+offset zero and the base at offsets `1..24`. `FUN_180019ec8` inserts the base
+count byte, copying those bytes to payload offsets `2..25`. With the callback's
+count argument fixed at one, the transport length is exactly 26. The source
+manual-base store is not modified, and the stack payload is consumed
+synchronously by the transport call before either frame returns.
+
 On a successful transport response it copies the raw manual FDT result from
 `0x180060718..0x18006072f` to the caller and returns zero. A failed command
 returns `-1`.

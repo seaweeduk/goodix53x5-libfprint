@@ -45,6 +45,23 @@ After storing the event type at profile context `+0x08`, the parser calls
 `SetEvent(profile_context->event_10)`. A manual-FDT response uses a separate
 completion event and does not enter this state-machine dispatch.
 
+`FUN_180005b80` receives the payload pointer and command selector. Selector `3`
+copies payload bytes `4..27` to the manual result store and signals context
+`+0x2d8`; it does not publish a worker event. For asynchronous down/up packets,
+the IRQ is the little-endian word at payload `+0`. Down IRQ `2` also latches
+the little-endian touch word at `+2` into `0x180060790`; up IRQ `0x200` does
+not write that retained touch word. Both copy all 24 raw bytes to `0x180060760`.
+Down writes context `+0x200 = 9`; up writes `+0x200 = 10`. Base processing
+precedes event-type publication (`15` or `16`), which precedes `SetEvent`.
+The input packet is borrowed and these routes do not modify it. The parser
+does not consult the hardware arm state at context `+0x1fc`.
+
+The retained touch word is consumed by the down route's `FUN_180004918` call
+and diagnostic logging, not by the up handler. A later down packet overwrites
+it before its own base calculation. It is not an independently published
+up-event field. The down helper requires initialized profile thresholds at
+context `+0x318/+0x31a` when the override word at `0x1800606fc` is zero.
+
 For each down, up, or reverse event, the parser copies the 24 FDT sample bytes
 after the IRQ/touch header as 12 little-endian words without masking or
 rejecting a sample value. Only the up and reverse event routes call
@@ -98,6 +115,16 @@ written; any earlier unconsumed marker value is unchanged.
   down-arm base and records wait state `0xf0`.
 - Argument `0` issues the FDT-up detect command using the calculated up-arm base
   and records wait state `0xf1`.
+
+The base pointers are `0x180060730` (down) and `0x180060748` (up).
+`FUN_180019ec8` (`ChangeMode`) constructs category `3`, command `1` or `2`,
+payload `[0x0c, 1, base[24]]` or `[0x0e, 1, base[24]]`. Both lengths are
+26 bytes, with checksum selector one, ACK timeout 500 ms, no synchronous
+data-response wait, and response-event selector `0xff`. The retained bases
+are read-only inputs to this encoding. The protocol-initialized flag at
+`0x180063840` must equal one, and `ChangeMode` holds the protocol critical
+section while constructing and submitting the command. Other arm arguments
+besides exactly zero and one do not issue a command or change wait state.
 
 For either argument, `FUN_180005a60` issues the category-3 mode command first and
 writes `+0x1fc` only after that command returns. It returns zero regardless of
