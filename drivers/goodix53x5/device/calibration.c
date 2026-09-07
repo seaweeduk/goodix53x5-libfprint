@@ -220,6 +220,7 @@ goodix_device_parse_otp (const guint8      *otp,
     {
       params->dac_h = ((guint16) otp[17] << 8 ^ otp[22]) & 0x1FF;
       params->dac_l = ((otp[17] & 0x40) << 2) ^ otp[31];
+      params->dac_from_otp = TRUE;
     }
 
   if (params->tcode != 0)
@@ -293,17 +294,23 @@ goodix_device_fix_config_checksum (guint8 *config,
  * Apply calibration parameters to the config buffer.
  */
 void
-goodix_device_patch_config (guint8              *config,
-                            gsize                config_len,
+goodix_device_patch_config (guint8                  *config,
+                            gsize                    config_len,
                             const GoodixCalibParams *params)
 {
-  replace_value_in_section (config, config_len, 2, TCODE_TAG, params->tcode);
-  replace_value_in_section (config, config_len, 3, TCODE_TAG, params->tcode);
-  replace_value_in_section (config, config_len, 4, TCODE_TAG, params->tcode);
-  replace_value_in_section (config, config_len, 2, DAC_L_TAG,
-                            (params->dac_l << 4) | 8);
-  replace_value_in_section (config, config_len, 3, DAC_L_TAG,
-                            (params->dac_l << 4) | 8);
+  if (params->tcode != 0)
+    {
+      replace_value_in_section (config, config_len, 2, TCODE_TAG, params->tcode);
+      replace_value_in_section (config, config_len, 3, TCODE_TAG, params->tcode);
+      replace_value_in_section (config, config_len, 4, TCODE_TAG, params->tcode);
+    }
+  if (params->dac_from_otp)
+    {
+      replace_value_in_section (config, config_len, 2, DAC_L_TAG,
+                                (params->dac_l << 4) | 8);
+      replace_value_in_section (config, config_len, 3, DAC_L_TAG,
+                                (params->dac_l << 4) | 8);
+    }
   replace_value_in_section (config, config_len, 2, DELTA_DOWN_TAG,
                             (params->delta_down << 8) | 0x80);
 

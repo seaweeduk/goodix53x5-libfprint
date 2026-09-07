@@ -481,13 +481,10 @@ study_feature_element (guint    seed,
 }
 
 static GoodixMatchInfo *
-study_match_info (guint seed,
-                  gboolean matchable,
-                  gint32   marker)
+study_match_info_from_feature (GBytes  *feature,
+                               gboolean matchable)
 {
   GoodixMatchInfo *info = goodix_milan_match_info_new_empty ();
-  g_autoptr(GBytes) feature = study_feature_element (
-    seed, matchable, 0, 0, 0, 0, marker);
   const guint8 *feature_data;
   gsize feature_size;
   guint8 tail[0x520] = { 0 };
@@ -525,6 +522,17 @@ study_match_info (guint seed,
   info->extraction_metadata.optional_c7 = view.fields.optional_c7;
   g_assert_true (goodix_milan_match_info_is_complete (info));
   return info;
+}
+
+static GoodixMatchInfo *
+study_match_info (guint    seed,
+                  gboolean matchable,
+                  gint32   marker)
+{
+  g_autoptr(GBytes) feature = study_feature_element (
+    seed, matchable, 0, 0, 0, 0, marker);
+
+  return study_match_info_from_feature (feature, matchable);
 }
 
 static GBytes *
@@ -1220,6 +1228,523 @@ test_production_match_study_handoff (void)
     }
 }
 
+static GBytes *
+ordered_match_feature (gint32 ordinal,
+                       gint32 translation)
+{
+  g_autoptr(GBytes) base = study_feature_element (
+    9, TRUE, ordinal != 0, ordinal != 0, ordinal == 2 ? 20 : 0,
+    ordinal, ordinal * 111);
+  GoodixMilanFeatureView view;
+  GoodixMilanFeatureRecord records[150];
+  gsize size;
+  gsize packed_size = 0;
+  const guint8 *data = g_bytes_get_data (base, &size);
+  g_autofree guint8 *packed = g_malloc (size);
+
+  g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                     data, size, &view), ==, 0);
+  g_assert_cmpint (goodix_milan_feature_unpack_template_records (
+                     view.packed_records, 150, 0, records, 150), ==, 0);
+  for (gsize i = 0; i < G_N_ELEMENTS (records); i++)
+    {
+      /* Canonical packed angles; the four-pixel translation preserves the
+       * balanced bitmap's period and keeps every record inside the image. */
+      records[i].orientation = (gint16) ((i % 16) * 0x100);
+      records[i].refined_x += translation * 0x100;
+    }
+  g_assert_cmpint (goodix_milan_template_pack_feature_element (
+                     view.high_bitmap, view.enhanced_bitmap, view.inline_mask,
+                     view.low_bitmap, records, 150, view.antifake, &view.fields,
+                     packed, size, &packed_size), ==, 0);
+  return g_bytes_new_take (g_steal_pointer (&packed), packed_size);
+}
+
+static void
+test_production_match_order_lifecycle (void)
+{
+  static const gint32 identity[7] = { 0, 0x100, 0, 0, 0, 0x100, 0 };
+
+  g_autoptr(GBytes) probe_feature = ordered_match_feature (0, 0);
+  g_autoptr(GBytes) first = ordered_match_feature (1, 0);
+  g_autoptr(GBytes) translated = ordered_match_feature (2, 4);
+
+  /* Native 180055a40 traverses a1 physical indices, then skips later active
+   * features in a full gallery after retaining an active match. 1800619a0
+   * routes the selected slot's affine to the graph reference independently.
+   * Both orders and complete after-match bytes were checked against the DLL.
+   * These are constructed matcher inputs, not sensor-generated features. */
+  for (guint reverse = 0; reverse < 2; reverse++)
+    {
+      g_autoptr(GBytes) base = study_gallery (
+        GOODIX_MILAN_STUDY_REPLACE_NO_RELATION, TRUE);
+      g_autoptr(GBytes) gallery = NULL;
+      g_autoptr(GBytes) after_match = NULL;
+      g_autoptr(GError) error = NULL;
+      GoodixMilanUnpackedTemplate before;
+      GoodixMilanUnpackedTemplate after;
+      GoodixMilanPrintTemplateInfo info;
+      GoodixMilanMatchResult result;
+      GoodixMatchInfo *probe = study_match_info_from_feature (
+        probe_feature, TRUE);
+      GoodixStudyQueue *queue = goodix_milan_study_queue_new (0, 7);
+      const gsize winner = reverse ? 2 : 1;
+      const guint64 mask = reverse ? UINT64_C (4) : UINT64_C (2);
+      const gint32 transform[6] = {
+        0x100, 0, reverse ? 0x400 : 0, 0, 0x100, 0,
+      };
+      gsize capacity = g_bytes_get_size (base) + g_bytes_get_size (translated);
+      g_autofree guint8 *packed = g_malloc (capacity);
+      gsize size = 0;
+      const guint8 *data;
+
+      g_test_message ("first matchable physical slot=%" G_GSIZE_FORMAT, winner);
+      unpack_study_template (base, &before);
+      before.feature_elements[1] = g_bytes_get_data (
+        first, &before.feature_element_sizes[1]);
+      before.feature_elements[2] = g_bytes_get_data (
+        translated, &before.feature_element_sizes[2]);
+      before.relations[1].values[3] = -0x400;
+      goodix_milan_template_write_u32 (before.tail_state + 4, (guint32) winner);
+      goodix_milan_template_write_u32 (before.tail_state + 8, reverse ? 1 : 2);
+      g_assert_cmpint (goodix_milan_template_pack (
+                         before.feature_elements, before.feature_element_sizes,
+                         before.feature_count, before.relations,
+                         before.relation_count, &before.metadata,
+                         before.tail_state, sizeof (before.tail_state), packed,
+                         capacity, &size), ==, 0);
+      gallery = g_bytes_new_take (g_steal_pointer (&packed), size);
+      g_assert_true (goodix_milan_print_validate_template (gallery, &info, &error));
+      g_assert_no_error (error);
+      data = g_bytes_get_data (gallery, &size);
+      g_assert_cmpint (goodix_milan_match_serialized_feature_result_queued (
+                         probe, data, size, &result, &after_match, queue), ==,
+                       GOODIX_SIGFM_TEMPLATE_OK);
+      g_assert_cmpint (result.score, ==, 100);
+      g_assert_cmpuint (result.matched_feature_index, ==, winner);
+      g_assert_cmpmem (result.match_transform, sizeof (transform),
+                       transform, sizeof (transform));
+      g_assert_true (result.relation.relation_valid);
+      g_assert_cmpint (result.relation.relation_count, ==, 42);
+      g_assert_cmpmem (result.relation.relation_values, sizeof (identity),
+                       identity, sizeof (identity));
+      g_assert_cmpuint (result.direct_positive_feature_mask, ==, mask);
+      g_assert_cmpuint (result.contributor_feature_mask, ==, mask);
+      g_assert_cmpuint (result.lifecycle_update_feature_mask, ==, mask);
+      g_assert_cmpint (result.study_control.queue_candidate_eligible, ==, 0);
+      g_assert_true (goodix_milan_study_queue_validate (queue));
+      g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==, 0);
+      g_assert_nonnull (after_match);
+      g_assert_false (g_bytes_equal (gallery, after_match));
+      g_assert_true (goodix_milan_print_validate_template (
+                       after_match, &info, &error));
+      g_assert_no_error (error);
+      unpack_study_template (after_match, &after);
+      g_assert_cmpuint (after.feature_count, ==, before.feature_count);
+      g_assert_cmpuint (after.metadata.registration_count, ==,
+                        before.metadata.registration_count);
+      g_assert_cmpint (after.metadata.graph_reference_index, ==,
+                       before.metadata.graph_reference_index);
+      g_assert_cmpuint (after.metadata.graph_established, ==,
+                        before.metadata.graph_established);
+      g_assert_cmpint (after.metadata.graph_companion_f3, ==,
+                       before.metadata.graph_companion_f3);
+      g_assert_cmpint (after.metadata.graph_companion_f4, ==,
+                       before.metadata.graph_companion_f4);
+      g_assert_cmpuint (after.metadata.queue_state, ==, 0);
+      g_assert_cmpuint (after.metadata.queue_transaction_counter, ==, 7);
+      g_assert_cmpuint (after.relation_count, ==, before.relation_count);
+      for (gsize i = 0; i < before.relation_count; i++)
+        {
+          g_assert_cmpint (after.relations[i].index, ==, before.relations[i].index);
+          g_assert_cmpmem (after.relations[i].values, sizeof (identity),
+                           before.relations[i].values, sizeof (identity));
+        }
+      g_assert_cmpmem (after.tail_state, sizeof (after.tail_state),
+                       before.tail_state, sizeof (before.tail_state));
+      for (gsize i = 0; i < before.feature_count; i++)
+        {
+          GoodixMilanFeatureView original;
+          GoodixMilanFeatureView updated;
+
+          g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                             before.feature_elements[i],
+                             before.feature_element_sizes[i], &original), ==, 0);
+          g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                             after.feature_elements[i],
+                             after.feature_element_sizes[i], &updated), ==, 0);
+          assert_feature_material_equal (&updated, &original);
+          for (gsize field = 0; field < G_N_ELEMENTS (original.fields.tagged_values);
+               field++)
+            {
+              gint32 expected = original.fields.tagged_values[field];
+
+              /* Two bitmap columns of unique residual coverage: 2 * 44. */
+              if (field == 6)
+                expected = i == 2 ? 88 : 0;
+              if (field == 9 && i == winner)
+                expected++;
+              g_assert_cmpint (updated.fields.tagged_values[field], ==, expected);
+            }
+          g_assert_cmpint (updated.fields.optional_c7, ==,
+                           original.fields.optional_c7);
+        }
+      goodix_milan_study_queue_free (queue);
+      goodix_milan_match_free_info (probe);
+    }
+}
+
+static GBytes *
+study_candidate_feature (gint32 ordinal,
+                         gint32 coverage)
+{
+  g_autoptr(GBytes) base = ordered_match_feature (ordinal, ordinal == 2 ? 4 : 0);
+  GoodixMilanFeatureView view;
+  GoodixMilanFeatureRecord records[150];
+  GoodixMilanAntifakeBlob antifake = { 0 };
+  gsize size;
+  gsize packed_size = 0;
+  const guint8 *data = g_bytes_get_data (base, &size);
+  g_autofree guint8 *packed = g_malloc (size);
+
+  g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                     data, size, &view), ==, 0);
+  g_assert_cmpint (goodix_milan_feature_unpack_template_records (
+                     view.packed_records, 150, 0, records, 150), ==, 0);
+  view.fields.tagged_values[4] = coverage;
+  g_assert_cmpint (goodix_milan_template_pack_feature_element (
+                     view.high_bitmap, view.enhanced_bitmap, view.inline_mask,
+                     view.low_bitmap, records, 150, &antifake, &view.fields,
+                     packed, size, &packed_size), ==, 0);
+  return g_bytes_new_take (g_steal_pointer (&packed), packed_size);
+}
+
+static void
+test_production_study_competing_candidates (void)
+{
+  g_autoptr(GBytes) probe_feature = study_candidate_feature (0, 100);
+  g_autoptr(GBytes) first = study_candidate_feature (1, 70);
+  g_autoptr(GBytes) translated = study_candidate_feature (2, 100);
+
+  /* Native 180045530 ranks residual, coverage, then overlap count, retaining
+   * the first physical index on a complete tie. The real match selects slot 2
+   * with residual 88; study must select another slot. Native 18005edb0 followed
+   * by 180044fc0 agrees on complete match/study outputs for both fixtures.
+   * These are matcher-boundary inputs, not sensor/enrollment chronology. */
+  for (guint tie = 0; tie < 2; tie++)
+    {
+      g_autoptr(GBytes) third = study_candidate_feature (3, tie ? 70 : 69);
+      g_autoptr(GBytes) base = study_gallery (
+        GOODIX_MILAN_STUDY_REPLACE_NO_RELATION, TRUE);
+      g_autoptr(GBytes) gallery = NULL;
+      g_autoptr(GBytes) after_match = NULL;
+      g_autoptr(GBytes) after_study = NULL;
+      GoodixMilanUnpackedTemplate before;
+      GoodixMilanUnpackedTemplate matched;
+      GoodixMilanUnpackedTemplate studied;
+      GoodixMilanFeatureView probe_view;
+      GoodixMilanPrintTemplateInfo info;
+      GoodixMilanMatchResult result;
+      GoodixMilanStudyAction action = GOODIX_MILAN_STUDY_NONE;
+      GoodixMatchInfo *probe = study_match_info_from_feature (probe_feature, TRUE);
+      GoodixStudyQueue *queue = goodix_milan_study_queue_new (0, 7);
+      const gsize selected = tie ? 1 : 3;
+      gsize capacity = g_bytes_get_size (base) + g_bytes_get_size (translated) +
+                       g_bytes_get_size (third);
+      g_autofree guint8 *packed = g_malloc (capacity);
+      gsize size = 0;
+      const guint8 *data;
+
+      g_test_message ("study coverage tie=%u selected slot=%" G_GSIZE_FORMAT,
+                      tie, selected);
+      unpack_study_template (base, &before);
+      before.feature_elements[1] = g_bytes_get_data (
+        first, &before.feature_element_sizes[1]);
+      before.feature_elements[2] = g_bytes_get_data (
+        translated, &before.feature_element_sizes[2]);
+      before.feature_elements[3] = g_bytes_get_data (
+        third, &before.feature_element_sizes[3]);
+      before.relations[1].values[3] = -0x400;
+      goodix_milan_template_write_u32 (before.tail_state, 2);
+      goodix_milan_template_write_u32 (before.tail_state + 8, 0);
+      g_assert_cmpint (goodix_milan_template_pack (
+                         before.feature_elements, before.feature_element_sizes,
+                         before.feature_count, before.relations,
+                         before.relation_count, &before.metadata,
+                         before.tail_state, sizeof (before.tail_state), packed,
+                         capacity, &size), ==, 0);
+      gallery = g_bytes_new_take (g_steal_pointer (&packed), size);
+      g_assert_true (goodix_milan_print_validate_template (gallery, &info, NULL));
+      data = g_bytes_get_data (gallery, &size);
+      g_assert_cmpint (goodix_milan_match_serialized_feature_result_queued (
+                         probe, data, size, &result, &after_match, queue), ==,
+                       GOODIX_SIGFM_TEMPLATE_OK);
+      g_assert_cmpint (result.score, ==, 100);
+      g_assert_cmpuint (result.matched_feature_index, ==, 2);
+      g_assert_cmpint (result.retained_evidence_flag, ==, 1);
+      g_assert_cmpint (result.study_control.study_action_gate, ==, 1);
+      g_assert_cmpint (result.study_control.study_finalization_gate, ==, 1);
+      g_assert_cmpint (result.study_control.queue_candidate_eligible, ==, 0);
+      g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==, 0);
+      g_assert_nonnull (after_match);
+      unpack_study_template (after_match, &matched);
+      data = g_bytes_get_data (after_match, &size);
+      g_assert_cmpint (goodix_milan_match_study_feature_queued (
+                         probe, data, size, &result, TRUE, queue, &after_study,
+                         &action), ==, GOODIX_SIGFM_TEMPLATE_OK);
+      g_assert_cmpint (action, ==, GOODIX_MILAN_STUDY_REPLACE);
+      g_assert_nonnull (after_study);
+      assert_study_template (after_study, before.relation_count, &info, &studied);
+      g_assert_cmpuint (studied.metadata.maximum_records, ==,
+                        before.metadata.maximum_records);
+      g_assert_cmpint (studied.metadata.graph_companion_f3, ==,
+                       before.metadata.graph_companion_f3);
+      g_assert_cmpint (studied.metadata.graph_companion_f4, ==,
+                       before.metadata.graph_companion_f4);
+      g_assert_true (goodix_milan_study_queue_validate (queue));
+      g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==, 0);
+      g_assert_cmpuint (goodix_milan_study_queue_allocated (queue), ==, 0);
+      data = g_bytes_get_data (probe_feature, &size);
+      g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                         data, size, &probe_view), ==, 0);
+      for (gsize i = 0; i < studied.feature_count; i++)
+        {
+          GoodixMilanFeatureView original;
+          GoodixMilanFeatureView updated;
+
+          g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                             matched.feature_elements[i],
+                             matched.feature_element_sizes[i], &original), ==, 0);
+          g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                             studied.feature_elements[i],
+                             studied.feature_element_sizes[i], &updated), ==, 0);
+          g_assert_cmpint (original.fields.tagged_values[6], ==, i == 2 ? 88 : 0);
+          g_assert_cmpint (original.fields.tagged_values[9], ==, i == 2 ? 1 : 0);
+          assert_feature_material_equal (
+            &updated, i == selected ? &probe_view : &original);
+          for (gsize field = 0; field < G_N_ELEMENTS (original.fields.tagged_values);
+               field++)
+            {
+              gint32 expected = original.fields.tagged_values[field];
+
+              if (i == selected)
+                {
+                  if (field == 3 || field == 4)
+                    expected = 100;
+                  if (field == 5)
+                    expected = 2;
+                  if (field == 8 || field == 9)
+                    expected = 1;
+                }
+              if (field == 7)
+                expected = i == selected ? (gint32) studied.feature_count - 1 :
+                           (gint32) i - (i > selected);
+              g_assert_cmpint (updated.fields.tagged_values[field], ==, expected);
+            }
+          g_assert_cmpint (updated.fields.optional_c7, ==, original.fields.optional_c7);
+        }
+      for (gsize i = 0; i < before.relation_count; i++)
+        {
+          g_assert_cmpint (studied.relations[i].index, ==, before.relations[i].index);
+          g_assert_cmpmem (studied.relations[i].values,
+                           sizeof (studied.relations[i].values),
+                           before.relations[i].values,
+                           sizeof (before.relations[i].values));
+        }
+      /* Replacement inherits the matched slot's lifecycle, so both precede
+       * untouched features; the replacement's new ordinal breaks their tie. */
+      gsize position = 0;
+
+      g_assert_cmpuint (goodix_milan_template_read_u32 (
+                          studied.tail_state + position++ * 4), ==, selected);
+      g_assert_cmpuint (goodix_milan_template_read_u32 (
+                          studied.tail_state + position++ * 4), ==, 2);
+      for (gsize i = studied.feature_count; i-- > 0;)
+        if (i != selected && i != 2)
+          g_assert_cmpuint (goodix_milan_template_read_u32 (
+                              studied.tail_state + position++ * 4), ==, i);
+      g_assert_cmpmem (studied.tail_state + position * 4, 0x50c - position * 4,
+                       before.tail_state + position * 4, 0x50c - position * 4);
+      g_assert_cmpuint (goodix_milan_template_read_u32 (
+                          studied.tail_state + 0x50c), ==, 1);
+      g_assert_cmpuint (goodix_milan_template_read_u32 (
+                          studied.tail_state + 0x510), ==, 1);
+      g_assert_cmpmem (studied.tail_state + 0x514, sizeof (studied.tail_state) - 0x514,
+                       before.tail_state + 0x514, sizeof (before.tail_state) - 0x514);
+      goodix_milan_study_queue_free (queue);
+      goodix_milan_match_free_info (probe);
+    }
+}
+
+static GBytes *
+bitmap_decision_feature (gsize changed_bytes)
+{
+  g_autoptr(GBytes) base = ordered_match_feature (0, 0);
+  GoodixMilanFeatureView view;
+  GoodixMilanFeatureRecord records[150];
+  guint8 high[286], enhanced[286], low[286];
+  gsize size, packed_size;
+  const guint8 *data = g_bytes_get_data (base, &size);
+  g_autofree guint8 *packed = g_malloc (size);
+
+  g_assert_cmpuint (changed_bytes, <=, sizeof (high));
+  g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                     data, size, &view), ==, 0);
+  g_assert_cmpint (goodix_milan_feature_unpack_template_records (
+                     view.packed_records, 150, 0, records, 150), ==, 0);
+  for (gsize i = 0; i < sizeof (high); i++)
+    {
+      guint8 flip = i < changed_bytes ? 0xff : 0;
+
+      high[i] = view.high_bitmap[i] ^ flip;
+      enhanced[i] = view.enhanced_bitmap[i] ^ flip;
+      low[i] = view.low_bitmap[i] ^ flip;
+    }
+  g_assert_cmpint (goodix_milan_template_pack_feature_element (
+                     high, enhanced, view.inline_mask, low, records, 150,
+                     view.antifake, &view.fields, packed, size, &packed_size), ==, 0);
+  return g_bytes_new_take (g_steal_pointer (&packed), packed_size);
+}
+
+static GBytes *
+bitmap_decision_gallery (void)
+{
+  g_autoptr(GBytes) base = study_gallery (
+    GOODIX_MILAN_STUDY_REPLACE_NO_RELATION, TRUE);
+  g_autoptr(GBytes) feature = ordered_match_feature (1, 0);
+  GoodixMilanUnpackedTemplate unpacked;
+  gsize capacity = g_bytes_get_size (base) + g_bytes_get_size (feature);
+  g_autofree guint8 *packed = g_malloc (capacity);
+  gsize size;
+
+  unpack_study_template (base, &unpacked);
+  unpacked.feature_elements[1] = g_bytes_get_data (
+    feature, &unpacked.feature_element_sizes[1]);
+  g_assert_cmpint (goodix_milan_template_pack (
+                     unpacked.feature_elements, unpacked.feature_element_sizes,
+                     unpacked.feature_count, unpacked.relations,
+                     unpacked.relation_count, &unpacked.metadata,
+                     unpacked.tail_state, sizeof (unpacked.tail_state), packed,
+                     capacity, &size), ==, 0);
+  return g_bytes_new_take (g_steal_pointer (&packed), size);
+}
+
+static void
+test_production_match_bitmap_decision (void)
+{
+  static const struct
+  {
+    gsize changed_bytes;
+    gint  score;
+  } cases[] = { { 48, 100 }, { 56, -7 } };
+
+  /* Boundary-valid synthetic features, not sensor/enrollment chronology.
+   * Record descriptors, positions and angles are identical in both cases;
+   * all three balanced maps change together. Native 2.0.310.900 type-12
+   * dispatch accepts 48 flipped bytes but rejects 56. Both enqueue a probe;
+   * queue admission is distinct from recognition acceptance.
+   * Complete native/current after-match bytes were compared for both cases. */
+  for (gsize c = 0; c < G_N_ELEMENTS (cases); c++)
+    {
+      const gboolean accepted = cases[c].score > 0;
+      g_autoptr(GBytes) feature = bitmap_decision_feature (cases[c].changed_bytes);
+      g_autoptr(GBytes) gallery = bitmap_decision_gallery ();
+      g_autoptr(GBytes) after_match = NULL;
+      g_autoptr(GError) error = NULL;
+      GoodixMilanUnpackedTemplate before, after;
+      GoodixMilanPrintTemplateInfo info;
+      GoodixMilanMatchResult result;
+      GoodixMatchInfo *probe = study_match_info_from_feature (feature, TRUE);
+      GoodixStudyQueue *queue = goodix_milan_study_queue_new (0, 7);
+      const GoodixMatchInfo *queued;
+      gsize size;
+      const guint8 *data = g_bytes_get_data (gallery, &size);
+
+      g_test_message ("flipped bitmap bytes=%" G_GSIZE_FORMAT,
+                      cases[c].changed_bytes);
+      g_assert_true (goodix_milan_print_validate_template (gallery, &info, &error));
+      g_assert_no_error (error);
+      unpack_study_template (gallery, &before);
+      g_assert_cmpint (goodix_milan_match_serialized_feature_result_queued (
+                         probe, data, size, &result, &after_match, queue), ==,
+                       GOODIX_SIGFM_TEMPLATE_OK);
+      g_assert_cmpint (result.score, ==, cases[c].score);
+      g_assert_cmpuint (result.matched_feature_index, ==, accepted ? 1 : SIZE_MAX);
+      g_assert_cmpint (result.relation.relation_valid, ==, accepted);
+      g_assert_cmpint (result.relation.relation_count, ==, accepted ? 42 : 0);
+      g_assert_cmpuint (result.direct_positive_feature_mask, ==, accepted ? 2 : 0);
+      g_assert_cmpuint (result.contributor_feature_mask, ==, accepted ? 2 : 0);
+      g_assert_cmpuint (result.lifecycle_update_feature_mask, ==, accepted ? 2 : 0);
+      g_assert_cmpint (result.study_control.queue_candidate_eligible, ==, 1);
+      g_assert_true (goodix_milan_study_queue_validate (queue));
+      g_assert_cmpuint (goodix_milan_study_queue_occupied (queue), ==, 1);
+      queued = queue_entry_at_rank (queue, 0);
+      g_assert_cmpuint (queue->enabled_state, ==, 0);
+      g_assert_cmpuint (queue->transaction_counter, ==, 7);
+      g_assert_cmpint (queued->record_count, ==, 150);
+      g_assert_cmpint (queued->partition_count, ==, 0);
+      g_assert_cmpmem (queued->feature_bitmaps.high_bitmap, 286,
+                       probe->feature_bitmaps.high_bitmap, 286);
+      g_assert_cmpmem (queued->feature_bitmaps.enhanced_bitmap, 286,
+                       probe->feature_bitmaps.enhanced_bitmap, 286);
+      g_assert_cmpmem (queued->feature_bitmaps.low_bitmap, 286,
+                       probe->feature_bitmaps.low_bitmap, 286);
+
+      g_assert_nonnull (after_match);
+      g_assert_true (goodix_milan_print_validate_template (after_match, &info, &error));
+      g_assert_no_error (error);
+      unpack_study_template (after_match, &after);
+      g_assert_cmpuint (after.feature_count, ==, before.feature_count);
+      g_assert_cmpuint (after.metadata.registration_count, ==,
+                        before.metadata.registration_count);
+      g_assert_cmpint (after.metadata.graph_reference_index, ==,
+                       before.metadata.graph_reference_index);
+      g_assert_cmpuint (after.metadata.graph_established, ==,
+                        before.metadata.graph_established);
+      g_assert_cmpint (after.metadata.graph_companion_f3, ==,
+                       before.metadata.graph_companion_f3);
+      g_assert_cmpint (after.metadata.graph_companion_f4, ==,
+                       before.metadata.graph_companion_f4);
+      g_assert_cmpuint (after.metadata.queue_state, ==, 0);
+      g_assert_cmpuint (after.metadata.queue_transaction_counter, ==, 7);
+      g_assert_cmpuint (after.relation_count, ==, before.relation_count);
+      for (gsize i = 0; i < before.relation_count; i++)
+        {
+          g_assert_cmpint (after.relations[i].index, ==, before.relations[i].index);
+          g_assert_cmpmem (after.relations[i].values, sizeof (after.relations[i].values),
+                           before.relations[i].values, sizeof (before.relations[i].values));
+        }
+      g_assert_cmpmem (after.tail_state, sizeof (after.tail_state),
+                       before.tail_state, sizeof (before.tail_state));
+      for (gsize i = 0; i < before.feature_count; i++)
+        {
+          GoodixMilanFeatureView original, updated;
+
+          g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                             before.feature_elements[i], before.feature_element_sizes[i],
+                             &original), ==, 0);
+          g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                             after.feature_elements[i], after.feature_element_sizes[i],
+                             &updated), ==, 0);
+          assert_feature_material_equal (&updated, &original);
+          for (gsize field = 0; field < G_N_ELEMENTS (original.fields.tagged_values); field++)
+            {
+              gint32 expected = original.fields.tagged_values[field];
+
+              /* Identity-aligned galleries have no unique residual coverage. */
+              if (field == 6)
+                expected = 0;
+              if (field == 9 && accepted && i == 1)
+                expected++;
+              g_assert_cmpint (updated.fields.tagged_values[field], ==, expected);
+            }
+          g_assert_cmpint (updated.fields.optional_c7, ==, original.fields.optional_c7);
+        }
+      goodix_milan_study_queue_free (queue);
+      goodix_milan_match_free_info (probe);
+    }
+}
+
 static void
 assert_feature_roundtrip (GBytes *feature,
                           gsize   partition_count)
@@ -1443,5 +1968,11 @@ main (int argc,
                    test_queued_study_action);
   g_test_add_func ("/goodix53x5/milan/state/production-match-study-handoff",
                    test_production_match_study_handoff);
+  g_test_add_func ("/goodix53x5/milan/state/production-match-order-lifecycle",
+                   test_production_match_order_lifecycle);
+  g_test_add_func ("/goodix53x5/milan/state/production-match-bitmap-decision",
+                   test_production_match_bitmap_decision);
+  g_test_add_func ("/goodix53x5/milan/state/production-study-competing-candidates",
+                   test_production_study_competing_candidates);
   return g_test_run ();
 }
