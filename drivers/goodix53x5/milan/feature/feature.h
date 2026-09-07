@@ -48,6 +48,19 @@ typedef struct
   int32_t response;
 } GoodixMilanFeatureExtremum;
 
+#define EXTREMA_SCAN_BORDER 6
+#define EXTREMA_FIRST_SCALE 1
+#define FEATURE_EXTREMA_CURSOR_INIT \
+  { EXTREMA_FIRST_SCALE, EXTREMA_SCAN_BORDER, EXTREMA_SCAN_BORDER }
+
+/* Cursor order is scale, row, column. Keep the planes and dimensions unchanged
+ * between calls; a zero return leaves the cursor exhausted. */
+int feature_next_extremum (const uint16_t             *scales,
+                           size_t                      rows,
+                           size_t                      columns,
+                           size_t                      cursor[3],
+                           GoodixMilanFeatureExtremum *extremum);
+
 size_t goodix_milan_feature_collect_extrema (const uint16_t             *scales,
                                              size_t                      rows,
                                              size_t                      columns,

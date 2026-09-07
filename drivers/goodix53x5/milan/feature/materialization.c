@@ -193,25 +193,18 @@ goodix_milan_feature_collect_materialized (
   GoodixMilanFeatureAux    *auxiliary,
   size_t                    capacity)
 {
-  size_t extrema_count = goodix_milan_feature_collect_extrema (
-    scales, rows, columns, NULL, 0);
-  GoodixMilanFeatureExtremum *extrema =
-    malloc (extrema_count * sizeof(*extrema));
+  size_t cursor[3] = FEATURE_EXTREMA_CURSOR_INIT;
+  GoodixMilanFeatureExtremum extremum;
   uint8_t *visited = calloc (rows * columns, 1);
   size_t count = 0;
 
-  if (!extrema || !visited)
-    {
-      free (visited);
-      free (extrema);
-      return 0;
-    }
-  goodix_milan_feature_collect_extrema (scales, rows, columns, extrema,
-                                        extrema_count);
-  for (size_t i = 0; i < extrema_count && count < capacity; i++)
+  if (!visited)
+    return 0;
+  while (count < capacity &&
+         feature_next_extremum (scales, rows, columns, cursor, &extremum))
     {
       GoodixMilanFeatureCandidate candidate = {
-        extrema[i].x, extrema[i].y, extrema[i].scale, extrema[i].response,
+        extremum.x, extremum.y, extremum.scale, extremum.response,
         0, 0, 0,
       };
       uint32_t curvature = 0;
@@ -229,7 +222,6 @@ goodix_milan_feature_collect_materialized (
       count++;
     }
   free (visited);
-  free (extrema);
   return count;
 }
 

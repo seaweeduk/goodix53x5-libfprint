@@ -521,12 +521,13 @@ goodix_milan_match_low_bitmap_metrics (
 
   if (!metrics || milan_match_low_bitmap_compute (
         enrolled_bitmap, enrolled_inline_mask, probe_bitmap, probe_inline_mask,
-        transform, NULL, classes, NULL, NULL) != 0 ||
-      classes[4] == 0)
+        transform, NULL, classes, NULL, NULL) != 0)
     return -1;
 
-  metrics[0] = (classes[4] / 2 + (classes[0] + classes[3]) * 0x100) /
-               classes[4];
+  metrics[0] = classes[4] > 0 ?
+               (classes[4] / 2 + (classes[0] + classes[3]) * 0x100) /
+               classes[4] :
+               0;
   int32_t zero_total = classes[0] + classes[1] + classes[2];
   int32_t one_total = classes[1] + classes[2] + classes[3];
   metrics[1] = zero_total > 0

@@ -498,6 +498,9 @@ goodix_milan_persistence_restore (FpDevice              *dev,
 
   restored = g_new (GoodixMilanPreprocessState, 1);
   goodix_milan_preprocess_reset (restored);
+  /* Native import retains these fresh-DLL defaults, not persisted values. */
+  restored->profile9_history_mask_threshold = 60;
+  restored->profile9_history_mask_average = 60;
   restored->sample_count = goodix_milan_read_u32 (
     contents + GOODIX_MILAN_STATE_SAMPLE_COUNT_OFFSET);
   for (gsize i = 0; i < GOODIX_MILAN_SENSOR_PIXELS; i++)
