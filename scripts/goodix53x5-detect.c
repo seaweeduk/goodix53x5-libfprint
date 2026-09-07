@@ -609,8 +609,13 @@ print_report (const ProbeReport *report,
   if (report->firmware && report->firmware[0] != '\0')
     g_print ("Firmware %s\n", report->firmware);
   if (report->chip_id != 0)
-    g_print ("Chip 0x%08x | Milan profile 9 | sensor type 12\n",
-             report->chip_id);
+    {
+      g_print ("Chip 0x%08x", report->chip_id);
+      if ((report->chip_id & MILAN_CHIP_FAMILY_MASK) ==
+          MILAN_CHIP_FAMILY_PREFIX)
+        g_print (" | Milan profile 9 | sensor type 12");
+      g_print ("\n");
+    }
   if (system_name)
     g_print ("System %s | Linux %s\n", system_name, kernel_release);
 
