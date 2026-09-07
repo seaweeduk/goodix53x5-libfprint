@@ -50,15 +50,16 @@
 /* --- Calibration parameters (from OTP) --- */
 typedef struct
 {
-  guint16 tcode;
-  guint16 delta_fdt;
-  guint16 delta_down;
-  guint16 delta_up;
-  guint16 delta_img;
-  guint16 delta_nav;
-  guint16 dac_h;
-  guint16 dac_l;
-  guint16 dac_delta;
+  guint16  tcode;
+  guint16  delta_fdt;
+  guint16  delta_down;
+  guint16  delta_up;
+  guint16  delta_img;
+  guint16  delta_nav;
+  guint16  dac_h;
+  guint16  dac_l;
+  guint16  dac_delta;
+  gboolean dac_from_otp;
 } GoodixCalibParams;
 
 /* --- Command descriptor for sub-SSM --- */
