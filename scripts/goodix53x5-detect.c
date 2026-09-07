@@ -609,8 +609,28 @@ print_report (const ProbeReport *report,
   if (report->firmware && report->firmware[0] != '\0')
     g_print ("Firmware %s\n", report->firmware);
   if (report->chip_id != 0)
-    g_print ("Chip 0x%08x | Milan profile 9 | sensor type 12\n",
-             report->chip_id);
+    {
+      g_print ("Chip 0x%08x", report->chip_id);
+      /* Reference-driver profiles and algorithm sensor types are distinct enums. */
+      switch (report->chip_id & MILAN_CHIP_FAMILY_MASK)
+        {
+        case 0x00220200u:
+          g_print (" | Milan profile 0 | sensor type 0");
+          break;
+        case 0x00220700u:
+          g_print (" | Milan profile 1 | sensor type 6");
+          break;
+        case 0x00220800u:
+          g_print (" | Milan profile 2 | sensor type 7");
+          break;
+        case MILAN_CHIP_FAMILY_PREFIX:
+          g_print (" | Milan profile 9 | sensor type 12");
+          break;
+        default:
+          break;
+        }
+      g_print ("\n");
+    }
   if (system_name)
     g_print ("System %s | Linux %s\n", system_name, kernel_release);
 
