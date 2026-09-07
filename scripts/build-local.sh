@@ -84,29 +84,12 @@ mkdir -p "$libfprint_dir/libfprint/drivers/goodix53x5"
 cp -R "$repo_dir/drivers/goodix53x5/." "$libfprint_dir/libfprint/drivers/goodix53x5/"
 rm -rf "$libfprint_dir/libfprint/sigfm"
 
-if ! cmp -s "$repo_dir/tests/test-goodix53x5-milan-synthetic.c" \
-             "$libfprint_dir/tests/test-goodix53x5-milan-synthetic.c"; then
-  cp "$repo_dir/tests/test-goodix53x5-milan-synthetic.c" \
-     "$libfprint_dir/tests/test-goodix53x5-milan-synthetic.c"
-fi
-
-if ! cmp -s "$repo_dir/tests/test-goodix53x5-milan-state.c" \
-             "$libfprint_dir/tests/test-goodix53x5-milan-state.c"; then
-  cp "$repo_dir/tests/test-goodix53x5-milan-state.c" \
-     "$libfprint_dir/tests/test-goodix53x5-milan-state.c"
-fi
-
-if ! cmp -s "$repo_dir/tests/test-goodix53x5-milan-runtime.c" \
-             "$libfprint_dir/tests/test-goodix53x5-milan-runtime.c"; then
-  cp "$repo_dir/tests/test-goodix53x5-milan-runtime.c" \
-     "$libfprint_dir/tests/test-goodix53x5-milan-runtime.c"
-fi
-
-if ! cmp -s "$repo_dir/tests/test-goodix53x5-milan-runtime-seam.h" \
-             "$libfprint_dir/tests/test-goodix53x5-milan-runtime-seam.h"; then
-  cp "$repo_dir/tests/test-goodix53x5-milan-runtime-seam.h" \
-     "$libfprint_dir/tests/test-goodix53x5-milan-runtime-seam.h"
-fi
+for test_source in "$repo_dir"/tests/test-goodix53x5-milan-*.{c,h}; do
+  destination="$libfprint_dir/tests/$(basename "$test_source")"
+  if ! cmp -s "$test_source" "$destination"; then
+    cp "$test_source" "$destination"
+  fi
+done
 
 if ! grep -q "'goodix53x5'" "$libfprint_dir/libfprint/meson.build"; then
   git -C "$libfprint_dir" apply "$repo_dir/meson-integration.patch"
