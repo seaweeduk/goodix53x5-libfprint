@@ -611,9 +611,24 @@ print_report (const ProbeReport *report,
   if (report->chip_id != 0)
     {
       g_print ("Chip 0x%08x", report->chip_id);
-      if ((report->chip_id & MILAN_CHIP_FAMILY_MASK) ==
-          MILAN_CHIP_FAMILY_PREFIX)
-        g_print (" | Milan profile 9 | sensor type 12");
+      /* Reference-driver profiles and algorithm sensor types are distinct enums. */
+      switch (report->chip_id & MILAN_CHIP_FAMILY_MASK)
+        {
+        case 0x00220200u:
+          g_print (" | Milan profile 0 | sensor type 0");
+          break;
+        case 0x00220700u:
+          g_print (" | Milan profile 1 | sensor type 6");
+          break;
+        case 0x00220800u:
+          g_print (" | Milan profile 2 | sensor type 7");
+          break;
+        case MILAN_CHIP_FAMILY_PREFIX:
+          g_print (" | Milan profile 9 | sensor type 12");
+          break;
+        default:
+          break;
+        }
       g_print ("\n");
     }
   if (system_name)
