@@ -258,6 +258,52 @@ test_preprocess_post_render_retry (void)
                    ==, GOODIX_MILAN_PREPROCESS_RETRY);
   g_assert_cmpuint (state->sample_count, ==, 1);
   g_assert_cmpstr (digest, ==, post_render_retry_sha256);
+
+  /* Native 0x18006c510 restores only sample_count after its nested update.
+   * Retried scans retain auxiliary adaptation and temporal stability; the
+   * third scan crosses 0x180064170's stable_count > 3 update cutoff. */
+  g_assert_cmpuint (state->auxiliary_sample_count, ==, 2);
+  g_assert_cmpuint (state->stable_count, ==, 1);
+  for (unsigned int retry = 0; retry < 2; retry++)
+    {
+      g_assert_cmpint (goodix_milan_preprocess (
+                         state, &profile, setup, live,
+                         GOODIX_MILAN_PURPOSE_IDENTIFY, processed,
+                         &quality, &coverage), ==, GOODIX_MILAN_PREPROCESS_RETRY);
+      g_assert_cmpint (quality, ==, 0);
+      g_assert_cmpint (coverage, ==, 18);
+      g_assert_cmpuint (state->sample_count, ==, 2);
+      g_assert_cmpuint (state->auxiliary_sample_count, ==, 4);
+      g_assert_cmpuint (state->stable_count, ==, retry == 0 ? 3 : 5);
+      g_clear_pointer (&digest, g_free);
+      digest = sha256 (processed, PIXELS);
+      g_assert_cmpstr (digest, ==, post_render_retry_sha256);
+    }
+
+  /* Keep the same setup and retained state. This admitted patterned image
+   * consumes the retry history rather than silently starting fresh. */
+  for (int row = 0; row < GOODIX_MILAN_SENSOR_ROWS; row++)
+    for (int column = 0; column < GOODIX_MILAN_SENSOR_COLUMNS; column++)
+      {
+        size_t index = (size_t) row * GOODIX_MILAN_SENSOR_COLUMNS + column;
+
+        live[index] = setup[index] -
+                      ((column * 8 + row * 8) % 80 < 40 ? 300 : 1200);
+      }
+  g_assert_cmpint (goodix_milan_preprocess (
+                     state, &profile, setup, live,
+                     GOODIX_MILAN_PURPOSE_IDENTIFY, processed,
+                     &quality, &coverage), ==, 0);
+  g_assert_cmpint (quality, ==, 100);
+  g_assert_cmpint (coverage, ==, 100);
+  g_assert_cmpuint (state->sample_count, ==, 2);
+  g_assert_cmpuint (state->auxiliary_sample_count, ==, 4);
+  g_assert_cmpuint (state->stable_count, ==, 5);
+  g_clear_pointer (&digest, g_free);
+  digest = sha256 (processed, PIXELS);
+  /* Approved 2.0.310.900 DLL, exported preprocessing of this sequence. */
+  g_assert_cmpstr (digest, ==,
+                   "be89e134886a20c573846bfdb7b0f41b9eb6bcb27be73b247ccb5a9774550a5c");
 }
 
 typedef struct
@@ -948,6 +994,129 @@ test_generated_enrollment_prefix_lifecycle (void)
 }
 
 static void
+test_generated_enrollment_retry_continuation (void)
+{
+  static const struct
+  {
+    GoodixMilanEnrollmentAttemptStatus status;
+    guint                              count;
+    guint                              reject_detail;
+    guint                              bad_count;
+  } attempts[] = {
+    { GOODIX_MILAN_ENROLLMENT_ACCEPTED, 1, 0, 0 },
+    { GOODIX_MILAN_ENROLLMENT_ACCEPTED, 2, 0, 0 },
+    { GOODIX_MILAN_ENROLLMENT_ACCEPTED, 3, 0, 0 },
+    { GOODIX_MILAN_ENROLLMENT_RETRY_CENTER, 3, 2, 1 },
+    { GOODIX_MILAN_ENROLLMENT_RETRY_CENTER, 3, 4, 2 },
+    { GOODIX_MILAN_ENROLLMENT_RETRY_CENTER, 3, 1, 3 },
+    { GOODIX_MILAN_ENROLLMENT_ACCEPTED, 4, 0, 3 },
+    { GOODIX_MILAN_ENROLLMENT_ACCEPTED, 5, 0, 3 },
+  };
+  GoodixMatchInfo *info = generate_match_info ();
+  g_autoptr(GBytes) extracted = goodix_milan_match_serialize_template (info);
+  g_autoptr(GoodixMilanEnrollmentTransaction) transaction =
+    goodix_milan_enrollment_transaction_new ();
+  g_autoptr(GBytes) previous = NULL;
+  guint bad_record_count = 0;
+  guint bad_continue_count = 0;
+
+  /* Native 2.0.310.900: 180042c30 gives metric 0x64000064 initially,
+   * then 0x100 for this generated feature. 18002d4b0/180032990 roll back
+   * the fourth scan until three consecutive retries suppress deletion.
+   * Native stage/deletion execution also preserves the rejected order slot.
+   * This exercises the transaction, not combine-only self-enrollment, and
+   * carries its actual retained state and counters through every attempt. */
+  for (guint attempt = 0; attempt < G_N_ELEMENTS (attempts); attempt++)
+    {
+      GoodixMilanEnrollmentResult result;
+      GoodixMilanPrintTemplateInfo print_info;
+      GoodixMilanUnpackedTemplate unpacked;
+      g_autoptr(GBytes) published = NULL;
+      g_autoptr(GError) error = NULL;
+      gsize size;
+      const guint8 *data;
+      guint count = attempts[attempt].count;
+      guint order_count = attempts[attempt].reject_detail ? count + 1 : count;
+
+      g_test_message ("enrollment attempt %u", attempt + 1);
+      g_assert_cmpint (goodix_milan_enrollment_transaction_attempt (
+                         &transaction, extracted, &bad_record_count,
+                         &bad_continue_count, &result), ==,
+                       attempts[attempt].status);
+      g_assert_cmpuint (result.pre_insertion_accepted_count, ==,
+                        attempt ? attempts[attempt - 1].count : 0);
+      g_assert_cmpint (result.overlap, ==, attempt ? 100 : 0);
+      g_assert_cmpint (result.previous_overlap, ==, attempt ? 100 : 0);
+      g_assert_cmpuint (result.reject_detail, ==, attempts[attempt].reject_detail);
+      g_assert_cmpuint (bad_record_count, ==, attempts[attempt].bad_count);
+      g_assert_cmpuint (bad_continue_count, ==, attempts[attempt].bad_count);
+      g_assert_cmpuint (goodix_milan_enrollment_transaction_count (transaction),
+                        ==, count);
+      published = goodix_milan_enrollment_transaction_publish (transaction);
+      g_assert_nonnull (published);
+      g_assert_true (goodix_milan_print_validate_template (
+                       published, &print_info, &error));
+      g_assert_no_error (error);
+      g_assert_cmpuint (print_info.feature_count, ==, count);
+      g_assert_cmpuint (print_info.registration_count, ==,
+                        1 + count * (count - 1) / 2);
+      g_assert_cmpuint (print_info.relation_count, ==, count - 1);
+      g_assert_cmpuint (print_info.graph_established, ==, count > 1);
+      g_assert_cmpint (print_info.graph_reference_index, ==, count > 1 ? 0 : -1);
+      g_assert_cmpuint (print_info.queue_state, ==, 0);
+      g_assert_cmpuint (print_info.queue_transaction_counter, ==, 0);
+      data = g_bytes_get_data (published, &size);
+      g_assert_cmpint (goodix_milan_template_unpack (data, size, &unpacked), ==, 0);
+      g_assert_cmpint (unpacked.metadata.graph_companion_f3, ==, -1);
+      g_assert_cmpint (unpacked.metadata.graph_companion_f4, ==, -1);
+      for (guint feature = 0; feature < count; feature++)
+        {
+          GoodixMilanFeatureView view;
+
+          g_assert_cmpint (goodix_milan_template_parse_feature_element (
+                             unpacked.feature_elements[feature],
+                             unpacked.feature_element_sizes[feature], &view), ==, 0);
+          g_assert_cmpuint (view.record_count, ==, 150);
+          g_assert_cmpint (view.fields.tagged_values[0], ==, count > 1);
+          g_assert_cmpint (view.fields.tagged_values[1], ==,
+                           feature ? 1 + feature * (feature - 1) / 2 : 0);
+          g_assert_cmpint (view.fields.tagged_values[5], ==, 0);
+          g_assert_cmpint (view.fields.tagged_values[6], ==, 0);
+          g_assert_cmpint (view.fields.tagged_values[7], ==, feature);
+        }
+      for (guint slot = 0; slot < GOODIX_MILAN_PROFILE9_ACTIVE_FEATURE_LIMIT; slot++)
+        g_assert_cmpuint (goodix_milan_template_read_u32 (
+                            unpacked.tail_state + slot * 4), ==,
+                          slot < order_count ? slot : G_MAXUINT32);
+
+      if (attempts[attempt].reject_detail)
+        {
+          GoodixMilanUnpackedTemplate before;
+
+          data = g_bytes_get_data (previous, &size);
+          g_assert_cmpint (goodix_milan_template_unpack (data, size, &before), ==, 0);
+          for (guint feature = 0; feature < count; feature++)
+            g_assert_cmpmem (unpacked.feature_elements[feature],
+                             unpacked.feature_element_sizes[feature],
+                             before.feature_elements[feature],
+                             before.feature_element_sizes[feature]);
+          for (guint relation = 0; relation < count - 1; relation++)
+            {
+              g_assert_cmpint (unpacked.relations[relation].index, ==,
+                               before.relations[relation].index);
+              g_assert_cmpmem (unpacked.relations[relation].values,
+                               sizeof (unpacked.relations[relation].values),
+                               before.relations[relation].values,
+                               sizeof (before.relations[relation].values));
+            }
+        }
+      g_clear_pointer (&previous, g_bytes_unref);
+      previous = g_steal_pointer (&published);
+    }
+  goodix_milan_match_free_info (info);
+}
+
+static void
 test_generated_production_replay (void)
 {
   GoodixMatchInfo *info = generate_match_info ();
@@ -1162,6 +1331,8 @@ main (int argc,
                     test_study_policy_actions);
   g_test_add_func ("/goodix53x5/milan/generated-enrollment-prefix-lifecycle",
                     test_generated_enrollment_prefix_lifecycle);
+  g_test_add_func ("/goodix53x5/milan/generated-enrollment-retry-continuation",
+                    test_generated_enrollment_retry_continuation);
   g_test_add_func ("/goodix53x5/milan/generated-production-replay",
                     test_generated_production_replay);
   return g_test_run ();
