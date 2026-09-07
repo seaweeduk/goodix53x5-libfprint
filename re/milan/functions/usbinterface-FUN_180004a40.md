@@ -14,7 +14,10 @@ its argument `+0x28`. `device_enable` (`FUN_18000e9b0`) dispatches that
 profile to `FUN_1800162ac`, which selects static context `0x1800615f0` and
 calls `GxFNHV_MilanOpen` (`FUN_18000450c`). The latter installs this function
 at context `+0x18` and publishes the context through `0x1800606d0`.
-`device_action` (`FUN_18000e1f0`) action 9 calls that slot without arguments.
+`device_action` (`FUN_18000e1f0`) action 9 calls that slot without arguments
+at `0x18000e32e`. It retains the callback result at `0x18000e898` and
+returns it after leaving the critical section while context `+0x204`
+remains enabled; a disabled context instead returns `0xffffffff`.
 
 The context calibration words are zero-initialized image storage. Neither of
 these profile-9 open functions assigns `+0x31c`, `+0x31e`, or `+0x2fe`.
@@ -32,6 +35,63 @@ global `0x1800606d9` and context `+0x205`, and context `+0x1e8` becomes 1.
 The parser calculations read the private block without modifying its bytes.
 Before return, `FUN_180007c74` receives global tcode and high DAC. The
 successful function result is zero.
+
+## OTP Integrity And Admission
+
+The profile selector passed to `FUN_180017a84` at `0x180004c37` is the
+32-bit context field `+0x228`, not the USB product ID. `FUN_1800162ac`
+copies its argument's profile field `+0x28` to static context `+0x228` at
+`0x180016369..0x18001636c`. The dispatch compares this value with 9 at
+`0x180017aa8` and calls `FUN_180017918` at `0x180017ab1`.
+
+`FUN_18001b2e0` requests category `0x0a`, command 3, with two zero payload
+bytes and copies the response bytes from `0x1800638d3` to its caller's
+buffer. This caller supplies length 32. No byte swapping occurs between
+that copy and the integrity verifier.
+
+`FUN_180017918` constructs a private 31-byte hash input in this order:
+`otp[0..24]`, then `otp[26..31]`. Its loads/stores at
+`0x180017935..0x180017960` preserve byte order; byte 25 is excluded, not
+replaced by zero. It calls `FUN_18002d5e0` with byte count `0x1f`.
+That helper uses the 256-byte table at `0x180059c70`, the non-reflected
+CRC-8 table with polynomial `0x07`:
+
+```text
+state = 0
+for each input byte in order:
+    state = table[state XOR byte]
+hash = (~state) & 0xff
+```
+
+Each table lookup zero-extends its byte result. The helper complements EAX
+at `0x18002d60b`; only AL is compared with `otp[25]` at `0x18001796b`.
+The verifier returns zero on equality and `0xffffffff` on mismatch. It
+does not modify the input before comparison. The corresponding current
+helpers are `goodix_device_compute_otp_hash` and `goodix_device_verify_otp`
+in `device/calibration.c`.
+
+After equality, the verifier clears bytes 26, 27, and 28 only when global
+byte `0x1800637d8` equals exactly 1 (`0x180017970..0x18001797e`). This
+global has zero image initialization; the profile-9 verifier and dispatch
+do not write it. The conditional clearing happens after hashing and does
+not recompute byte 25. The caller publishes the resulting block, including
+any such clearing, only on success. The calibration expressions below
+consume bytes 17, 22, 23, and 31, not the conditionally cleared bytes.
+
+On mismatch, `FUN_180017918` leaves the block unchanged, but dispatch
+`FUN_180017a84` writes little-endian word `0xa55a` at bytes 10..11 and
+bytes `f1 fb 09` at 26..28 (`0x180017b55..0x180017b61`), retaining failure
+status. These writes affect the private caller buffer, not the published
+OTP copies. `Milan_CheckSensor` branches on nonzero verifier status at
+`0x180004c4e`: it clears context dword `+0x1e8`, writes bytes
+`09 fb f1` to context `+0x1f8..+0x1fa`, skips OTP publication and all
+calibration calculations, and returns `0xffffffff`. Success instead
+publishes both 32-byte copies and sets `+0x1e8=1` before calibration.
+
+After either integrity result, `FUN_180007c74` copies global tcode and
+high DAC into words `0x180060cb8` and `0x180060cbc`; failure does not derive
+new calibration values from the rejected block. A failed OTP read returns
+before verification, publication, these status writes, or this final copy.
 
 ## Calibration Fields
 

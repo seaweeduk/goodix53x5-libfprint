@@ -48,6 +48,8 @@ software touch snapshot or an FDT-up recovery state.
 
 `FUN_180005094` applies the profile-9 OTP patches before calling
 `thunk_FUN_18001aed8` (`Dlcfg`) with length `0x100` and timeout `500`.
+The selected template, conditional calibration writes, and complete checksum
+contract are documented in `usbinterface-FUN_180005094.md`.
 `FUN_18001aed8` retries one unsuccessful category-9 configuration download, for
 at most two command attempts. Final failure returns `-1` before FDT/image
 acquisition.

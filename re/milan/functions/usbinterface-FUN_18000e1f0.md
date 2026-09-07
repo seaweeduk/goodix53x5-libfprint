@@ -86,6 +86,8 @@ callback consumes a 32-bit mode at argument `+0` and a 16-bit timeout at `+4`:
   The download makes at most two category-9 command attempts, returning zero
   on transport success or `-1` on final failure. The helper's assembly
   preserves that return through its epilogue.
+  See `usbinterface-FUN_180005094.md` for the selected template, conditional
+  value writes, and configuration-checksum contract.
 - Other mode values return zero without issuing a command or changing mode.
 
 Mode 4 does not reset the sensor, rediscover its profile, reread OTP, initialize
