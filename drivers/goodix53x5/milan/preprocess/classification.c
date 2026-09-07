@@ -503,6 +503,7 @@ static void
 milan_profile9_histogram_thresholds (const uint16_t *image,
                                      const uint8_t  *valid,
                                      size_t          count,
+                                     int             primary,
                                      int            *low,
                                      int            *high)
 {
@@ -520,7 +521,8 @@ milan_profile9_histogram_thresholds (const uint16_t *image,
         if (value > maximum)
           maximum = value;
       }
-  if (maximum <= minimum)
+  if (maximum <= minimum ||
+      (!primary && (int16_t) (maximum - minimum) <= 0))
     {
       *low = minimum;
       *high = minimum;
@@ -582,6 +584,15 @@ milan_profile9_histogram_thresholds (const uint16_t *image,
          MILAN_HISTOGRAM_LAST_BIN + minimum;
   *high = (range * high_bin + MILAN_HISTOGRAM_MIDPOINT_BIN) /
           MILAN_HISTOGRAM_LAST_BIN + minimum;
+  if (!primary)
+    {
+      if (*high - *low > 500)
+        *low = *high;
+      if (*low > 9000)
+        *low = 9000;
+      return;
+    }
+
   if (*low > mode_limit)
     *low = mode_limit;
   if (*high > mode_limit)
@@ -1424,7 +1435,7 @@ milan_profile9_temporal_class3 (GoodixMilanPreprocessState *state,
   if (!gradient || !direction || !scores || !mask)
     goto out;
   milan_profile9_histogram_thresholds (
-    state->profile9_history_reference, qualified, count, &threshold, &unused);
+    state->profile9_history_reference, qualified, count, 0, &threshold, &unused);
   for (size_t row = 0; row < rows; row++)
     for (size_t column = 0; column < columns; column++)
       {
@@ -1887,7 +1898,7 @@ goodix_milan_profile9_build_broken_mask (
     prepared, rows, columns, primary_kernel, 3, blurred);
   primary_histogram_state = milan_profile9_histogram_state (
     blurred, valid, count, 1);
-  milan_profile9_histogram_thresholds (blurred, valid, count, &low, &high);
+  milan_profile9_histogram_thresholds (blurred, valid, count, 1, &low, &high);
   milan_profile9_primary_path_scores (
     blurred, valid, rows, columns, low, high, gradient, direction, scores);
   size_t severe_count = milan_profile9_build_severe_mask (
