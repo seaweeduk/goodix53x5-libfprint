@@ -33,8 +33,6 @@ enum {
   HESSIAN_COUNT,
 };
 
-#define EXTREMA_SCAN_BORDER 6
-#define EXTREMA_FIRST_SCALE 1
 #define EXTREMA_SCALE_LIMIT 4
 #define EXTREMA_RESPONSE_THRESHOLD 0x148
 #define DERIVATIVE_LIMIT 0x8000
@@ -55,25 +53,24 @@ enum {
 #define REFINEMENT_SCALE_FACTOR 0x13333
 #define REFINEMENT_Q16_SHIFT 16
 
-size_t
-goodix_milan_feature_collect_extrema (
+int
+feature_next_extremum (
   const uint16_t             *scales,
   size_t                      rows,
   size_t                      columns,
-  GoodixMilanFeatureExtremum *extrema,
-  size_t                      capacity)
+  size_t                      cursor[3],
+  GoodixMilanFeatureExtremum *result)
 {
   size_t count;
-  size_t result_count = 0;
 
   count = rows * columns;
-  for (size_t scale = EXTREMA_FIRST_SCALE;
+  for (size_t scale = cursor[0];
        scale < EXTREMA_SCALE_LIMIT;
-       scale++)
-    for (size_t row = EXTREMA_SCAN_BORDER;
+       scale++, cursor[1] = EXTREMA_SCAN_BORDER)
+    for (size_t row = cursor[1];
          row + EXTREMA_SCAN_BORDER < rows;
-         row++)
-      for (size_t column = EXTREMA_SCAN_BORDER;
+         row++, cursor[2] = EXTREMA_SCAN_BORDER)
+      for (size_t column = cursor[2];
            column + EXTREMA_SCAN_BORDER < columns;
            column++)
         {
@@ -108,12 +105,36 @@ goodix_milan_feature_collect_extrema (
                 }
           if (!extremum)
             continue;
-          if (result_count < capacity && extrema)
-            extrema[result_count] = (GoodixMilanFeatureExtremum){
-              (int32_t) column, (int32_t) row, (int32_t) scale, response,
-            };
-          result_count++;
+          *result = (GoodixMilanFeatureExtremum){
+            (int32_t) column, (int32_t) row, (int32_t) scale, response,
+          };
+          cursor[0] = scale;
+          cursor[1] = row;
+          cursor[2] = column + 1;
+          return 1;
         }
+  cursor[0] = EXTREMA_SCALE_LIMIT;
+  return 0;
+}
+
+size_t
+goodix_milan_feature_collect_extrema (
+  const uint16_t             *scales,
+  size_t                      rows,
+  size_t                      columns,
+  GoodixMilanFeatureExtremum *extrema,
+  size_t                      capacity)
+{
+  size_t cursor[3] = FEATURE_EXTREMA_CURSOR_INIT;
+  GoodixMilanFeatureExtremum extremum;
+  size_t result_count = 0;
+
+  while (feature_next_extremum (scales, rows, columns, cursor, &extremum))
+    {
+      if (result_count < capacity && extrema)
+        extrema[result_count] = extremum;
+      result_count++;
+    }
   return result_count;
 }
 
