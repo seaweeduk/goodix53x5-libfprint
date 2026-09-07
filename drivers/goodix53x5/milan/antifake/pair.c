@@ -252,6 +252,9 @@ goodix_milan_antifake_pair_metrics (
                                                (size_t) current_index));
     }
   metrics[1] = (int32_t) distance_count;
+  if (distance_count == 0)
+    return 0;
+
   int32_t valid_total = prior_valid_count + current_valid_count;
 
   metrics[2] = valid_total == 0
@@ -262,11 +265,8 @@ goodix_milan_antifake_pair_metrics (
                  ? current_valid_count * 0x1000
                  : (prior_valid_count / 2 + current_valid_count * 0x1000) /
                      prior_valid_count;
-  if (distance_count != 0)
-    {
-      qsort (distances, distance_count, sizeof(distances[0]), compare_int32);
-      metrics[4] = distances[(distance_count - 1) / 2];
-    }
+  qsort (distances, distance_count, sizeof (distances[0]), compare_int32);
+  metrics[4] = distances[(distance_count - 1) / 2];
   return 0;
 }
 
