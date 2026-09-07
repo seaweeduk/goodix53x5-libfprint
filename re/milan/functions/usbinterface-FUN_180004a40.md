@@ -9,6 +9,9 @@
 
 ## Ownership And Initialization
 
+See [the chip/profile mapping](../CHIP-ID-PROFILE-MAPPING.md) for the complete
+USB identification predicates and the distinct algorithm sensor-type enum.
+
 `FUN_180017ef8` maps chip-family value `0x220c` (type 12) to profile 9 at
 its argument `+0x28`. `device_enable` (`FUN_18000e9b0`) dispatches that
 profile to `FUN_1800162ac`, which selects static context `0x1800615f0` and

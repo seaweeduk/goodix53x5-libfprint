@@ -19,6 +19,9 @@ buffer is retained by this owner after return.
 
 ## Selected Template
 
+See [the chip/profile mapping](../CHIP-ID-PROFILE-MAPPING.md) for chip-family
+selection and the distinction between profiles and algorithm sensor types.
+
 At `0x180005105..0x180005110`, the owner passes context dword `+0x228` to
 `FUN_1800180f8`. That field is the profile, not the USB ID or sensor type
 number. Type-12 chip family `0x220c` selects profile 9 in `FUN_180017ef8`;
