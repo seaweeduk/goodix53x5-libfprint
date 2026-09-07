@@ -31,6 +31,14 @@ normalizes each as unsigned `value >> 1` and compares the vector with anchor
 The reverse-event path owns anchor seeding; the anchor is distinct from the
 sensor's programmed down base. `FUN_180004a40` owns `delta_down` derivation.
 
+An empty anchor bypasses the raw-event callback and both comparisons at
+`0x180014a4a..0x180014a51`; up never seeds it. With an active anchor, the
+comparison and any proximity clearing happen before the base-valid check in
+`Milan_checkbase_isok`, regardless of the entry value of `+0x232`. Intermediate
+differences leave all 24 anchor bytes unchanged. The proximity-clear writes at
+`0x180014c13..0x180014c29` zero all twelve words and set the empty byte; they do
+not update the programmed down base or retained manual base.
+
 ## Refresh And Rearm
 
 On a majority, this function clears base-valid byte `+0x232` and synchronously
@@ -39,6 +47,9 @@ the anchor, sets `+0x338`, and sets one-shot byte `+0x236` through the refresh
 owner. Failed refresh retains the active anchor and leaves `+0x338` clear. Both
 paths return before callback `+0x110` and `Milan_checkbase_isok`; wrapper
 `FUN_180015aa0` still rearms FDT-down through `+0xb0`.
+The rearm argument is a byte (`CL = 1` at `0x180015b7c`). The wrapper saves the
+callback's 32-bit result at `0x180015b8b` and returns it after any retained-frame
+cleanup, independently of the handler's result.
 
 Without a majority, the function calls `+0x110` with zero and then
 `Milan_checkbase_isok`, which reacquires all bases only when validity is already
@@ -48,5 +59,9 @@ lost. Refresh ownership and failure effects are documented in
 Profile setup does not explicitly initialize `+0x338`; reverse, up, and refresh
 branches own its transitions. A fresh zero-initialized module begins with an
 active zeroed anchor, but prior events and retained DLL state can change it.
-An up event therefore refreshes from this path only when preceding reverse-event
-history has left an active anchor and the strict majority predicate fires.
+The majority refresh path therefore requires an active anchor and the strict
+majority predicate, not proof that a reverse event has previously seeded it.
+Ordinary reverse seeding is one producer of that active state. The non-majority
+path separately checks base validity after callback `+0x110` at
+`0x180014c55..0x180014c67`; this caller performs no additional anchor clearing
+after `Milan_checkbase_isok` returns.

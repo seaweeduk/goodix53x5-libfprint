@@ -40,6 +40,21 @@ predicates using `delta_down` at `+0x318`:
 
 `FUN_180004a40` owns `delta_down` derivation.
 
+The prior-arm majority at `0x18001463e..0x180014698` short-circuits all anchor
+work, including seeding. The empty-anchor branch at
+`0x18001491a..0x180014981` copies all 24 normalized bytes and goes directly to
+callback `+0x110`; it does not compare the newly seeded anchor on the same
+event. An active anchor is retained unchanged for intermediate differences,
+not moved toward the current vector. Only a subsequent qualifying event clears
+or refreshes it. Neither anchor seeding nor proximity clearing writes the
+programmed down base or the separately retained manual base.
+
+Both comparison helpers zero-extend their 16-bit operands before subtracting
+in 32 bits. For the fixed twelve-area call, the changed count cannot wrap;
+exactly six changed areas and differences equal to `delta_down` do not trigger.
+The proximity helper computes unsigned integer division by three before its
+comparison, so a zero quotient cannot clear even an identical anchor.
+
 ## Refresh And Rearm
 
 The two drift branches clear `+0x232` and synchronously call
@@ -51,3 +66,5 @@ unchanged. See `usbinterface-FUN_180013da4.md` and
 
 On a no-refresh path this function calls callback `+0x110` with zero before
 returning to `FUN_180015a60`; the wrapper then rearms FDT-down through `+0xb0`.
+The wrapper supplies a byte argument (`CL = 1` at `0x180015a83`) and tail-calls
+the arm callback, returning its result rather than the handler's result.
