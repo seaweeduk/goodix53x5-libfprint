@@ -547,101 +547,122 @@ goodix_milan_filter_recognition_pairs_internal (
       if (triangle_count >= MILAN_RECOGNITION_TRIANGLE_LIMIT)
         break;
       for (size_t second = first + 1; second + 1 < match_count; second++)
-        for (size_t third = second + 1; third < match_count; third++)
-          {
-            const size_t selected[3] = { first, second, third };
-            int32_t source[6];
-            int32_t target[6];
-            int32_t orientation_differences[3];
-            int32_t affine[6];
-            int inliers = 0;
-            int64_t residual_sum = 0;
-            uint8_t mask[MILAN_MATCH_MAX_PAIRS] = { 0 };
+        {
+          const size_t edge[2] = { first, second };
+          int32_t source[6];
+          int32_t target[6];
+          int32_t edge_orientations[2];
 
-            for (size_t i = 0; i < 3; i++)
+          for (size_t i = 0; i < 2; i++)
+            {
+              int32_t enrolled_index = pairs[edge[i] * 2];
+              int32_t probe_index = pairs[edge[i] * 2 + 1];
+
+              source[i * 2] =
+                (uint16_t) probe_records[probe_index].refined_x;
+              source[i * 2 + 1] =
+                (uint16_t) probe_records[probe_index].refined_y;
+              target[i * 2] =
+                (uint16_t) enrolled_records[enrolled_index].refined_x;
+              target[i * 2 + 1] =
+                (uint16_t) enrolled_records[enrolled_index].refined_y;
+              edge_orientations[i] = milan_normalize_orientation_difference (
+                enrolled_records[enrolled_index].orientation -
+                probe_records[probe_index].orientation,
+                MILAN_ORIENTATION_HALF_PERIOD, MILAN_ORIENTATION_PERIOD);
+            }
+          if (!milan_triangle_edge_is_consistent (
+                milan_triangle_distance_shift_then_add (
+                  source[0], source[1], source[2], source[3]),
+                milan_triangle_distance_shift_then_add (
+                  target[0], target[1], target[2], target[3])))
+            continue;
+          for (size_t third = second + 1; third < match_count; third++)
+            {
+              /* The orientation retry mutates its per-triangle scratch. */
+              int32_t orientation_differences[3] = {
+                edge_orientations[0], edge_orientations[1], 0
+              };
+              int32_t affine[6];
+              int inliers = 0;
+              int64_t residual_sum = 0;
+              uint8_t mask[MILAN_MATCH_MAX_PAIRS] = { 0 };
+
               {
-                int32_t enrolled_index = pairs[selected[i] * 2];
-                int32_t probe_index = pairs[selected[i] * 2 + 1];
+                int32_t enrolled_index = pairs[third * 2];
+                int32_t probe_index = pairs[third * 2 + 1];
 
-                source[i * 2] =
-                  (uint16_t) probe_records[probe_index].refined_x;
-                source[i * 2 + 1] =
-                  (uint16_t) probe_records[probe_index].refined_y;
-                target[i * 2] =
-                  (uint16_t) enrolled_records[enrolled_index].refined_x;
-                target[i * 2 + 1] =
-                  (uint16_t) enrolled_records[enrolled_index].refined_y;
-                orientation_differences[i] =
+                source[4] = (uint16_t) probe_records[probe_index].refined_x;
+                source[5] = (uint16_t) probe_records[probe_index].refined_y;
+                target[4] = (uint16_t) enrolled_records[enrolled_index].refined_x;
+                target[5] = (uint16_t) enrolled_records[enrolled_index].refined_y;
+                orientation_differences[2] =
                   milan_normalize_orientation_difference (
                     enrolled_records[enrolled_index].orientation -
                       probe_records[probe_index].orientation,
-                     MILAN_ORIENTATION_HALF_PERIOD, MILAN_ORIENTATION_PERIOD);
+                    MILAN_ORIENTATION_HALF_PERIOD, MILAN_ORIENTATION_PERIOD);
               }
-            if (!milan_triangle_edge_is_consistent (
-                  milan_triangle_distance_shift_then_add (
-                    source[0], source[1], source[2], source[3]),
-                  milan_triangle_distance_shift_then_add (
-                    target[0], target[1], target[2], target[3])) ||
-                !milan_triangle_edge_is_consistent (
-                  milan_triangle_distance_shift_then_add (
-                    source[0], source[1], source[4], source[5]),
-                  milan_triangle_distance_shift_then_add (
-                    target[0], target[1], target[4], target[5])) ||
-                !milan_triangle_edge_is_consistent (
-                  milan_triangle_distance_add_then_shift (
-                    source[2], source[3], source[4], source[5]),
-                  milan_triangle_distance_add_then_shift (
-                    target[2], target[3], target[4], target[5])) ||
-                !milan_triangle_orientations_are_consistent (
-                  orientation_differences))
-              continue;
-            triangle_count++;
-            milan_affine_from_three_points (source, target, affine);
-            if (!milan_triangle_affine_is_consistent (affine))
-              continue;
-            for (size_t i = 0; i < match_count; i++)
-              {
-                int32_t enrolled_index = pairs[i * 2];
-                int32_t probe_index = pairs[i * 2 + 1];
-                int32_t x = (uint16_t) probe_records[probe_index].refined_x;
-                int32_t y = (uint16_t) probe_records[probe_index].refined_y;
-                int64_t transformed_x =
-                  (((int64_t) affine[0] * x +
-                    (int64_t) affine[1] * y + 0x80) >> 8) + affine[2];
-                int64_t transformed_y =
-                  (((int64_t) affine[3] * x +
-                    (int64_t) affine[4] * y + 0x80) >> 8) + affine[5];
-                int64_t dx = transformed_x -
-                  (uint16_t) enrolled_records[enrolled_index].refined_x;
-                int64_t dy = transformed_y -
-                  (uint16_t) enrolled_records[enrolled_index].refined_y;
-                int64_t squared = dx * dx + dy * dy;
+              if (!milan_triangle_edge_is_consistent (
+                    milan_triangle_distance_shift_then_add (
+                      source[0], source[1], source[4], source[5]),
+                    milan_triangle_distance_shift_then_add (
+                      target[0], target[1], target[4], target[5])) ||
+                  !milan_triangle_edge_is_consistent (
+                    milan_triangle_distance_add_then_shift (
+                      source[2], source[3], source[4], source[5]),
+                    milan_triangle_distance_add_then_shift (
+                      target[2], target[3], target[4], target[5])) ||
+                  !milan_triangle_orientations_are_consistent (
+                    orientation_differences))
+                continue;
+              triangle_count++;
+              milan_affine_from_three_points (source, target, affine);
+              if (!milan_triangle_affine_is_consistent (affine))
+                continue;
+              for (size_t i = 0; i < match_count; i++)
+                {
+                  int32_t enrolled_index = pairs[i * 2];
+                  int32_t probe_index = pairs[i * 2 + 1];
+                  int32_t x = (uint16_t) probe_records[probe_index].refined_x;
+                  int32_t y = (uint16_t) probe_records[probe_index].refined_y;
+                  int64_t transformed_x =
+                    (((int64_t) affine[0] * x +
+                      (int64_t) affine[1] * y + 0x80) >> 8) + affine[2];
+                  int64_t transformed_y =
+                    (((int64_t) affine[3] * x +
+                      (int64_t) affine[4] * y + 0x80) >> 8) + affine[5];
+                  int64_t dx = transformed_x -
+                    (uint16_t) enrolled_records[enrolled_index].refined_x;
+                  int64_t dy = transformed_y -
+                    (uint16_t) enrolled_records[enrolled_index].refined_y;
+                  int64_t squared = dx * dx + dy * dy;
 
-                if (llabs (dx) < MILAN_RECOGNITION_INLIER_AXIS_LIMIT &&
-                    llabs (dy) < MILAN_RECOGNITION_INLIER_AXIS_LIMIT &&
-                    squared < MILAN_RECOGNITION_INLIER_SQUARED_LIMIT)
-                  {
-                    inliers++;
-                    residual_sum += squared;
-                    mask[i] = 1;
-                  }
-              }
-            int residual = inliers == 0
-                             ? MILAN_RECOGNITION_NO_MODEL_RESIDUAL
-                             : (int) ((residual_sum + (inliers >> 1)) /
-                                      inliers);
-            if ((inliers > best_inliers ||
-                 (inliers == best_inliers && residual < *best_residual)) &&
-                milan_affine_is_valid (affine))
-              {
-                best_inliers = inliers;
-                *best_residual = residual;
-                memcpy (best_affine, affine, 6 * sizeof(*best_affine));
-                memcpy (best_mask, mask, sizeof(best_mask));
-              }
-            if (best_inliers > MILAN_RECOGNITION_EARLY_INLIER_COUNT)
-              goto done;
-          }
+                  if (llabs (dx) < MILAN_RECOGNITION_INLIER_AXIS_LIMIT &&
+                      llabs (dy) < MILAN_RECOGNITION_INLIER_AXIS_LIMIT &&
+                      squared < MILAN_RECOGNITION_INLIER_SQUARED_LIMIT)
+                    {
+                      inliers++;
+                      residual_sum += squared;
+                      mask[i] = 1;
+                    }
+                }
+              int residual = inliers == 0
+                               ? MILAN_RECOGNITION_NO_MODEL_RESIDUAL
+                               : (int) ((residual_sum + (inliers >> 1)) /
+                                        inliers);
+              if ((inliers > best_inliers ||
+                   (inliers == best_inliers && residual < *best_residual)) &&
+                  milan_affine_is_valid (affine))
+                {
+                  best_inliers = inliers;
+                  *best_residual = residual;
+                  memcpy (best_affine, affine, 6 * sizeof(*best_affine));
+                  memcpy (best_mask, mask, sizeof(best_mask));
+                }
+              if (best_inliers > MILAN_RECOGNITION_EARLY_INLIER_COUNT)
+                goto done;
+            }
+        }
     }
 done:
   if (model_valid)
