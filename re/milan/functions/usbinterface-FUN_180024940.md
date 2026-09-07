@@ -57,8 +57,10 @@
   primitive neither reads nor writes beyond it.
 - `FUN_180007968` then checks a subtype-selected fixed CRC span. For profile 9 /
   sensor type 12, `FUN_180009b88` selects `0x37b0` raw12 bytes, and the later image
-  conversion writes the fixed `108 * 88 * 2 == 0x4a40` output consumed by the
-  hardware and engine layers.
+  conversion of a valid complete frame writes `108 * 88 * 2 == 0x4a40` output
+  bytes consumed by the hardware and engine layers. The count-driven converter
+  itself does not impose dimensions; its packing and caller-owned storage are
+  documented in [`usbinterface-FUN_180009a64.md`](usbinterface-FUN_180009a64.md).
 
 - CRC is checked on the pre-GEA buffer by `FUN_180009b88` with mode zero and
   the subtype byte at device context `+0x1ec` (9 for this path). It compares
