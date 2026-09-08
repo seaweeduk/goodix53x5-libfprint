@@ -751,7 +751,7 @@ median3x3_core (const uint16_t *source,
 }
 
 static int
-profile9_calibration_admit (const uint32_t             *ratio,
+profile9_calibration_admit (const uint16_t             *source,
                             size_t                      rows,
                             size_t                      columns,
                             GoodixMilanPreprocessState *state)
@@ -767,7 +767,7 @@ profile9_calibration_admit (const uint32_t             *ratio,
         for (size_t column = 0; column < coarse_columns; column++)
           {
             uint16_t current =
-              (uint16_t) ratio[(row * 2) * columns + column * 2];
+              source[(row * 2) * columns + column * 2];
             uint16_t previous =
               state->coarse_reference[row * coarse_columns + column];
 
@@ -785,7 +785,7 @@ profile9_calibration_admit (const uint32_t             *ratio,
     for (size_t row = 0; row < coarse_rows; row++)
       for (size_t column = 0; column < coarse_columns; column++)
         state->coarse_reference[row * coarse_columns + column] =
-          (uint16_t) ratio[(row * 2) * columns + column * 2];
+          source[(row * 2) * columns + column * 2];
 
   if (state->stable_count > 3)
     return 0;
@@ -958,7 +958,7 @@ profile9_update_calibration_state (
 {
   size_t count = rows * columns;
   int calibration_admitted =
-    profile9_calibration_admit (ratio, rows, columns, state);
+    profile9_calibration_admit (difference, rows, columns, state);
 
   if (calibration_admitted)
     {
