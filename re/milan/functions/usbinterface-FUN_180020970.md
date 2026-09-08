@@ -6,6 +6,13 @@
 - Logged name: `deviceInit`
 - Role: asynchronous initialization worker launched from UMDF D0 entry.
 
+This worker's reset/session ordering is shared by profile 0 and profile 9.
+Family selection occurs inside `FUN_18000e9b0`; action 9 and action 12 then
+dispatch different sensor-check and all-base callbacks. Both full-init and
+resume session routes call the same `FUN_180007ee0` wrapper and common
+GTLS client owners. See [Profile 0 USB Contract](../PROFILE0-USB-CONTRACT.md)
+for the family boundary, profile-0 validity producer, and cancellation scope.
+
 ## Initial Image-Base Path
 
 - On the first/full initialization branch (`device_context +0x110 != 1`), it

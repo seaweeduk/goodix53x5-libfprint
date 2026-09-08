@@ -4,6 +4,8 @@
 
 This contract belongs to the 2.0.310.900 reference driver, with image base
 `0x180000000` in both `usbinterface.dll` and `GoodixEngineAdapter.dll`.
+The [reference-driver note](REFERENCE-DRIVER.md) provides the Dell download
+and exact DLL identities.
 USB product IDs do not select profiles. The USB layer calls its profile field
 `sensorType` in log messages; that field is not the algorithm sensor-type enum.
 
@@ -104,3 +106,10 @@ device lifecycle.
 
 See `functions/usbinterface-FUN_180004a40.md` for profile-9 OTP admission and
 `functions/usbinterface-FUN_180005094.md` for profile-selected configuration.
+
+Profile-0/type-0 behavior relative to profile 9/type 12 is owned by
+[the USB contract](PROFILE0-USB-CONTRACT.md) and
+[the engine contract](PROFILE0-ENGINE-CONTRACT.md), with extraction, matching,
+study and storage in [the template contract](PROFILE0-MATCH-TEMPLATE-CONTRACT.md).
+Shared raw dimensions do not imply shared calibration, capture sequencing,
+or preprocessing dispatch.

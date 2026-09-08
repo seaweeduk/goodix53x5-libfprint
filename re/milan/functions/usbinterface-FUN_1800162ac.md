@@ -5,6 +5,10 @@
 - Address: `0x1800162ac`
 - Role: initialize the Milan HV HAL context and profile-9 callback table.
 
+The corresponding profile-0 initializer is `FUN_1800112ac`; its separate
+callback layout, geometry, and calibration/acquisition contract are owned by
+[Profile 0 USB Contract](../PROFILE0-USB-CONTRACT.md).
+
 ## Profile-9 Initialization
 
 Established callback assignments used by the profile-9 refresh/event contract

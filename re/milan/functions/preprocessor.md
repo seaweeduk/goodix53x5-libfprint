@@ -44,6 +44,13 @@
 
 ## Sibling Export Lifecycle
 
+- The calibration serialization, sensor-ID gate, setup retry, and teardown
+  boundaries are shared by profiles 0 and 9. The saved calibration is
+  `0x224b0` bytes, not the `0x3048c` live workspace. Load checks a version
+  prefix and the two active-plane checksums, without an explicit subtype
+  comparison; adapter `FUN_18002bfa0` separately checks the 16-byte sensor ID.
+  See [the calibration layout](../PROFILE0-ENGINE-CONTRACT.md#calibration-persistence-and-reset).
+
 - `preprocessor_init` clears calibrated flag `DAT_180249afc` before invoking the
   setup path. A rejected profile-9 setup therefore returns `0x29bb` with the
   flag still clear; success sets it to 1. The production adapter may retry this

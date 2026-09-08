@@ -6,6 +6,13 @@
 - Logged name: `milan_HVseries_disable`
 - Role: final HAL-context teardown for Milan HV profile 9.
 
+Profile-0 `FUN_180011160` is a separate close callback. Unlike this owner,
+it has no frees of retained image/auxiliary/FDT buffers at
+`+0x248/+0x258/+0x268`. Both are reached after the common controller-stop
+helper. See [Profile 0 USB Contract](../PROFILE0-USB-CONTRACT.md) for the
+explicit ownership boundaries; close behavior must not be inferred solely
+from the shared HAL layout.
+
 ## Call Path
 
 - `usbinterfaceEvtDeviceReleaseHardware` (`FUN_180023c40`) calls

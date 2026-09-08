@@ -10,6 +10,12 @@
   meaningful return value; source and destination are separate caller buffers.
 - Related current owner: `device/image.c:goodix_device_decode_image`.
 
+Profile-0 raw owner `FUN_1800071d8` also calls this exact converter, with
+destination `0x180060498` and its post-processing byte count minus four.
+It shares the reply-processing and CRC helper boundary with profile 9;
+the separate USB acquisition contract is documented in
+[Profile 0 USB Contract](../PROFILE0-USB-CONTRACT.md).
+
 ## Packing And Iteration
 
 For group `g`, let `b0..b5` be input bytes at `6*g..6*g+5`. The four words at
