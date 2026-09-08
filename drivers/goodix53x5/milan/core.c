@@ -819,8 +819,7 @@ profile9_update_calibration (const uint32_t             *ratio,
 
       if (deviation < 0)
         deviation = -deviation;
-      if (deviation < 6400 ||
-          (state->sample_count < 30 && deviation < 8192))
+      if (deviation < 6400)
         {
           uint32_t divisor = state->sample_count + 1;
 
