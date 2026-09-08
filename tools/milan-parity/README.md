@@ -125,8 +125,13 @@ There is no implicit whole-dump selection.
 The DLL path, its explicitly approved SHA-256, and an already initialized Wine
 prefix are mandatory. The tooling does not discover or create a DLL or prefix.
 
+Use `--compare-current` for the normal current-source parity gate. In a clean
+checkout, first run `GOODIX53X5_DEBUG=0 ./scripts/build-local.sh` to create the
+required `.build/libfprint/builddir` support directory.
+
 ```sh
 ./tools/milan-parity/milan-parity validate-dump \
+  --compare-current \
   --dump-dir /private/CAMPAIGN/debug-dump \
   --operation 01234567-89ab-4cde-8123-456789abcdef/identify/58 \
   --operation 01234567-89ab-4cde-8123-456789abcdef/verify/59 \
@@ -187,6 +192,7 @@ for operation in "${operations[@]}"; do
 done
 
 "$REPO/tools/milan-parity/milan-parity" validate-dump \
+  --compare-current --repo "$REPO" \
   --dump-dir "$DUMP_DIR" \
   --build-manifest "$BUILD_MANIFEST" \
   "${selectors[@]}" \
@@ -253,9 +259,82 @@ GOODIX53X5_DEBUG=0 ./scripts/build-local.sh
 This creates `.build/libfprint/builddir`. The Milan stack builder does not create
 that checkout-local directory for `--compare-current`.
 
+### Comparison Modes And Starting State
+
+| Invocation | Expected output | Native side | Meaning |
+| --- | --- | --- | --- |
+| `--compare-current` | Newly computed current-source output | Native replay | Source-parity gate at the reconstructed runner boundary |
+| Without the flag | Recorded live output | The same native replay | Diagnostic comparison; live starting-state equivalence is not established |
+
+Changing this flag does not select extra native paths or replay the device event
+loop. It changes which output is compared against the native result. Both modes
+retain the full exact comparison and all existing failure/availability rules.
+The shipped no-flag default is unchanged; it emits a warning explaining its
+diagnostic scope. A mismatch remains a mismatch, not a skip or a forced pass.
+
+Both runners initialize fresh preprocessing state before applying eligible
+same-generation frame history. The live driver can instead import persisted
+calibration and classification/history state at setup, or transfer process-owned
+state during refresh. Runtime-debug/v3 records frames and setup flags, but not
+that imported workspace. A clear `setup_initialized` flag does not prove an empty
+calibration, and a complete generation chronology does not supply state inherited
+from earlier generations or before capture began.
+
+Consequently, current and native replay can agree while both differ from the
+recorded live image. This is not by itself proof of a driver algorithm defect.
+Captured mode need not always fail: compatible initial states or convergent
+outputs can agree. Neither its pass nor structural replay admissibility proves
+that all live state was reconstructed. Taking another ordinary v3 capture does
+not add state that this schema does not record.
+
+Reports include additive `replay_scope` metadata: `purpose` is `source-parity` or
+`capture-diagnostic`; `preprocessing_origin` is
+`fresh-before-generation-prelude`; `history` is
+`eligible-same-generation-preprocessing`; `captured_initial_workspace` is
+`not-recorded`; and `live_state_equivalence` is `not-established` in both modes.
+These describe comparison capability, not an additional per-operation verdict.
+No claim about the actual imported sample count is inferred from v3 metadata.
+
+### Future Live-State Replay
+
+Faithful live replay needs a separate, versioned capture/runner contract. This
+is not implemented by the scope metadata above and cannot be retrofitted into
+sealed v3 dumps by inventing missing state.
+
+- Seal the full logical preprocessing/profile input state actually copied into
+  the runtime call, after restore/refresh transfer and before setup processing.
+  This includes sample/count fields, calibration and application/auxiliary gain
+  planes, retained classification, masks, reference/history planes and ages,
+  plus profile/setup flags. Record all fields that the supported path can read,
+  not only the subset currently stored on disk. Use typed, versioned data with
+  explicit widths, dimensions and byte order, never raw pointers or C struct
+  memory dumps.
+- Bind that state to the exact operation, generation, chronology, input frames,
+  purpose, build identity and sealed artifact hashes. Capture the same immutable
+  snapshot used by the worker, not a mutable device object later in the call.
+- For multi-call replay, either checkpoint each call's starting state or record
+  a proven initial snapshot plus every relevant update, restore, reset, refresh
+  transfer and commit/discard transition. State snapshots alone cannot prove
+  that the earlier persistence lifecycle selected the correct state; validating
+  that lifecycle also needs its inputs and events.
+- First prove that current replay reproduces the captured state and processed
+  output exactly. Then map that logical state through verified native import/setup
+  contracts and compare the complete native output. Never transplant a Linux
+  structure into the DLL or supply captured queue state as runner input.
+
+That mode would add useful checks on mature calibration, retained history,
+generation handoff and frame/state pairing against what actually ran on the
+device. The ordinary source gate can miss errors shared by both runners' simpler
+state reconstruction. It would still not reproduce physical USB acquisition,
+interrupt timing, suspend/resume or cancellation races without a separate event
+and ownership replay contract. Keep `--compare-current` as the routine source
+gate; add live reproduction as a separate integration check when the required
+state can be captured and verified.
+
 ## Active-Investigation Guarantee
 
-A v3 dump remains replayable throughout an active investigation while its
+A v3 dump remains usable for the reconstructed current-source replay boundary
+throughout an active investigation while its
 runtime, print, and replay contracts remain current. Ordinary production
 algorithm changes do not invalidate the recorded raw-frame and gallery boundary,
 so a mismatch can be fixed and replayed against the exact operation that exposed
@@ -266,8 +345,10 @@ This guarantee does not cover sensor acquisition, USB lifecycle, FDT/reference
 capture, suspend, or timing before the recorded raw-frame boundary; an input
 gallery already corrupted by an earlier bug; an incompatible print schema;
 uncaptured required process or hardware state; a changed native boundary policy;
-or a schema that is no longer current. These cases require a fresh capture, not
-a compatibility adapter.
+or a schema that is no longer current. These cases may require a new capture
+contract before taking fresh evidence. An ordinary recapture does not recover
+required state that the schema omits. Do not add a compatibility adapter or
+invent the missing state.
 
 Every explicitly selected, structurally replayable identify or verify operation
 from a current strict dump is executed against the approved DLL under the
