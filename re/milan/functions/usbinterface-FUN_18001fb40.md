@@ -63,3 +63,22 @@
   published by that attempt.
 - Request admission and lifetime are owned by `OnCaptureData`; see
   `usbinterface-FUN_180021978.md`.
+
+## Cancellation And Later Arm Failure
+
+`gfOnCancel` (`0x180020ef0`) takes the same construction critical section
+`+0xc8` when enabled, sets stop bytes `+0x154/+0x152`, and takes request
+critical section `+0x98` when enabled. With a retained request it completes
+the callback's request argument through WDF slot `+0x518` with status
+`0xc0000120`, then clears `+0xf8`. It does not free either frame, clear the HAL
+capture callback, or destroy the retained base.
+
+If cancellation owns the request before sample construction, the null request
+gate prevents output publication. If unmark-cancelable reports `0xc0000120`
+after the sample bytes were copied, `CompletePendingRequest` leaves completion
+to `gfOnCancel`: copied bytes do not constitute successful request completion.
+If normal unmark/completion wins, the success status and sample length have
+already been delivered and `+0xf8` is clear before the down handler arms up.
+That later arm has no request owner to complete again or change to failure.
+Its transport result is not propagated by the profile-9 arm wrapper; see
+`usbinterface-FUN_180014e10.md`.

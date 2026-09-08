@@ -120,6 +120,18 @@ Callback `+0xb0` is profile-9 `FUN_180005a60`. The false/drift branch invokes
 it with one to rearm FDT-down detection. The real-finger branch invokes it with
 zero after capture to switch the sensor to FDT-up detection.
 
+The arm callback's up branch sends category 3, command 2 with timeout 500 at
+`0x180005af4`.
+When the send/wait result's low two bits are both set, it calls
+`FUN_1800059c0` with mode 4 and retries the same arm once. It then writes HAL
+wait state `+0x1fc = 0xf1` at `0x180005b30` and returns zero at
+`0x180005b3a` regardless of either transport
+result. The down handler ignores the arm return in any case and returns its
+earlier read/validation result. Thus an up-arm transport failure cannot retract
+the already completed capture request, republish its frame, or restore its
+cleared callback. Request cancellation has a separate owner; see
+`usbinterface-FUN_18001fb40.md`.
+
 The blocking controller worker `FUN_18000df20` treats handler return `-1` as a
 logged event error only. It does not terminate the request or worker; after the
 handler rearms down, the worker returns to its indefinite event wait.
