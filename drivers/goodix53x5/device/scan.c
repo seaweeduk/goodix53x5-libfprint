@@ -84,7 +84,6 @@ typedef struct
   gboolean                      cycle_active;
   gboolean                      recovering_generation;
   gboolean                      release_settled;
-  gboolean                      capture_notified;
 } GoodixScanCoordinatorData;
 
 static void goodix_scan_coordinator_handler (FpiSsm *ssm, FpDevice *dev);
@@ -421,18 +420,6 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
           g_cancellable_cancel (data->event_cancel);
           return;
         }
-      if (data->cycle_active && !data->capture_notified)
-        {
-          if (!self->milan_generation || !self->captured_raw_image)
-            {
-              data->recovering_generation = TRUE;
-              break;
-            }
-          data->capture_notified = TRUE;
-          data->cpu_outstanding = TRUE;
-          goodix_milan_generation_prepare_setup (dev, self->milan_generation);
-          data->capture_ready (dev, data->user_data);
-        }
       break;
 
     case GOODIX_SCAN_COORD_DISPATCH_EVENT:
@@ -592,7 +579,22 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       data->cycle_active = TRUE;
       data->release_settled = FALSE;
       data->cpu_done = FALSE;
-      data->capture_notified = FALSE;
+      if (!data->stop_requested)
+        {
+          if (!self->milan_generation || !self->captured_raw_image)
+            {
+              data->recovering_generation = TRUE;
+            }
+          else
+            {
+              /* Deliver the completed frame before up-arm. Dispatch ownership
+               * holds the coordinator until the command finishes; cleanup joins
+               * any worker even if that command fails. */
+              data->cpu_outstanding = TRUE;
+              goodix_milan_generation_prepare_setup (dev, self->milan_generation);
+              data->capture_ready (dev, data->user_data);
+            }
+        }
       fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_UP;
       goodix_cmd_fdt_up_setup (ssm, dev, fdt->base_up);
       break;
