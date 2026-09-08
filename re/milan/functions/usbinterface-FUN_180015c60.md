@@ -251,6 +251,20 @@ The exact FDT transform and its command consumers are documented in
 
 ## Callers And Lifetime
 
+This owner does not clear software drift-anchor words `+0x320..+0x337` or
+anchor-empty byte `+0x338`, including on complete admission. Its admitted
+publication at `0x180015f45..0x180015fc9` replaces the retained image and sets
+validity; the common postlude replaces retained/programmed FDT bases, not the
+software anchor. Persistence `FUN_18000da18` serializes the acquired buffers
+without modifying the anchor. The profile-9 base setter `FUN_180005950` writes
+the primary/down/up/manual global base stores only.
+
+Consequently `Milan_checkbase_isok` recovery through `UP_Occure` preserves an
+active anchor that survived the up handler's majority and proximity tests.
+Reverse and majority-up callers separately clear the anchor after successful
+acquisition; their caller-owned clears must not be attributed to this callee.
+See `usbinterface-FUN_1800149c4.md`.
+
 - `FUN_1800162ac` installs this function at HAL callback slot `+0x180`.
 - Full initialization dispatches slot `+0x180` through device action `0x0c` at
   `FUN_180020970:0x180020d04`.

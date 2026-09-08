@@ -65,3 +65,20 @@ Ordinary reverse seeding is one producer of that active state. The non-majority
 path separately checks base validity after callback `+0x110` at
 `0x180014c55..0x180014c67`; this caller performs no additional anchor clearing
 after `Milan_checkbase_isok` returns.
+
+`Milan_checkbase_isok` (`FUN_1800141f0`) calls `MilanHV_update_allbase` only
+when `+0x232` is zero. That acquisition owner does not clear the software
+anchor either. An invalid-base up event with an active intermediate-distance
+anchor therefore retains all twelve anchor words and the active flag through
+successful reference/FDT-base publication and the wrapper's down rearm. A
+proximity-qualified up event clears the anchor before the same recovery call;
+a majority-qualified up event instead uses the temperature route and clears
+only after successful acquisition.
+
+An ordinary validation rejection during a preceding majority refresh can leave
+`+0x232` clear, the active anchor intact, and an older admitted image at `+0x248`
+with `+0x237` still set. `MilanHV_Down_procedure` (`FUN_180014e10`) does not call
+`Milan_checkbase_isok` on its genuine-down branch: after its FDT comparison it
+gates live-image acquisition on image validity and capture ownership/enabling,
+not FDT-base validity. The older image-valid state therefore does not imply
+that the next up event enters with `+0x232` set.
