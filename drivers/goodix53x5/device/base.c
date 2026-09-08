@@ -794,9 +794,14 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
                 GOODIX_FDT_BASE_LEN);
         memcpy (self->profile9_fdt.base_manual, data->candidate_base_manual,
                 GOODIX_FDT_BASE_LEN);
-        memset (self->profile9_fdt.drift_anchor, 0,
-                sizeof (self->profile9_fdt.drift_anchor));
-        self->profile9_fdt.drift_anchor_empty = TRUE;
+        /* Native up/checkbase recovery publishes bases without clearing the anchor. */
+        if (!data->forced_refresh || self->profile9_fdt.refresh_reason !=
+            GOODIX_PROFILE9_FDT_REFRESH_UP_INVALID_BASE)
+          {
+            memset (self->profile9_fdt.drift_anchor, 0,
+                    sizeof (self->profile9_fdt.drift_anchor));
+            self->profile9_fdt.drift_anchor_empty = TRUE;
+          }
         self->profile9_fdt.base_valid = TRUE;
         self->profile9_fdt.event.pending = FALSE;
         self->profile9_fdt.initial_recovery_pending = FALSE;
