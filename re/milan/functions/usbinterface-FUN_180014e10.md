@@ -26,7 +26,7 @@ In the normal image-mode branch the function:
 1. Reads the FDT interrupt sample through callback `+0x70`.
 2. Takes an immediate manual TX-off FDT reading through callback `+0x160` with
    argument zero.
-3. Calls `FUN_180014c98` at `0x180014fc2` with 12 areas and threshold word
+3. Calls `FUN_180014c98` at `0x180014fb1` with 12 areas and threshold word
    `+0x31c`.
 
 `FUN_180014c98` halves both 16-bit values and returns one only when every area's
@@ -62,11 +62,25 @@ valid image base and active capture callback, `FUN_1800150e0` reads the TX-on,
 HV-enabled live frame using high DAC `+0x312` and dispatches it through the
 registered completion callback.
 
+The exact ordinary capture gate is sensor-mode dword `+0x1e0 == 0`, retained
+image-valid byte `+0x237 == 1`, callback pointer `+0x240 != NULL`, and global
+image-initialized byte `0x18005f398 != 0`. FDT-base-valid byte `+0x232` is not the
+image-valid operand of this gate. The separate MS image branch is outside the
+standard single-frame request path.
+
 `FUN_1800150e0` (`MilanHV_ReadImg`) derives one frame length as the low 16 bits
 of `rows_u8_1f0 * columns_u8_1f1 * 2`; profile 9 uses `88 * 108 * 2 ==
 0x4a40`. Capture count byte `+0x280` is one for identify/verify and two for
 enrollment. Each callback `+0x158` call receives output, TX one, HV one,
 `&context[0x312]`, adjust-DAC one, finger-image one, and capture mode four.
+
+Profile-9 initializer `FUN_18000450c` installs `FUN_1800055d0` at `+0x158`.
+That wrapper initializes a local status to zero and returns the status written
+by `FUN_1800074bc`. The latter sends category two, command zero through
+`FUN_180017ec0` with timeout argument 500. A false send/wait result or raw-read
+status global `0x180060cc0 == -1` writes status `-1`, logged as
+`read image timeout || read rawdata error`. This is the ordinary read-error
+return consumed by `MilanHV_ReadImg`, not a completed-frame callback result.
 
 On each callback success, `FUN_1800150e0` increments the completed-frame count
 and decrements `+0x280`. After all requested frames succeed, it calls the
@@ -76,6 +90,15 @@ length, and one-shot byte `+0x236`. It then clears a nonzero marker, clears the
 callback, frees the temporary live buffer, and returns zero. This direct call
 is the ordinary standard-capture completion edge; device action `0x15` is a
 separate completion route.
+
+For a single-frame success, the callback observes remaining count zero but
+still owns the nonnull HAL callback and the original one-shot marker. It
+serializes and completes the pending standard request synchronously; only after
+it returns does `MilanHV_ReadImg` clear marker/callback and free the live frame.
+The later sensor-mode and up-arm callbacks therefore observe the cleared
+callback and completed request. See `usbinterface-FUN_18001fb40.md` for the
+complete sample-publication boundary. Neither success nor read failure changes
+the retained reference pointer or its contents.
 
 If callback `+0x158` returns `-1`, the function stops at that frame, frees the
 entire temporary buffer, returns `-1`, and does not call or clear the completed-
@@ -88,6 +111,10 @@ The down handler propagates this `-1`, skips sensor-mode callback `+0x110`, and
 calls arm callback `+0xb0(1)`. The registered callback and pending standard
 request remain available to a later real-down event. On success, the handler
 calls `+0x110(1)` and then `+0xb0(0)` to arm FDT-up.
+
+For profile 9, `FUN_18000450c` installs `FUN_180005b70` at `+0x110`.
+`FUN_180005b70` returns zero without mutation or transport activity; this call
+does not add a sensor-mode command between publication and the up arm.
 
 Callback `+0xb0` is profile-9 `FUN_180005a60`. The false/drift branch invokes
 it with one to rearm FDT-down detection. The real-finger branch invokes it with

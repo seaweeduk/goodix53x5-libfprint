@@ -75,12 +75,20 @@ The queue producer and this export use opposite values of the same evidence
 word. Match-time insertion requires evidence `+0x688 == 0`; this export calls
 the dispatcher only when `+0x688 != 0`. A queue owner inserted by the current
 match therefore cannot be consumed by the current study. Action five requires
-a queue already present on a retained live handle from an earlier match/study
-operation. The adapter's unconditional post-action-zero handle cleanup removes
-that owner, and the next adapter transaction freshly unpacks ranks as `-1`.
-Consequently action five is reachable only for a caller that deliberately
-retains and reuses the live DLL handle across the intervening action-zero study;
-it is not reachable through the ordinary adapter persistence lifecycle.
+a queue already present on a retained live handle from an earlier operation.
+An earlier positive match with gate zero permits action-zero study; an earlier
+no-match can also enqueue, but does not supply a valid study-wrapper boundary.
+`identifyImage:0x180001b34` clears the matched-gallery global, and
+`0x180001ed3` binds it only after a positive candidate score. In the no-match
+case, probe cleanup and live-gallery retention are separate from this export.
+Thus an intervening action-zero study is not a necessary condition for a
+direct caller's retained queue chronology.
+
+The adapter's unconditional post-action-zero handle cleanup removes that owner,
+and the next adapter transaction freshly unpacks ranks as `-1`. Action five
+requires a caller that retains and reuses a populated live DLL handle across
+operations; it is not reachable through the ordinary adapter persistence
+lifecycle. Retention alone does not establish a successful queued rematch.
 
 ## Invalid Inputs And Failure
 
