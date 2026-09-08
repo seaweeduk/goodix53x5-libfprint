@@ -60,7 +60,14 @@ def build_parser() -> argparse.ArgumentParser:
     finish.add_argument("--user")
 
     validate = commands.add_parser(
-        "validate-dump", help="Validate runtime-debug/v3 and run natural native parity")
+        "validate-dump", help="Validate runtime-debug/v3 and run natural native parity",
+        description=(
+            "Use --compare-current for current-source parity with the native runner. "
+            "Both runners initialize fresh preprocessing state and replay eligible "
+            "same-generation history. Without the flag, recorded live outputs are "
+            "compared with native replay as a diagnostic: v3 does not capture the "
+            "imported preprocessing workspace, so live starting-state equivalence "
+            "is not established."))
     validate.add_argument("--dump-dir", required=True)
     validate.add_argument(
         "--build-manifest",
@@ -78,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     tool = Path(__file__).resolve().parent
     validate.add_argument("--native-runner", default=str(tool / "native-runner"))
     validate.add_argument("--compare-current", action="store_true",
-                          help="Compare rebuilt current source with native for selected operations")
+                          help="Source-parity gate: compare current and native replay, not live outputs")
     validate.add_argument("--current-runner", default=str(tool / "current-runner"))
     validate.add_argument("--repo", default=str(Path(__file__).resolve().parents[2]))
     validate.add_argument("--state-root")

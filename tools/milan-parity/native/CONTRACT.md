@@ -113,6 +113,23 @@ operation, status, or presence of another result.
 
 ## Reports And Privacy
 
+The normal source-parity gate uses `--compare-current`: current and native
+runners initialize fresh preprocessing state and replay eligible same-generation
+history. Without the flag the expected output is the recorded live result, but
+the native execution is unchanged. Runtime-debug/v3 does not capture the imported
+preprocessing workspace or establish an empty-state origin. Default capture
+comparison is therefore diagnostic, not proof of equal live/native starting
+conditions; even a match does not establish live persistence replayability.
+
+The report's additive `replay_scope` object records the purpose (`source-parity`
+or `capture-diagnostic`), `preprocessing_origin`
+(`fresh-before-generation-prelude`), `history`
+(`eligible-same-generation-preprocessing`), `captured_initial_workspace`
+(`not-recorded`) and `live_state_equivalence` (`not-established`). Structural
+admissibility remains distinct from this state limitation. Exact differences,
+summary counts, exit status, schema versions and the shipped default are unchanged.
+Captured mode warns on stderr; stdout retains its summary/report-path format.
+
 The public report identifies the capture by its random 256-bit compile-time
 build ID, deterministic production source identity,
 `milan-parity-driver-build/v2` manifest SHA-256, sealed captured-library
