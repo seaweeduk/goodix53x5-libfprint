@@ -881,24 +881,25 @@ profile9_update_auxiliary_map (uint16_t       *map,
 {
   for (size_t i = 0; i < count; i++)
     {
+      uint16_t candidate = MILAN_FIXED_ONE;
+      int32_t deviation;
+
       if (gaussian[i] != 0)
+        candidate =
+          ((uint32_t) adjusted[i] * MILAN_FIXED_ONE + gaussian[i] / 2) /
+          gaussian[i];
+      deviation = (int32_t) candidate - (int32_t) MILAN_FIXED_ONE;
+
+      if (deviation < 0)
+        deviation = -deviation;
+      if (deviation < 328)
         {
-          uint32_t candidate =
-            ((uint32_t) adjusted[i] * MILAN_FIXED_ONE + gaussian[i] / 2) /
-            gaussian[i];
-          int32_t deviation = (int32_t) candidate - (int32_t) MILAN_FIXED_ONE;
+          uint32_t divisor = samples + 1;
 
-          if (deviation < 0)
-            deviation = -deviation;
-          if (deviation < 328)
-            {
-              uint32_t divisor = samples + 1;
-
-              map[i] =
-                (uint16_t) (((divisor >> 1) + (uint32_t) map[i] * samples +
-                             candidate) /
-                            divisor);
-            }
+          map[i] =
+            (uint16_t) (((divisor >> 1) + (uint32_t) map[i] * samples +
+                         candidate) /
+                        divisor);
         }
     }
 }
