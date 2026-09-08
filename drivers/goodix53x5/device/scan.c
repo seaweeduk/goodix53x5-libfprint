@@ -518,7 +518,7 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
                 refresh = TRUE;
               else if (!fdt->base_valid)
                 {
-                  data->refresh_reason = GOODIX_PROFILE9_FDT_REFRESH_INVALID_BASE;
+                  data->refresh_reason = GOODIX_PROFILE9_FDT_REFRESH_UP_INVALID_BASE;
                   refresh = TRUE;
                 }
             }
