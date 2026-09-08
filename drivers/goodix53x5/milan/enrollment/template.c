@@ -561,17 +561,20 @@ goodix_milan_match_combine_templates (GPtrArray *templates)
             }
           if (prior_view.record_count > 40 && current_view.record_count > 40)
             {
-              gint32 pair_score;
+              gint32 pair_metrics[5];
 
-              if (goodix_milan_antifake_score_pair (
+              if (goodix_milan_antifake_pair_metrics (
                     prior_view.antifake, GOODIX_MILAN_ANTIFAKE_SIZE,
                     current_view.antifake, GOODIX_MILAN_ANTIFAKE_SIZE,
-                    candidate.values + 1, &pair_score) != 0)
+                    candidate.values + 1, pair_metrics) != 0)
                 goto out;
-              goodix_milan_match_update_antifake_score (
-                mutable_antifakes[prior], pair_score);
-              goodix_milan_match_update_antifake_score (
-                mutable_antifakes[i], pair_score);
+              if (pair_metrics[1] != 0)
+                {
+                  goodix_milan_match_update_antifake_score (
+                    mutable_antifakes[prior], pair_metrics[4]);
+                  goodix_milan_match_update_antifake_score (
+                    mutable_antifakes[i], pair_metrics[4]);
+                }
             }
           if (candidate.values[0] > best_inliers)
             {
@@ -919,19 +922,23 @@ goodix_enrollment_transaction_insert (
           if (transaction->features[prior].record_count > 40 &&
               transaction->features[current].record_count > 40)
             {
-              gint32 pair_score;
+              gint32 pair_metrics[5];
 
-              if (goodix_milan_antifake_score_pair (
+              if (goodix_milan_antifake_pair_metrics (
                     &transaction->features[prior].antifake,
                     GOODIX_MILAN_ANTIFAKE_SIZE,
                     &transaction->features[current].antifake,
                     GOODIX_MILAN_ANTIFAKE_SIZE, candidate.values + 1,
-                    &pair_score) != 0)
+                    pair_metrics) != 0)
                 return FALSE;
-              goodix_milan_match_update_antifake_score (
-                &transaction->features[prior].antifake, pair_score);
-              goodix_milan_match_update_antifake_score (
-                &transaction->features[current].antifake, pair_score);
+              /* Native leaves both scores untouched when no mutual pair exists. */
+              if (pair_metrics[1] != 0)
+                {
+                  goodix_milan_match_update_antifake_score (
+                    &transaction->features[prior].antifake, pair_metrics[4]);
+                  goodix_milan_match_update_antifake_score (
+                    &transaction->features[current].antifake, pair_metrics[4]);
+                }
             }
           if (candidate.values[0] > best_inliers)
             {
