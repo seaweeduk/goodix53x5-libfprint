@@ -751,7 +751,7 @@ median3x3_core (const uint16_t *source,
 }
 
 static int
-profile9_calibration_admit (const uint32_t             *ratio,
+profile9_calibration_admit (const uint16_t             *source,
                             size_t                      rows,
                             size_t                      columns,
                             GoodixMilanPreprocessState *state)
@@ -767,7 +767,7 @@ profile9_calibration_admit (const uint32_t             *ratio,
         for (size_t column = 0; column < coarse_columns; column++)
           {
             uint16_t current =
-              (uint16_t) ratio[(row * 2) * columns + column * 2];
+              source[(row * 2) * columns + column * 2];
             uint16_t previous =
               state->coarse_reference[row * coarse_columns + column];
 
@@ -785,7 +785,7 @@ profile9_calibration_admit (const uint32_t             *ratio,
     for (size_t row = 0; row < coarse_rows; row++)
       for (size_t column = 0; column < coarse_columns; column++)
         state->coarse_reference[row * coarse_columns + column] =
-          (uint16_t) ratio[(row * 2) * columns + column * 2];
+          source[(row * 2) * columns + column * 2];
 
   if (state->stable_count > 3)
     return 0;
@@ -819,8 +819,7 @@ profile9_update_calibration (const uint32_t             *ratio,
 
       if (deviation < 0)
         deviation = -deviation;
-      if (deviation < 6400 ||
-          (state->sample_count < 30 && deviation < 8192))
+      if (deviation < 6400)
         {
           uint32_t divisor = state->sample_count + 1;
 
@@ -882,24 +881,25 @@ profile9_update_auxiliary_map (uint16_t       *map,
 {
   for (size_t i = 0; i < count; i++)
     {
+      uint16_t candidate = MILAN_FIXED_ONE;
+      int32_t deviation;
+
       if (gaussian[i] != 0)
+        candidate =
+          ((uint32_t) adjusted[i] * MILAN_FIXED_ONE + gaussian[i] / 2) /
+          gaussian[i];
+      deviation = (int32_t) candidate - (int32_t) MILAN_FIXED_ONE;
+
+      if (deviation < 0)
+        deviation = -deviation;
+      if (deviation < 328)
         {
-          uint32_t candidate =
-            ((uint32_t) adjusted[i] * MILAN_FIXED_ONE + gaussian[i] / 2) /
-            gaussian[i];
-          int32_t deviation = (int32_t) candidate - (int32_t) MILAN_FIXED_ONE;
+          uint32_t divisor = samples + 1;
 
-          if (deviation < 0)
-            deviation = -deviation;
-          if (deviation < 328)
-            {
-              uint32_t divisor = samples + 1;
-
-              map[i] =
-                (uint16_t) (((divisor >> 1) + (uint32_t) map[i] * samples +
-                             candidate) /
-                            divisor);
-            }
+          map[i] =
+            (uint16_t) (((divisor >> 1) + (uint32_t) map[i] * samples +
+                         candidate) /
+                        divisor);
         }
     }
 }
@@ -958,7 +958,7 @@ profile9_update_calibration_state (
 {
   size_t count = rows * columns;
   int calibration_admitted =
-    profile9_calibration_admit (ratio, rows, columns, state);
+    profile9_calibration_admit (difference, rows, columns, state);
 
   if (calibration_admitted)
     {

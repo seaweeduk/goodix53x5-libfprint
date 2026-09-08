@@ -34,6 +34,7 @@ goodix_milan_enrollment_propagate_lower (
       for (size_t position = worklist_count; position-- > 0;)
         {
           size_t node = worklist[position];
+          size_t child = position;
           GoodixMilanRelationSlot *slot =
             goodix_milan_enrollment_relation_slot (matrix, candidate, node);
           int32_t overlap;
@@ -46,15 +47,19 @@ goodix_milan_enrollment_propagate_lower (
               overlap <= threshold)
             continue;
           memcpy (path, slot->values + 1, sizeof(path));
+          /* An absent edge leaves the accumulated path at the same child. */
           for (size_t route = position; route-- > 0;)
             {
               GoodixMilanRelationSlot *route_slot =
                 goodix_milan_enrollment_relation_slot (
-                  matrix, worklist[route], worklist[route + 1]);
+                  matrix, worklist[route], worklist[child]);
 
               if (route_slot && route_slot->values[0] >= 0)
-                goodix_milan_transform_compose (
-                  route_slot->values + 1, path, path);
+                {
+                  goodix_milan_transform_compose (
+                    route_slot->values + 1, path, path);
+                  child = route;
+                }
             }
           if (goodix_milan_transform_invert (
                 path, candidate_to_pivot) != 0)

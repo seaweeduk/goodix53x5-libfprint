@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 from typing import Any
 import uuid
 
@@ -835,6 +836,11 @@ def run_validate_dump(args: argparse.Namespace) -> None:
 
     current_identity = None
     repo = Path(args.repo).expanduser().resolve()
+    if not args.compare_current:
+        print("warning: capture-vs-native is a diagnostic comparison; runtime-debug/v3 "
+              "does not record the imported preprocessing workspace. Live starting-state "
+              "equivalence is not established. Use --compare-current for source parity.",
+              file=sys.stderr)
     if args.compare_current:
         current_runner = _regular_user_path(
             args.current_runner, "current runner", executable=True)
@@ -1066,6 +1072,13 @@ def run_validate_dump(args: argparse.Namespace) -> None:
             "operations": operations,
             "parity_mode": "natural",
             "policy": POLICY,
+            "replay_scope": {
+                "purpose": "source-parity" if args.compare_current else "capture-diagnostic",
+                "preprocessing_origin": "fresh-before-generation-prelude",
+                "history": "eligible-same-generation-preprocessing",
+                "captured_initial_workspace": "not-recorded",
+                "live_state_equivalence": "not-established",
+            },
             "schema": REPORT_SCHEMA,
             "selectors": [{"action": action, "epoch_u64": epoch, "session": session}
                           for session, action, epoch in selectors],
