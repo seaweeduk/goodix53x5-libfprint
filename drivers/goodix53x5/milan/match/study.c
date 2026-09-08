@@ -57,8 +57,45 @@ static GoodixStudyQueueEnqueueResult
 goodix_milan_match_enqueue_queue_candidate (GoodixStudyQueue      *queue,
                                       const GoodixMatchInfo *probe_info)
 {
+  g_autofree GoodixMilanUnpackedTemplate *unpacked = NULL;
+  g_autofree guint8 *feature_copy = NULL;
+  g_autofree guint8 *packed = NULL;
+
+  g_autoptr(GBytes) queued_template = NULL;
+  GoodixMatchInfo queued;
+  const guint8 *template_data;
+  gsize template_size;
+  size_t packed_size = 0;
+
+  if (!goodix_milan_match_info_is_complete (probe_info))
+    return GOODIX_STUDY_QUEUE_INVALID;
+  template_data = g_bytes_get_data (probe_info->template, &template_size);
+  unpacked = g_new (GoodixMilanUnpackedTemplate, 1);
+  if (goodix_milan_template_unpack (template_data, template_size, unpacked) != 0 ||
+      unpacked->metadata.sensor_type != GOODIX_MILAN_PRINT_SENSOR_TYPE ||
+      unpacked->feature_count != 1 || unpacked->relation_count != 0)
+    return GOODIX_STUDY_QUEUE_INVALID;
+
+  /* Native enqueue owns a ba=-1 copy, not the original probe's lifecycle state. */
+  feature_copy = g_memdup2 (unpacked->feature_elements[0],
+                            unpacked->feature_element_sizes[0]);
+  if (goodix_milan_template_patch_feature_scalar (
+        feature_copy, unpacked->feature_element_sizes[0], 0xba, -1) != 0)
+    return GOODIX_STUDY_QUEUE_INVALID;
+  unpacked->feature_elements[0] = feature_copy;
+  packed = g_malloc (template_size);
+  if (goodix_milan_template_pack (
+        unpacked->feature_elements, unpacked->feature_element_sizes,
+        unpacked->feature_count, unpacked->relations, unpacked->relation_count,
+        &unpacked->metadata, unpacked->tail_state, sizeof (unpacked->tail_state),
+        packed, template_size, &packed_size) != 0 || packed_size != template_size)
+    return GOODIX_STUDY_QUEUE_INVALID;
+
+  queued_template = g_bytes_new_take (g_steal_pointer (&packed), packed_size);
+  queued = *probe_info;
+  queued.template = queued_template;
   return goodix_milan_study_queue_enqueue (
-    queue, probe_info, goodix_milan_match_queue_duplicate_metric, NULL);
+    queue, &queued, goodix_milan_match_queue_duplicate_metric, NULL);
 }
 
 GoodixSigfmTemplateStatus
@@ -616,8 +653,8 @@ goodix_milan_match_study_feature_queued (
           probe_info->extraction_metadata.quality > 15 &&
           probe_info->extraction_metadata.coverage > 65)
         {
-          enqueue_result = goodix_milan_study_queue_enqueue (
-            queue, probe_info, goodix_milan_match_queue_duplicate_metric, NULL);
+          enqueue_result = goodix_milan_match_enqueue_queue_candidate (
+            queue, probe_info);
           if (enqueue_result == GOODIX_STUDY_QUEUE_INVALID)
             {
               status = GOODIX_SIGFM_TEMPLATE_INVALID;
