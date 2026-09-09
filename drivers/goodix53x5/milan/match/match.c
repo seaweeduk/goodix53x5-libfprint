@@ -1716,6 +1716,11 @@ milan_match_finalize (MilanMatchFinalizationContext *context)
         memcpy (result->match_transform,
                 context->rescue_result->selected_transform,
                 sizeof (context->rescue_result->selected_transform));
+      else if (context->enrolled->metadata.sensor_type ==
+               GOODIX_MILAN_PRINT_SENSOR_TYPE &&
+               selection->selected_feature >= 0)
+        memcpy (result->match_transform, selection->selected_transform,
+                sizeof (selection->selected_transform));
       if (goodix_milan_match_selection_blocking_override (selection))
         result->score = -65536;
       return 0;
