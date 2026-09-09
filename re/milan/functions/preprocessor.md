@@ -56,9 +56,11 @@
   flag still clear; success sets it to 1. The production adapter may retry this
   export once with the same setup frame.
 - `preprocessor` refuses a live call unless `DAT_180249afc == 1`. Its output
-  descriptor copy is independent of status: a late `0xc351` still has selected
-  processed bytes, while early `0x29aa` and `0x7531` returns do not publish a
-  processed image.
+  descriptor copy is independent of status: late `0xc351` and `0x7531` can
+  publish complete selected processed bytes and quality/coverage. In particular,
+  `0x7531` alone does not indicate that the result pixels were left untouched.
+  Early raw-admission `0x29aa` returns without a result image. Publication and
+  the late status ordering are owned by `FUN_18006d540`.
 - `preprocessor_exit` clears `DAT_180249afc` and exactly `0x3048c` bytes at
   calibration workspace `DAT_180219670`. It does not clear gain-ready global
   `DAT_1801efbfc`; `preprocessor_init` also has no xref to that global. Setup
@@ -81,10 +83,6 @@ ordinary WBF enrollment or identify invocation.
 
 - Packed flags and argument setup: `0x180002b25..0x180002c44`.
 - Result propagation and image copy: remainder of the successful branch.
-
-## Confidence
-
-High for profile and argument provenance.
 
 ## Unresolved
 
