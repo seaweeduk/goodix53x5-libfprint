@@ -68,4 +68,5 @@ jobs:
             --print-errorlogs \
             goodix53x5-milan-synthetic \
             goodix53x5-milan-state \
+            goodix53x5-milan-native-study \
             goodix53x5-milan-runtime

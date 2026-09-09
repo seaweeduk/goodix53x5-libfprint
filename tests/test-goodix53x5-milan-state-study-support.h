@@ -50,6 +50,10 @@ GBytes *
 ordered_match_feature (gint32 ordinal,
                        gint32 translation);
 
+GBytes *
+study_candidate_feature (gint32 ordinal,
+                         gint32 coverage);
+
 void
 assert_study_template (GBytes                       *bytes,
                        guint32                       expected_relations,
