@@ -91,6 +91,9 @@ for test_source in "$repo_dir"/tests/test-goodix53x5-milan-*.{c,h}; do
   fi
 done
 
+mkdir -p "$libfprint_dir/tests/native-study"
+cp -R "$repo_dir/tests/native-study/fixtures" "$libfprint_dir/tests/native-study/"
+
 if ! grep -q "'goodix53x5'" "$libfprint_dir/libfprint/meson.build"; then
   git -C "$libfprint_dir" apply "$repo_dir/meson-integration.patch"
 fi
