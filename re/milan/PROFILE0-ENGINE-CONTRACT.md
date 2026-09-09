@@ -276,8 +276,11 @@ when low-range count is greater than `sample_count/5`.
 Both refined rendering (`FUN_18006d430`) and quality rerendering
 (`FUN_18006d190`) select masked preparation when the signed mask percentage is
 below 96, otherwise unmasked preparation. Mode 0/type 0 calls
-`FUN_180069730` or `FUN_18006b170`; mode 1/type 12 calls `FUN_180069ce0` or
-`FUN_180069bc0`. The refined owner then uses `FUN_18006b510`. The quality
+`FUN_180069730` or `FUN_18006b170`; mode 1 calls `FUN_180069ce0` or
+`FUN_180069bc0`. Type 12's refined-rendering caller supplies mode 0, centering
+88 contiguous rows of 108 words through `FUN_180069730` or `FUN_18006b170`.
+See [the refined-rendering caller contract](functions/FUN_18006d430.md).
+The refined owner then uses `FUN_18006b510`. The quality
 rerender owner instead uses `FUN_18006a1f0`, whose only subtype branch is for
 type 11, so its range/quantization kernel is shared unchanged for types 0/12.
 
@@ -292,8 +295,9 @@ scores adjacent column-mean differences.
 
 `FUN_18006e7f0` shares the ordered replacement formula but not all inputs:
 type 0 uses `FUN_180069150` and the foreground mask at mask `+0x10` because
-coating is set. Type 12 uses `FUN_180069350` and the independent primary-image
-mask from `FUN_18007e4b0`. Both use initial selection threshold 800. The three
+coating is set. Type 12 uses mode 0's `FUN_180069150` row-difference metric and
+the independent primary-image mask from `FUN_18007e4b0`. Both use initial
+selection threshold 800. The three
 type-0 transition boundaries are 2000/4000/6000 versus type-12
 1800/3600/5400. Correlation threshold 235, strict comparison ties, primary-first
 copy, and selected-plane publication are shared. See
