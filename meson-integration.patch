@@ -118,8 +118,77 @@ diff --git a/tests/meson.build b/tests/meson.build
 index 00aa566..f0c5dcf 100644
 --- a/tests/meson.build
 +++ b/tests/meson.build
-@@ -324,3 +324,82 @@ foreach test_name: unit_tests
+@@ -324,3 +324,151 @@ foreach test_name: unit_tests
 +if 'goodix53x5' in drivers
++    executable(
++        'goodix53x5-native-match-inputs',
++        'test-goodix53x5-milan-native-match-inputs.c',
++        'test-goodix53x5-milan-state-support.c',
++        'test-goodix53x5-milan-state-study-fixtures.c',
++        'test-goodix53x5-milan-state-study-assertions.c',
++        dependencies: libfprint_private_dep,
++        c_args: common_cflags + goodix53x5_cflags,
++        link_with: libfprint_drivers,
++        install: false,
++    )
++    native_match = executable(
++        'test-goodix53x5-milan-native-match',
++        'test-goodix53x5-milan-native-match.c',
++        'test-goodix53x5-milan-state-study-assertions.c',
++        dependencies: libfprint_private_dep,
++        c_args: common_cflags + goodix53x5_cflags + [
++            '-DNATIVE_MATCH_FIXTURES="' + join_paths(meson.current_source_dir(),
++                'native-match', 'fixtures') + '"',
++        ],
++        link_with: libfprint_drivers,
++        install: false,
++    )
++    test('goodix53x5-milan-native-match', native_match,
++        suite: ['unit-tests'], env: envs)
++
++    native_preprocess = executable(
++        'test-goodix53x5-milan-native-preprocess',
++        'test-goodix53x5-milan-native-preprocess.c',
++        dependencies: libfprint_private_dep,
++        c_args: common_cflags + goodix53x5_cflags + [
++            '-DNATIVE_PREPROCESS_FIXTURES="' + join_paths(meson.current_source_dir(),
++                'native-preprocess', 'fixtures') + '"',
++        ],
++        link_with: libfprint_drivers,
++        install: false,
++    )
++    test('goodix53x5-milan-native-preprocess', native_preprocess,
++        suite: ['unit-tests'], env: envs)
++
++    native_study_support = files(
++        'test-goodix53x5-milan-state-support.c',
++        'test-goodix53x5-milan-state-study-fixtures.c',
++        'test-goodix53x5-milan-state-study-assertions.c',
++        'test-goodix53x5-milan-state-study-candidates.c',
++    )
++    executable(
++        'goodix53x5-native-study-inputs',
++        'test-goodix53x5-milan-native-study-inputs.c', native_study_support,
++        dependencies: libfprint_private_dep,
++        c_args: common_cflags + goodix53x5_cflags,
++        link_with: libfprint_drivers,
++        install: false,
++    )
++    native_study = executable(
++        'test-goodix53x5-milan-native-study',
++        'test-goodix53x5-milan-native-study.c',
++        'test-goodix53x5-milan-state-study-assertions.c',
++        dependencies: libfprint_private_dep,
++        c_args: common_cflags + goodix53x5_cflags + [
++            '-DNATIVE_STUDY_FIXTURES="' + join_paths(meson.current_source_dir(),
++                'native-study', 'fixtures') + '"',
++        ],
++        link_with: libfprint_drivers,
++        install: false,
++    )
++    test('goodix53x5-milan-native-study', native_study,
++        suite: ['unit-tests'], env: envs)
++
 +    goodix53x5_milan_synthetic = executable(
 +        'test-goodix53x5-milan-synthetic',
 +        'test-goodix53x5-milan-synthetic.c',

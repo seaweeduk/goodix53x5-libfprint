@@ -11,7 +11,7 @@
 #include "test-goodix53x5-milan-state-study-support.h"
 #include "test-goodix53x5-milan-state-tests.h"
 
-static GBytes *
+GBytes *
 study_candidate_feature (gint32 ordinal,
                          gint32 coverage)
 {
