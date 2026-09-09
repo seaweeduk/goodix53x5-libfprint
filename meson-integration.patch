@@ -118,8 +118,22 @@ diff --git a/tests/meson.build b/tests/meson.build
 index 00aa566..f0c5dcf 100644
 --- a/tests/meson.build
 +++ b/tests/meson.build
-@@ -324,3 +324,111 @@ foreach test_name: unit_tests
+@@ -324,3 +324,125 @@ foreach test_name: unit_tests
 +if 'goodix53x5' in drivers
++    native_preprocess = executable(
++        'test-goodix53x5-milan-native-preprocess',
++        'test-goodix53x5-milan-native-preprocess.c',
++        dependencies: libfprint_private_dep,
++        c_args: common_cflags + goodix53x5_cflags + [
++            '-DNATIVE_PREPROCESS_FIXTURES="' + join_paths(meson.current_source_dir(),
++                'native-preprocess', 'fixtures') + '"',
++        ],
++        link_with: libfprint_drivers,
++        install: false,
++    )
++    test('goodix53x5-milan-native-preprocess', native_preprocess,
++        suite: ['unit-tests'], env: envs)
++
 +    native_study_support = files(
 +        'test-goodix53x5-milan-state-support.c',
 +        'test-goodix53x5-milan-state-study-fixtures.c',
