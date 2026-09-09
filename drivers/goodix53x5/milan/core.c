@@ -1216,7 +1216,7 @@ preprocess_refine_core (const uint16_t *source,
           if (valid_percent < 96 && mask[index] == 0)
             value = 5000;
           else
-            value = (int) source[index] - mean + 5000;
+            value = (int16_t) ((int) source[index] - mean + 5000);
           centered[index] = (uint16_t) (value > 0 ? value : 0);
         }
     }
@@ -2710,7 +2710,7 @@ milan_profile9_center_rows (const uint16_t *source,
           if (mask_percent < 96 && render_mask[index] == 0)
             value = 5000;
           else
-            value = (int) source[index] - mean + 5000;
+            value = (int16_t) ((int) source[index] - mean + 5000);
           centered[index] = (uint16_t) (value > 0 ? value : 0);
         }
     }
@@ -2841,7 +2841,7 @@ milan_profile9_rerender (const uint16_t *source,
           if (mask_percent < 96 && render_mask[index] == 0)
             value = 5000;
           else
-            value = (int) source[index] - mean + 5000;
+            value = (int16_t) ((int) source[index] - mean + 5000);
           centered[index] = (uint16_t) (value > 0 ? value : 0);
         }
     }
