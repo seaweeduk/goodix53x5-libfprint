@@ -95,6 +95,8 @@ mkdir -p "$libfprint_dir/tests/native-study"
 cp -R "$repo_dir/tests/native-study/fixtures" "$libfprint_dir/tests/native-study/"
 mkdir -p "$libfprint_dir/tests/native-preprocess"
 cp -R "$repo_dir/tests/native-preprocess/fixtures" "$libfprint_dir/tests/native-preprocess/"
+mkdir -p "$libfprint_dir/tests/native-match"
+cp -R "$repo_dir/tests/native-match/fixtures" "$libfprint_dir/tests/native-match/"
 
 if ! grep -q "'goodix53x5'" "$libfprint_dir/libfprint/meson.build"; then
   git -C "$libfprint_dir" apply "$repo_dir/meson-integration.patch"
