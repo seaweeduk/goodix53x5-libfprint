@@ -70,6 +70,8 @@ typedef struct
   GoodixProfile9FdtWaitMode cancelled_fdt_mode;
   gboolean                  retry_mode;
   guint8                    response_bit;
+  guint8                    ack_status;
+  GoodixCmdResultCallback   result_cb;
   guint                     attempt;
   GoodixCmdState            phase;
   gint64                    ack_deadline_us;
@@ -162,6 +164,14 @@ goodix_cmd_phase_name (GoodixCmdState phase)
  * keep their existing failure policy. The parent and command owner never
  * change between attempts. */
 static gboolean
+goodix_cmd_native_zero (GoodixCmdOperation *operation, const GError *error)
+{
+  return g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT) ||
+         (operation->phase == GOODIX_CMD_SEND &&
+          g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO));
+}
+
+static gboolean
 goodix_cmd_retry (FpDevice *dev,
                   FpiSsm   *ssm,
                   GError   *error)
@@ -177,9 +187,7 @@ goodix_cmd_retry (FpDevice *dev,
       (operation->phase != GOODIX_CMD_SEND &&
        operation->phase != GOODIX_CMD_RECV_ACK &&
        !(operation->response_bit && operation->phase == GOODIX_CMD_RECV_DATA)) ||
-      !(g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT) ||
-        (operation->phase == GOODIX_CMD_SEND &&
-         g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO))))
+      !goodix_cmd_native_zero (operation, error))
     return FALSE;
 
   fp_dbg ("Retrying command cat=0x%02x cmd=0x%02x phase=%s attempt=1 parent-state=%d: %s",
@@ -207,6 +215,8 @@ static void
 goodix_mark_coordinator_io_failure (FpiDeviceGoodix53x5 *self,
                                     const GError         *error)
 {
+  if (self->cmd_ssm && ((GoodixCmdOperation *) fpi_ssm_get_data (self->cmd_ssm))->result_cb)
+    return; /* The composite command owns its intermediate result. */
   if (self->profile9_fdt.owner &&
       !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
     self->needs_reinit = TRUE;
@@ -830,9 +840,14 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
         /* A valid even status leaves the ACK unsatisfied. Keep this attempt's
          * original deadline; only exhaustion invokes its existing retry policy. */
         if ((status & GOODIX_PROTO_ACK_FLAG_VALID) == 0)
-          fpi_ssm_jump_to_state (ssm, GOODIX_CMD_RECV_ACK);
+          {
+            fpi_ssm_jump_to_state (ssm, GOODIX_CMD_RECV_ACK);
+          }
         else
-          fpi_ssm_next_state (ssm);
+          {
+            operation->ack_status = status;
+            fpi_ssm_next_state (ssm);
+          }
       }
       break;
 
@@ -864,6 +879,16 @@ goodix_cmd_ssm_done (FpiSsm   *ssm,
                       operation->cmd.category, operation->cmd.command,
                       goodix_cmd_phase_name (operation->phase), operation->attempt,
                       fpi_ssm_get_cur_state (operation->parent_ssm));
+    }
+  if (operation->result_cb)
+    {
+      operation->result_cb (operation->parent_ssm, dev, operation->ack_status,
+                            error && goodix_cmd_native_zero (operation, error), error);
+      return;
+    }
+
+  if (error)
+    {
       goodix_mark_coordinator_io_failure (self, error);
       fpi_ssm_mark_failed (operation->parent_ssm, error);
     }
@@ -881,7 +906,8 @@ goodix_run_cmd_full (FpiSsm                    *parent_ssm,
                      const guint8              *payload,
                      gsize                      payload_len,
                      gboolean                   expect_data,
-                     GoodixProfile9FdtWaitMode  cancelled_mode)
+                     GoodixProfile9FdtWaitMode  cancelled_mode,
+                     GoodixCmdResultCallback   callback)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiSsm *cmd_ssm;
@@ -901,6 +927,7 @@ goodix_run_cmd_full (FpiSsm                    *parent_ssm,
 
   operation = g_new0 (GoodixCmdOperation, 1);
   operation->parent_ssm = parent_ssm;
+  operation->result_cb = callback;
   operation->cancelled_fdt_mode = cancelled_mode;
   operation->response_bit = expect_data ?
                             (category == 3 && command == 3 ? 1 :
@@ -949,7 +976,17 @@ goodix_run_cmd (FpiSsm       *parent_ssm,
 {
   goodix_run_cmd_full (parent_ssm, dev, category, command, payload,
                        payload_len, expect_data,
-                       GOODIX_PROFILE9_FDT_WAIT_NONE);
+                       GOODIX_PROFILE9_FDT_WAIT_NONE, NULL);
+}
+
+void
+goodix_run_cmd_result (FpiSsm *ssm, FpDevice *dev,
+                       guint8 category, guint8 command,
+                       const guint8 *payload, gsize payload_len,
+                       gboolean expect_data, GoodixCmdResultCallback callback)
+{
+  goodix_run_cmd_full (ssm, dev, category, command, payload, payload_len,
+                       expect_data, GOODIX_PROFILE9_FDT_WAIT_NONE, callback);
 }
 
 void
@@ -964,7 +1001,7 @@ goodix_run_cmd_drain_fdt_once (
 {
   g_return_if_fail (cancelled_mode != GOODIX_PROFILE9_FDT_WAIT_NONE);
   goodix_run_cmd_full (parent_ssm, dev, category, command, payload,
-                       payload_len, FALSE, cancelled_mode);
+                       payload_len, FALSE, cancelled_mode, NULL);
 }
 
 gboolean
