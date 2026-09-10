@@ -430,7 +430,10 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
 
         data->receive_active = FALSE;
         g_clear_object (&data->event_cancel);
-        if (!goodix_cmd_parse_fdt_event (dev, fdt->wait_mode,
+        /* A queued notification retains its receive identity even when a
+         * subsequent arm has changed the worker's current wait mode. */
+        if (!goodix_cmd_parse_fdt_event (dev, data->event_preparsed ?
+                                         self->pending_fdt_mode : fdt->wait_mode,
                                          &data->event_type, &fdt->event,
                                          &error))
           {

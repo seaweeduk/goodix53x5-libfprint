@@ -95,14 +95,19 @@ struct _FpiDeviceGoodix53x5
   FpiSsm *cmd_owner;
   FpiSsm *cmd_ssm;
 
-  /* Known repeated mode ACK slots. Kept for the device lifetime: there is no
-   * wire generation or reliable count of ACKs left after a timed-out send. */
+  /* Repeated mode and issued manual/config ACK slots. Kept for the device
+   * lifetime: the wire has no generation or reliable remaining ACK count. */
   guint8 retried_mode_acks;
+  /* Native response events reset per send; the manual cache survives reset.
+   * Retain its four metadata bytes for existing Linux touch-flag consumers. */
+  guint8 command_response_ready;
+  guint8 manual_response[4 + GOODIX_FDT_BASE_LEN];
   /* Parser mutations precede coalesced notification. The latest reverse event
    * retains the down base installed by its predecessor, not the arm payload. */
   guint16 fdt_prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
   guint8  pending_fdt_packet[4 + 4 + GOODIX_FDT_BASE_LEN];
   gsize   pending_fdt_packet_len;
+  GoodixProfile9FdtWaitMode pending_fdt_mode;
 
   /* Profile-9 FDT state persists across actions and hardware reinitialization. */
   GoodixProfile9FdtState profile9_fdt;
