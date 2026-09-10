@@ -361,7 +361,7 @@ milan_build_overlap_mask (const uint8_t source_mask[44 * 52],
                 (int64_t) adjusted_transform[1] * adjusted_transform[3];
   if (determinant == 0)
     return -1;
-  inverse[0] = (int32_t) (((int64_t) adjusted_transform[4] << 18) /
+  inverse[0] = (int32_t) (((int64_t) adjusted_transform[4] * INT64_C(0x40000)) /
                           determinant);
   inverse[1] = (int32_t) ((int64_t) adjusted_transform[3] * -0x40000 /
                           determinant);
@@ -371,7 +371,7 @@ milan_build_overlap_mask (const uint8_t source_mask[44 * 52],
                              adjusted_transform[2]) * 0x400) / determinant);
   inverse[3] = (int32_t) ((int64_t) adjusted_transform[1] * -0x40000 /
                           determinant);
-  inverse[4] = (int32_t) (((int64_t) adjusted_transform[0] << 18) /
+  inverse[4] = (int32_t) (((int64_t) adjusted_transform[0] * INT64_C(0x40000)) /
                           determinant);
   inverse[5] = (int32_t) ((((int64_t) adjusted_transform[3] *
                              adjusted_transform[2] -
