@@ -39,7 +39,7 @@ typedef enum {
   EVENT_COMPLETES_DURING_CANCEL,
   EVENT_BEFORE_ARM_ACK,
   DUPLICATE_SLEEP_BEFORE_EC_ACK,
-  DUPLICATE_SLEEP_BEFORE_EC_DATA,
+  DUPLICATE_SLEEP_AFTER_EC_ACK,
   DUPLICATE_ARM_IN_EVENT_WAIT,
   LATE_ACK_DEADLINE,
   CANCEL_DURING_RETRY,
@@ -59,6 +59,8 @@ typedef enum {
   LATE_EVEN_DEADLINE,
   RESPONSE_BUDGET,
   RESPONSE_DEADLINE,
+  EC_LATE_ACK,
+  EC_LATE_DATA,
 } EventOrder;
 
 typedef struct {
@@ -69,6 +71,7 @@ typedef struct {
   gboolean success;
   EventOrder event_order;
   guint8 standalone_arm;
+  guint8 ec_status;
 } Scenario;
 
 static struct {
@@ -212,7 +215,10 @@ static gboolean
 response_case (const Scenario *scenario)
 {
   return scenario->event_order == RESPONSE_BUDGET ||
-         scenario->event_order == RESPONSE_DEADLINE;
+         scenario->event_order == RESPONSE_DEADLINE ||
+         scenario->event_order == DUPLICATE_SLEEP_AFTER_EC_ACK ||
+         scenario->event_order == EC_LATE_ACK ||
+         scenario->event_order == EC_LATE_DATA;
 }
 
 static void
@@ -332,7 +338,16 @@ complete_usb (gpointer unused)
     }
   else if (!io.ec_data)
     {
-      if (polling_case (scenario) && io.command == scenario->timeout_command)
+      if (scenario->event_order == EC_LATE_ACK && io.command == scenario->standalone_arm &&
+          io.duplicates == 0)
+        {
+          if (io.timeout != 500)
+            g_test_fail ();
+          test_clock_us += 350 * 1000;
+          reply (transfer, 0xa, 7, &scenario->ec_status, 1);
+          io.duplicates++;
+        }
+      else if (polling_case (scenario) && io.command == scenario->timeout_command)
         {
           if (io.even_attempt != io.sends[io.command])
             {
@@ -438,7 +453,9 @@ complete_usb (gpointer unused)
            * The later injected duplicate belongs to the second send. The wire
            * has no attempt number; both carry identical command/status bytes. */
           ack_reply (transfer, io.command);
-          if (response_case (scenario) && io.timeout != ack_budget (io.command))
+          guint expected_timeout = scenario->event_order == EC_LATE_ACK &&
+                                   io.command == scenario->standalone_arm ? 150 : ack_budget (io.command);
+          if (response_case (scenario) && io.timeout != expected_timeout)
             g_test_fail ();
           if (io.command == 0xae)
             {
@@ -452,9 +469,15 @@ complete_usb (gpointer unused)
     }
   else
     {
-      const guint8 result[] = { 1 };
       g_assert_true (io.ec_data);
-      if (response_case (scenario))
+      if (io.command == 0xae)
+        {
+          /* Native supplies no required EC response. A baseline that asks for
+           * one exhausts its receive rather than receiving an invented byte. */
+          error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                       "No EC response exists");
+        }
+      else if (response_case (scenario))
         {
           if (io.duplicates == 0)
             {
@@ -462,11 +485,14 @@ complete_usb (gpointer unused)
                 g_test_fail ();
               test_clock_us += 350 * 1000;
               io.duplicates++;
-              ack_reply (transfer, 0x60);
+              if (scenario->event_order == EC_LATE_DATA)
+                reply (transfer, 0xa, 7, &scenario->ec_status, 1);
+              else
+                ack_reply (transfer, 0x60);
             }
           else
             {
-              if (io.timeout != 150)
+              if (io.timeout != (scenario->event_order == EC_LATE_ACK ? 500 : 150))
                 g_test_fail ();
               io.data_chunks++;
               if (scenario->event_order == RESPONSE_DEADLINE)
@@ -516,16 +542,9 @@ complete_usb (gpointer unused)
               io.data_chunks++;
             }
         }
-      else if (scenario->event_order == DUPLICATE_SLEEP_BEFORE_EC_DATA &&
-          io.duplicates == 0)
-        {
-          io.duplicates++;
-          ack_reply (transfer, 0x60);
-        }
       else
         {
-          reply (transfer, 0x0a, 7, result, sizeof (result));
-          io.ec_data = FALSE;
+          g_assert_not_reached ();
         }
     }
 
@@ -660,6 +679,10 @@ response_handler (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case 1:
+      goodix_cmd_ec_control (ssm, dev, FALSE);
+      break;
+
+    case 2:
       if (io.scenario->standalone_arm == 0x36)
         goodix_cmd_fdt_manual (ssm, dev, TRUE, self->profile9_fdt.base_manual);
       else
@@ -673,7 +696,7 @@ response_handler (FpiSsm *ssm, FpDevice *dev)
         }
       break;
 
-    case 2:
+    case 3:
       {
         const guint8 *payload;
         gsize length;
@@ -759,7 +782,7 @@ test_scenario (gconstpointer user_data)
     {
       ssm = scenario->event_order == MULTICELL_DATA
         ? fpi_ssm_new (dev, data_handler, 2)
-        : response_case (scenario) ? fpi_ssm_new (dev, response_handler, 3)
+        : response_case (scenario) ? fpi_ssm_new (dev, response_handler, 4)
         : fpi_ssm_new (dev, arm_handler,
                        scenario->event_order == SAME_COMMAND_PRECEDENCE ? 4 : 3);
       self->profile9_fdt.owner = ssm;
@@ -837,7 +860,7 @@ test_scenario (gconstpointer user_data)
     scenario->event_order == EVENT_COMPLETES_DURING_CANCEL;
   gboolean duplicate = (scenario->standalone_arm && scenario->event_order != MULTICELL_DATA) ||
     scenario->event_order == DUPLICATE_SLEEP_BEFORE_EC_ACK ||
-    scenario->event_order == DUPLICATE_SLEEP_BEFORE_EC_DATA;
+    scenario->event_order == DUPLICATE_SLEEP_AFTER_EC_ACK;
   if (rearm_case (scenario))
     {
       gboolean two = scenario->event_order == TWO_EARLY_REVERSE;
@@ -953,7 +976,9 @@ main (int argc, char **argv)
   static const Scenario ec_terminal = { 0xae, 1, 1, 1, FALSE, EVENT_CANCELLED };
   static const Scenario before_arm = { 0, 0, 1, 1, TRUE, EVENT_BEFORE_ARM_ACK };
   static const Scenario sleep_duplicate_ack = { 0x60, 1, 1, 2, TRUE, DUPLICATE_SLEEP_BEFORE_EC_ACK };
-  static const Scenario sleep_duplicate_data = { 0x60, 1, 1, 2, TRUE, DUPLICATE_SLEEP_BEFORE_EC_DATA };
+  /* The late sleep ACK now crosses EC completion and reaches a genuine manual
+   * response wait, instead of the nonexistent EC response wait. */
+  static const Scenario sleep_duplicate_data = { 0x60, 1, 0, 2, TRUE, DUPLICATE_SLEEP_AFTER_EC_ACK, 0x36 };
   static const Scenario up_duplicate = { 0x34, 1, 2, 0, TRUE, DUPLICATE_ARM_IN_EVENT_WAIT, 0x34 };
   static const Scenario down_duplicate = { 0x32, 1, 0, 0, TRUE, DUPLICATE_ARM_IN_EVENT_WAIT, 0x32 };
   static const Scenario deadline = { 0x60, 1, 1, 2, FALSE, LATE_ACK_DEADLINE };
@@ -978,6 +1003,10 @@ main (int argc, char **argv)
   static const Scenario config_budget = { 0x60, 1, 0, 2, TRUE, RESPONSE_BUDGET, 0x90 };
   static const Scenario manual_deadline = { 0x60, 1, 0, 2, FALSE, RESPONSE_DEADLINE, 0x36 };
   static const Scenario config_deadline = { 0x60, 1, 0, 2, FALSE, RESPONSE_DEADLINE, 0x90 };
+  static const Scenario ec_zero_ack = { 0, 0, 0, 1, TRUE, EC_LATE_ACK, 0x36, 0 };
+  static const Scenario ec_one_ack = { 0, 0, 0, 1, TRUE, EC_LATE_ACK, 0x36, 1 };
+  static const Scenario ec_zero_data = { 0, 0, 0, 1, TRUE, EC_LATE_DATA, 0x36, 0 };
+  static const Scenario ec_one_data = { 0, 0, 0, 1, TRUE, EC_LATE_DATA, 0x36, 1 };
 
   g_test_init (&argc, &argv, NULL);
   g_test_add_data_func ("/goodix53x5/milan/transport/stop-during-arm", &control, test_scenario);
@@ -989,7 +1018,7 @@ main (int argc, char **argv)
   g_test_add_data_func ("/goodix53x5/milan/transport/terminal-ec-timeout", &ec_terminal, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/event-before-arm-ack", &before_arm, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/late-sleep-ack-before-ec-ack", &sleep_duplicate_ack, test_scenario);
-  g_test_add_data_func ("/goodix53x5/milan/transport/late-sleep-ack-before-ec-data", &sleep_duplicate_data, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/late-sleep-ack-after-ec-ack", &sleep_duplicate_data, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/duplicate-up-ack-in-event-wait", &up_duplicate, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/duplicate-down-ack-in-event-wait", &down_duplicate, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/late-ack-deadline", &deadline, test_scenario);
@@ -1014,5 +1043,9 @@ main (int argc, char **argv)
   g_test_add_data_func ("/goodix53x5/milan/transport/budgets/config-response", &config_budget, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/budgets/manual-deadline", &manual_deadline, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/budgets/config-deadline", &config_deadline, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/ec/late-zero-before-ack", &ec_zero_ack, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/ec/late-one-before-ack", &ec_one_ack, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/ec/late-zero-before-data", &ec_zero_data, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/ec/late-one-before-data", &ec_one_data, test_scenario);
   return g_test_run ();
 }

@@ -140,9 +140,6 @@ gboolean goodix_cmd_parse_mcu_reply (FpDevice      *dev,
 /* TRUE if the config upload reply reports success. */
 gboolean goodix_cmd_parse_config_reply (FpDevice *dev);
 
-/* TRUE if the EC power control reply reports success. */
-gboolean goodix_cmd_parse_ec_control_reply (FpDevice *dev);
-
 /* Parse a manual FDT reading returned by goodix_cmd_fdt_manual(). */
 gboolean goodix_cmd_parse_fdt_manual_reply (FpDevice      *dev,
                                              const guint8 **out_payload,

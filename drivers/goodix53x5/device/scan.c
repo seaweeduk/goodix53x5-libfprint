@@ -392,14 +392,6 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_POWER_ON_DONE:
-      if (!goodix_cmd_parse_ec_control_reply (dev))
-        {
-          self->needs_reinit = TRUE;
-          fpi_ssm_mark_failed (
-            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                           "Scan EC power-on failed"));
-          return;
-        }
       fpi_ssm_next_state (ssm);
       break;
 
@@ -711,14 +703,6 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_CLEANUP_EC_OFF_DONE:
-      if (!goodix_cmd_parse_ec_control_reply (dev))
-        {
-          self->needs_reinit = TRUE;
-          fpi_ssm_mark_failed (
-            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                           "Scan EC power-off failed"));
-          return;
-        }
       if (data->stop_error)
         fpi_ssm_mark_failed (ssm, g_steal_pointer (&data->stop_error));
       else

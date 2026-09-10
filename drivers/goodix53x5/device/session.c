@@ -640,13 +640,6 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_OPEN_EC_POWER_OFF_DONE:
-      if (!goodix_cmd_parse_ec_control_reply (dev))
-        {
-          fpi_ssm_mark_failed (
-            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                           "Open EC power-off failed"));
-          return;
-        }
       self->open_ref_powered = FALSE;
       fpi_ssm_next_state (ssm);
       break;
