@@ -127,6 +127,8 @@ struct _FpiDeviceGoodix53x5
 
   /* Firmware version string */
   gchar *fw_version;
+  /* Observable prefix of native's shared response cache. */
+  guint8 shared_response[64];
 
   /* Hardware identity and its validated Milan algorithm subtype. */
   guint32 chip_id;

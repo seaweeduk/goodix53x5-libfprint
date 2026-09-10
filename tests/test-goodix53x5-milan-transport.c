@@ -43,6 +43,9 @@ static void idle_test_open_complete (FpDevice *dev, GError *error);
 static void idle_test_close_complete (FpDevice *dev, GError *error);
 static FpiSsm *idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handler,
                                     int states, int cleanup, const char *name);
+static void startup_delay (FpiSsm *ssm, int state, int delay);
+static GString *startup_trace;
+static guint startup_delays;
 /* Exercise the real driver close, replacing only USB release and the outer
  * action completion (this transport fixture has no libfprint current GTask). */
 #define g_usb_device_release_interface(device, interface, flags, error) idle_test_release ()
@@ -57,7 +60,9 @@ static FpiSsm *idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handle
 #define fpi_device_open_complete idle_test_open_complete
 #define fpi_device_action_is_cancelled(device) g_cancellable_is_cancelled (action_cancel_token)
 #define fpi_device_get_usb_device(device) ((GUsbDevice *) NULL)
+#define fpi_ssm_jump_to_state_delayed startup_delay
 #include "drivers/goodix53x5/device/session.c"
+#undef fpi_ssm_jump_to_state_delayed
 #undef fpi_device_get_usb_device
 #undef fpi_device_action_is_cancelled
 #undef fpi_device_open_complete
@@ -207,7 +212,15 @@ mock_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel,
     {
       g_assert_cmpuint (transfer->length, ==, 64);
       if (timeout != 0)
-        g_assert_null (cancel);
+        {
+          if (io.command == 0 || io.command == 0xa8)
+            {
+              if (cancel != action_cancel_token)
+                g_test_fail ();
+            }
+          else
+            g_assert_null (cancel);
+        }
     }
   else
     {
@@ -222,6 +235,15 @@ mock_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel,
       else
         io.started_writes++;
       io.command = transfer->buffer[0];
+      if (startup_trace)
+        {
+          guint8 ping[] = { 0, 3, 0, 0, 0, 0xa7 };
+          guint8 fw[] = { 0xa8, 3, 0, 0, 0, 0xff };
+          guint8 reset[] = { 0xa2, 3, 0, 1, 0x14, 0xf0 };
+          const guint8 *expected = io.command == 0 ? ping : io.command == 0xa8 ? fw : reset;
+          g_assert_cmpmem (transfer->buffer, 6, expected, 6);
+          g_string_append_printf (startup_trace, "%02x,", io.command);
+        }
       io.sends[io.command]++;
       io.ec_data = FALSE;
       if (io.scenario->event_order >= ARM_STATUS && io.command == 0x90)
@@ -1578,12 +1600,13 @@ static FpiSsm *
 idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handler,
                       int states, int cleanup, const char *name)
 {
+  if (handler != goodix_open_ssm_handler)
+    return fpi_ssm_new_full (dev, handler, states, cleanup, name);
   g_assert_true (idle_reinit_testing || idle_open_testing);
   g_assert_true (handler == goodix_open_ssm_handler);
-  /* Run the actual session reset, claim and PING states, stopping before
-   * firmware/TLS/calibration. No replacement reset or PING implementation. */
-  return fpi_ssm_new_full (dev, handler, GOODIX_OPEN_READ_FW_VERSION,
-                           GOODIX_OPEN_READ_FW_VERSION, name);
+  /* Run reset/claim and the whole startup probe, stopping before calibration. */
+  return fpi_ssm_new_full (dev, handler, GOODIX_OPEN_RESET,
+                           GOODIX_OPEN_RESET, name);
 }
 
 static void
@@ -1635,6 +1658,19 @@ idle_test_ping (FpiSsm *ssm, FpDevice *dev)
 }
 
 static void
+idle_test_firmware_success (void)
+{
+  guint8 version[] = "fixture";
+
+  g_assert_cmpuint (io.command, ==, 0xa8);
+  idle_test_complete (NULL);
+  ack_reply (io.pending, 0xa8);
+  idle_test_complete (NULL);
+  reply (io.pending, 0x0a, 4, version, sizeof (version));
+  idle_test_complete (NULL);
+}
+
+static void
 test_idle_lifetime (gconstpointer user_data)
 {
   guint which = GPOINTER_TO_UINT (user_data);
@@ -1647,10 +1683,11 @@ test_idle_lifetime (gconstpointer user_data)
   guint8 partial_payload[96] = { 0 };
   gsize partial_length;
   g_autofree guint8 *partial = goodix_proto_build_message (
-    9, 0, partial_payload, sizeof (partial_payload), TRUE, &partial_length);
+    which == 13 ? 0x0a : 9, which == 13 ? 4 : 0,
+    partial_payload, sizeof (partial_payload), TRUE, &partial_length);
   guint8 fragment[64];
   guint8 continuation[37] = { 0x91 };
-  gboolean handoff = which == 2 || which == 3 || which == 4 || which == 6 || which == 11;
+  gboolean handoff = which == 2 || which == 3 || which == 4 || which == 6 || which >= 11;
 
   memset (&io, 0, sizeof (io));
   io.scenario = &scenario;
@@ -1687,8 +1724,17 @@ test_idle_lifetime (gconstpointer user_data)
       g_assert_cmpuint (self->rx.len, ==, 0);
       g_assert_cmpuint (self->command_response_ready, ==, 0);
     }
-  if (which == 4 || which == 11)
+  if (which == 12)
     {
+      guint8 firmware[] = "idle-version";
+      reply (io.pending, 0x0a, 4, firmware, sizeof (firmware));
+      idle_test_complete (NULL);
+      g_assert_cmpuint (self->command_response_ready, ==, 4);
+    }
+  if (which == 4 || which == 11 || which == 13)
+    {
+      if (which == 13)
+        continuation[0] = 0xa9;
       g_assert_cmpuint (partial_length, ==, 100);
       memcpy (fragment, partial, sizeof (fragment));
       memcpy (continuation + 1, partial + sizeof (fragment), sizeof (continuation) - 1);
@@ -1783,7 +1829,7 @@ test_idle_lifetime (gconstpointer user_data)
         }
       idle_test_complete (which == 6 ? g_error_new_literal (
         G_IO_ERROR, G_IO_ERROR_CANCELLED, "Cancelled command write") : NULL);
-      if (which == 4)
+      if (which == 4 || which == 13)
         {
           g_assert_true (self->rx_idle_partial);
           g_assert_cmpuint (self->rx.len, ==, sizeof (fragment));
@@ -1791,7 +1837,7 @@ test_idle_lifetime (gconstpointer user_data)
           io.pending->actual_length = sizeof (continuation);
           idle_test_complete (NULL);
           g_assert_false (self->rx_idle_partial);
-          g_assert_cmpuint (self->command_response_ready, ==, 2);
+          g_assert_cmpuint (self->command_response_ready, ==, which == 13 ? 4 : 2);
           g_assert_cmpuint (io.completions, ==, 1);
         }
       if (which != 6)
@@ -1799,7 +1845,21 @@ test_idle_lifetime (gconstpointer user_data)
           ack_reply (io.pending, 0);
           idle_test_complete (NULL);
         }
+      if (which == 11)
+        idle_test_firmware_success ();
       g_assert_cmpuint (io.completions, ==, 2);
+      if (which >= 12)
+        {
+          const guint8 *cached = NULL;
+          gsize len = 0;
+          g_assert_true (goodix_cmd_parse_fw_version_reply (dev, &cached, &len, NULL));
+          g_assert_cmpuint (len, ==, 64);
+          if (which == 12)
+            g_assert_cmpstr ((const gchar *) cached, ==, "idle-version");
+          else
+            g_assert_cmpmem (cached, len, partial_payload, 64);
+          g_assert_null (self->fw_version);
+        }
     }
 
   /* Retain only the explicit idle device reference until the close joins. */
@@ -1953,9 +2013,10 @@ test_idle_failed_open (gconstpointer user_data)
       g_assert_cmpuint (io.completions, ==, 0);
       g_assert_cmpuint (io.command, ==, 0);
       idle_test_complete (NULL);
-      g_assert_cmpuint (io.timeout, ==, 2000);
+      g_assert_cmpuint (io.timeout, ==, 500);
       ack_reply (io.pending, 0);
       idle_test_complete (NULL);
+      idle_test_firmware_success ();
       g_assert_no_error (io.error);
     }
   else
@@ -1989,6 +2050,368 @@ test_idle_failed_open (gconstpointer user_data)
   g_clear_object (&dev);
   g_assert_null (weak);
   idle_open_testing = FALSE;
+}
+
+static void
+startup_delay (FpiSsm *ssm, int state, int delay)
+{
+  g_assert_nonnull (startup_trace);
+  g_assert_null (io.pending);
+  g_assert_cmpint (delay, ==, 100);
+  startup_delays++;
+  g_string_append (startup_trace, "D,");
+  test_clock_us += delay * 1000LL;
+  /* Exercise FpiSsm's real delayed transition without sleeping in the test. */
+  fpi_ssm_jump_to_state_delayed (ssm, state, 0);
+}
+
+typedef enum {
+  PROBE_NORMAL, PROBE_EARLY, PROBE_NUL, PROBE_FULL, PROBE_LATE,
+  PROBE_LATE_FW, PROBE_READY_RESET, PROBE_DEADLINE,
+  PROBE_CANCEL_WRITE, PROBE_CANCEL_ACK, PROBE_CANCEL_DATA, PROBE_CANCEL_DELAY,
+  PROBE_MALFORMED, PROBE_REMOVED,
+} ProbeSchedule;
+
+typedef struct {
+  guint ping_failures;
+  guint firmware_failures;
+  ProbeSchedule schedule;
+  const char *trace;
+  guint delays;
+} ProbeCase;
+
+static void
+startup_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  io.completions++;
+  io.error = error;
+}
+
+static void
+test_startup_probe (gconstpointer data)
+{
+  const ProbeCase *test = data;
+  static const Scenario scenario = { .event_order = EVENT_CANCELLED };
+  FpDeviceClass *klass = g_type_class_ref (FPI_TYPE_DEVICE_GOODIX53X5);
+  g_autoptr(FpDevice) dev = NULL;
+  FpiDeviceGoodix53x5 *self;
+  guint8 version[64];
+  gboolean early = FALSE;
+  gboolean late = FALSE;
+  guint interruptions = 0;
+
+  memset (&io, 0, sizeof (io));
+  io.scenario = &scenario;
+  test_clock_us = 1000000;
+  startup_delays = 0;
+  startup_trace = g_string_new (NULL);
+  action_cancel_token = g_cancellable_new ();
+  klass->type = FP_DEVICE_TYPE_VIRTUAL;
+  dev = g_object_new (FPI_TYPE_DEVICE_GOODIX53X5, NULL);
+  g_type_class_unref (klass);
+  self = FPI_DEVICE_GOODIX53X5 (dev);
+  self->cancel = g_cancellable_new ();
+  self->fw_version = g_strdup ("previous-getter-output");
+  memset (self->shared_response, 0x55, sizeof (self->shared_response));
+  memset (version, 'V', sizeof (version));
+  if (test->schedule != PROBE_FULL)
+    memcpy (version, test->schedule == PROBE_NUL ? "\0bc" : "abc", 4);
+
+  /* Execute real claim/probe/sensor-reset states. Stop before chip/OTP/TLS. */
+  fpi_ssm_start (fpi_ssm_new_full (dev, goodix_open_ssm_handler,
+                                  GOODIX_OPEN_READ_CHIP_ID, GOODIX_OPEN_READ_CHIP_ID,
+                                  "startup-boundary"), startup_done);
+  for (guint step = 0; !io.completions && step < 150; step++)
+    {
+      if (!io.pending)
+        {
+          if (test->schedule == PROBE_CANCEL_DELAY)
+            g_cancellable_cancel (action_cancel_token);
+          g_main_context_iteration (NULL, TRUE);
+          continue;
+        }
+      if (io.pending->endpoint == GOODIX_EP_OUT)
+        {
+          if (test->schedule == PROBE_CANCEL_WRITE && io.command == 0)
+            {
+              g_cancellable_cancel (action_cancel_token);
+              idle_test_complete (g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "Write cancelled"));
+            }
+          else
+            idle_test_complete (NULL);
+          continue;
+        }
+      gboolean fw = io.command == 0xa8;
+      gboolean response = fw && io.ec_data;
+      if (io.command == 0 || fw)
+        {
+          if (io.timeout != (response ? 2000 - interruptions * 500 : 500))
+            g_test_fail ();
+          if (io.cancel != action_cancel_token)
+            g_test_fail ();
+        }
+      if ((test->schedule == PROBE_CANCEL_ACK && io.command == 0) ||
+          (test->schedule == PROBE_CANCEL_DATA && response))
+        {
+          g_cancellable_cancel (action_cancel_token);
+          idle_test_complete (g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "Wait cancelled"));
+        }
+      else if (test->schedule == PROBE_REMOVED && io.command == 0)
+        idle_test_complete (g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_NO_DEVICE, "Removed"));
+      else if (test->schedule == PROBE_MALFORMED && io.command == 0)
+        {
+          ack_reply (io.pending, 0x82);
+          idle_test_complete (NULL);
+        }
+      else if ((io.command == 0 && io.sends[0] <= test->ping_failures) ||
+               (response && io.sends[0xa8] <= test->firmware_failures) ||
+               (fw && !response && early && io.sends[0xa8] == 1 &&
+                test->schedule == PROBE_READY_RESET))
+        {
+          test_clock_us += io.timeout * 1000LL;
+          idle_test_complete (g_error_new_literal (G_USB_DEVICE_ERROR,
+                                                  G_USB_DEVICE_ERROR_TIMED_OUT, "Scheduled probe timeout"));
+        }
+      else if (fw && !io.ec_data &&
+               (test->schedule == PROBE_EARLY || test->schedule == PROBE_READY_RESET) && !early)
+        {
+          reply (io.pending, 0x0a, 4, test->schedule == PROBE_READY_RESET ?
+                 (const guint8 *) "old" : version, 4);
+          early = TRUE;
+          idle_test_complete (NULL);
+        }
+      else if (fw && test->schedule == PROBE_LATE && !late)
+        {
+          ack_reply (io.pending, 0);
+          late = TRUE;
+          idle_test_complete (NULL);
+        }
+      else if (!fw && io.command == 0 && io.sends[0] == 2 &&
+               test->schedule == PROBE_LATE_FW && !late)
+        {
+          ack_reply (io.pending, 0xa8);
+          late = TRUE;
+          idle_test_complete (NULL);
+        }
+      else if (response && test->schedule == PROBE_DEADLINE && interruptions < 2)
+        {
+          test_clock_us += 500000;
+          if (interruptions == 0)
+            {
+              guint8 value = 0;
+              reply (io.pending, 0x0a, 7, &value, 1);
+            }
+          else
+            io.pending->actual_length = 0;
+          interruptions++;
+          idle_test_complete (NULL);
+        }
+      else if (response)
+        {
+          if (test->schedule == PROBE_FULL)
+            {
+              gsize len;
+              g_autofree guint8 *packet = goodix_proto_build_message (0x0a, 4, version, 64, TRUE, &len);
+              memcpy (io.pending->buffer, packet, 64);
+              io.pending->actual_length = 64;
+              test_clock_us += 700000;
+              idle_test_complete (NULL);
+              g_assert_cmpuint (io.timeout, ==, 1300);
+              io.pending->buffer[0] = 0xa9;
+              memcpy (io.pending->buffer + 1, packet + 64, len - 64);
+              io.pending->actual_length = len - 63;
+              idle_test_complete (NULL);
+            }
+          else
+            {
+              reply (io.pending, 0x0a, 4, version, 4);
+              idle_test_complete (NULL);
+            }
+        }
+      else
+        {
+          ack_reply (io.pending, io.command);
+          if (fw)
+            io.ec_data = TRUE;
+          idle_test_complete (NULL);
+        }
+    }
+  g_test_message ("startup trace=%s delays=%u output=%s error=%s", startup_trace->str,
+                  startup_delays, self->fw_version, io.error ? io.error->message : "none");
+  g_assert_cmpuint (io.completions, ==, 1);
+  g_assert_cmpstr (startup_trace->str, ==, test->trace);
+  g_assert_cmpuint (startup_delays, ==, test->delays);
+  if (test->schedule >= PROBE_CANCEL_WRITE)
+    {
+      if (test->schedule <= PROBE_CANCEL_DELAY)
+        g_assert_error (io.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+      else if (test->schedule == PROBE_MALFORMED)
+        g_assert_error (io.error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO);
+      else
+        g_assert_error (io.error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_NO_DEVICE);
+      g_assert_cmpstr (self->fw_version, ==, "previous-getter-output");
+    }
+  else
+    {
+      g_assert_no_error (io.error);
+      g_assert_false (self->needs_reinit);
+      if (test->firmware_failures >= 10)
+        g_assert_cmpstr (self->fw_version, ==, "previous-getter-output");
+      else
+        {
+          g_assert_cmpstr (self->fw_version, ==, test->schedule == PROBE_NUL ? "" :
+                          test->schedule == PROBE_FULL ?
+                          "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV" : "abc");
+          if (test->schedule != PROBE_FULL)
+            for (guint i = 4; i < 64; i++)
+              g_assert_cmpuint (self->shared_response[i], ==, 0x55);
+        }
+    }
+  g_assert_null (io.pending);
+  g_assert_null (self->cmd_ssm);
+  g_assert_false (self->rx_active);
+  g_clear_error (&io.error);
+  g_clear_pointer (&self->rx.buf, g_free);
+  g_clear_pointer (&self->fw_version, g_free);
+  g_clear_object (&self->cancel);
+  g_clear_object (&action_cancel_token);
+  g_string_free (startup_trace, TRUE);
+  startup_trace = NULL;
+}
+
+static void
+alias_command (FpiSsm *ssm, FpDevice *dev)
+{
+  guint category = GPOINTER_TO_UINT (fpi_ssm_get_data (ssm));
+  guint8 payload[2] = { 0, 0 };
+
+  if (category)
+    goodix_run_cmd (ssm, dev, category, 1, payload, sizeof (payload), TRUE);
+  else
+    goodix_cmd_read_fw_version (ssm, dev);
+}
+
+static void
+alias_packet (guint8 category, guint8 command, const guint8 *payload, gsize len)
+{
+  gsize size;
+  g_autofree guint8 *packet = goodix_proto_build_message (category, command, payload, len, TRUE, &size);
+  gsize offset = 0;
+
+  while (offset < size)
+    {
+      gsize header = offset ? 1 : 0;
+      gsize count = MIN (size - offset, 64 - header);
+
+      g_assert_nonnull (io.pending);
+      if (header)
+        io.pending->buffer[0] = packet[0] | 1;
+      memcpy (io.pending->buffer + header, packet + offset, count);
+      io.pending->actual_length = count + header;
+      offset += count;
+      idle_test_complete (NULL);
+    }
+}
+
+static void
+test_shared_response (gconstpointer data)
+{
+  guint which = GPOINTER_TO_UINT (data);
+  gboolean idle = which == 6;
+  gboolean after_ack = which == 3 || which == 5 || which >= 7;
+  guint category = which == 7 ? 8 : which == 8 ? 0x0e : 0;
+  static const Scenario scenario = { .event_order = EVENT_CANCELLED };
+  FpDeviceClass *klass = g_type_class_ref (FPI_TYPE_DEVICE_GOODIX53X5);
+  g_autoptr(FpDevice) dev = NULL;
+  guint8 expected[64], payload[76], version[] = { 'v', 0 };
+  const guint8 *cached = NULL;
+  gsize len = 0;
+  FpiSsm *ssm;
+
+  memset (&io, 0, sizeof (io));
+  io.scenario = &scenario;
+  action_cancel_token = g_cancellable_new ();
+  test_clock_us = 1000000;
+  klass->type = FP_DEVICE_TYPE_VIRTUAL;
+  dev = g_object_new (FPI_TYPE_DEVICE_GOODIX53X5, NULL);
+  g_type_class_unref (klass);
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  memset (expected, 0x55, sizeof (expected));
+  memcpy (self->shared_response, expected, sizeof (expected));
+
+  ssm = fpi_ssm_new (dev, idle ? idle_test_ec : alias_command, 1);
+  fpi_ssm_set_data (ssm, GUINT_TO_POINTER (category), NULL);
+  fpi_ssm_start (ssm, idle_test_command_done);
+  idle_test_complete (NULL);
+  if (idle || after_ack)
+    {
+      ack_reply (io.pending, io.command);
+      idle_test_complete (NULL);
+    }
+  if (which >= 4 && which <= 6)
+    {
+      const guint8 categories[] = { 0x0a, 8, 0x0e, 0x0f };
+      const guint8 commands[] = { 3, 1, 2, 0 };
+      const guint sizes[] = { 16, 24, 76, 4 };
+
+      for (guint i = 0; i < 4; i++)
+        {
+          memset (payload, 'B' + i, sizeof (payload));
+          test_clock_us += 100000;
+          alias_packet (categories[i], commands[i], payload, sizes[i]);
+          if (i == 2)
+            {
+              const guint8 length[] = { 76, 0, 0, 0 };
+              memcpy (expected, length, 4);
+              memcpy (expected + 4, payload, 60);
+            }
+          else
+            memcpy (expected, payload, i == 3 ? 1 : sizes[i]);
+          g_assert_cmpmem (self->shared_response, 64, expected, 64);
+          g_assert_cmpuint (self->command_response_ready & 4, ==, 0);
+          g_assert_cmpuint (io.completions, ==, idle ? 1 : 0);
+          g_assert_cmpuint (io.timeout, ==, idle ? 0 : (after_ack ? 2000 : 500) - (i + 1) * 100);
+        }
+      if (idle)
+        {
+          /* The cache outlives idle reception; join before the query OUT. */
+          fpi_ssm_start (fpi_ssm_new (dev, alias_command, 1), idle_test_command_done);
+          g_assert_true (g_cancellable_is_cancelled (io.cancel));
+          idle_test_complete (g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "Alias idle handoff"));
+          g_assert_cmpuint (io.pending->endpoint, ==, GOODIX_EP_OUT);
+          idle_test_complete (NULL);
+        }
+    }
+  if (category)
+    {
+      guint8 actual_category, actual_command;
+      memset (payload, 'R', 12);
+      alias_packet (category, 1, payload, 12);
+      g_assert_true (goodix_proto_rx_parse (&self->rx, &actual_category, &actual_command, &cached, &len));
+      g_assert_cmpuint (actual_category, ==, category);
+      g_assert_cmpuint (actual_command, ==, 1);
+      g_assert_cmpmem (cached, len, payload, 12);
+    }
+  else
+    {
+      guint command = which == 0 ? 0 : (which == 1 || which == 3) ? 1 : 4;
+      alias_packet (0x0a, command, version, sizeof (version));
+      memcpy (expected, version, sizeof (version));
+      if (!after_ack)
+        {
+          g_assert_cmpuint (io.completions, ==, idle ? 1 : 0);
+          ack_reply (io.pending, 0xa8);
+          idle_test_complete (NULL);
+        }
+      g_assert_true (goodix_cmd_parse_fw_version_reply (dev, &cached, &len, NULL));
+      g_assert_cmpmem (cached, len, expected, sizeof (expected));
+    }
+  g_assert_cmpuint (io.completions, ==, idle ? 2 : 1);
+  g_assert_null (io.pending);
+  g_assert_null (self->cmd_ssm);
+  g_assert_false (self->rx_active);
+  g_clear_pointer (&self->rx.buf, g_free);
+  g_clear_object (&action_cancel_token);
 }
 
 int
@@ -2042,6 +2465,45 @@ main (int argc, char **argv)
   static const Scenario drain_control = { 0, 0, 1, 1, TRUE, STOP_DRAIN_CONTROL };
 
   g_test_init (&argc, &argv, NULL);
+  const char *alias_names[] = { "a0-before-ack", "a1-before-ack", "a4-before-ack", "a1-after-ack",
+                               "writers-before-ack", "writers-after-ack", "writers-idle",
+                               "register-response", "psk-response" };
+  for (guint i = 0; i < G_N_ELEMENTS (alias_names); i++)
+    {
+      g_autofree char *name = g_strdup_printf ("/goodix53x5/milan/transport/shared-response/%s", alias_names[i]);
+      g_test_add_data_func (name, GUINT_TO_POINTER (i), test_shared_response);
+    }
+  static const ProbeCase probes[] = {
+    { 0, 0, PROBE_NORMAL, "00,a8,a2,", 0 },
+    { 2, 0, PROBE_NORMAL, "00,00,a8,a2,", 0 },
+    { 0, 1, PROBE_NORMAL, "00,a8,a8,a2,", 0 },
+    { 0, 2, PROBE_NORMAL, "00,a8,a8,D,00,a8,a2,", 1 },
+    { 0, 10, PROBE_NORMAL, "00,a8,a8,D,00,a8,a8,D,00,a8,a8,D,00,a8,a8,D,00,a8,a8,D,a2,", 5 },
+    { 10, 10, PROBE_NORMAL, "00,00,a8,a8,D,00,00,a8,a8,D,00,00,a8,a8,D,00,00,a8,a8,D,00,00,a8,a8,D,a2,", 5 },
+    { 0, 0, PROBE_EARLY, "00,a8,a2,", 0 },
+    { 0, 0, PROBE_NUL, "00,a8,a2,", 0 },
+    { 0, 0, PROBE_FULL, "00,a8,a2,", 0 },
+    { 2, 0, PROBE_LATE, "00,00,a8,a2,", 0 },
+    { 0, 2, PROBE_LATE_FW, "00,a8,a8,D,00,a8,a2,", 1 },
+    { 0, 0, PROBE_READY_RESET, "00,a8,a8,a2,", 0 },
+    { 0, 0, PROBE_DEADLINE, "00,a8,a2,", 0 },
+    { 0, 0, PROBE_CANCEL_WRITE, "00,", 0 },
+    { 0, 0, PROBE_CANCEL_ACK, "00,", 0 },
+    { 0, 0, PROBE_CANCEL_DATA, "00,a8,", 0 },
+    { 0, 2, PROBE_CANCEL_DELAY, "00,a8,a8,D,", 1 },
+    { 0, 0, PROBE_MALFORMED, "00,", 0 },
+    { 0, 0, PROBE_REMOVED, "00,", 0 },
+  };
+  const char *probe_names[] = { "success", "ping-exhausted", "firmware-retry", "outer-retry",
+                               "firmware-exhausted", "all-exhausted", "early-response", "empty-string",
+                               "full-string", "late-ping-ack", "late-firmware-ack", "ready-reset", "response-deadline",
+                               "cancel-write", "cancel-ack", "cancel-data",
+                               "cancel-delay", "malformed", "removed" };
+  for (guint i = 0; i < G_N_ELEMENTS (probes); i++)
+    {
+      g_autofree char *name = g_strdup_printf ("/goodix53x5/milan/transport/startup/%s", probe_names[i]);
+      g_test_add_data_func (name, &probes[i], test_startup_probe);
+    }
   const char *failed_open_names[] = { "recovery-cancel", "recovery-partial-race", "recovery-no-idle",
                                      "final-cancel", "final-partial-race", "final-no-idle",
                                      "recovery-reply-race", "final-reply-race", "action-cancel-during-join" };
@@ -2053,7 +2515,7 @@ main (int argc, char **argv)
     }
   const char *idle_names[] = { "ack-only-close", "tail", "handoff", "handoff-race",
                               "partial-handoff", "removal", "action-cancel", "close-race", "bad-frame",
-                              "stopped-fdt", "response-caches", "partial-reinit" };
+                              "stopped-fdt", "response-caches", "partial-reinit", "firmware-cache", "firmware-partial-handoff" };
   for (guint i = 0; i < G_N_ELEMENTS (idle_names); i++)
     {
       g_autofree char *name = g_strdup_printf ("/goodix53x5/milan/transport/idle/%s", idle_names[i]);

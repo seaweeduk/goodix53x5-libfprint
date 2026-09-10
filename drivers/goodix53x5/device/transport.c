@@ -173,6 +173,14 @@ goodix_cmd_set_budgets (GoodixCmdOperation *operation)
   operation->response_timeout_ms = GOODIX_DATA_TIMEOUT;
   switch (command)
     {
+    case 0xa8: /* Firmware version */
+      operation->response_timeout_ms = 2000;
+      G_GNUC_FALLTHROUGH;
+
+    case 0x00: /* Startup mode */
+      operation->ack_timeout_ms = 500;
+      break;
+
     case 0x36: /* Manual FDT */
     case 0x90: /* Configuration */
       operation->response_timeout_ms = 500;
@@ -212,6 +220,12 @@ goodix_mode_ack_bit (guint8 cmd_byte)
 
     case 0x90:
       return 16;
+
+    case 0x00:
+      return 32;
+
+    case 0xa8:
+      return 64;
 
     default:
       return 0;
@@ -577,7 +591,7 @@ goodix_recv_start_full (FpiSsm                     *ssm,
           operation->deadline_us = cmd_operation->ack_deadline_us;
         }
       else if (cmd_operation->phase == GOODIX_CMD_RECV_DATA &&
-               cmd_operation->response_timeout_ms == 500)
+                cmd_operation->response_bit)
         {
           operation->fixed_deadline = TRUE;
         }
@@ -687,9 +701,38 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                                  &payload, &payload_len))
         {
           guint8 bit = category == 3 && command == 3 ? 1 :
-                       category == 9 && command == 0 ? 2 : 0;
+                       category == 9 && command == 0 ? 2 :
+                       category == 0x0a && (command == 0 || command == 1 || command == 4) ? 4 : 0;
           GoodixCmdOperation *current = !idle_packet && self->cmd_ssm == transfer->ssm ?
                                         fpi_ssm_get_data (transfer->ssm) : NULL;
+          gboolean shared = bit == 4 || (category == 0x0a && command == 3) ||
+                            category == 8 || category == 0x0e || category == 0x0f;
+          gboolean current_data = current && current->phase == GOODIX_CMD_RECV_DATA &&
+                                  current->cmd.category == category && current->cmd.command == command;
+
+          /* DataFromDevice publishes these shared stores without a matching
+           * command. Only A/0, A/1 and A/4 signal the version getter's event.
+           * Project the first 64 bytes, retaining every unwritten suffix. */
+          if (shared)
+            {
+              gsize offset = category == 0x0e ? 4 : 0;
+              gsize count = category == 0x0f ? MIN (payload_len, 1) :
+                            MIN (payload_len, sizeof (self->shared_response) - offset);
+
+              if (category == 0x0e)
+                {
+                  guint32 length = GUINT32_TO_LE ((guint32) payload_len);
+                  memcpy (self->shared_response, &length, sizeof (length));
+                }
+              memcpy (self->shared_response + offset, payload, count);
+              /* Preserve ordinary current response consumption (e.g. register
+               * and PSK reads); unrelated stores do not finish that waiter. */
+              if (!bit && current && !current_data)
+                {
+                  goodix_proto_rx_reset (&self->rx);
+                  goto receive_more;
+                }
+            }
 
           if (bit)
             {
@@ -706,10 +749,10 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                   memcpy (self->manual_response, payload, sizeof (self->manual_response));
                 }
               /* Configuration publishes only an event, never a success byte.
-               * Both response slots are independent of ACK reception. */
+               * Response slots are independent of ACK reception. */
               self->command_response_ready |= bit;
-              if (!current || current->response_bit != bit ||
-                  current->phase != GOODIX_CMD_RECV_DATA)
+              if (!current || current->phase != GOODIX_CMD_RECV_DATA ||
+                  (current->response_bit != bit && !current_data))
                 {
                   goodix_proto_rx_reset (&self->rx);
                   goto receive_more;
@@ -935,7 +978,10 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
               fpi_ssm_mark_failed (ssm, error);
             return;
           }
-        goodix_recv_start (ssm, dev, timeout, NULL);
+        goodix_recv_start (ssm, dev, timeout,
+                          ((cmd->category == 0 && cmd->command == 0) ||
+                           (cmd->category == 0x0a && cmd->command == 4)) ?
+                          fpi_device_get_cancellable (dev) : NULL);
       }
       break;
 
@@ -980,7 +1026,8 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
       if (operation->response_bit & FPI_DEVICE_GOODIX53X5 (dev)->command_response_ready)
         fpi_ssm_next_state (ssm);
       else
-        goodix_recv_start (ssm, dev, operation->response_timeout_ms, NULL);
+        goodix_recv_start (ssm, dev, operation->response_timeout_ms,
+                          operation->response_bit == 4 ? fpi_device_get_cancellable (dev) : NULL);
       break;
     }
 }
@@ -1069,11 +1116,12 @@ goodix_run_cmd_full (FpiSsm                    *parent_ssm,
   operation->cancelled_fdt_mode = cancelled_mode;
   operation->response_bit = expect_data ?
                             (category == 3 && command == 3 ? 1 :
-                             category == 9 && command == 0 ? 2 : 0) : 0;
+                             category == 9 && command == 0 ? 2 :
+                             category == 0x0a && command == 4 ? 4 : 0) : 0;
   operation->retry_mode = operation->response_bit || (!expect_data &&
                          ((category == GOODIX_PROTO_CATEGORY_FDT &&
                            (command == GOODIX_PROTO_CMD_FDT_DOWN || command == GOODIX_PROTO_CMD_FDT_UP)) ||
-                          (category == 0x06 && command == 0)));
+                          ((category == 0x06 || category == 0) && command == 0)));
   cmd = &operation->cmd;
   cmd->category = category;
   cmd->command = command;

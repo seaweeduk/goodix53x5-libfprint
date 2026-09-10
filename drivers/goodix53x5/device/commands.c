@@ -98,19 +98,23 @@ goodix_encode_u32_le (guint8 *out, guint32 value)
 void
 goodix_cmd_ping (FpiSsm *ssm, FpDevice *dev)
 {
-  /* ping: category=0, command=0, payload=\x00\x00 */
-  guint8 payload[2] = { 0x00, 0x00 };
-
-  goodix_run_cmd (ssm, dev, 0x0, 0x0, payload, 2, FALSE);
+  goodix_cmd_probe (ssm, dev, FALSE, NULL);
 }
 
 void
 goodix_cmd_read_fw_version (FpiSsm *ssm, FpDevice *dev)
 {
-  /* read_firmware_version: category=0xA, command=4, payload=\x00\x00 */
-  guint8 payload[2] = { 0x00, 0x00 };
+  goodix_cmd_probe (ssm, dev, TRUE, NULL);
+}
 
-  goodix_run_cmd (ssm, dev, 0xA, 0x4, payload, 2, TRUE);
+void
+goodix_cmd_probe (FpiSsm *ssm, FpDevice *dev, gboolean firmware,
+                  GoodixCmdResultCallback callback)
+{
+  guint8 payload[2] = { 0, 0 };
+
+  goodix_run_cmd_result (ssm, dev, firmware ? 0x0a : 0, firmware ? 4 : 0,
+                         payload, sizeof (payload), firmware, callback);
 }
 
 void
@@ -367,8 +371,19 @@ goodix_cmd_parse_fw_version_reply (FpDevice      *dev,
                                    gsize         *out_payload_len,
                                    GError       **error)
 {
-  return goodix_parse_reply_exact (dev, 0xA, 0x4, out_payload,
-                                   out_payload_len, error);
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (!(self->command_response_ready & 4))
+    {
+      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                           "Firmware response is unavailable");
+      return FALSE;
+    }
+  if (out_payload)
+    *out_payload = self->shared_response;
+  if (out_payload_len)
+    *out_payload_len = sizeof (self->shared_response);
+  return TRUE;
 }
 
 gboolean
