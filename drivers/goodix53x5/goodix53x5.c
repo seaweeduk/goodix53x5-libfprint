@@ -25,6 +25,7 @@
 #include "device/enroll.h"
 #include "device/auth.h"
 #include "device/persistence.h"
+#include "device/transport.h"
 
 #include <string.h>
 #include <openssl/crypto.h>
@@ -47,7 +48,7 @@ goodix_open (FpDevice *dev)
 }
 
 static void
-goodix_close (FpDevice *dev)
+goodix_close_joined (FpDevice *dev, gpointer data)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   GError *error = NULL;
@@ -61,6 +62,7 @@ goodix_close (FpDevice *dev)
   g_clear_pointer (&self->otp_data, g_free);
   g_clear_pointer (&self->fw_version, g_free);
   g_clear_pointer (&self->rx.buf, g_free);
+  self->rx_idle_partial = FALSE;
 #ifdef GOODIX53X5_DEBUG
   g_clear_pointer (&self->captured_image, g_free);
 #endif
@@ -80,6 +82,12 @@ goodix_close (FpDevice *dev)
   self->usb_interface_claimed = FALSE;
 
   fpi_device_close_complete (dev, error);
+}
+
+static void
+goodix_close (FpDevice *dev)
+{
+  goodix_idle_recv_stop (dev, goodix_close_joined, NULL);
 }
 
 static void

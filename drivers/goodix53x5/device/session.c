@@ -754,6 +754,12 @@ goodix_start_open_ssm (FpDevice *dev)
  * Returns TRUE if a reinit sub-SSM was started (caller returns and the
  * parent advances when it completes), FALSE if no reinit was needed.
  */
+static void
+goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
+{
+  goodix_maybe_start_reinit_subsm (data, dev);
+}
+
 gboolean
 goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
                                  FpDevice *dev)
@@ -763,6 +769,18 @@ goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
 
   if (!self->needs_reinit)
     return FALSE;
+
+  if (self->idle_rx_ssm)
+    {
+      /* Reinitialization also releases the interface; join the idle owner
+       * before either release or USB reset, just as close does. */
+      goodix_idle_recv_stop (dev, goodix_reinit_idle_joined, ssm);
+      return TRUE;
+    }
+
+  /* A USB reset ends the transport that could complete the retained packet. */
+  goodix_proto_rx_reset (&self->rx);
+  self->rx_idle_partial = FALSE;
 
   fp_info ("Reinitializing device after system sleep");
   self->action_epoch++;

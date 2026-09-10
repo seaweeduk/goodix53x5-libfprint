@@ -67,6 +67,7 @@ typedef struct
 typedef struct
 {
   GoodixCmd                 cmd;
+  gboolean                  idle_after_ack;
   FpiSsm                   *parent_ssm;
   GoodixProfile9FdtWaitMode cancelled_fdt_mode;
   gboolean                  retry_mode;
@@ -79,6 +80,84 @@ typedef struct
   guint                     ack_timeout_ms;
   guint                     response_timeout_ms;
 } GoodixCmdOperation;
+
+typedef struct
+{
+  FpDevice                *dev;
+  GCancellable            *cancel;
+  GoodixIdleJoinedCallback joined;
+  gpointer                 joined_data;
+} GoodixIdleRecv;
+
+static void
+goodix_idle_recv_free (GoodixIdleRecv *idle)
+{
+  g_object_unref (idle->cancel);
+  g_object_unref (idle->dev);
+  g_free (idle);
+}
+
+static void
+goodix_idle_recv_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixIdleRecv *idle = fpi_ssm_get_data (ssm);
+
+  self->idle_rx_ssm = NULL;
+  self->rx_idle_partial = self->rx.len && !goodix_proto_rx_complete (&self->rx);
+  if (error && !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+    {
+      fp_dbg ("Idle receive stopped: %s", error->message);
+      self->needs_reinit = TRUE;
+    }
+  g_clear_error (&error);
+  fp_dbg ("Idle receive joined; partial=%d", self->rx_idle_partial);
+  if (idle->joined)
+    idle->joined (dev, idle->joined_data);
+}
+
+static void
+goodix_idle_recv_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  GoodixIdleRecv *idle = fpi_ssm_get_data (ssm);
+
+  goodix_recv_start (ssm, dev, 0, idle->cancel);
+}
+
+static void
+goodix_idle_recv_start (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixIdleRecv *idle = g_new0 (GoodixIdleRecv, 1);
+
+  g_assert (!self->rx_active && !self->idle_rx_ssm);
+  idle->dev = g_object_ref (dev);
+  idle->cancel = g_cancellable_new ();
+  self->idle_rx_ssm = fpi_ssm_new (dev, goodix_idle_recv_handler, 1);
+  fpi_ssm_set_data (self->idle_rx_ssm, idle, (GDestroyNotify) goodix_idle_recv_free);
+  fp_dbg ("Idle receive started after EC-off ACK");
+  fpi_ssm_start (self->idle_rx_ssm, goodix_idle_recv_done);
+}
+
+void
+goodix_idle_recv_stop (FpDevice *dev, GoodixIdleJoinedCallback joined,
+                       gpointer data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (self->idle_rx_ssm)
+    {
+      GoodixIdleRecv *idle = fpi_ssm_get_data (self->idle_rx_ssm);
+      g_assert (!idle->joined);
+      idle->joined = joined;
+      idle->joined_data = data;
+      g_cancellable_cancel (idle->cancel);
+    }
+  else
+    {
+      joined (dev, data);
+    }
+}
 
 /* Native budgets count Sleep(1) ACK polls and 50-ms response waits. GUsb uses
  * elapsed milliseconds instead: retain the caller's nominal budget across
@@ -507,7 +586,8 @@ goodix_recv_start_full (FpiSsm                     *ssm,
   operation->cancelled_cb = cancelled_cb;
   operation->cancelled_data = cancelled_data;
 
-  goodix_proto_rx_reset (&self->rx);
+  if (!self->rx_idle_partial)
+    goodix_proto_rx_reset (&self->rx);
   self->rx_active = TRUE;
   self->rx_owner = ssm;
 
@@ -601,13 +681,14 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
       const guint8 *payload;
       gsize payload_len;
       gboolean expected_ack = FALSE;
+      gboolean idle_packet = self->idle_rx_ssm == transfer->ssm || self->rx_idle_partial;
 
       if (goodix_proto_rx_parse (&self->rx, &category, &command,
                                  &payload, &payload_len))
         {
           guint8 bit = category == 3 && command == 3 ? 1 :
                        category == 9 && command == 0 ? 2 : 0;
-          GoodixCmdOperation *current = self->cmd_ssm == transfer->ssm ?
+          GoodixCmdOperation *current = !idle_packet && self->cmd_ssm == transfer->ssm ?
                                         fpi_ssm_get_data (transfer->ssm) : NULL;
 
           if (bit)
@@ -634,9 +715,9 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                   goto receive_more;
                 }
             }
-          else if (current && category == 3 && (command == 1 || command == 2) &&
-                   (current->response_bit ||
-                    (current->cmd.category == 3 && current->cmd.command <= 2)))
+          else if (category == 3 && (command == 1 || command == 2) &&
+                   (idle_packet || (current && (current->response_bit ||
+                                                (current->cmd.category == 3 && current->cmd.command <= 2)))))
             {
               GoodixFdtEventType type;
               GoodixProfile9FdtEvent event;
@@ -657,12 +738,29 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
               /* Every native parser mutation precedes replacement of the
                * latest worker notification, including during config/manual. */
               goodix_recv_apply_fdt_event (dev, type, &event);
-              self->pending_fdt_packet_len = self->rx.expected;
-              self->pending_fdt_mode = mode;
-              memcpy (self->pending_fdt_packet, self->rx.buf, self->rx.expected);
+              if (!idle_packet)
+                {
+                  self->pending_fdt_packet_len = self->rx.expected;
+                  self->pending_fdt_mode = mode;
+                  memcpy (self->pending_fdt_packet, self->rx.buf, self->rx.expected);
+                }
               goodix_proto_rx_reset (&self->rx);
               goto receive_more;
             }
+          if (idle_packet)
+            {
+              /* No active waiter: ordinary unclaimed packets have no result
+               * owner. EC data likewise has no native cache/event side effect. */
+              fp_dbg ("Idle receive consumed cat=0x%02x cmd=0x%02x", category, command);
+              goodix_proto_rx_reset (&self->rx);
+              goto receive_more;
+            }
+        }
+      else if (idle_packet)
+        {
+          goodix_rx_cb (transfer, dev, operation, fpi_device_error_new_msg (
+                          FP_DEVICE_ERROR_PROTO, "Invalid idle protocol packet"));
+          return;
         }
 
       /* Native EC has no response event. Optional category-A/command-7 data
@@ -709,7 +807,7 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
     {
       /* Preserve unrelated per-continuation data budgets. Scoped command waits
        * keep one deadline across interleaved packets and continuations. */
-      if (!operation->fixed_deadline)
+      if (!operation->fixed_deadline && self->idle_rx_ssm != transfer->ssm)
         operation->deadline_us = g_get_monotonic_time () + GOODIX_DATA_TIMEOUT * 1000LL;
       goto receive_more;
     }
@@ -717,6 +815,16 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
 
 receive_more:
   {
+    if (self->rx.len == 0)
+      self->rx_idle_partial = FALSE;
+    if (self->idle_rx_ssm == transfer->ssm &&
+        g_cancellable_is_cancelled (operation->cancellable))
+      {
+        goodix_recv_operation_finish (dev, transfer->ssm, operation);
+        goodix_recv_operation_free (operation);
+        fpi_ssm_mark_completed (transfer->ssm);
+        return;
+      }
     guint timeout = operation->deadline_us ?
                     goodix_deadline_remaining (operation->deadline_us) : 0;
 
@@ -912,8 +1020,18 @@ goodix_cmd_ssm_done (FpiSsm   *ssm,
     }
   else
     {
+      if (operation->idle_after_ack)
+        goodix_idle_recv_start (dev);
       fpi_ssm_next_state (operation->parent_ssm);
     }
+}
+
+static void
+goodix_cmd_begin_after_idle (FpDevice *dev, gpointer data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  fpi_ssm_start (self->cmd_ssm, goodix_cmd_ssm_done);
 }
 
 static void
@@ -925,14 +1043,15 @@ goodix_run_cmd_full (FpiSsm                    *parent_ssm,
                      gsize                      payload_len,
                      gboolean                   expect_data,
                      GoodixProfile9FdtWaitMode  cancelled_mode,
-                     GoodixCmdResultCallback   callback)
+                     GoodixCmdResultCallback   callback,
+                     gboolean                  idle_after_ack)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiSsm *cmd_ssm;
   GoodixCmdOperation *operation;
   GoodixCmd *cmd;
 
-  if (self->cmd_owner || self->rx_active)
+  if (self->cmd_owner || (self->rx_active && self->rx_owner != self->idle_rx_ssm))
     {
       fpi_ssm_mark_failed (
         parent_ssm,
@@ -946,6 +1065,7 @@ goodix_run_cmd_full (FpiSsm                    *parent_ssm,
   operation = g_new0 (GoodixCmdOperation, 1);
   operation->parent_ssm = parent_ssm;
   operation->result_cb = callback;
+  operation->idle_after_ack = idle_after_ack;
   operation->cancelled_fdt_mode = cancelled_mode;
   operation->response_bit = expect_data ?
                             (category == 3 && command == 3 ? 1 :
@@ -980,7 +1100,7 @@ goodix_run_cmd_full (FpiSsm                    *parent_ssm,
   fpi_ssm_set_data (cmd_ssm, operation,
                     (GDestroyNotify) goodix_cmd_operation_free);
   self->cmd_ssm = cmd_ssm;
-  fpi_ssm_start (cmd_ssm, goodix_cmd_ssm_done);
+  goodix_idle_recv_stop (dev, goodix_cmd_begin_after_idle, NULL);
 }
 
 void
@@ -994,7 +1114,15 @@ goodix_run_cmd (FpiSsm       *parent_ssm,
 {
   goodix_run_cmd_full (parent_ssm, dev, category, command, payload,
                        payload_len, expect_data,
-                       GOODIX_PROFILE9_FDT_WAIT_NONE, NULL);
+                       GOODIX_PROFILE9_FDT_WAIT_NONE, NULL, FALSE);
+}
+
+void
+goodix_run_cmd_ec_off (FpiSsm *ssm, FpDevice *dev,
+                       const guint8 *payload, gsize payload_len)
+{
+  goodix_run_cmd_full (ssm, dev, 0x0a, 7, payload, payload_len, FALSE,
+                       GOODIX_PROFILE9_FDT_WAIT_NONE, NULL, TRUE);
 }
 
 void
@@ -1004,7 +1132,7 @@ goodix_run_cmd_result (FpiSsm *ssm, FpDevice *dev,
                        gboolean expect_data, GoodixCmdResultCallback callback)
 {
   goodix_run_cmd_full (ssm, dev, category, command, payload, payload_len,
-                       expect_data, GOODIX_PROFILE9_FDT_WAIT_NONE, callback);
+                       expect_data, GOODIX_PROFILE9_FDT_WAIT_NONE, callback, FALSE);
 }
 
 void
@@ -1019,7 +1147,7 @@ goodix_run_cmd_drain_fdt_once (
 {
   g_return_if_fail (cancelled_mode != GOODIX_PROFILE9_FDT_WAIT_NONE);
   goodix_run_cmd_full (parent_ssm, dev, category, command, payload,
-                       payload_len, FALSE, cancelled_mode, NULL);
+                       payload_len, FALSE, cancelled_mode, NULL, FALSE);
 }
 
 gboolean
