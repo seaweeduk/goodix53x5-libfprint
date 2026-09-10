@@ -166,9 +166,17 @@ goodix_cmd_phase_name (GoodixCmdState phase)
 static gboolean
 goodix_cmd_native_zero (GoodixCmdOperation *operation, const GError *error)
 {
-  return g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT) ||
-         (operation->phase == GOODIX_CMD_SEND &&
-          g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO));
+  if (g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT))
+    return TRUE;
+  if (operation->phase != GOODIX_CMD_SEND || !error || error->domain != G_USB_DEVICE_ERROR)
+    return FALSE;
+  /* Native maps negative writes to zero. These GUsb codes include transfer
+   * error, endpoint stall and ordinary backend failure. Host preconditions,
+   * cancellation and device loss do not authorize another write. */
+  return error->code == G_USB_DEVICE_ERROR_IO ||
+         error->code == G_USB_DEVICE_ERROR_FAILED ||
+         error->code == G_USB_DEVICE_ERROR_NOT_SUPPORTED ||
+         error->code == G_USB_DEVICE_ERROR_INTERNAL;
 }
 
 static gboolean
@@ -332,6 +340,11 @@ goodix_tx_cb (FpiUsbTransfer *transfer,
     {
       if (goodix_cmd_retry (dev, transfer->ssm, error))
         return;
+      /* Cancellation can interrupt a partially sent command. Cleanup using
+       * that same action token may also be prevented from establishing sleep. */
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
+          g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_CANCELLED))
+        FPI_DEVICE_GOODIX53X5 (dev)->needs_reinit = TRUE;
       goodix_mark_coordinator_io_failure (FPI_DEVICE_GOODIX53X5 (dev), error);
       fpi_ssm_mark_failed (transfer->ssm, error);
       return;
@@ -415,7 +428,10 @@ goodix_send_message (FpiSsm   *ssm,
   transfer->ssm = ssm;
   fpi_usb_transfer_fill_bulk_full (transfer, GOODIX_EP_OUT,
                                    chunked, padded_len, g_free);
-  fpi_usb_transfer_submit (transfer, GOODIX_CMD_TIMEOUT, NULL,
+  /* Native writes have no timeout. The active libfprint action owns device
+   * lifetime and cancellation until this callback joins; Linux USB removal
+   * independently completes in-flight transfers with NO_DEVICE. */
+  fpi_usb_transfer_submit (transfer, 0, fpi_device_get_cancellable (dev),
                            goodix_tx_cb, NULL);
 }
 

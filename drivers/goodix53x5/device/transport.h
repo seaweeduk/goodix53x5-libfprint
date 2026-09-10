@@ -23,7 +23,6 @@
 #include "device/commands.h"
 
 /* Timeouts in ms */
-#define GOODIX_CMD_TIMEOUT    1000
 #define GOODIX_ACK_TIMEOUT    2000
 #define GOODIX_DATA_TIMEOUT   5000
 

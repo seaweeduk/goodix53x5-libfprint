@@ -47,7 +47,12 @@ test_cancellation_no_publication (void)
   fp_device_verify (device, print, cancel, match_report, &result, NULL,
                     verify_done, &result);
   wait_paused ();
+  GCancellable *action_cancel = fpi_device_get_cancellable (device);
+  g_assert_true (G_IS_CANCELLABLE (action_cancel));
+  g_assert_true (action_cancel != self->cancel);
+  g_assert_false (g_cancellable_is_cancelled (action_cancel));
   g_cancellable_cancel (cancel);
+  g_assert_true (g_cancellable_is_cancelled (action_cancel));
   fpi_ssm_mark_failed (paused_ssm, g_error_new_literal (
                          G_IO_ERROR, G_IO_ERROR_CANCELLED, "early cancellation"));
   paused_ssm = NULL;

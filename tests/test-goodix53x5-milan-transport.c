@@ -19,11 +19,18 @@ test_monotonic_time (void)
 }
 static void reply (FpiUsbTransfer *, guint8, guint8, const guint8 *, gsize);
 static void boundary_done (FpiSsm *, FpDevice *, GError *);
+static GCancellable *action_cancel_token;
+static GCancellable *test_action_cancellable (FpDevice *dev)
+{
+  (void) dev;
+  return action_cancel_token;
+}
 
 /* Compile the actual owners, replacing USB submission, the monotonic clock,
  * and setup preparation preceding our completed-capture boundary. FpiSsm is not mocked.
  * The executable supplies these owners instead of their archive objects. */
 #define fpi_usb_transfer_submit mock_submit
+#define fpi_device_get_cancellable test_action_cancellable
 #define goodix_milan_generation_prepare_setup capture_setup
 #define g_get_monotonic_time test_monotonic_time
 #include "drivers/goodix53x5/device/transport.c"
@@ -31,6 +38,7 @@ static void boundary_done (FpiSsm *, FpDevice *, GError *);
 #include "drivers/goodix53x5/device/scan.c"
 #undef goodix_milan_generation_prepare_setup
 #undef fpi_usb_transfer_submit
+#undef fpi_device_get_cancellable
 #undef g_get_monotonic_time
 
 typedef enum {
@@ -49,6 +57,10 @@ typedef enum {
   SEND_TIMEOUT_RETRY,
   SEND_DISCONNECT,
   SEND_CANCELLED,
+  SEND_FAILED_RETRY,
+  SEND_STALL_RETRY,
+  SEND_INTERNAL_RETRY,
+  WRITE_STALLED_CANCEL,
   SAME_COMMAND_PRECEDENCE,
   MULTICELL_DATA,
   ACK_ZERO_THEN_ONE,
@@ -108,6 +120,9 @@ static struct {
   guint captures;
   guint completions;
   guint cancellations;
+  guint cancelled_writes;
+  guint started_writes;
+  guint precancelled_writes;
   guint events;
   guint dispatches;
   guint duplicates;
@@ -165,7 +180,14 @@ mock_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel,
     {
       GBytes **first = NULL;
       g_assert_cmpuint (transfer->endpoint, ==, GOODIX_EP_OUT);
-      g_assert_null (cancel);
+      if (io.scenario->event_order >= SEND_FAILED_RETRY &&
+          io.scenario->event_order <= WRITE_STALLED_CANCEL &&
+          (timeout != 0 || cancel != action_cancel_token))
+        g_test_fail ();
+      if (cancel && g_cancellable_is_cancelled (cancel))
+        io.precancelled_writes++;
+      else
+        io.started_writes++;
       io.command = transfer->buffer[0];
       io.sends[io.command]++;
       io.ec_data = FALSE;
@@ -363,21 +385,39 @@ complete_usb (gpointer unused)
     {
       io.action_cancelled = TRUE;
       g_cancellable_cancel (FPI_DEVICE_GOODIX53X5 (transfer->device)->cancel);
+      g_cancellable_cancel (action_cancel_token);
     }
 
   if (transfer->endpoint == GOODIX_EP_OUT)
     {
       EventOrder order = scenario->event_order;
+      if (order == WRITE_STALLED_CANCEL && io.command == 0x34 && !io.action_cancelled)
+        {
+          /* The write stays owned until its cancellation completion. */
+          g_assert_cmpuint (io.completions, ==, 0);
+          io.action_cancelled = TRUE;
+          stop_after_capture (transfer->device);
+          g_cancellable_cancel (action_cancel_token);
+          g_cancellable_cancel (FPI_DEVICE_GOODIX53X5 (transfer->device)->cancel);
+        }
       /* ACK budgets begin after write completion, not at submission. */
       if (response_case (scenario))
         test_clock_us += 50 * 1000;
-      if (io.command == 0x34 && io.sends[0x34] == 1 &&
-          order >= SEND_IO_RETRY && order <= SEND_CANCELLED)
+      if (cancel && g_cancellable_is_cancelled (cancel))
+        {
+          io.cancelled_writes++;
+          error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                       "Action write cancelled before completion");
+        }
+      else if (io.command == 0x34 && io.sends[0x34] == 1 &&
+               order >= SEND_IO_RETRY && order <= SEND_INTERNAL_RETRY)
         {
           gint code = order == SEND_IO_RETRY ? G_USB_DEVICE_ERROR_IO :
             order == SEND_TIMEOUT_RETRY ? G_USB_DEVICE_ERROR_TIMED_OUT :
             order == SEND_DISCONNECT ? G_USB_DEVICE_ERROR_NO_DEVICE :
-            G_USB_DEVICE_ERROR_CANCELLED;
+            order == SEND_CANCELLED ? G_USB_DEVICE_ERROR_CANCELLED :
+            order == SEND_FAILED_RETRY ? G_USB_DEVICE_ERROR_FAILED :
+            order == SEND_STALL_RETRY ? G_USB_DEVICE_ERROR_NOT_SUPPORTED : G_USB_DEVICE_ERROR_INTERNAL;
           stop_after_capture (transfer->device);
           error = g_error_new_literal (G_USB_DEVICE_ERROR, code, "Scheduled send failure");
         }
@@ -456,6 +496,7 @@ complete_usb (gpointer unused)
         {
           io.action_cancelled = TRUE;
           g_cancellable_cancel (FPI_DEVICE_GOODIX53X5 (transfer->device)->cancel);
+          g_cancellable_cancel (action_cancel_token);
           error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "Scheduled repair cancellation");
         }
       else if (scenario->event_order == ARM_FIRST_FAIL ||
@@ -1061,6 +1102,7 @@ test_scenario (gconstpointer user_data)
   self->profile9_fdt.base_valid = TRUE;
   self->profile9_fdt.drift_anchor_empty = TRUE;
   self->calib.delta_down = 30;
+  action_cancel_token = g_cancellable_new ();
   if (scenario->event_order >= ARM_STATUS)
     io.duplicates = 1; /* These controls need no synthetic late arm ACK. */
   if (stop_state_case (scenario))
@@ -1156,6 +1198,7 @@ test_scenario (gconstpointer user_data)
   /* Report contract differences without aborting, so every scheduled case
    * releases its owners and the complete suite can expose baseline failures. */
   gboolean cancelled = scenario->event_order == CANCEL_DURING_RETRY ||
+                       scenario->event_order == WRITE_STALLED_CANCEL ||
                         cancel_arm_case (scenario) ||
                        scenario->event_order == ARM_CONFIG_CANCEL;
   gboolean delivered = (scenario->standalone_arm && scenario->event_order < ARM_STATUS &&
@@ -1321,6 +1364,9 @@ test_scenario (gconstpointer user_data)
         g_test_fail ();
   gboolean exhausted_arm = scenario->event_order == ARM_REPEAT_FAIL ||
                            scenario->event_order == ARM_FIRST_FAIL;
+  if (scenario->event_order == WRITE_STALLED_CANCEL &&
+      (io.started_writes != 1 || io.precancelled_writes != 2 || io.cancelled_writes != 3))
+    g_test_fail ();
   if (scenario->event_order >= ARM_STATUS)
     {
       guint arms = malformed || cancelled ? 1 : scenario->event_order == ARM_MAX ? 4 :
@@ -1352,7 +1398,8 @@ test_scenario (gconstpointer user_data)
         test_clock_us - io.ec_ack_started != ack_budget (0xae) * 1000LL || io.sends[0xae] != 1)) ||
       (scenario->success && (io.error || (self->needs_reinit && !exhausted_arm))) ||
       (exhausted_arm && (io.error || !self->needs_reinit)) ||
-      (cancelled && (!io.action_cancelled || self->needs_reinit ||
+      (cancelled && (!io.action_cancelled ||
+                    (self->needs_reinit != (io.cancelled_writes != 0)) ||
                     !g_error_matches (io.error, G_IO_ERROR, G_IO_ERROR_CANCELLED))) ||
       (excluded_send && !g_error_matches (io.error, G_USB_DEVICE_ERROR,
                            scenario->event_order == SEND_DISCONNECT ?
@@ -1371,6 +1418,7 @@ test_scenario (gconstpointer user_data)
   g_clear_pointer (&io.first_sleep, g_bytes_unref);
   g_clear_pointer (&io.first_down, g_bytes_unref);
   g_clear_pointer (&io.first_response, g_bytes_unref);
+  g_clear_object (&action_cancel_token);
   g_clear_pointer (&self->captured_raw_image, g_free);
   g_clear_pointer (&self->rx.buf, g_free);
   goodix_milan_generation_invalidate (&self->milan_generation);
@@ -1428,6 +1476,18 @@ main (int argc, char **argv)
   static const Scenario drain_control = { 0, 0, 1, 1, TRUE, STOP_DRAIN_CONTROL };
 
   g_test_init (&argc, &argv, NULL);
+  static const Scenario writes[] = {
+    { 0, 0, 2, 1, TRUE, SEND_FAILED_RETRY },
+    { 0, 0, 2, 1, TRUE, SEND_STALL_RETRY },
+    { 0, 0, 2, 1, TRUE, SEND_INTERNAL_RETRY },
+    { 0, 0, 1, 1, FALSE, WRITE_STALLED_CANCEL },
+  };
+  const char *write_names[] = { "transfer-error", "stall", "internal", "stalled-cancel" };
+  for (guint i = 0; i < G_N_ELEMENTS (writes); i++)
+    {
+      g_autofree char *name = g_strdup_printf ("/goodix53x5/milan/transport/write/%s", write_names[i]);
+      g_test_add_data_func (name, &writes[i], test_scenario);
+    }
   static const Scenario cancel_arms[] = {
     { 0, 0, 1, 1, FALSE, CANCEL_ARM_FIRST, 0, 1 },
     { 0, 0, 1, 1, FALSE, CANCEL_ARM_FIRST, 0, 3 },
