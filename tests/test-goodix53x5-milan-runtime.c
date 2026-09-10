@@ -19,6 +19,16 @@ main (int    argc,
   g_test_init (&argc, &argv, NULL);
   g_mutex_init (&plan.mutex);
   g_cond_init (&plan.condition);
+  const char *cleanup_names[] = {
+    "update-clean", "update-cleanup-failure", "no-update-clean", "no-update-cleanup-failure",
+    "no-match-clean", "no-match-cleanup-failure", "earlier-error", "missing-result",
+    "cancelled-result", "removed-result",
+  };
+  for (guint i = 0; i < G_N_ELEMENTS (cleanup_names); i++)
+    {
+      g_autofree char *name = g_strdup_printf ("/goodix53x5/milan/runtime/cleanup/%s", cleanup_names[i]);
+      g_test_add_data_func (name, GUINT_TO_POINTER (i), test_auth_cleanup_results);
+    }
   g_test_add_func ("/goodix53x5/milan/runtime/auth-gallery-outcomes",
                    test_auth_gallery_outcomes);
   g_test_add_func ("/goodix53x5/milan/runtime/auth-publication-contracts",

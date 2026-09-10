@@ -600,6 +600,8 @@ goodix_verify_ssm_done (FpiSsm   *ssm,
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiDeviceAction action = fpi_device_get_current_action (dev);
   gboolean updated = FALSE;
+  gboolean removed = FALSE;
+  gboolean cancelled;
 
   (void) ssm;
 
@@ -608,6 +610,24 @@ goodix_verify_ssm_done (FpiSsm   *ssm,
 #endif
   g_clear_pointer (&self->captured_raw_image, g_free);
 
+  g_object_get (dev, "removed", &removed, NULL);
+  cancelled = fpi_device_action_is_cancelled (dev) ||
+              (self->cancel && g_cancellable_is_cancelled (self->cancel));
+  if (error && self->scan_cleanup_only_error && self->pending_result_report &&
+      !cancelled && !removed)
+    {
+      /* Native deactivation attempts shutdown before update/storage, but its
+       * IOCTL result does not invalidate the completed comparison or admission.
+       * Scan and worker callbacks have joined before reaching this owner. */
+      fp_dbg ("Preserving completed authentication after cleanup failure: %s", error->message);
+      self->needs_reinit = TRUE;
+      g_clear_error (&error);
+    }
+  self->scan_cleanup_only_error = FALSE;
+  if (!error && cancelled)
+    error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "Authentication cancelled");
+  if (!error && removed)
+    error = fpi_device_error_new (FP_DEVICE_ERROR_REMOVED);
   if (!error)
     {
       if (!self->pending_result_report)
@@ -650,6 +670,7 @@ goodix_auth_start (FpDevice *dev)
   self->cancel = g_cancellable_new ();
   goodix_clear_pending_result_report (self);
   self->action_epoch++;
+  self->scan_cleanup_only_error = FALSE;
   if (self->action_epoch == 0)
     self->action_epoch++;
 #ifdef GOODIX53X5_DEBUG
