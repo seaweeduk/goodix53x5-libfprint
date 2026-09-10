@@ -181,6 +181,7 @@ goodix_cmd_operation_free (GoodixCmdOperation *operation)
 static gboolean
 goodix_validate_ack_for_cmd (FpDevice        *dev,
                              const GoodixCmd *cmd,
+                             guint8          *status,
                              GError         **error)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
@@ -207,8 +208,7 @@ goodix_validate_ack_for_cmd (FpDevice        *dev,
       return FALSE;
     }
 
-  if (payload[0] != expected_cmd_byte ||
-      (payload[1] & GOODIX_PROTO_ACK_FLAG_VALID) == 0)
+  if (payload[0] != expected_cmd_byte)
     {
       g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
                    "Unexpected ACK: expected cmd_byte=0x%02x, got ack_cmd=0x%02x flags=0x%02x",
@@ -216,6 +216,7 @@ goodix_validate_ack_for_cmd (FpDevice        *dev,
       return FALSE;
     }
 
+  *status = payload[1];
   return TRUE;
 }
 
@@ -536,7 +537,7 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
           goodix_proto_rx_parse (&self->rx, &category, &command,
                                  &payload, &payload_len) &&
           category == GOODIX_PROTO_CATEGORY_ACK && command == GOODIX_PROTO_CMD_ACK &&
-          payload_len >= 2 && (payload[1] & GOODIX_PROTO_ACK_FLAG_VALID) &&
+          payload_len >= 2 &&
           (self->retried_mode_acks & goodix_mode_ack_bit (payload[0])))
         {
           goodix_proto_rx_reset (&self->rx);
@@ -676,6 +677,7 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
         guint8 category, command;
         const guint8 *payload;
         gsize payload_len;
+        guint8 status;
 
         /* Native applies EVERY event's base updates before replacing its one
          * worker notification. Keep these updates even across ACK failure;
@@ -714,13 +716,18 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
             return;
           }
 
-        if (!goodix_validate_ack_for_cmd (dev, cmd, &error))
+        if (!goodix_validate_ack_for_cmd (dev, cmd, &status, &error))
           {
             fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
             return;
           }
 
-        fpi_ssm_next_state (ssm);
+        /* A valid even status leaves the ACK unsatisfied. Keep this attempt's
+         * original deadline; only exhaustion invokes its existing retry policy. */
+        if ((status & GOODIX_PROTO_ACK_FLAG_VALID) == 0)
+          fpi_ssm_jump_to_state (ssm, GOODIX_CMD_RECV_ACK);
+        else
+          fpi_ssm_next_state (ssm);
       }
       break;
 
