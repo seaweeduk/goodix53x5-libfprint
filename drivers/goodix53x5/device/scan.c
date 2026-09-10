@@ -743,6 +743,37 @@ goodix_scan_coordinator_done (FpiSsm   *ssm,
 }
 
 void
+goodix_scan_note_command_error (FpiSsm *ssm, FpDevice *dev, const GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixScanCoordinatorData *data;
+  gboolean ordinary;
+  gint state;
+
+  if (self->profile9_fdt.owner != ssm)
+    return;
+  state = fpi_ssm_get_cur_state (ssm);
+  if (state != GOODIX_SCAN_COORD_CLEANUP_SLEEP && state != GOODIX_SCAN_COORD_CLEANUP_EC_OFF)
+    {
+      self->scan_cleanup_only_error = FALSE;
+      return;
+    }
+  data = fpi_ssm_get_data (ssm);
+  ordinary = error->domain == G_USB_DEVICE_ERROR &&
+             (error->code == G_USB_DEVICE_ERROR_TIMED_OUT ||
+              error->code == G_USB_DEVICE_ERROR_IO ||
+              error->code == G_USB_DEVICE_ERROR_FAILED ||
+              error->code == G_USB_DEVICE_ERROR_NOT_SUPPORTED ||
+              error->code == G_USB_DEVICE_ERROR_INTERNAL);
+  if (!ordinary || data->stop_error || !data->cpu_done || data->cpu_outstanding)
+    self->scan_cleanup_only_error = FALSE;
+  else if (!fpi_ssm_get_error (ssm))
+    self->scan_cleanup_only_error = TRUE;
+  /* A preceding capture/processing error retains its first-error ownership.
+   * A later protocol, cancellation or removal failure revokes cleanup-only. */
+}
+
+void
 goodix_scan_start_coordinator_subsm (
   FpiSsm                       *parent_ssm,
   FpDevice                     *dev,
@@ -765,6 +796,7 @@ goodix_scan_start_coordinator_subsm (
     }
 
   data = g_new0 (GoodixScanCoordinatorData, 1);
+  self->scan_cleanup_only_error = FALSE;
   data->parent_ssm = parent_ssm;
   data->capture_ready = capture_ready;
   data->cycle_settled = cycle_settled;

@@ -101,6 +101,9 @@ struct _FpiDeviceGoodix53x5
   /* Native response events reset per send; the manual cache survives reset.
    * Retain its four metadata bytes for existing Linux touch-flag consumers. */
   guint8 command_response_ready;
+  /* Current scan's first error is ordinary deactivation transport failure,
+   * after worker join. Only authentication may preserve a computed result. */
+  gboolean scan_cleanup_only_error;
   guint8 manual_response[4 + GOODIX_FDT_BASE_LEN];
   /* Parser mutations precede coalesced notification. The latest reverse event
    * retains the down base installed by its predecessor, not the arm payload. */

@@ -23,6 +23,7 @@
 #include "driver-private.h"
 #include "device/transport.h"
 #include "device/calibration.h"
+#include "device/scan.h"
 
 #include <string.h>
 
@@ -905,6 +906,7 @@ goodix_cmd_ssm_done (FpiSsm   *ssm,
 
   if (error)
     {
+      goodix_scan_note_command_error (operation->parent_ssm, dev, error);
       goodix_mark_coordinator_io_failure (self, error);
       fpi_ssm_mark_failed (operation->parent_ssm, error);
     }

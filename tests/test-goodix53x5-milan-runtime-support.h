@@ -11,6 +11,7 @@
 #pragma once
 
 #include "drivers_api.h"
+
 #include "fpi-print.h"
 #include "drivers/goodix53x5/device/scan.h"
 #include "drivers/goodix53x5/driver-private.h"
@@ -123,6 +124,7 @@ gboolean milan_runtime_harness_stale_error (const GError *error);
 
 void test_auth_gallery_outcomes (void);
 void test_auth_publication_contracts (void);
+void test_auth_cleanup_results (gconstpointer user_data);
 void test_malformed_current_print (void);
 void test_cancellation_no_publication (void);
 void test_enrollment_combine_retry (void);

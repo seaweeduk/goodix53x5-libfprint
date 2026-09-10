@@ -61,6 +61,8 @@ typedef enum {
   SEND_STALL_RETRY,
   SEND_INTERNAL_RETRY,
   WRITE_STALLED_CANCEL,
+  EARLIER_CLEANUP_ERROR,
+  CLEANUP_LATE_PROTO,
   SAME_COMMAND_PRECEDENCE,
   MULTICELL_DATA,
   ACK_ZERO_THEN_ONE,
@@ -399,11 +401,12 @@ complete_usb (gpointer unused)
                                        "Action write cancelled before completion");
         }
       else if (io.command == 0x34 && io.sends[0x34] == 1 &&
-               order >= SEND_IO_RETRY && order <= SEND_INTERNAL_RETRY)
+               ((order >= SEND_IO_RETRY && order <= SEND_INTERNAL_RETRY) ||
+                order == EARLIER_CLEANUP_ERROR))
         {
           gint code = order == SEND_IO_RETRY ? G_USB_DEVICE_ERROR_IO :
             order == SEND_TIMEOUT_RETRY ? G_USB_DEVICE_ERROR_TIMED_OUT :
-            order == SEND_DISCONNECT ? G_USB_DEVICE_ERROR_NO_DEVICE :
+            order == SEND_DISCONNECT || order == EARLIER_CLEANUP_ERROR ? G_USB_DEVICE_ERROR_NO_DEVICE :
             order == SEND_CANCELLED ? G_USB_DEVICE_ERROR_CANCELLED :
             order == SEND_FAILED_RETRY ? G_USB_DEVICE_ERROR_FAILED :
             order == SEND_STALL_RETRY ? G_USB_DEVICE_ERROR_NOT_SUPPORTED : G_USB_DEVICE_ERROR_INTERNAL;
@@ -551,7 +554,9 @@ complete_usb (gpointer unused)
     }
   else if (!io.ec_data)
     {
-      if (scenario->event_order == EC_LATE_ACK && io.command == scenario->standalone_arm &&
+      if (scenario->event_order == CLEANUP_LATE_PROTO && io.command == 0xae)
+        reply (transfer, 0xb, 0, &io.command, 1);
+      else if (scenario->event_order == EC_LATE_ACK && io.command == scenario->standalone_arm &&
           io.duplicates == 0)
         {
           if (io.timeout != 500)
@@ -1210,7 +1215,7 @@ test_scenario (gconstpointer user_data)
                       io.packet_down[1][0], io.packet_manual[1][0]);
     }
   gboolean excluded_send = scenario->event_order == SEND_DISCONNECT ||
-    scenario->event_order == SEND_CANCELLED;
+    scenario->event_order == SEND_CANCELLED || scenario->event_order == EARLIER_CLEANUP_ERROR;
   gboolean malformed = scenario->event_order == ACK_EVEN_THEN_MALFORMED ||
                        scenario->event_order == ARM_CONFIG_PROTO;
   if (stop_state_case (scenario))
@@ -1301,6 +1306,17 @@ test_scenario (gconstpointer user_data)
         g_test_fail ();
   gboolean exhausted_arm = scenario->event_order == ARM_REPEAT_FAIL ||
                            scenario->event_order == ARM_FIRST_FAIL;
+  if (!scenario->standalone_arm &&
+      ((scenario->timeout_command == 0x60 && scenario->timeout_count == 2) ||
+       scenario->timeout_command == 0xae))
+    {
+      gboolean cleanup_only = scenario->event_order != EARLIER_CLEANUP_ERROR &&
+                              scenario->event_order != CLEANUP_LATE_PROTO;
+      if (self->scan_cleanup_only_error != cleanup_only)
+        g_test_fail ();
+    }
+  if ((cancelled || excluded_send) && self->scan_cleanup_only_error)
+    g_test_fail ();
   if (scenario->event_order == WRITE_STALLED_CANCEL &&
       (io.started_writes != 1 || io.precancelled_writes != 2 || io.cancelled_writes != 3))
     g_test_fail ();
@@ -1339,7 +1355,8 @@ test_scenario (gconstpointer user_data)
                     (self->needs_reinit != (io.cancelled_writes != 0)) ||
                     !g_error_matches (io.error, G_IO_ERROR, G_IO_ERROR_CANCELLED))) ||
       (excluded_send && !g_error_matches (io.error, G_USB_DEVICE_ERROR,
-                           scenario->event_order == SEND_DISCONNECT ?
+                           scenario->event_order == SEND_DISCONNECT ||
+                           scenario->event_order == EARLIER_CLEANUP_ERROR ?
                            G_USB_DEVICE_ERROR_NO_DEVICE : G_USB_DEVICE_ERROR_CANCELLED)) ||
       (!scenario->success && !exhausted_arm && !cancelled && !excluded_send && !malformed &&
        (!g_error_matches (io.error, G_USB_DEVICE_ERROR,
@@ -1413,6 +1430,10 @@ main (int argc, char **argv)
   static const Scenario drain_control = { 0, 0, 1, 1, TRUE, STOP_DRAIN_CONTROL };
 
   g_test_init (&argc, &argv, NULL);
+  static const Scenario cleanup_earlier = { 0x60, 2, 1, 2, FALSE, EARLIER_CLEANUP_ERROR };
+  static const Scenario cleanup_protocol = { 0x60, 2, 1, 2, FALSE, CLEANUP_LATE_PROTO };
+  g_test_add_data_func ("/goodix53x5/milan/transport/cleanup/earlier-error", &cleanup_earlier, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/cleanup/later-protocol", &cleanup_protocol, test_scenario);
   static const Scenario writes[] = {
     { 0, 0, 2, 1, TRUE, SEND_FAILED_RETRY },
     { 0, 0, 2, 1, TRUE, SEND_STALL_RETRY },

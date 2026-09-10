@@ -21,6 +21,9 @@
 
 #include "driver-private.h"
 
+/* Record command failure before the scan SSM retains its first error. */
+void goodix_scan_note_command_error (FpiSsm *ssm, FpDevice *dev, const GError *error);
+
 typedef enum
 {
   /* Authentication matched; stop without waiting for a later lift event. */
