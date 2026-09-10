@@ -64,6 +64,9 @@ typedef enum {
   DOWN_BEFORE_SLEEP_ACK,
   REVERSE_BEFORE_SLEEP_ACK,
   STOP_DRAIN_CONTROL,
+  CANCEL_ARM_FIRST,
+  CANCEL_ARM_REPEAT,
+  CANCEL_ARM_CONFIG,
   RESPONSE_EARLY,
   RESPONSE_RETRY,
   RESPONSE_EARLY_RESET,
@@ -71,6 +74,16 @@ typedef enum {
   RESPONSE_DUPLICATE,
   RESPONSE_ASYNC,
   RESPONSE_HANDOFF,
+  ARM_STATUS,
+  ARM_CONFIG_FAIL,
+  ARM_REPEAT_FAIL,
+  ARM_REPEAT_STATUS,
+  ARM_REFRESH,
+  ARM_MAX,
+  ARM_CONFIG_DATA_FAIL,
+  ARM_CONFIG_PROTO,
+  ARM_CONFIG_CANCEL,
+  ARM_FIRST_FAIL,
 } EventOrder;
 
 typedef struct {
@@ -156,6 +169,30 @@ mock_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel,
       io.command = transfer->buffer[0];
       io.sends[io.command]++;
       io.ec_data = FALSE;
+      if (io.scenario->event_order >= ARM_STATUS && io.command == 0x90)
+        {
+          gsize len;
+          const guint8 *config = goodix_device_get_default_config (&len);
+          guint8 expected[256];
+          guint16 sum = 0xa5a5;
+
+          g_assert_cmpuint (len, ==, sizeof (expected));
+          memcpy (expected, config, len);
+          expected[0xc7] = 0x80;
+          expected[0xc8] = 30; /* Native delta patch; zero TCODE / invalid DAC retain template. */
+          for (guint i = 0; i < 254; i += 2)
+            sum += expected[i] | ((guint16) expected[i + 1] << 8);
+          sum = -sum;
+          expected[254] = sum;
+          expected[255] = sum >> 8;
+          for (guint i = 0; i < sizeof (expected); i++)
+            {
+              guint offset = i + 3;
+              guint wire_offset = offset < 64 ? offset :
+                                  64 + ((offset - 64) / 63) * 64 + 1 + (offset - 64) % 63;
+              g_assert_cmpuint (transfer->buffer[wire_offset], ==, expected[i]);
+            }
+        }
       if (io.command == 0xae)
         io.ec_ack_started = 0;
       if (io.command == 0x34)
@@ -173,7 +210,8 @@ mock_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel,
         {
           g_autoptr(GBytes) bytes = g_bytes_new (transfer->buffer,
                                                 transfer->length);
-          if (*first && !(io.command == 0x32 &&
+          if (*first && !(io.scenario->event_order == ARM_REFRESH && io.command == 0x32) &&
+              !(io.command == 0x32 &&
                          (io.scenario->event_order == EARLY_REARM_REVERSE ||
                           io.scenario->event_order == TWO_EARLY_REVERSE) &&
                          io.sends[0x32] > 1 + io.scenario->timeout_count))
@@ -248,7 +286,7 @@ response_case (const Scenario *scenario)
          scenario->event_order == DUPLICATE_SLEEP_AFTER_EC_ACK ||
          scenario->event_order == EC_LATE_ACK ||
           scenario->event_order == EC_LATE_DATA ||
-          scenario->event_order >= RESPONSE_EARLY;
+          (scenario->event_order >= RESPONSE_EARLY && scenario->event_order < ARM_STATUS);
 }
 
 static void
@@ -284,6 +322,13 @@ stop_after_capture (FpDevice *dev)
 }
 
 static gboolean
+cancel_arm_case (const Scenario *scenario)
+{
+  return scenario->event_order >= CANCEL_ARM_FIRST &&
+         scenario->event_order <= CANCEL_ARM_CONFIG;
+}
+
+static gboolean
 complete_usb (gpointer unused)
 {
   FpiUsbTransfer *transfer = io.pending;
@@ -302,6 +347,7 @@ complete_usb (gpointer unused)
   /* Request stop with the up-arm ACK still outstanding, except for the
    * separately controlled event-completion/cancellation boundary. */
   if (!scenario->standalone_arm && !rearm_case (scenario) && !io.disposition_sent &&
+      !cancel_arm_case (scenario) &&
       scenario->event_order != RESPONSE_HANDOFF &&
       scenario->event_order != EVENT_BEFORE_ARM_ACK &&
       transfer->endpoint == GOODIX_EP_IN &&
@@ -369,6 +415,73 @@ complete_usb (gpointer unused)
           io.cancellations++;
           error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
                                         "Scheduled event cancellation");
+        }
+    }
+  else if (cancel_arm_case (scenario))
+    {
+      gboolean config = io.command == 0x90;
+      gboolean cancel_now = !io.action_cancelled &&
+        ((io.command == 0x34 &&
+          (scenario->event_order == CANCEL_ARM_FIRST ||
+           (scenario->event_order == CANCEL_ARM_REPEAT && io.sends[0x90]))) ||
+         (config && io.ec_data && scenario->event_order == CANCEL_ARM_CONFIG));
+
+      if (cancel_now)
+        {
+          io.action_cancelled = TRUE;
+          g_cancellable_cancel (FPI_DEVICE_GOODIX53X5 (transfer->device)->cancel);
+        }
+      if (io.command == 0x60 && scenario->event_order != CANCEL_ARM_CONFIG && !io.events)
+        up_event (transfer);
+      else if (config && io.ec_data)
+        {
+          guint8 status = 0;
+          reply (transfer, 9, 0, &status, 1);
+        }
+      else
+        {
+          guint8 ack[] = { io.command, io.command == 0x34 && !io.sends[0x90] ?
+                          scenario->ec_status : 1 };
+          reply (transfer, 0xb, 0, ack, sizeof (ack));
+          io.ec_data = config;
+        }
+    }
+  else if (scenario->event_order >= ARM_STATUS)
+    {
+      gboolean config = io.command == 0x90;
+      gboolean repeated = io.sends[0x90] != 0;
+      if (config && scenario->event_order == ARM_CONFIG_PROTO)
+        reply (transfer, 0xb, 0, &io.command, 1);
+      else if (config && scenario->event_order == ARM_CONFIG_CANCEL)
+        {
+          io.action_cancelled = TRUE;
+          g_cancellable_cancel (FPI_DEVICE_GOODIX53X5 (transfer->device)->cancel);
+          error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "Scheduled repair cancellation");
+        }
+      else if (scenario->event_order == ARM_FIRST_FAIL ||
+               (config && (scenario->event_order == ARM_CONFIG_FAIL ||
+                           (scenario->event_order == ARM_CONFIG_DATA_FAIL && io.ec_data))) ||
+          (!config && repeated && scenario->event_order == ARM_REPEAT_FAIL) ||
+          (!config && scenario->event_order == ARM_MAX && (io.sends[io.command] & 1)))
+        {
+          test_clock_us += io.timeout * 1000;
+          error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                       "Scheduled arm recovery timeout");
+        }
+      else if (config && scenario->event_order == ARM_REFRESH && io.events < 2)
+        reverse_event (transfer, io.events);
+      else if (config && io.ec_data)
+        {
+          guint8 status = 0;
+          reply (transfer, 9, 0, &status, 1);
+        }
+      else
+        {
+          guint8 ack[] = { io.command, config ? 1 :
+                          repeated ? (scenario->event_order == ARM_REPEAT_STATUS ? 3 : 1) :
+                          scenario->ec_status };
+          reply (transfer, 0xb, 0, ack, sizeof (ack));
+          io.ec_data = config;
         }
     }
   else if (scenario->event_order == RESPONSE_DUPLICATE && io.command == 0xae &&
@@ -773,7 +886,10 @@ arm_handler (FpiSsm *ssm, FpDevice *dev)
         goodix_cmd_fdt_up_setup (ssm, dev, self->profile9_fdt.base_up);
       break;
     case 1:
-      goodix_recv_start (ssm, dev, 0, NULL);
+      if (io.scenario->event_order >= ARM_STATUS && goodix_recv_take_pending_fdt (dev))
+        fpi_ssm_next_state (ssm);
+      else
+        goodix_recv_start (ssm, dev, 0, NULL);
       break;
     case 2:
       {
@@ -945,6 +1061,8 @@ test_scenario (gconstpointer user_data)
   self->profile9_fdt.base_valid = TRUE;
   self->profile9_fdt.drift_anchor_empty = TRUE;
   self->calib.delta_down = 30;
+  if (scenario->event_order >= ARM_STATUS)
+    io.duplicates = 1; /* These controls need no synthetic late arm ACK. */
   if (stop_state_case (scenario))
     {
       self->profile9_fdt.drift_anchor_empty = FALSE;
@@ -1001,6 +1119,10 @@ test_scenario (gconstpointer user_data)
   for (guint step = 0; io.completions == 0 && step < 48; step++)
     {
       gboolean completed = FALSE;
+      if (!io.pending && cancel_arm_case (scenario) && !io.disposition_sent &&
+          self->profile9_fdt.owner &&
+          fpi_ssm_get_cur_state (self->profile9_fdt.owner) == GOODIX_SCAN_COORD_WAIT_CPU)
+        stop_after_capture (dev);
       if (!io.pending && (rearm_case (scenario) || scenario->event_order == RESPONSE_HANDOFF) &&
           io.wait_cpu_count && !io.disposition_sent)
         stop_after_capture (dev);
@@ -1033,8 +1155,11 @@ test_scenario (gconstpointer user_data)
                   io.error ? io.error->message : "success");
   /* Report contract differences without aborting, so every scheduled case
    * releases its owners and the complete suite can expose baseline failures. */
-  gboolean cancelled = scenario->event_order == CANCEL_DURING_RETRY;
-  gboolean delivered = (scenario->standalone_arm && scenario->event_order != MULTICELL_DATA &&
+  gboolean cancelled = scenario->event_order == CANCEL_DURING_RETRY ||
+                        cancel_arm_case (scenario) ||
+                       scenario->event_order == ARM_CONFIG_CANCEL;
+  gboolean delivered = (scenario->standalone_arm && scenario->event_order < ARM_STATUS &&
+                         scenario->event_order != MULTICELL_DATA &&
                          !response_case (scenario)) ||
     scenario->event_order == EVENT_BEFORE_ARM_ACK ||
     scenario->event_order == EVENT_COMPLETES_DURING_CANCEL;
@@ -1088,7 +1213,26 @@ test_scenario (gconstpointer user_data)
     }
   gboolean excluded_send = scenario->event_order == SEND_DISCONNECT ||
     scenario->event_order == SEND_CANCELLED;
-  gboolean malformed = scenario->event_order == ACK_EVEN_THEN_MALFORMED;
+  if (cancel_arm_case (scenario))
+    {
+      gboolean armed = scenario->event_order != CANCEL_ARM_CONFIG;
+
+      if (io.dispatches || io.events != armed ||
+          io.sends[0x90] != (scenario->event_order != CANCEL_ARM_FIRST) ||
+          io.sends[0x32] || self->pending_fdt_packet_len)
+        g_test_fail ();
+      for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+        {
+          guint16 sample = (6 * i + 1) | ((6 * i + 4) << 8);
+          guint16 expected = armed ? (sample / 2) * 0x101 : 0;
+
+          if (self->profile9_fdt.base_down[2 * i] != (expected & 0xff) ||
+              self->profile9_fdt.base_down[2 * i + 1] != (expected >> 8))
+            g_test_fail ();
+        }
+    }
+  gboolean malformed = scenario->event_order == ACK_EVEN_THEN_MALFORMED ||
+                       scenario->event_order == ARM_CONFIG_PROTO;
   if (stop_state_case (scenario))
     {
       gboolean down = scenario->event_order == DOWN_BEFORE_SLEEP_ACK;
@@ -1125,7 +1269,8 @@ test_scenario (gconstpointer user_data)
       (io.sends[scenario->standalone_arm] != (scenario->event_order == RESPONSE_DEADLINE ? 2 : 1) ||
        io.data_chunks != (scenario->event_order == RESPONSE_DEADLINE ? 2 : 1) || io.events || io.dispatches))
     g_test_fail ();
-  if (scenario->event_order >= RESPONSE_EARLY && scenario->event_order != RESPONSE_HANDOFF &&
+  if (scenario->event_order >= RESPONSE_EARLY && scenario->event_order < ARM_STATUS &&
+      scenario->event_order != RESPONSE_HANDOFF &&
       (io.sends[scenario->standalone_arm] !=
        (scenario->event_order == RESPONSE_RETRY || scenario->event_order == RESPONSE_EARLY_RESET ? 2 : 1) ||
        io.events != (scenario->event_order == RESPONSE_ASYNC ? 2 : 0) || io.dispatches))
@@ -1174,9 +1319,28 @@ test_scenario (gconstpointer user_data)
     for (guint i = 0; i < GOODIX_FDT_BASE_LEN; i++)
       if (self->profile9_fdt.event.raw[i] != 3 * i + 1)
         g_test_fail ();
+  gboolean exhausted_arm = scenario->event_order == ARM_REPEAT_FAIL ||
+                           scenario->event_order == ARM_FIRST_FAIL;
+  if (scenario->event_order >= ARM_STATUS)
+    {
+      guint arms = malformed || cancelled ? 1 : scenario->event_order == ARM_MAX ? 4 :
+                   scenario->event_order == ARM_REPEAT_FAIL ? 3 :
+                   scenario->event_order == ARM_FIRST_FAIL ? 2 :
+                   scenario->ec_status == 1 ? 1 : 2;
+      guint configs = scenario->event_order == ARM_CONFIG_FAIL ||
+                      scenario->event_order == ARM_CONFIG_DATA_FAIL ? 2 :
+                      scenario->ec_status == 1 || scenario->event_order == ARM_FIRST_FAIL ? 0 : 1;
+      if (io.sends[scenario->standalone_arm] != arms || io.sends[0x90] != configs ||
+          io.events != (malformed || cancelled ? 0 : scenario->event_order == ARM_REFRESH ? 2 : 1))
+        g_test_fail ();
+      if (scenario->event_order == ARM_REFRESH)
+        for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+          if (io.last_down_payload[2 * i] != 51 + i || io.last_down_payload[2 * i + 1] != 51 + i)
+            g_test_fail ();
+    }
   if (io.sends[0x34] != scenario->expected_up_sends ||
       io.sends[0x60] != scenario->expected_sleep_sends ||
-      (scenario->standalone_arm == 0x32 && io.sends[0x32] != 2) ||
+      (scenario->standalone_arm == 0x32 && scenario->event_order < ARM_STATUS && io.sends[0x32] != 2) ||
       (delivered && (io.events != 1 || io.dispatches != 1)) ||
       (duplicate && io.duplicates != 1) ||
       (scenario->event_order == MULTICELL_DATA && (io.data_chunks != 3 || io.sends[0x20] != 1)) ||
@@ -1186,13 +1350,14 @@ test_scenario (gconstpointer user_data)
         scenario->event_order == LATE_EVEN_DEADLINE) &&
        (io.deadline_violation || io.expected_acks || io.duplicates != 1 ||
         test_clock_us - io.ec_ack_started != ack_budget (0xae) * 1000LL || io.sends[0xae] != 1)) ||
-      (scenario->success && (io.error || self->needs_reinit)) ||
+      (scenario->success && (io.error || (self->needs_reinit && !exhausted_arm))) ||
+      (exhausted_arm && (io.error || !self->needs_reinit)) ||
       (cancelled && (!io.action_cancelled || self->needs_reinit ||
                     !g_error_matches (io.error, G_IO_ERROR, G_IO_ERROR_CANCELLED))) ||
       (excluded_send && !g_error_matches (io.error, G_USB_DEVICE_ERROR,
                            scenario->event_order == SEND_DISCONNECT ?
                            G_USB_DEVICE_ERROR_NO_DEVICE : G_USB_DEVICE_ERROR_CANCELLED)) ||
-      (!scenario->success && !cancelled && !excluded_send && !malformed &&
+      (!scenario->success && !exhausted_arm && !cancelled && !excluded_send && !malformed &&
        (!g_error_matches (io.error, G_USB_DEVICE_ERROR,
                            G_USB_DEVICE_ERROR_TIMED_OUT) || !self->needs_reinit)))
     {
@@ -1263,6 +1428,48 @@ main (int argc, char **argv)
   static const Scenario drain_control = { 0, 0, 1, 1, TRUE, STOP_DRAIN_CONTROL };
 
   g_test_init (&argc, &argv, NULL);
+  static const Scenario cancel_arms[] = {
+    { 0, 0, 1, 1, FALSE, CANCEL_ARM_FIRST, 0, 1 },
+    { 0, 0, 1, 1, FALSE, CANCEL_ARM_FIRST, 0, 3 },
+    { 0, 0, 2, 1, FALSE, CANCEL_ARM_REPEAT, 0, 3 },
+    { 0, 0, 1, 1, FALSE, CANCEL_ARM_CONFIG, 0, 3 },
+  };
+  const char *cancel_arm_names[] = { "first", "first-status-three", "repeat", "config" };
+  for (guint i = 0; i < G_N_ELEMENTS (cancel_arms); i++)
+    {
+      g_autofree char *name = g_strdup_printf ("/goodix53x5/milan/transport/cancel-arm/%s",
+                                              cancel_arm_names[i]);
+      g_test_add_data_func (name, &cancel_arms[i], test_scenario);
+    }
+  static const Scenario arms[] = {
+    { 0, 0, 0, 0, TRUE, ARM_STATUS, 0x32, 1 },
+    { 0, 0, 1, 0, TRUE, ARM_STATUS, 0x34, 1 },
+    { 0, 0, 0, 0, TRUE, ARM_STATUS, 0x32, 3 },
+    { 0, 0, 2, 0, TRUE, ARM_STATUS, 0x34, 3 },
+    { 0, 0, 0, 0, TRUE, ARM_STATUS, 0x32, 7 },
+    { 0, 0, 2, 0, TRUE, ARM_STATUS, 0x34, 7 },
+    { 0, 0, 0, 0, TRUE, ARM_CONFIG_FAIL, 0x32, 3 },
+    { 0, 0, 0, 0, TRUE, ARM_REPEAT_FAIL, 0x32, 3 },
+    { 0, 0, 0, 0, TRUE, ARM_REPEAT_STATUS, 0x32, 3 },
+    { 0, 0, 0, 0, TRUE, ARM_REFRESH, 0x32, 3 },
+    { 0, 0, 0, 0, TRUE, ARM_MAX, 0x32, 3 },
+    { 0, 0, 0, 0, TRUE, ARM_CONFIG_DATA_FAIL, 0x32, 3 },
+    { 0, 0, 0, 0, FALSE, ARM_CONFIG_PROTO, 0x32, 3 },
+    { 0, 0, 0, 0, FALSE, ARM_CONFIG_CANCEL, 0x32, 3 },
+    { 0, 0, 0, 0, TRUE, ARM_FIRST_FAIL, 0x32, 3 },
+  };
+  const char *arm_names[] = {
+    "down-one", "up-one", "down-three", "up-three", "down-seven", "up-seven",
+    "config-fails-still-rearm", "repeat-fails-still-wait", "repeat-three-no-reload",
+    "fresh-base-after-config", "four-arm-bound",
+    "config-data-fails-still-rearm", "config-protocol-no-rearm", "config-cancel-no-rearm",
+    "first-fails-still-wait",
+  };
+  for (guint i = 0; i < G_N_ELEMENTS (arms); i++)
+    {
+      g_autofree char *name = g_strdup_printf ("/goodix53x5/milan/transport/arm-repair/%s", arm_names[i]);
+      g_test_add_data_func (name, &arms[i], test_scenario);
+    }
   static const Scenario responses[] = {
     { 0, 0, 0, 1, TRUE, RESPONSE_EARLY, 0x36 },
     { 0, 0, 0, 1, TRUE, RESPONSE_EARLY, 0x90 },

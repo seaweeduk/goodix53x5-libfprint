@@ -23,6 +23,7 @@
 #include "driver-private.h"
 #include "device/transport.h"
 #include "device/commands.h"
+#include "device/calibration.h"
 
 #include <string.h>
 
@@ -188,30 +189,113 @@ goodix_cmd_upload_config (FpiSsm *ssm, FpDevice *dev,
   goodix_run_cmd (ssm, dev, 0x9, 0x0, config, config_len, TRUE);
 }
 
-void
-goodix_cmd_fdt_down_setup (FpiSsm *ssm, FpDevice *dev,
-                           const guint8 *fdt_base)
+typedef enum {
+  GOODIX_ARM_FIRST,
+  GOODIX_ARM_CONFIG,
+  GOODIX_ARM_REPEAT,
+  GOODIX_ARM_NUM_STATES,
+} GoodixArmState;
+
+typedef struct
 {
-  guint8 *payload;
+  FpiSsm *parent;
+  guint8  command;
+  guint8  first_base[GOODIX_FDT_BASE_LEN];
+} GoodixArmOperation;
+
+static void
+goodix_arm_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
+                   gboolean native_zero, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixArmOperation *operation = fpi_ssm_get_data (ssm);
+  GoodixArmState state = fpi_ssm_get_cur_state (ssm);
+
+  if (error)
+    g_prefix_error (&error, "FDT arm parent-state=%d: ", fpi_ssm_get_cur_state (operation->parent));
+  if (error && !native_zero)
+    {
+      if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        self->needs_reinit = TRUE;
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+  /* Native's arm wrapper waits for FDT even after an exhausted arm. This
+   * publishes no capture/result. Retain reinitialization for the next action;
+   * configuration failure alone does not poison a successful repeated arm. */
+  if (error && state != GOODIX_ARM_CONFIG)
+    self->needs_reinit = TRUE;
+  if (error)
+    fp_dbg ("Continuing native FDT wait/repair after %s", error->message);
+  g_clear_error (&error);
+  if (self->cancel && g_cancellable_is_cancelled (self->cancel))
+    {
+      /* A completed arm must reach the coordinator's cancelled-event drain.
+       * Cancellation still prevents configuration repair or another arm. */
+      if (state != GOODIX_ARM_CONFIG && !native_zero)
+        fpi_ssm_mark_completed (ssm);
+      else
+        fpi_ssm_mark_failed (ssm, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                                       "FDT arm cancelled"));
+      return;
+    }
+  if (state == GOODIX_ARM_CONFIG ||
+      (state == GOODIX_ARM_FIRST && !native_zero && (status & 3) == 3))
+    fpi_ssm_next_state (ssm);
+  else
+    fpi_ssm_mark_completed (ssm);
+}
+
+static void
+goodix_arm_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixArmOperation *operation = fpi_ssm_get_data (ssm);
+  g_autofree guint8 *payload = NULL;
   gsize payload_len;
 
-  goodix_build_fdt_payload (0x0C, fdt_base, &payload, &payload_len);
-  goodix_run_cmd (ssm, dev, GOODIX_PROTO_CATEGORY_FDT,
-                  GOODIX_PROTO_CMD_FDT_DOWN, payload, payload_len, FALSE);
-  g_free (payload);
+  if (fpi_ssm_get_cur_state (ssm) == GOODIX_ARM_CONFIG)
+    {
+      const guint8 *config = goodix_device_get_default_config (&payload_len);
+      payload = g_memdup2 (config, payload_len);
+      goodix_device_patch_config (payload, payload_len, &self->calib);
+      goodix_run_cmd_result (ssm, dev, 9, 0, payload, payload_len, TRUE, goodix_arm_result);
+    }
+  else
+    {
+      const guint8 *base = fpi_ssm_get_cur_state (ssm) == GOODIX_ARM_FIRST ?
+                           operation->first_base : operation->command == GOODIX_PROTO_CMD_FDT_DOWN ?
+                           self->profile9_fdt.base_down : self->profile9_fdt.base_up;
+      goodix_build_fdt_payload (operation->command == GOODIX_PROTO_CMD_FDT_DOWN ? 0x0c : 0x0e,
+                                base, &payload, &payload_len);
+      goodix_run_cmd_result (ssm, dev, GOODIX_PROTO_CATEGORY_FDT, operation->command,
+                             payload, payload_len, FALSE, goodix_arm_result);
+    }
+}
+
+static void
+goodix_arm_start (FpiSsm *parent, FpDevice *dev, guint8 command, const guint8 *base)
+{
+  GoodixArmOperation *operation = g_new0 (GoodixArmOperation, 1);
+  FpiSsm *ssm = fpi_ssm_new (dev, goodix_arm_handler, GOODIX_ARM_NUM_STATES);
+
+  operation->command = command;
+  operation->parent = parent;
+  memcpy (operation->first_base, base, sizeof (operation->first_base));
+  fpi_ssm_set_data (ssm, operation, g_free);
+  fpi_ssm_start_subsm (parent, ssm);
 }
 
 void
-goodix_cmd_fdt_up_setup (FpiSsm *ssm, FpDevice *dev,
-                         const guint8 *fdt_base)
+goodix_cmd_fdt_down_setup (FpiSsm *ssm, FpDevice *dev, const guint8 *fdt_base)
 {
-  guint8 *payload;
-  gsize payload_len;
+  goodix_arm_start (ssm, dev, GOODIX_PROTO_CMD_FDT_DOWN, fdt_base);
+}
 
-  goodix_build_fdt_payload (0x0E, fdt_base, &payload, &payload_len);
-  goodix_run_cmd (ssm, dev, GOODIX_PROTO_CATEGORY_FDT,
-                  GOODIX_PROTO_CMD_FDT_UP, payload, payload_len, FALSE);
-  g_free (payload);
+void
+goodix_cmd_fdt_up_setup (FpiSsm *ssm, FpDevice *dev, const guint8 *fdt_base)
+{
+  goodix_arm_start (ssm, dev, GOODIX_PROTO_CMD_FDT_UP, fdt_base);
 }
 
 void
