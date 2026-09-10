@@ -75,10 +75,17 @@ installs `FUN_1800059c0` (`Milan_SetMode`) in this slot for profile 9. The
 callback consumes a 32-bit mode at argument `+0` and a 16-bit timeout at `+4`:
 
 - A null argument returns `-1`.
-- Mode 2 sends category 6, command 0 with no payload through
-  `FUN_180017ec0`, using the supplied timeout. It discards the transport
-  return, writes HAL dword `+0x1e0 = 2`, and returns zero. The stored mode
+- Mode 2 calls `FUN_180017ec0(6, 0, 0, NULL, timeout)`. Its
+  `FUN_180019ec8` (`ChangeMode`) callee constructs the two-byte payload
+  `01 00`, category 6, command 0, checksum selector 1, ACK timeout equal to
+  the supplied timeout, no data-response wait, and response selector `0xff`.
+  A zero transport result causes one identical retry under the same protocol
+  critical section (`0x180063870`); there are at most two attempts.
+  `Milan_SetMode` discards the transport return, writes HAL dword
+  `+0x1e0 = 2`, and returns zero. The stored mode
   therefore records the request, not confirmed hardware success.
+  See `usbinterface-profile9-fdt-event-loop.md` for ACK reception, serialization
+  and the separate request-deactivation owner.
 - Mode 4 calls `FUN_180005094` (`Milan_DlCfg`) and returns its status; it does
   not use the supplied timeout or write `+0x1e0`. The helper builds the
   profile-selected 256-byte configuration, applies retained OTP/calibration
