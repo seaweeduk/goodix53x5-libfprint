@@ -61,6 +61,9 @@ typedef enum {
   RESPONSE_DEADLINE,
   EC_LATE_ACK,
   EC_LATE_DATA,
+  DOWN_BEFORE_SLEEP_ACK,
+  REVERSE_BEFORE_SLEEP_ACK,
+  STOP_DRAIN_CONTROL,
 } EventOrder;
 
 typedef struct {
@@ -176,6 +179,20 @@ rearm_case (const Scenario *scenario)
          scenario->event_order == TWO_EARLY_REVERSE;
 }
 
+static gboolean
+down_drain_case (const Scenario *scenario)
+{
+  return scenario->event_order == DOWN_BEFORE_SLEEP_ACK ||
+         scenario->event_order == REVERSE_BEFORE_SLEEP_ACK;
+}
+
+static gboolean
+stop_state_case (const Scenario *scenario)
+{
+  return down_drain_case (scenario) || scenario->event_order == EVENT_BEFORE_SLEEP_ACK ||
+         scenario->event_order == STOP_DRAIN_CONTROL;
+}
+
 static void
 reverse_event (FpiUsbTransfer *transfer, guint ordinal)
 {
@@ -263,6 +280,10 @@ complete_usb (gpointer unused)
   GError *error = NULL;
   const Scenario *scenario = io.scenario;
   guint events_before = io.events;
+
+  if (down_drain_case (scenario) && io.command == 0x32 &&
+      transfer->endpoint == GOODIX_EP_IN && !io.disposition_sent)
+    stop_after_capture (transfer->device);
 
   g_assert_nonnull (transfer);
   /* Request stop with the up-arm ACK still outstanding, except for the
@@ -398,6 +419,17 @@ complete_usb (gpointer unused)
       else if (io.command == 0x60 &&
                scenario->event_order == EVENT_BEFORE_SLEEP_ACK && io.events == 0)
         up_event (transfer);
+      else if (io.command == 0x60 && down_drain_case (scenario) && io.events == 0)
+        {
+          guint8 payload[4 + GOODIX_FDT_BASE_LEN] = { 2, 0, 0xff, 0x0f };
+
+          if (scenario->event_order == REVERSE_BEFORE_SLEEP_ACK)
+            payload[0] = 0x80;
+          for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+            payload[4 + 2 * i] = 100 + 2 * i;
+          reply (transfer, 3, 1, payload, sizeof (payload));
+          io.events++;
+        }
       else if (io.command == 0x34 && scenario->event_order == EVENT_BEFORE_ARM_ACK &&
                io.events == 0)
         up_event (transfer);
@@ -590,7 +622,7 @@ boundary_handler (FpiSsm *ssm, FpDevice *dev)
   if (fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_DISPATCH_EVENT)
     io.dispatches++;
   if (fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_ENSURE_REFERENCE)
-    fpi_ssm_jump_to_state (ssm, rearm_case (io.scenario)
+    fpi_ssm_jump_to_state (ssm, (rearm_case (io.scenario) || down_drain_case (io.scenario))
                            ? GOODIX_SCAN_COORD_REARM_DOWN : GOODIX_SCAN_COORD_ARM_UP);
   else
     goodix_scan_coordinator_handler (ssm, dev);
@@ -778,6 +810,18 @@ test_scenario (gconstpointer user_data)
   self->profile9_fdt.base_valid = TRUE;
   self->profile9_fdt.drift_anchor_empty = TRUE;
   self->calib.delta_down = 30;
+  if (stop_state_case (scenario))
+    {
+      self->profile9_fdt.drift_anchor_empty = FALSE;
+      memset (self->profile9_fdt.base_down, 45, GOODIX_FDT_BASE_LEN);
+      memset (self->profile9_fdt.base_up, 60, GOODIX_FDT_BASE_LEN);
+      memset (self->profile9_fdt.base_manual, 70, GOODIX_FDT_BASE_LEN);
+      for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+        {
+          self->fdt_prior_down[i] = 0x2222;
+          self->profile9_fdt.drift_anchor[i] = 31 + i;
+        }
+    }
   if (scenario->standalone_arm)
     {
       ssm = scenario->event_order == MULTICELL_DATA
@@ -801,7 +845,7 @@ test_scenario (gconstpointer user_data)
       data->capture_ready = capture_ready;
       data->dispatching = TRUE;
       data->action_cancel = g_object_ref (self->cancel);
-      if (rearm_case (scenario))
+      if (rearm_case (scenario) || down_drain_case (scenario))
         {
           /* Prior capture and up-release have completed; CPU publication has
            * not. B0 is a programmed base distinct from either early event. */
@@ -908,6 +952,38 @@ test_scenario (gconstpointer user_data)
   gboolean excluded_send = scenario->event_order == SEND_DISCONNECT ||
     scenario->event_order == SEND_CANCELLED;
   gboolean malformed = scenario->event_order == ACK_EVEN_THEN_MALFORMED;
+  if (stop_state_case (scenario))
+    {
+      gboolean down = scenario->event_order == DOWN_BEFORE_SLEEP_ACK;
+      gboolean reverse = scenario->event_order == REVERSE_BEFORE_SLEEP_ACK;
+      gboolean up = scenario->event_order == EVENT_BEFORE_SLEEP_ACK;
+
+      if (io.events != (down || reverse || up) || io.dispatches ||
+          io.cancellations != 1 || self->profile9_fdt.event.pending ||
+          self->pending_fdt_packet_len || !self->profile9_fdt.base_valid ||
+          self->profile9_fdt.drift_anchor_empty)
+        g_test_fail ();
+      for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+        {
+          /* Up uses the existing fixture's consecutive bytes; reverse/down
+           * use samples 100,102,... . Expected words are independent formulas. */
+          guint16 sample = (6 * i + 1) | ((6 * i + 4) << 8);
+          guint16 expected_down = up ? (guint16) ((sample >> 1) * 257) :
+                                   reverse ? (50 + i) * 257 : 45 * 257;
+          guint16 expected_up = down ? (80 + i) * 257 : 60 * 257;
+          guint8 expected_manual = reverse ? 45 : 70;
+
+          if (self->profile9_fdt.base_down[2 * i] != (expected_down & 0xff) ||
+              self->profile9_fdt.base_down[2 * i + 1] != (expected_down >> 8) ||
+              self->profile9_fdt.base_up[2 * i] != (expected_up & 0xff) ||
+              self->profile9_fdt.base_up[2 * i + 1] != (expected_up >> 8) ||
+              self->profile9_fdt.base_manual[2 * i] != expected_manual ||
+              self->profile9_fdt.base_manual[2 * i + 1] != expected_manual ||
+              self->fdt_prior_down[i] != (reverse ? 45 : 0x2222) ||
+              self->profile9_fdt.drift_anchor[i] != 31 + i)
+            g_test_fail ();
+        }
+    }
   if (response_case (scenario) &&
       (io.sends[scenario->standalone_arm] != 1 || io.data_chunks != 1 || io.events || io.dispatches))
     g_test_fail ();
@@ -1007,6 +1083,9 @@ main (int argc, char **argv)
   static const Scenario ec_one_ack = { 0, 0, 0, 1, TRUE, EC_LATE_ACK, 0x36, 1 };
   static const Scenario ec_zero_data = { 0, 0, 0, 1, TRUE, EC_LATE_DATA, 0x36, 0 };
   static const Scenario ec_one_data = { 0, 0, 0, 1, TRUE, EC_LATE_DATA, 0x36, 1 };
+  static const Scenario drain_down = { 0, 0, 0, 1, TRUE, DOWN_BEFORE_SLEEP_ACK };
+  static const Scenario drain_reverse = { 0, 0, 0, 1, TRUE, REVERSE_BEFORE_SLEEP_ACK };
+  static const Scenario drain_control = { 0, 0, 1, 1, TRUE, STOP_DRAIN_CONTROL };
 
   g_test_init (&argc, &argv, NULL);
   g_test_add_data_func ("/goodix53x5/milan/transport/stop-during-arm", &control, test_scenario);
@@ -1047,5 +1126,8 @@ main (int argc, char **argv)
   g_test_add_data_func ("/goodix53x5/milan/transport/ec/late-one-before-ack", &ec_one_ack, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/ec/late-zero-before-data", &ec_zero_data, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/ec/late-one-before-data", &ec_one_data, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/stop-state/down", &drain_down, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/stop-state/reverse", &drain_reverse, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/stop-state/no-event", &drain_control, test_scenario);
   return g_test_run ();
 }
