@@ -62,15 +62,23 @@ typedef struct
   gboolean dac_from_otp;
 } GoodixCalibParams;
 
-/* --- Command descriptor for sub-SSM --- */
+typedef enum
+{
+  GOODIX_FDT_EVENT_DOWN = 0,
+  GOODIX_FDT_EVENT_UP,
+  GOODIX_FDT_EVENT_REVERSE,
+} GoodixFdtEventType;
+
 typedef struct
 {
-  guint8   category;
-  guint8   command;
-  guint8  *payload;
-  gsize    payload_len;
-  gboolean use_checksum;
-} GoodixCmd;
+  /* Receive identity and reverse predecessor travel with the coalesced slot;
+   * scan copies selected work before another packet can replace this slot. */
+  GoodixProfile9FdtEvent event;
+  GoodixFdtEventType type;
+  guint16 prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
+} GoodixFdtNotification;
+
+typedef struct _GoodixTransport GoodixTransport;
 
 /* --- Device struct --- */
 struct _FpiDeviceGoodix53x5
@@ -87,13 +95,14 @@ struct _FpiDeviceGoodix53x5
 
   /* Reassembly buffer for multi-chunk reads */
   GoodixReassembly rx;
-  FpiSsm          *rx_owner;
-  guint64          rx_token;
-  gboolean         rx_active;
-
-  /* Exactly one command may own TX and its command-local receives. */
-  FpiSsm *cmd_owner;
-  FpiSsm *cmd_ssm;
+  /* Validated view of the last complete packet, borrowed until RX reset. */
+  gboolean         reply_valid;
+  guint8           reply_category;
+  guint8           reply_command;
+  const guint8    *reply_payload;
+  gsize            reply_payload_len;
+  /* Demand-driven physical IN/OUT and the accepted foreground operation. */
+  GoodixTransport *transport;
 
   /* Repeated mode and issued manual/config ACK slots. Kept for the device
    * lifetime: the wire has no generation or reliable remaining ACK count. */
@@ -108,10 +117,7 @@ struct _FpiDeviceGoodix53x5
   /* Parser mutations precede coalesced notification. The latest reverse event
    * retains the down base installed by its predecessor, not the arm payload. */
   guint16 fdt_prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
-  guint8  pending_fdt_packet[4 + 4 + GOODIX_FDT_BASE_LEN];
-  gsize   pending_fdt_packet_len;
-  GoodixProfile9FdtWaitMode pending_fdt_mode;
-  FpiSsm *idle_rx_ssm;
+  GoodixFdtNotification pending_fdt;
   gboolean rx_idle_partial;
 
   /* Profile-9 FDT state persists across actions and hardware reinitialization. */

@@ -24,6 +24,7 @@
 #include "device/transport.h"
 #include "device/commands.h"
 #include "device/calibration.h"
+#include "device/scan.h"
 
 #include <string.h>
 
@@ -41,6 +42,127 @@
 
 /* HV value for image capture */
 #define GOODIX_HV_VALUE 6
+
+typedef struct
+{
+  FpiSsm                *ssm;
+  GoodixCmdResultCallback result;
+} GoodixCommandCompletion;
+
+static void
+goodix_command_done (FpDevice                    *dev,
+                      const GoodixTransportResult *result,
+                      GError                     *error,
+                      gpointer                    data)
+{
+  GoodixCommandCompletion *completion = data;
+  FpiSsm *ssm = completion->ssm;
+  GoodixCmdResultCallback callback = completion->result;
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  g_free (completion);
+  if (g_error_matches (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_BUSY))
+    {
+      /* Rejection never entered the command's retry or repair workflow. */
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+  /* Interrupted writes can leave the sensor partially commanded. Composite
+   * arm/config workflows own other intermediate failures until they settle. */
+  if (result->write_cancelled)
+    self->needs_reinit = TRUE;
+  if (callback)
+    callback (ssm, dev, result->ack_status, result->ordinary_exhaustion, error);
+  else if (error)
+    {
+      goodix_scan_note_command_error (ssm, dev, error);
+      if (self->profile9_fdt.owner &&
+          !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        self->needs_reinit = TRUE;
+      fpi_ssm_mark_failed (ssm, error);
+    }
+  else
+    fpi_ssm_next_state (ssm);
+}
+
+static void
+goodix_run_cmd_full (FpiSsm                   *ssm,
+                     FpDevice                 *dev,
+                     guint8                    category,
+                     guint8                    command,
+                     const guint8             *payload,
+                     gsize                     payload_len,
+                     gboolean                  expect_data,
+                     GoodixProfile9FdtWaitMode cancelled_mode,
+                     GoodixCmdResultCallback  callback,
+                     gboolean                  idle_after_ack)
+{
+  GoodixCommandCompletion *completion = g_new0 (GoodixCommandCompletion, 1);
+  GoodixTransportRequest request = {
+    .cmd = { category, command, (guint8 *) payload, payload_len, TRUE },
+    .expect_data = expect_data,
+    .idle_after_ack = idle_after_ack,
+    .cancelled_mode = cancelled_mode,
+  };
+
+  completion->ssm = ssm;
+  completion->result = callback;
+  goodix_transport_command (dev, &request, goodix_command_done, completion);
+}
+
+static void
+goodix_run_cmd (FpiSsm       *ssm,
+                FpDevice     *dev,
+                guint8        category,
+                guint8        command,
+                const guint8 *payload,
+                gsize         payload_len,
+                gboolean      expect_data)
+{
+  goodix_run_cmd_full (ssm, dev, category, command, payload, payload_len,
+                       expect_data, GOODIX_PROFILE9_FDT_WAIT_NONE, NULL, FALSE);
+}
+
+static void
+goodix_run_cmd_result (FpiSsm *ssm, FpDevice *dev,
+                       guint8 category, guint8 command,
+                       const guint8 *payload, gsize payload_len,
+                       gboolean expect_data, GoodixCmdResultCallback callback)
+{
+  goodix_run_cmd_full (ssm, dev, category, command, payload, payload_len,
+                       expect_data, GOODIX_PROFILE9_FDT_WAIT_NONE, callback, FALSE);
+}
+
+static void
+goodix_run_cmd_ec_off (FpiSsm *ssm, FpDevice *dev,
+                       const guint8 *payload, gsize payload_len)
+{
+  goodix_run_cmd_full (ssm, dev, 0x0a, 7, payload, payload_len, FALSE,
+                       GOODIX_PROFILE9_FDT_WAIT_NONE, NULL, TRUE);
+}
+
+static void
+goodix_run_cmd_drain_fdt_once (FpiSsm                   *ssm,
+                              FpDevice                 *dev,
+                              guint8                    category,
+                              guint8                    command,
+                              const guint8             *payload,
+                              gsize                     payload_len,
+                              GoodixProfile9FdtWaitMode cancelled_mode)
+{
+  g_return_if_fail (cancelled_mode != GOODIX_PROFILE9_FDT_WAIT_NONE);
+  goodix_run_cmd_full (ssm, dev, category, command, payload, payload_len,
+                       FALSE, cancelled_mode, NULL, FALSE);
+}
+
+void
+goodix_recv_reply (FpiSsm *ssm, FpDevice *dev, guint timeout)
+{
+  GoodixCommandCompletion *completion = g_new0 (GoodixCommandCompletion, 1);
+
+  completion->ssm = ssm;
+  goodix_transport_wait_reply (dev, timeout, goodix_command_done, completion);
+}
 
 /* ========================================================================
  * Payload builders
