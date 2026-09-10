@@ -20,6 +20,7 @@
 #pragma once
 
 #include "driver-private.h"
+#include "device/commands.h"
 
 /* Timeouts in ms */
 #define GOODIX_CMD_TIMEOUT    1000
@@ -51,6 +52,16 @@ gboolean goodix_recv_start_cancellable_full (
   GCancellable               *cancellable,
   GoodixRecvCancelledCallback cancelled_cb,
   gpointer                    user_data);
+
+/* Commit the native parser-side base updates before publishing a notification.
+ * Dispatch must not apply these updates again for a restored pending event. */
+void goodix_recv_apply_fdt_event (FpDevice                     *dev,
+                                 GoodixFdtEventType             type,
+                                 const GoodixProfile9FdtEvent  *event);
+
+/* Restore an already-applied event received before the arm ACK for coordinator
+ * dispatch. No transfer is submitted and transport ownership must be idle. */
+gboolean goodix_recv_take_pending_fdt (FpDevice *dev);
 
 /**
  * Launch a command sub-SSM that sends a command and receives + validates the

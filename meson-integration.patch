@@ -118,7 +118,7 @@ diff --git a/tests/meson.build b/tests/meson.build
 index 00aa566..f0c5dcf 100644
 --- a/tests/meson.build
 +++ b/tests/meson.build
-@@ -324,3 +324,151 @@ foreach test_name: unit_tests
+@@ -324,3 +324,163 @@ foreach test_name: unit_tests
 +if 'goodix53x5' in drivers
 +    executable(
 +        'goodix53x5-native-match-inputs',
@@ -232,6 +232,18 @@ index 00aa566..f0c5dcf 100644
 +        goodix53x5_milan_state,
 +        suite: ['unit-tests'],
 +        env: envs)
++
++    goodix53x5_milan_transport = executable(
++        'test-goodix53x5-milan-transport',
++        'test-goodix53x5-milan-transport.c',
++        dependencies: libfprint_private_dep,
++        include_directories: include_directories('../libfprint/drivers/goodix53x5'),
++        c_args: common_cflags + goodix53x5_cflags,
++        link_with: libfprint_drivers,
++        install: false,
++    )
++    test('goodix53x5-milan-transport', goodix53x5_milan_transport,
++        suite: ['unit-tests'], env: envs)
 +
 +    goodix53x5_milan_runtime_units = static_library(
 +        'goodix53x5-milan-runtime-test-units',

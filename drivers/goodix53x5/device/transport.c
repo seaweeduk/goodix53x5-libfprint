@@ -22,6 +22,7 @@
 #include "drivers_api.h"
 #include "driver-private.h"
 #include "device/transport.h"
+#include "device/calibration.h"
 
 #include <string.h>
 
@@ -53,19 +54,110 @@ typedef enum {
 
 typedef struct
 {
-  guint64                       token;
-  guint                         timeout_ms;
-  GCancellable                 *cancellable;
-  GoodixRecvCancelledCallback   cancelled_cb;
-  gpointer                      cancelled_data;
+  guint64                     token;
+  guint                       timeout_ms;
+  gint64                      deadline_us;
+  gboolean                    ack_wait;
+  GCancellable               *cancellable;
+  GoodixRecvCancelledCallback cancelled_cb;
+  gpointer                    cancelled_data;
 } GoodixRecvOperation;
 
 typedef struct
 {
-  GoodixCmd                   cmd;
-  FpiSsm                     *parent_ssm;
-  GoodixProfile9FdtWaitMode   cancelled_fdt_mode;
+  GoodixCmd                 cmd;
+  FpiSsm                   *parent_ssm;
+  GoodixProfile9FdtWaitMode cancelled_fdt_mode;
+  gboolean                  retry_mode;
+  guint                     attempt;
+  GoodixCmdState            phase;
+  gint64                    ack_deadline_us;
 } GoodixCmdOperation;
+
+static guint8
+goodix_mode_ack_bit (guint8 cmd_byte)
+{
+  switch (cmd_byte)
+    {
+    case 0x32:
+      return 1;
+
+    case 0x34:
+      return 2;
+
+    case 0x60:
+      return 4;
+
+    default:
+      return 0;
+    }
+}
+
+static const char *
+goodix_cmd_phase_name (GoodixCmdState phase)
+{
+  switch (phase)
+    {
+    case GOODIX_CMD_SEND:
+      return "send";
+
+    case GOODIX_CMD_RECV_ACK:
+    case GOODIX_CMD_VALIDATE_ACK:
+      return "ACK";
+
+    case GOODIX_CMD_RECV_DATA:
+      return "data";
+
+    case GOODIX_CMD_NUM_STATES:
+      return "unknown";
+    }
+  g_assert_not_reached ();
+}
+
+/* Only a transport timeout or send I/O failure in the first transaction is
+ * recoverable here. Protocol, cancellation, disconnect and ownership errors
+ * keep their existing failure policy. The parent and command owner never
+ * change between attempts. */
+static gboolean
+goodix_cmd_retry (FpDevice *dev,
+                  FpiSsm   *ssm,
+                  GError   *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixCmdOperation *operation;
+
+  if (self->cmd_ssm != ssm || self->rx_active)
+    return FALSE;
+  operation = fpi_ssm_get_data (ssm);
+  if (self->cmd_owner != operation->parent_ssm ||
+      !operation->retry_mode || operation->attempt != 1 ||
+      (operation->phase != GOODIX_CMD_SEND &&
+       operation->phase != GOODIX_CMD_RECV_ACK) ||
+      !(g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT) ||
+        (operation->phase == GOODIX_CMD_SEND &&
+         g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO))))
+    return FALSE;
+
+  fp_dbg ("Retrying command cat=0x%02x cmd=0x%02x phase=%s attempt=1 parent-state=%d: %s",
+          operation->cmd.category, operation->cmd.command,
+          goodix_cmd_phase_name (operation->phase),
+          fpi_ssm_get_cur_state (operation->parent_ssm), error->message);
+  self->retried_mode_acks |= goodix_mode_ack_bit (
+    GOODIX_PROTO_CMD_BYTE (operation->cmd.category, operation->cmd.command));
+  operation->ack_deadline_us = 0;
+  g_error_free (error);
+  fpi_ssm_jump_to_state (ssm, GOODIX_CMD_SEND);
+  return TRUE;
+}
+
+/* Zero means infinite to GUsb, so never round an expired deadline to zero. */
+static guint
+goodix_deadline_remaining (gint64 deadline_us)
+{
+  gint64 remaining = deadline_us - g_get_monotonic_time ();
+
+  return remaining > 0 ? (guint) ((remaining + 999) / 1000) : 0;
+}
 
 static void
 goodix_mark_coordinator_io_failure (FpiDeviceGoodix53x5 *self,
@@ -175,6 +267,8 @@ goodix_tx_cb (FpiUsbTransfer *transfer,
 {
   if (error)
     {
+      if (goodix_cmd_retry (dev, transfer->ssm, error))
+        return;
       goodix_mark_coordinator_io_failure (FPI_DEVICE_GOODIX53X5 (dev), error);
       fpi_ssm_mark_failed (transfer->ssm, error);
       return;
@@ -312,6 +406,18 @@ goodix_recv_start_full (FpiSsm                     *ssm,
   if (operation->token == 0)
     operation->token = ++self->rx_token;
   operation->timeout_ms = timeout_ms;
+  operation->deadline_us = timeout_ms ?
+                           g_get_monotonic_time () + timeout_ms * 1000LL : 0;
+  if (self->cmd_ssm == ssm)
+    {
+      GoodixCmdOperation *cmd_operation = fpi_ssm_get_data (ssm);
+
+      if (cmd_operation->phase == GOODIX_CMD_RECV_ACK)
+        {
+          operation->ack_wait = TRUE;
+          operation->deadline_us = cmd_operation->ack_deadline_us;
+        }
+    }
   operation->cancellable = cancellable ? g_object_ref (cancellable) : NULL;
   operation->cancelled_cb = cancelled_cb;
   operation->cancelled_data = cancelled_data;
@@ -374,22 +480,23 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
           return;
         }
 
-      goodix_mark_coordinator_io_failure (self, error);
       goodix_recv_operation_free (operation);
-      fpi_ssm_mark_failed (transfer->ssm, error);
+      if (!goodix_cmd_retry (dev, transfer->ssm, error))
+        {
+          goodix_mark_coordinator_io_failure (self, error);
+          fpi_ssm_mark_failed (transfer->ssm, error);
+        }
       return;
     }
 
-  /* Skip zero-length reads — resubmit with same timeout/cancellable */
+  /* ACK polling retains its deadline. Other receives keep the existing
+   * zero-length-read timeout policy. */
   if (transfer->actual_length == 0)
     {
-      next = fpi_usb_transfer_new (dev);
-      next->ssm = transfer->ssm;
-      fpi_usb_transfer_fill_bulk (next, GOODIX_EP_IN, GOODIX_USB_CHUNK_SIZE);
-      fpi_usb_transfer_submit (next, operation->timeout_ms,
-                               operation->cancellable,
-                               goodix_rx_cb, operation);
-      return;
+      if (!operation->ack_wait)
+        operation->deadline_us = operation->timeout_ms ?
+                                 g_get_monotonic_time () + operation->timeout_ms * 1000LL : 0;
+      goto receive_more;
     }
 
   if (!goodix_proto_rx_feed_chunk (&self->rx, transfer->buffer,
@@ -405,6 +512,36 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
 
   if (goodix_proto_rx_complete (&self->rx))
     {
+      guint8 category, command;
+      const guint8 *payload;
+      gsize payload_len;
+      gboolean expected_ack = FALSE;
+
+      if (self->cmd_ssm == transfer->ssm)
+        {
+          GoodixCmdOperation *cmd_operation = fpi_ssm_get_data (transfer->ssm);
+
+          if (cmd_operation->phase == GOODIX_CMD_RECV_ACK &&
+              goodix_proto_rx_parse (&self->rx, &category, &command,
+                                     &payload, &payload_len) &&
+              category == GOODIX_PROTO_CATEGORY_ACK && command == GOODIX_PROTO_CMD_ACK &&
+              payload_len >= 2)
+            expected_ack = payload[0] == GOODIX_PROTO_CMD_BYTE (
+              cmd_operation->cmd.category, cmd_operation->cmd.command);
+        }
+      /* Native updates the acknowledged command's independent slot. A late
+       * ACK from a repeated mode command cannot satisfy a different command
+       * or an event/data wait. Validate the envelope before routing it. */
+      if (!expected_ack &&
+          goodix_proto_rx_parse (&self->rx, &category, &command,
+                                 &payload, &payload_len) &&
+          category == GOODIX_PROTO_CATEGORY_ACK && command == GOODIX_PROTO_CMD_ACK &&
+          payload_len >= 2 && (payload[1] & GOODIX_PROTO_ACK_FLAG_VALID) &&
+          (self->retried_mode_acks & goodix_mode_ack_bit (payload[0])))
+        {
+          goodix_proto_rx_reset (&self->rx);
+          goto receive_more;
+        }
       /* Message complete — advance SSM */
       goodix_recv_operation_finish (dev, transfer->ssm, operation);
       goodix_recv_operation_free (operation);
@@ -412,16 +549,32 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
     }
   else
     {
-      /* Need more chunks — use stored timeout/cancellable for continuations.
-       * For event waits (timeout=0/infinite), once we start getting data
-       * the remaining chunks should arrive quickly, so use DATA_TIMEOUT. */
-      next = fpi_usb_transfer_new (dev);
-      next->ssm = transfer->ssm;
-      fpi_usb_transfer_fill_bulk (next, GOODIX_EP_IN, GOODIX_USB_CHUNK_SIZE);
-      fpi_usb_transfer_submit (next, GOODIX_DATA_TIMEOUT,
-                               operation->cancellable,
-                               goodix_rx_cb, operation);
+      /* Preserve the existing per-continuation data budget. Only an ACK wait
+       * keeps one deadline across its interleaved packets and continuations. */
+      if (!operation->ack_wait)
+        operation->deadline_us = g_get_monotonic_time () + GOODIX_DATA_TIMEOUT * 1000LL;
+      goto receive_more;
     }
+  return;
+
+receive_more:
+  {
+    guint timeout = operation->deadline_us ?
+                    goodix_deadline_remaining (operation->deadline_us) : 0;
+
+    if (operation->deadline_us && !timeout)
+      {
+        goodix_rx_cb (transfer, dev, operation,
+                      g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                           "Receive deadline expired"));
+        return;
+      }
+    next = fpi_usb_transfer_new (dev);
+    next->ssm = transfer->ssm;
+    fpi_usb_transfer_fill_bulk (next, GOODIX_EP_IN, GOODIX_USB_CHUNK_SIZE);
+    fpi_usb_transfer_submit (next, timeout, operation->cancellable,
+                             goodix_rx_cb, operation);
+  }
 }
 
 gboolean
@@ -436,6 +589,45 @@ goodix_recv_start_cancellable_full (
                                  cancelled_cb, user_data);
 }
 
+gboolean
+goodix_recv_take_pending_fdt (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  gsize len = self->pending_fdt_packet_len;
+
+  if (!len || self->rx_active || self->cmd_owner)
+    return FALSE;
+  self->pending_fdt_packet_len = 0;
+  goodix_proto_rx_reset (&self->rx);
+  return goodix_proto_rx_feed_chunk (&self->rx, self->pending_fdt_packet, len);
+}
+
+void
+goodix_recv_apply_fdt_event (FpDevice                     *dev,
+                             GoodixFdtEventType            type,
+                             const GoodixProfile9FdtEvent *event)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixProfile9FdtState *fdt = &self->profile9_fdt;
+
+  if (type == GOODIX_FDT_EVENT_DOWN)
+    {
+      goodix_device_generate_fdt_up_base (event->raw, event->touch_flag,
+                                          &self->calib, fdt->base_up);
+    }
+  else
+    {
+      if (type == GOODIX_FDT_EVENT_REVERSE)
+        {
+          for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+            self->fdt_prior_down[i] = fdt->base_down[i * 2 + 1];
+          memcpy (fdt->base_manual, fdt->base_down, sizeof (fdt->base_manual));
+        }
+      goodix_device_generate_fdt_base (event->raw, GOODIX_FDT_BASE_LEN,
+                                       fdt->base_down);
+    }
+}
+
 /* ========================================================================
  * Command sub-SSM: send → recv ACK → recv data
  * ======================================================================== */
@@ -447,20 +639,68 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
   GoodixCmdOperation *operation = fpi_ssm_get_data (ssm);
   GoodixCmd *cmd = &operation->cmd;
 
+  operation->phase = fpi_ssm_get_cur_state (ssm);
+
   switch (fpi_ssm_get_cur_state (ssm))
     {
     case GOODIX_CMD_SEND:
+      operation->attempt++;
       goodix_send_message (ssm, dev, cmd->category, cmd->command,
                            cmd->payload, cmd->payload_len, cmd->use_checksum);
       break;
 
     case GOODIX_CMD_RECV_ACK:
-      goodix_recv_start (ssm, dev, GOODIX_ACK_TIMEOUT, NULL);
+      {
+        guint timeout;
+
+        if (!operation->ack_deadline_us)
+          operation->ack_deadline_us = g_get_monotonic_time () + GOODIX_ACK_TIMEOUT * 1000LL;
+        timeout = goodix_deadline_remaining (operation->ack_deadline_us);
+        if (!timeout)
+          {
+            GError *error = g_error_new_literal (
+              G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT, "ACK deadline expired");
+
+            if (!goodix_cmd_retry (dev, ssm, error))
+              fpi_ssm_mark_failed (ssm, error);
+            return;
+          }
+        goodix_recv_start (ssm, dev, timeout, NULL);
+      }
       break;
 
     case GOODIX_CMD_VALIDATE_ACK:
       {
         g_autoptr(GError) error = NULL;
+        FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+        guint8 category, command;
+        const guint8 *payload;
+        gsize payload_len;
+
+        /* Native applies EVERY event's base updates before replacing its one
+         * worker notification. Keep these updates even across ACK failure;
+         * the outstanding command still retries its original copied payload. */
+        if (operation->retry_mode && cmd->category == GOODIX_PROTO_CATEGORY_FDT &&
+            goodix_proto_rx_parse (&self->rx, &category, &command, &payload, &payload_len) &&
+            category == GOODIX_PROTO_CATEGORY_FDT && command == cmd->command &&
+            payload_len == GOODIX_FDT_EVENT_PAYLOAD_LEN)
+          {
+            GoodixFdtEventType type;
+            GoodixProfile9FdtEvent event;
+            GoodixProfile9FdtWaitMode mode = cmd->command == GOODIX_PROTO_CMD_FDT_DOWN ?
+                                             GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
+
+            if (!goodix_cmd_parse_fdt_event (dev, mode, &type, &event, &error))
+              {
+                fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+                return;
+              }
+            goodix_recv_apply_fdt_event (dev, type, &event);
+            self->pending_fdt_packet_len = self->rx.expected;
+            memcpy (self->pending_fdt_packet, self->rx.buf, self->rx.expected);
+            fpi_ssm_jump_to_state (ssm, GOODIX_CMD_RECV_ACK);
+            return;
+          }
 
         if (operation->cancelled_fdt_mode != GOODIX_PROFILE9_FDT_WAIT_NONE &&
             goodix_try_drain_cancelled_fdt (dev, operation, &error))
@@ -504,11 +744,18 @@ goodix_cmd_ssm_done (FpiSsm   *ssm,
 
   if (error)
     {
+      g_prefix_error (&error,
+                      "Command cat=0x%02x cmd=0x%02x phase=%s attempt=%u parent-state=%d: ",
+                      operation->cmd.category, operation->cmd.command,
+                      goodix_cmd_phase_name (operation->phase), operation->attempt,
+                      fpi_ssm_get_cur_state (operation->parent_ssm));
       goodix_mark_coordinator_io_failure (self, error);
       fpi_ssm_mark_failed (operation->parent_ssm, error);
     }
   else
-    fpi_ssm_next_state (operation->parent_ssm);
+    {
+      fpi_ssm_next_state (operation->parent_ssm);
+    }
 }
 
 static void
@@ -540,6 +787,10 @@ goodix_run_cmd_full (FpiSsm                    *parent_ssm,
   operation = g_new0 (GoodixCmdOperation, 1);
   operation->parent_ssm = parent_ssm;
   operation->cancelled_fdt_mode = cancelled_mode;
+  operation->retry_mode = !expect_data &&
+                          ((category == GOODIX_PROTO_CATEGORY_FDT &&
+                            (command == GOODIX_PROTO_CMD_FDT_DOWN || command == GOODIX_PROTO_CMD_FDT_UP)) ||
+                           (category == 0x06 && command == 0));
   cmd = &operation->cmd;
   cmd->category = category;
   cmd->command = command;
