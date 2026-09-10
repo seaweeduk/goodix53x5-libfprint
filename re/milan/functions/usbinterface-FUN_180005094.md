@@ -147,5 +147,14 @@ It performs no configuration rewriting or additional configuration-checksum
 repair. Final download failure returns `-1`, success zero; `Milan_DlCfg`
 preserves that result through its epilogue.
 
+`Dlcfg` uses ACK budget 500, data-response budget equal to its timeout argument
+(500 from `Milan_DlCfg`), checksum selector one and response-event selector one.
+Each attempt resets that response event before sending. Thus its byte-zero
+retry includes missing configuration response as well as send/ACK failure;
+successful ACK alone is not sufficient. `SendDataToDeviceEx` treats a
+non-timeout response-event wait return as success without decoding the cached
+response payload here. The FDT arm wrapper `0x180005a60` ignores the final
+mode-4 result and issues its post-configuration arm even after download failure.
+
 See `usbinterface-FUN_18000e1f0.md` for mode dispatch and
 `usbinterface-FUN_180015c60.md` for the base-acquisition caller.

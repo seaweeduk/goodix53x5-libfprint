@@ -39,6 +39,25 @@ for it in `WaitForSingleObject` calls with 50 ms timeouts, up to the supplied
 response timeout. A result other than `WAIT_TIMEOUT` ends that loop immediately;
 50 ms is not an unconditional delay between FDT commands.
 
+The manual event handle is HAL `+0x2d8`. Reset occurs before each attempt's
+send and before acquiring the inner send critical section. It does not clear
+the 24-byte cache at `0x180060718`; neither `ChangeMode` nor its retry clears
+that cache. `milanget_fdtdata` (`0x180005b80`) recognizes command selector 3
+before interpreting IRQ semantics: it copies payload bytes `4..27` to this
+cache and signals `+0x2d8`, without publishing an asynchronous worker FDT
+event. The consumer copies these 24 bytes only after nonzero `ChangeMode`
+completion; on zero it leaves the caller's output untouched and returns `-1`.
+
+ACK success followed by response-event timeout is a zero attempt and repeats
+the identical local command payload, with both ACK and response budgets fresh.
+The second attempt resets the response event again. Manual ACKs and manual
+data responses carry no attempt-generation discriminator. A delayed first
+response received after the second reset can update the cache and satisfy the
+second wait. A later second response still updates the same cache even after
+the caller copied its result; it neither rewrites that caller-owned output nor
+becomes an asynchronous down/up/reverse event. Subsequent manual sends reset
+the event but leave the cache until a newly received response replaces it.
+
 ## Reverse-Event Relationship
 
 `FUN_180005b80` copies the prior hardware down-arm base into the manual-base
