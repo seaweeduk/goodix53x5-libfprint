@@ -267,6 +267,8 @@ goodix_try_drain_cancelled_fdt (FpDevice           *dev,
   const guint8 *payload;
   gsize payload_len;
   guint16 irq;
+  GoodixFdtEventType type;
+  GoodixProfile9FdtEvent event;
 
   if (!goodix_proto_rx_parse (&self->rx, &category, &command,
                               &payload, &payload_len))
@@ -285,7 +287,13 @@ goodix_try_drain_cancelled_fdt (FpDevice           *dev,
       return FALSE;
     }
 
-  irq = payload[0] | ((guint16) payload[1] << 8);
+  if (!goodix_cmd_parse_fdt_event (dev, operation->cancelled_fdt_mode,
+                                  &type, &event, error))
+    return FALSE;
+  /* Stopping the worker invalidates notification, not parser-side base
+   * publication. Keep the event local so cleanup cannot restart dispatch. */
+  goodix_recv_apply_fdt_event (dev, type, &event);
+  irq = event.irq;
   operation->cancelled_fdt_mode = GOODIX_PROFILE9_FDT_WAIT_NONE;
   fp_dbg ("Drained cancelled FDT event before sleep ACK: mode=0x%02x irq=0x%04x",
           expected_command, irq);
