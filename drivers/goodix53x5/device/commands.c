@@ -347,12 +347,9 @@ goodix_cmd_parse_mcu_reply (FpDevice      *dev,
 gboolean
 goodix_cmd_parse_config_reply (FpDevice *dev)
 {
-  const guint8 *payload;
-  gsize payload_len;
-
-  return goodix_parse_reply_exact (dev, 0x9, 0x0, &payload, &payload_len,
-                                   NULL) &&
-         payload_len > 0 && payload[0] == 1;
+  /* Transport validated the packet and published native selector 1. Its
+   * payload is scratch, not a retained configuration success byte. */
+  return (FPI_DEVICE_GOODIX53X5 (dev)->command_response_ready & 2) != 0;
 }
 
 gboolean
@@ -361,18 +358,16 @@ goodix_cmd_parse_fdt_manual_reply (FpDevice      *dev,
                                    gsize         *out_payload_len,
                                    GError       **error)
 {
-  if (!goodix_parse_reply_exact (dev, GOODIX_PROTO_CATEGORY_FDT,
-                                 GOODIX_PROTO_CMD_FDT_MANUAL,
-                                 out_payload, out_payload_len, error))
-    return FALSE;
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
-  if (*out_payload_len < 4 + GOODIX_FDT_BASE_LEN)
+  if (!(self->command_response_ready & 1))
     {
-      g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
-                   "Manual FDT reply is too short: %zu", *out_payload_len);
+      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                           "Manual FDT response is not ready");
       return FALSE;
     }
-
+  *out_payload = self->manual_response;
+  *out_payload_len = sizeof (self->manual_response);
   return TRUE;
 }
 

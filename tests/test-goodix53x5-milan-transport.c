@@ -64,6 +64,12 @@ typedef enum {
   DOWN_BEFORE_SLEEP_ACK,
   REVERSE_BEFORE_SLEEP_ACK,
   STOP_DRAIN_CONTROL,
+  RESPONSE_EARLY,
+  RESPONSE_RETRY,
+  RESPONSE_EARLY_RESET,
+  RESPONSE_STATUS,
+  RESPONSE_DUPLICATE,
+  RESPONSE_ASYNC,
 } EventOrder;
 
 typedef struct {
@@ -105,6 +111,9 @@ static struct {
   guint8 packet_manual[2][GOODIX_FDT_BASE_LEN];
   guint8 last_down_payload[GOODIX_FDT_BASE_LEN];
   guint data_chunks;
+  guint early_attempt;
+  GBytes *first_response;
+  guint8 copied_response[4 + GOODIX_FDT_BASE_LEN];
   gboolean disposition_sent;
   gboolean ec_data;
   GError *error;
@@ -157,6 +166,8 @@ mock_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel,
           first = &io.first_down;
           memcpy (io.last_down_payload, transfer->buffer + 5, GOODIX_FDT_BASE_LEN);
         }
+      else if (io.command == 0x36 || io.command == 0x90)
+        first = &io.first_response;
       if (first)
         {
           g_autoptr(GBytes) bytes = g_bytes_new (transfer->buffer,
@@ -235,7 +246,8 @@ response_case (const Scenario *scenario)
          scenario->event_order == RESPONSE_DEADLINE ||
          scenario->event_order == DUPLICATE_SLEEP_AFTER_EC_ACK ||
          scenario->event_order == EC_LATE_ACK ||
-         scenario->event_order == EC_LATE_DATA;
+          scenario->event_order == EC_LATE_DATA ||
+          scenario->event_order >= RESPONSE_EARLY;
 }
 
 static void
@@ -355,6 +367,68 @@ complete_usb (gpointer unused)
           io.cancellations++;
           error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
                                         "Scheduled event cancellation");
+        }
+    }
+  else if (scenario->event_order == RESPONSE_DUPLICATE && io.command == 0xae &&
+           io.sends[0xae] == 2 && io.duplicates < 2)
+    {
+      if (io.duplicates++ == 0)
+        ack_reply (transfer, scenario->standalone_arm);
+      else
+        {
+          guint8 payload[4 + GOODIX_FDT_BASE_LEN];
+          memset (payload, 0x77, sizeof (payload));
+          reply (transfer, scenario->standalone_arm >> 4,
+                 (scenario->standalone_arm & 0xf) >> 1,
+                 payload, scenario->standalone_arm == 0x90 ? 1 : sizeof (payload));
+        }
+      test_clock_us += 75 * 1000;
+    }
+  else if (scenario->event_order >= RESPONSE_EARLY &&
+           io.command == scenario->standalone_arm)
+    {
+      guint8 payload[4 + GOODIX_FDT_BASE_LEN];
+      gboolean early = scenario->event_order == RESPONSE_EARLY ||
+                       (scenario->event_order == RESPONSE_EARLY_RESET && io.sends[io.command] == 1);
+
+      for (guint i = 0; i < sizeof (payload); i++)
+        payload[i] = i + 1;
+      if (io.command == 0x90)
+        payload[0] = scenario->ec_status;
+      if (scenario->event_order == RESPONSE_ASYNC && io.events < 2)
+        reverse_event (transfer, io.events);
+      else if (early && !io.ec_data && io.early_attempt != io.sends[io.command])
+        {
+          io.early_attempt = io.sends[io.command];
+          reply (transfer, io.command >> 4, (io.command & 0xf) >> 1,
+                 payload, io.command == 0x90 ? 1 : sizeof (payload));
+          test_clock_us += 350 * 1000;
+          io.data_chunks++;
+        }
+      else if ((!io.ec_data && scenario->event_order == RESPONSE_EARLY_RESET &&
+                io.sends[io.command] == 1) ||
+               (io.ec_data && scenario->event_order == RESPONSE_RETRY &&
+                io.sends[io.command] == 1))
+        {
+          test_clock_us += io.timeout * 1000;
+          error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                       "Scheduled response-command timeout");
+        }
+      else if (!io.ec_data)
+        {
+          if (io.timeout != (early ? 150 : 500))
+            g_test_fail ();
+          ack_reply (transfer, io.command);
+          io.ec_data = TRUE;
+        }
+      else
+        {
+          /* An early response must avoid this receive entirely. */
+          if (early)
+            g_test_fail ();
+          reply (transfer, io.command >> 4, (io.command & 0xf) >> 1,
+                 payload, io.command == 0x90 ? 1 : sizeof (payload));
+          io.data_chunks++;
         }
     }
   else if (!io.ec_data)
@@ -486,14 +560,18 @@ complete_usb (gpointer unused)
            * has no attempt number; both carry identical command/status bytes. */
           ack_reply (transfer, io.command);
           guint expected_timeout = scenario->event_order == EC_LATE_ACK &&
-                                   io.command == scenario->standalone_arm ? 150 : ack_budget (io.command);
+                                    io.command == scenario->standalone_arm ? 150 : ack_budget (io.command);
+          if (scenario->event_order == RESPONSE_DUPLICATE && io.command == 0xae && io.sends[0xae] == 2)
+            expected_timeout = 50;
           if (response_case (scenario) && io.timeout != expected_timeout)
-            g_test_fail ();
+              g_test_fail ();
           if (io.command == 0xae)
             {
               if (scenario->event_order == LATE_EVEN_ACK && io.timeout != ack_budget (io.command) / 4)
                 g_test_fail ();
               io.expected_acks++;
+              if (scenario->event_order == RESPONSE_DUPLICATE && io.sends[0xae] == 2 && io.timeout != 50)
+                g_test_fail ();
             }
           io.ec_data = io.command == 0xae || scenario->event_order == MULTICELL_DATA ||
                        (response_case (scenario) && io.command == scenario->standalone_arm);
@@ -524,7 +602,8 @@ complete_usb (gpointer unused)
             }
           else
             {
-              if (io.timeout != (scenario->event_order == EC_LATE_ACK ? 500 : 150))
+              if (io.timeout != (scenario->event_order == EC_LATE_ACK ||
+                                 io.sends[io.command] > 1 ? 500 : 150))
                 g_test_fail ();
               io.data_chunks++;
               if (scenario->event_order == RESPONSE_DEADLINE)
@@ -734,17 +813,35 @@ response_handler (FpiSsm *ssm, FpDevice *dev)
         gsize length;
         g_autoptr(GError) error = NULL;
 
-        if (!goodix_parse_reply_exact (dev, io.command >> 4, (io.command & 0xf) >> 1,
-                                      &payload, &length, &error))
+        if (io.command == 0x90)
+          {
+            if (!goodix_cmd_parse_config_reply (dev))
+              g_test_fail ();
+            if (io.scenario->event_order == RESPONSE_DUPLICATE)
+              goodix_cmd_ec_control (ssm, dev, FALSE);
+            else
+              fpi_ssm_mark_completed (ssm);
+          }
+        else if (!goodix_cmd_parse_fdt_manual_reply (dev, &payload, &length, &error))
           fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
         else
           {
             g_assert_cmpuint (length, ==, io.command == 0x90 ? 1 : 4 + GOODIX_FDT_BASE_LEN);
             for (guint i = 0; i < length; i++)
               g_assert_cmpuint (payload[i], ==, i + 1);
-            fpi_ssm_mark_completed (ssm);
+            memcpy (io.copied_response, payload, length);
+            if (io.scenario->event_order == RESPONSE_DUPLICATE)
+              goodix_cmd_ec_control (ssm, dev, FALSE);
+            else
+              fpi_ssm_mark_completed (ssm);
           }
       }
+      break;
+    case 4:
+      if (io.scenario->standalone_arm == 0x36)
+        for (guint i = 0; i < sizeof (io.copied_response); i++)
+          g_assert_cmpuint (io.copied_response[i], ==, i + 1);
+      fpi_ssm_mark_completed (ssm);
       break;
     }
 }
@@ -826,7 +923,7 @@ test_scenario (gconstpointer user_data)
     {
       ssm = scenario->event_order == MULTICELL_DATA
         ? fpi_ssm_new (dev, data_handler, 2)
-        : response_case (scenario) ? fpi_ssm_new (dev, response_handler, 4)
+        : response_case (scenario) ? fpi_ssm_new (dev, response_handler, 5)
         : fpi_ssm_new (dev, arm_handler,
                        scenario->event_order == SAME_COMMAND_PRECEDENCE ? 4 : 3);
       self->profile9_fdt.owner = ssm;
@@ -902,7 +999,8 @@ test_scenario (gconstpointer user_data)
                          !response_case (scenario)) ||
     scenario->event_order == EVENT_BEFORE_ARM_ACK ||
     scenario->event_order == EVENT_COMPLETES_DURING_CANCEL;
-  gboolean duplicate = (scenario->standalone_arm && scenario->event_order != MULTICELL_DATA) ||
+  gboolean duplicate = (scenario->standalone_arm && scenario->event_order != MULTICELL_DATA &&
+                         scenario->event_order < RESPONSE_EARLY) ||
     scenario->event_order == DUPLICATE_SLEEP_BEFORE_EC_ACK ||
     scenario->event_order == DUPLICATE_SLEEP_AFTER_EC_ACK;
   if (rearm_case (scenario))
@@ -984,9 +1082,25 @@ test_scenario (gconstpointer user_data)
             g_test_fail ();
         }
     }
-  if (response_case (scenario) &&
-      (io.sends[scenario->standalone_arm] != 1 || io.data_chunks != 1 || io.events || io.dispatches))
+  if (response_case (scenario) && scenario->event_order < RESPONSE_EARLY &&
+      (io.sends[scenario->standalone_arm] != (scenario->event_order == RESPONSE_DEADLINE ? 2 : 1) ||
+       io.data_chunks != (scenario->event_order == RESPONSE_DEADLINE ? 2 : 1) || io.events || io.dispatches))
     g_test_fail ();
+  if (scenario->event_order >= RESPONSE_EARLY &&
+      (io.sends[scenario->standalone_arm] !=
+       (scenario->event_order == RESPONSE_RETRY || scenario->event_order == RESPONSE_EARLY_RESET ? 2 : 1) ||
+       io.events != (scenario->event_order == RESPONSE_ASYNC ? 2 : 0) || io.dispatches))
+    g_test_fail ();
+  if (scenario->event_order == RESPONSE_EARLY_RESET && io.data_chunks != 2)
+    g_test_fail ();
+  if (scenario->event_order == RESPONSE_ASYNC)
+    for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+      if (self->profile9_fdt.base_down[2 * i] != 51 + i ||
+          self->profile9_fdt.base_down[2 * i + 1] != 51 + i ||
+          self->profile9_fdt.base_manual[2 * i] != 50 + i ||
+          self->profile9_fdt.base_manual[2 * i + 1] != 50 + i ||
+          self->fdt_prior_down[i] != 50 + i || !self->pending_fdt_packet_len)
+        g_test_fail ();
   if (polling_case (scenario) &&
       (io.even_followups != io.sends[scenario->timeout_command] ||
        (scenario->timeout_command == 0xae && io.sends[0xae] != 1)))
@@ -1031,6 +1145,7 @@ test_scenario (gconstpointer user_data)
   g_clear_pointer (&io.first_up, g_bytes_unref);
   g_clear_pointer (&io.first_sleep, g_bytes_unref);
   g_clear_pointer (&io.first_down, g_bytes_unref);
+  g_clear_pointer (&io.first_response, g_bytes_unref);
   g_clear_pointer (&self->captured_raw_image, g_free);
   g_clear_pointer (&self->rx.buf, g_free);
   goodix_milan_generation_invalidate (&self->milan_generation);
@@ -1088,6 +1203,32 @@ main (int argc, char **argv)
   static const Scenario drain_control = { 0, 0, 1, 1, TRUE, STOP_DRAIN_CONTROL };
 
   g_test_init (&argc, &argv, NULL);
+  static const Scenario responses[] = {
+    { 0, 0, 0, 1, TRUE, RESPONSE_EARLY, 0x36 },
+    { 0, 0, 0, 1, TRUE, RESPONSE_EARLY, 0x90 },
+    { 0, 0, 0, 1, TRUE, RESPONSE_RETRY, 0x36 },
+    { 0, 0, 0, 1, TRUE, RESPONSE_RETRY, 0x90 },
+    { 0, 0, 0, 1, TRUE, RESPONSE_EARLY_RESET, 0x36 },
+    { 0, 0, 0, 1, TRUE, RESPONSE_EARLY_RESET, 0x90 },
+    { 0, 0, 0, 1, TRUE, RESPONSE_STATUS, 0x90, 0 },
+    { 0, 0, 0, 1, TRUE, RESPONSE_STATUS, 0x90, 1 },
+    { 0, 0, 0, 1, TRUE, RESPONSE_STATUS, 0x90, 2 },
+    { 0, 0, 0, 1, TRUE, RESPONSE_DUPLICATE, 0x36 },
+    { 0, 0, 0, 1, TRUE, RESPONSE_DUPLICATE, 0x90 },
+    { 0, 0, 0, 1, TRUE, RESPONSE_ASYNC, 0x36 },
+    { 0, 0, 0, 1, TRUE, RESPONSE_ASYNC, 0x90 },
+  };
+  const char *response_names[] = {
+    "manual-early", "config-early", "manual-response-retry", "config-response-retry",
+    "manual-ready-reset", "config-ready-reset", "config-status-zero", "config-status-one",
+    "config-status-two",
+    "manual-duplicate", "config-duplicate", "manual-two-reverse", "config-two-reverse",
+  };
+  for (guint i = 0; i < G_N_ELEMENTS (responses); i++)
+    {
+      g_autofree char *name = g_strdup_printf ("/goodix53x5/milan/transport/responses/%s", response_names[i]);
+      g_test_add_data_func (name, &responses[i], test_scenario);
+    }
   g_test_add_data_func ("/goodix53x5/milan/transport/stop-during-arm", &control, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/event-before-sleep-ack", &drain, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/event-completes-during-cancel", &event_race, test_scenario);

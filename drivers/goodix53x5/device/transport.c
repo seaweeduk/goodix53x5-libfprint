@@ -69,6 +69,7 @@ typedef struct
   FpiSsm                   *parent_ssm;
   GoodixProfile9FdtWaitMode cancelled_fdt_mode;
   gboolean                  retry_mode;
+  guint8                    response_bit;
   guint                     attempt;
   GoodixCmdState            phase;
   gint64                    ack_deadline_us;
@@ -124,6 +125,12 @@ goodix_mode_ack_bit (guint8 cmd_byte)
     case 0x60:
       return 4;
 
+    case 0x36:
+      return 8;
+
+    case 0x90:
+      return 16;
+
     default:
       return 0;
     }
@@ -168,7 +175,8 @@ goodix_cmd_retry (FpDevice *dev,
   if (self->cmd_owner != operation->parent_ssm ||
       !operation->retry_mode || operation->attempt != 1 ||
       (operation->phase != GOODIX_CMD_SEND &&
-       operation->phase != GOODIX_CMD_RECV_ACK) ||
+       operation->phase != GOODIX_CMD_RECV_ACK &&
+       !(operation->response_bit && operation->phase == GOODIX_CMD_RECV_DATA)) ||
       !(g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT) ||
         (operation->phase == GOODIX_CMD_SEND &&
          g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO))))
@@ -567,6 +575,68 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
       gsize payload_len;
       gboolean expected_ack = FALSE;
 
+      if (goodix_proto_rx_parse (&self->rx, &category, &command,
+                                 &payload, &payload_len))
+        {
+          guint8 bit = category == 3 && command == 3 ? 1 :
+                       category == 9 && command == 0 ? 2 : 0;
+          GoodixCmdOperation *current = self->cmd_ssm == transfer->ssm ?
+                                        fpi_ssm_get_data (transfer->ssm) : NULL;
+
+          if (bit)
+            {
+              if (bit == 1)
+                {
+                  if (payload_len < sizeof (self->manual_response))
+                    {
+                      goodix_recv_operation_finish (dev, transfer->ssm, operation);
+                      goodix_recv_operation_free (operation);
+                      fpi_ssm_mark_failed (transfer->ssm, fpi_device_error_new_msg (
+                        FP_DEVICE_ERROR_PROTO, "Manual FDT reply is too short"));
+                      return;
+                    }
+                  memcpy (self->manual_response, payload, sizeof (self->manual_response));
+                }
+              /* Configuration publishes only an event, never a success byte.
+               * Both response slots are independent of ACK reception. */
+              self->command_response_ready |= bit;
+              if (!current || current->response_bit != bit ||
+                  current->phase != GOODIX_CMD_RECV_DATA)
+                {
+                  goodix_proto_rx_reset (&self->rx);
+                  goto receive_more;
+                }
+            }
+          else if (current && category == 3 && (command == 1 || command == 2) &&
+                   (current->response_bit ||
+                    (current->cmd.category == 3 && current->cmd.command <= 2)))
+            {
+              GoodixFdtEventType type;
+              GoodixProfile9FdtEvent event;
+              GoodixProfile9FdtWaitMode mode = command == 1 ?
+                GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
+              g_autoptr(GError) event_error = NULL;
+
+              if (payload_len != GOODIX_FDT_EVENT_PAYLOAD_LEN)
+                event_error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                        "Unexpected FDT event length");
+              if (event_error || !goodix_cmd_parse_fdt_event (dev, mode, &type, &event, &event_error))
+                {
+                  goodix_recv_operation_finish (dev, transfer->ssm, operation);
+                  goodix_recv_operation_free (operation);
+                  fpi_ssm_mark_failed (transfer->ssm, g_steal_pointer (&event_error));
+                  return;
+                }
+              /* Every native parser mutation precedes replacement of the
+               * latest worker notification, including during config/manual. */
+              goodix_recv_apply_fdt_event (dev, type, &event);
+              self->pending_fdt_packet_len = self->rx.expected;
+              memcpy (self->pending_fdt_packet, self->rx.buf, self->rx.expected);
+              goodix_proto_rx_reset (&self->rx);
+              goto receive_more;
+            }
+        }
+
       /* Native EC has no response event. Optional category-A/command-7 data
        * is ignored independently of the command or event currently awaited. */
       if (goodix_proto_rx_parse (&self->rx, &category, &command,
@@ -705,6 +775,10 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
     {
     case GOODIX_CMD_SEND:
       operation->attempt++;
+      FPI_DEVICE_GOODIX53X5 (dev)->command_response_ready &= ~operation->response_bit;
+      if (operation->response_bit)
+        FPI_DEVICE_GOODIX53X5 (dev)->retried_mode_acks |= goodix_mode_ack_bit (
+          GOODIX_PROTO_CMD_BYTE (cmd->category, cmd->command));
       goodix_send_message (ssm, dev, cmd->category, cmd->command,
                            cmd->payload, cmd->payload_len, cmd->use_checksum);
       break;
@@ -732,36 +806,7 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
     case GOODIX_CMD_VALIDATE_ACK:
       {
         g_autoptr(GError) error = NULL;
-        FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-        guint8 category, command;
-        const guint8 *payload;
-        gsize payload_len;
         guint8 status;
-
-        /* Native applies EVERY event's base updates before replacing its one
-         * worker notification. Keep these updates even across ACK failure;
-         * the outstanding command still retries its original copied payload. */
-        if (operation->retry_mode && cmd->category == GOODIX_PROTO_CATEGORY_FDT &&
-            goodix_proto_rx_parse (&self->rx, &category, &command, &payload, &payload_len) &&
-            category == GOODIX_PROTO_CATEGORY_FDT && command == cmd->command &&
-            payload_len == GOODIX_FDT_EVENT_PAYLOAD_LEN)
-          {
-            GoodixFdtEventType type;
-            GoodixProfile9FdtEvent event;
-            GoodixProfile9FdtWaitMode mode = cmd->command == GOODIX_PROTO_CMD_FDT_DOWN ?
-                                             GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
-
-            if (!goodix_cmd_parse_fdt_event (dev, mode, &type, &event, &error))
-              {
-                fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-                return;
-              }
-            goodix_recv_apply_fdt_event (dev, type, &event);
-            self->pending_fdt_packet_len = self->rx.expected;
-            memcpy (self->pending_fdt_packet, self->rx.buf, self->rx.expected);
-            fpi_ssm_jump_to_state (ssm, GOODIX_CMD_RECV_ACK);
-            return;
-          }
 
         if (operation->cancelled_fdt_mode != GOODIX_PROFILE9_FDT_WAIT_NONE &&
             goodix_try_drain_cancelled_fdt (dev, operation, &error))
@@ -791,7 +836,10 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_CMD_RECV_DATA:
-      goodix_recv_start (ssm, dev, operation->response_timeout_ms, NULL);
+      if (operation->response_bit & FPI_DEVICE_GOODIX53X5 (dev)->command_response_ready)
+        fpi_ssm_next_state (ssm);
+      else
+        goodix_recv_start (ssm, dev, operation->response_timeout_ms, NULL);
       break;
     }
 }
@@ -853,10 +901,13 @@ goodix_run_cmd_full (FpiSsm                    *parent_ssm,
   operation = g_new0 (GoodixCmdOperation, 1);
   operation->parent_ssm = parent_ssm;
   operation->cancelled_fdt_mode = cancelled_mode;
-  operation->retry_mode = !expect_data &&
-                          ((category == GOODIX_PROTO_CATEGORY_FDT &&
-                            (command == GOODIX_PROTO_CMD_FDT_DOWN || command == GOODIX_PROTO_CMD_FDT_UP)) ||
-                           (category == 0x06 && command == 0));
+  operation->response_bit = expect_data ?
+                            (category == 3 && command == 3 ? 1 :
+                             category == 9 && command == 0 ? 2 : 0) : 0;
+  operation->retry_mode = operation->response_bit || (!expect_data &&
+                         ((category == GOODIX_PROTO_CATEGORY_FDT &&
+                           (command == GOODIX_PROTO_CMD_FDT_DOWN || command == GOODIX_PROTO_CMD_FDT_UP)) ||
+                          (category == 0x06 && command == 0)));
   cmd = &operation->cmd;
   cmd->category = category;
   cmd->command = command;
