@@ -57,7 +57,7 @@ typedef struct
   guint64                     token;
   guint                       timeout_ms;
   gint64                      deadline_us;
-  gboolean                    ack_wait;
+  gboolean                    fixed_deadline;
   GCancellable               *cancellable;
   GoodixRecvCancelledCallback cancelled_cb;
   gpointer                    cancelled_data;
@@ -72,7 +72,43 @@ typedef struct
   guint                     attempt;
   GoodixCmdState            phase;
   gint64                    ack_deadline_us;
+  guint                     ack_timeout_ms;
+  guint                     response_timeout_ms;
 } GoodixCmdOperation;
+
+/* Native budgets count Sleep(1) ACK polls and 50-ms response waits. GUsb uses
+ * elapsed milliseconds instead: retain the caller's nominal budget across
+ * complete packet reception, beginning after write/ACK completion respectively.
+ * Other commands retain their unaudited existing timing policy. */
+static void
+goodix_cmd_set_budgets (GoodixCmdOperation *operation)
+{
+  guint8 command = GOODIX_PROTO_CMD_BYTE (operation->cmd.category,
+                                          operation->cmd.command);
+
+  operation->ack_timeout_ms = GOODIX_ACK_TIMEOUT;
+  operation->response_timeout_ms = GOODIX_DATA_TIMEOUT;
+  switch (command)
+    {
+    case 0x36: /* Manual FDT */
+    case 0x90: /* Configuration */
+      operation->response_timeout_ms = 500;
+      G_GNUC_FALLTHROUGH;
+
+    case 0x32: /* FDT down */
+    case 0x34: /* FDT up */
+      operation->ack_timeout_ms = 500;
+      break;
+
+    case 0x60: /* Sleep */
+    case 0xae: /* EC */
+      operation->ack_timeout_ms = 200;
+      break;
+
+    default:
+      break;
+    }
+}
 
 static guint8
 goodix_mode_ack_bit (guint8 cmd_byte)
@@ -415,8 +451,13 @@ goodix_recv_start_full (FpiSsm                     *ssm,
 
       if (cmd_operation->phase == GOODIX_CMD_RECV_ACK)
         {
-          operation->ack_wait = TRUE;
+          operation->fixed_deadline = TRUE;
           operation->deadline_us = cmd_operation->ack_deadline_us;
+        }
+      else if (cmd_operation->phase == GOODIX_CMD_RECV_DATA &&
+               cmd_operation->response_timeout_ms == 500)
+        {
+          operation->fixed_deadline = TRUE;
         }
     }
   operation->cancellable = cancellable ? g_object_ref (cancellable) : NULL;
@@ -490,11 +531,11 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
       return;
     }
 
-  /* ACK polling retains its deadline. Other receives keep the existing
+  /* Bounded command polling retains its deadline. Other receives keep the existing
    * zero-length-read timeout policy. */
   if (transfer->actual_length == 0)
     {
-      if (!operation->ack_wait)
+      if (!operation->fixed_deadline)
         operation->deadline_us = operation->timeout_ms ?
                                  g_get_monotonic_time () + operation->timeout_ms * 1000LL : 0;
       goto receive_more;
@@ -550,9 +591,9 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
     }
   else
     {
-      /* Preserve the existing per-continuation data budget. Only an ACK wait
-       * keeps one deadline across its interleaved packets and continuations. */
-      if (!operation->ack_wait)
+      /* Preserve unrelated per-continuation data budgets. Scoped command waits
+       * keep one deadline across interleaved packets and continuations. */
+      if (!operation->fixed_deadline)
         operation->deadline_us = g_get_monotonic_time () + GOODIX_DATA_TIMEOUT * 1000LL;
       goto receive_more;
     }
@@ -655,7 +696,7 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
         guint timeout;
 
         if (!operation->ack_deadline_us)
-          operation->ack_deadline_us = g_get_monotonic_time () + GOODIX_ACK_TIMEOUT * 1000LL;
+          operation->ack_deadline_us = g_get_monotonic_time () + operation->ack_timeout_ms * 1000LL;
         timeout = goodix_deadline_remaining (operation->ack_deadline_us);
         if (!timeout)
           {
@@ -732,7 +773,7 @@ goodix_cmd_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_CMD_RECV_DATA:
-      goodix_recv_start (ssm, dev, GOODIX_DATA_TIMEOUT, NULL);
+      goodix_recv_start (ssm, dev, operation->response_timeout_ms, NULL);
       break;
     }
 }
@@ -802,6 +843,7 @@ goodix_run_cmd_full (FpiSsm                    *parent_ssm,
   cmd->category = category;
   cmd->command = command;
   cmd->use_checksum = TRUE;
+  goodix_cmd_set_budgets (operation);
 
   if (payload_len > 0 && payload != NULL)
     {
