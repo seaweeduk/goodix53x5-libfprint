@@ -111,6 +111,8 @@ struct _FpiDeviceGoodix53x5
   guint8  pending_fdt_packet[4 + 4 + GOODIX_FDT_BASE_LEN];
   gsize   pending_fdt_packet_len;
   GoodixProfile9FdtWaitMode pending_fdt_mode;
+  FpiSsm *idle_rx_ssm;
+  gboolean rx_idle_partial;
 
   /* Profile-9 FDT state persists across actions and hardware reinitialization. */
   GoodixProfile9FdtState profile9_fdt;

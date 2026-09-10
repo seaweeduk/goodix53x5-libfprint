@@ -22,6 +22,13 @@
 #include "driver-private.h"
 #include "device/commands.h"
 
+/* Optional receive lifetime ends only after its USB callback joins. */
+typedef void (*GoodixIdleJoinedCallback) (FpDevice *dev, gpointer data);
+void goodix_idle_recv_stop (FpDevice *dev, GoodixIdleJoinedCallback joined,
+                            gpointer data);
+void goodix_run_cmd_ec_off (FpiSsm *ssm, FpDevice *dev,
+                             const guint8 *payload, gsize payload_len);
+
 /* Timeouts in ms */
 #define GOODIX_ACK_TIMEOUT    2000
 #define GOODIX_DATA_TIMEOUT   5000

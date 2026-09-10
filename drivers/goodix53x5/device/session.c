@@ -674,14 +674,18 @@ goodix_cleanup_failed_open (FpDevice *dev)
 }
 
 static void
-goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-
-  self->task_ssm = NULL;
+  GError *error = data;
 
   if (error)
     {
+      /* Reset/close ends the transport that could complete retained data.
+       * A completion winning idle cancellation may have just appended it. */
+      if (self->rx.buf)
+        goodix_proto_rx_reset (&self->rx);
+      self->rx_idle_partial = FALSE;
       self->open_ref_powered = FALSE;
       goodix_milan_generation_invalidate (&self->milan_generation);
       goodix_milan_persistence_clear (dev);
@@ -723,6 +727,20 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   fpi_device_open_complete (dev, NULL);
 }
 
+static void
+goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  self->task_ssm = NULL;
+  /* The SSM is freed on return. Transfer only its completion error to the
+   * join callback; the open action and idle owner retain the device. */
+  if (error)
+    goodix_idle_recv_stop (dev, goodix_open_complete_after_idle, error);
+  else
+    goodix_open_complete_after_idle (dev, NULL);
+}
+
 void
 goodix_start_open_ssm (FpDevice *dev)
 {
@@ -754,6 +772,12 @@ goodix_start_open_ssm (FpDevice *dev)
  * Returns TRUE if a reinit sub-SSM was started (caller returns and the
  * parent advances when it completes), FALSE if no reinit was needed.
  */
+static void
+goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
+{
+  goodix_maybe_start_reinit_subsm (data, dev);
+}
+
 gboolean
 goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
                                  FpDevice *dev)
@@ -763,6 +787,18 @@ goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
 
   if (!self->needs_reinit)
     return FALSE;
+
+  if (self->idle_rx_ssm)
+    {
+      /* Reinitialization also releases the interface; join the idle owner
+       * before either release or USB reset, just as close does. */
+      goodix_idle_recv_stop (dev, goodix_reinit_idle_joined, ssm);
+      return TRUE;
+    }
+
+  /* A USB reset ends the transport that could complete the retained packet. */
+  goodix_proto_rx_reset (&self->rx);
+  self->rx_idle_partial = FALSE;
 
   fp_info ("Reinitializing device after system sleep");
   self->action_epoch++;

@@ -351,7 +351,10 @@ goodix_cmd_ec_control (FpiSsm *ssm, FpDevice *dev, gboolean on)
   guint8 payload_on[3] = { 0x01, 0x01, 0x00 };
   guint8 payload_off[3] = { 0x00, 0x00, 0x00 };
 
-  goodix_run_cmd (ssm, dev, 0xA, 0x7, on ? payload_on : payload_off, 3, FALSE);
+  if (on)
+    goodix_run_cmd (ssm, dev, 0xA, 0x7, payload_on, 3, FALSE);
+  else
+    goodix_run_cmd_ec_off (ssm, dev, payload_off, sizeof (payload_off));
 }
 
 /* ========================================================================
