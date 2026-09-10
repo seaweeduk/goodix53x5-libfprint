@@ -83,11 +83,6 @@ void goodix_run_cmd (FpiSsm       *parent_ssm,
                      gsize         payload_len,
                      gboolean      expect_data);
 
-/* Composite arm recovery owns ordinary exhausted transactions. Protocol and
- * host errors remain distinct; callback takes error ownership and resolves ssm. */
-typedef void (*GoodixCmdResultCallback) (FpiSsm *ssm, FpDevice *dev,
-                                        guint8 status, gboolean native_zero,
-                                        GError *error);
 void goodix_run_cmd_result (FpiSsm *ssm, FpDevice *dev,
                             guint8 category, guint8 command,
                             const guint8 *payload, gsize payload_len,
