@@ -57,6 +57,8 @@ typedef enum {
   ACK_EVEN_THEN_MALFORMED,
   LATE_EVEN_ACK,
   LATE_EVEN_DEADLINE,
+  RESPONSE_BUDGET,
+  RESPONSE_DEADLINE,
 } EventOrder;
 
 typedef struct {
@@ -195,6 +197,24 @@ polling_case (const Scenario *scenario)
          scenario->event_order <= ACK_EVEN_THEN_MALFORMED;
 }
 
+/* Independent native caller values, also used by the scheduling assertions. */
+static guint
+ack_budget (guint8 command)
+{
+  if (command == 0x60 || command == 0xae)
+    return 200;
+  if (command == 0x32 || command == 0x34 || command == 0x36 || command == 0x90)
+    return 500;
+  return 2000;
+}
+
+static gboolean
+response_case (const Scenario *scenario)
+{
+  return scenario->event_order == RESPONSE_BUDGET ||
+         scenario->event_order == RESPONSE_DEADLINE;
+}
+
 static void
 reply (FpiUsbTransfer *transfer, guint8 category, guint8 command,
        const guint8 *payload, gsize length)
@@ -261,6 +281,9 @@ complete_usb (gpointer unused)
   if (transfer->endpoint == GOODIX_EP_OUT)
     {
       EventOrder order = scenario->event_order;
+      /* ACK budgets begin after write completion, not at submission. */
+      if (response_case (scenario))
+        test_clock_us += 50 * 1000;
       if (io.command == 0x34 && io.sends[0x34] == 1 &&
           order >= SEND_IO_RETRY && order <= SEND_CANCELLED)
         {
@@ -316,17 +339,16 @@ complete_usb (gpointer unused)
               guint8 ack[] = { io.command, scenario->event_order == ACK_ZERO_THEN_ONE ? 0 : 2 };
 
               io.even_attempt = io.sends[io.command];
-              if (io.timeout != GOODIX_ACK_TIMEOUT)
+              if (io.timeout != ack_budget (io.command))
                 g_test_fail ();
-              test_clock_us += 1500 * 1000;
+              test_clock_us += ack_budget (io.command) * 750;
               reply (transfer, 0x0b, 0, ack, sizeof (ack));
             }
           else
             {
               io.even_followups++;
-              /* The even ACK consumed 1500 ms of this attempt, not a new
-               * transaction. Its follow-up must have exactly 500 ms left. */
-              if (io.timeout != 500)
+              /* The even ACK consumed three quarters of the native budget. */
+              if (io.timeout != ack_budget (io.command) / 4)
                 g_test_fail ();
               if (scenario->event_order == ACK_EVEN_THEN_MALFORMED)
                 {
@@ -374,7 +396,7 @@ complete_usb (gpointer unused)
             {
               const guint8 ack[] = { 0x60, 2 };
 
-              test_clock_us += 1500 * 1000;
+              test_clock_us += ack_budget (io.command) * 750;
               reply (transfer, 0x0b, 0, ack, sizeof (ack));
             }
           else
@@ -390,13 +412,13 @@ complete_usb (gpointer unused)
           if (!io.ec_ack_started)
             io.ec_ack_started = test_clock_us;
           elapsed_ms = (test_clock_us - io.ec_ack_started) / 1000;
-          if (io.timeout == 0 || elapsed_ms + io.timeout > GOODIX_ACK_TIMEOUT)
+          if (io.timeout == 0 || elapsed_ms + io.timeout > ack_budget (io.command))
             io.deadline_violation = TRUE;
           if (io.duplicates == 0)
             {
               /* Exactly the remaining ACK from the two sleep attempts, not
                * an invented stream of more ACKs than commands sent. */
-              test_clock_us += 1500 * 1000;
+              test_clock_us += ack_budget (io.command) * 750;
               io.duplicates++;
               const guint8 ack[] = { 0x60, scenario->event_order == LATE_EVEN_DEADLINE ? 0 : 1 };
 
@@ -416,20 +438,55 @@ complete_usb (gpointer unused)
            * The later injected duplicate belongs to the second send. The wire
            * has no attempt number; both carry identical command/status bytes. */
           ack_reply (transfer, io.command);
+          if (response_case (scenario) && io.timeout != ack_budget (io.command))
+            g_test_fail ();
           if (io.command == 0xae)
             {
-              if (scenario->event_order == LATE_EVEN_ACK && io.timeout != 500)
+              if (scenario->event_order == LATE_EVEN_ACK && io.timeout != ack_budget (io.command) / 4)
                 g_test_fail ();
               io.expected_acks++;
             }
-          io.ec_data = io.command == 0xae || scenario->event_order == MULTICELL_DATA;
+          io.ec_data = io.command == 0xae || scenario->event_order == MULTICELL_DATA ||
+                       (response_case (scenario) && io.command == scenario->standalone_arm);
         }
     }
   else
     {
       const guint8 result[] = { 1 };
       g_assert_true (io.ec_data);
-      if (scenario->event_order == MULTICELL_DATA)
+      if (response_case (scenario))
+        {
+          if (io.duplicates == 0)
+            {
+              if (io.timeout != 500)
+                g_test_fail ();
+              test_clock_us += 350 * 1000;
+              io.duplicates++;
+              ack_reply (transfer, 0x60);
+            }
+          else
+            {
+              if (io.timeout != 150)
+                g_test_fail ();
+              io.data_chunks++;
+              if (scenario->event_order == RESPONSE_DEADLINE)
+                {
+                  test_clock_us += io.timeout * 1000;
+                  error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                               "Response budget exhausted after late ACK");
+                }
+              else
+                {
+                  guint8 payload[4 + GOODIX_FDT_BASE_LEN];
+
+                  for (guint i = 0; i < sizeof (payload); i++)
+                    payload[i] = i + 1;
+                  reply (transfer, io.command >> 4, (io.command & 0xf) >> 1,
+                         payload, io.command == 0x90 ? 1 : sizeof (payload));
+                }
+            }
+        }
+      else if (scenario->event_order == MULTICELL_DATA)
         {
           guint8 payload[150];
           gsize size;
@@ -592,6 +649,52 @@ data_handler (FpiSsm *ssm, FpDevice *dev)
 }
 
 static void
+response_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case 0:
+      goodix_cmd_set_sleep_mode (ssm, dev);
+      break;
+
+    case 1:
+      if (io.scenario->standalone_arm == 0x36)
+        goodix_cmd_fdt_manual (ssm, dev, TRUE, self->profile9_fdt.base_manual);
+      else
+        {
+          gsize len;
+          const guint8 *config = goodix_device_get_default_config (&len);
+          g_autofree guint8 *patched = g_memdup2 (config, len);
+
+          goodix_device_patch_config (patched, len, &self->calib);
+          goodix_cmd_upload_config (ssm, dev, patched, len);
+        }
+      break;
+
+    case 2:
+      {
+        const guint8 *payload;
+        gsize length;
+        g_autoptr(GError) error = NULL;
+
+        if (!goodix_parse_reply_exact (dev, io.command >> 4, (io.command & 0xf) >> 1,
+                                      &payload, &length, &error))
+          fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+        else
+          {
+            g_assert_cmpuint (length, ==, io.command == 0x90 ? 1 : 4 + GOODIX_FDT_BASE_LEN);
+            for (guint i = 0; i < length; i++)
+              g_assert_cmpuint (payload[i], ==, i + 1);
+            fpi_ssm_mark_completed (ssm);
+          }
+      }
+      break;
+    }
+}
+
+static void
 arm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
@@ -656,6 +759,7 @@ test_scenario (gconstpointer user_data)
     {
       ssm = scenario->event_order == MULTICELL_DATA
         ? fpi_ssm_new (dev, data_handler, 2)
+        : response_case (scenario) ? fpi_ssm_new (dev, response_handler, 3)
         : fpi_ssm_new (dev, arm_handler,
                        scenario->event_order == SAME_COMMAND_PRECEDENCE ? 4 : 3);
       self->profile9_fdt.owner = ssm;
@@ -727,7 +831,8 @@ test_scenario (gconstpointer user_data)
   /* Report contract differences without aborting, so every scheduled case
    * releases its owners and the complete suite can expose baseline failures. */
   gboolean cancelled = scenario->event_order == CANCEL_DURING_RETRY;
-  gboolean delivered = (scenario->standalone_arm && scenario->event_order != MULTICELL_DATA) ||
+  gboolean delivered = (scenario->standalone_arm && scenario->event_order != MULTICELL_DATA &&
+                         !response_case (scenario)) ||
     scenario->event_order == EVENT_BEFORE_ARM_ACK ||
     scenario->event_order == EVENT_COMPLETES_DURING_CANCEL;
   gboolean duplicate = (scenario->standalone_arm && scenario->event_order != MULTICELL_DATA) ||
@@ -780,6 +885,9 @@ test_scenario (gconstpointer user_data)
   gboolean excluded_send = scenario->event_order == SEND_DISCONNECT ||
     scenario->event_order == SEND_CANCELLED;
   gboolean malformed = scenario->event_order == ACK_EVEN_THEN_MALFORMED;
+  if (response_case (scenario) &&
+      (io.sends[scenario->standalone_arm] != 1 || io.data_chunks != 1 || io.events || io.dispatches))
+    g_test_fail ();
   if (polling_case (scenario) &&
       (io.even_followups != io.sends[scenario->timeout_command] ||
        (scenario->timeout_command == 0xae && io.sends[0xae] != 1)))
@@ -804,7 +912,7 @@ test_scenario (gconstpointer user_data)
       ((scenario->event_order == LATE_ACK_DEADLINE ||
         scenario->event_order == LATE_EVEN_DEADLINE) &&
        (io.deadline_violation || io.expected_acks || io.duplicates != 1 ||
-        test_clock_us - io.ec_ack_started != GOODIX_ACK_TIMEOUT * 1000LL || io.sends[0xae] != 1)) ||
+        test_clock_us - io.ec_ack_started != ack_budget (0xae) * 1000LL || io.sends[0xae] != 1)) ||
       (scenario->success && (io.error || self->needs_reinit)) ||
       (cancelled && (!io.action_cancelled || self->needs_reinit ||
                     !g_error_matches (io.error, G_IO_ERROR, G_IO_ERROR_CANCELLED))) ||
@@ -866,6 +974,10 @@ main (int argc, char **argv)
   static const Scenario even_malformed = { 0x34, 0, 1, 1, FALSE, ACK_EVEN_THEN_MALFORMED };
   static const Scenario late_even = { 0x60, 1, 1, 2, TRUE, LATE_EVEN_ACK };
   static const Scenario late_even_deadline = { 0x60, 1, 1, 2, FALSE, LATE_EVEN_DEADLINE };
+  static const Scenario manual_budget = { 0x60, 1, 0, 2, TRUE, RESPONSE_BUDGET, 0x36 };
+  static const Scenario config_budget = { 0x60, 1, 0, 2, TRUE, RESPONSE_BUDGET, 0x90 };
+  static const Scenario manual_deadline = { 0x60, 1, 0, 2, FALSE, RESPONSE_DEADLINE, 0x36 };
+  static const Scenario config_deadline = { 0x60, 1, 0, 2, FALSE, RESPONSE_DEADLINE, 0x90 };
 
   g_test_init (&argc, &argv, NULL);
   g_test_add_data_func ("/goodix53x5/milan/transport/stop-during-arm", &control, test_scenario);
@@ -898,5 +1010,9 @@ main (int argc, char **argv)
   g_test_add_data_func ("/goodix53x5/milan/transport/ack-polling/malformed-no-retry", &even_malformed, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/ack-polling/late-even-ack", &late_even, test_scenario);
   g_test_add_data_func ("/goodix53x5/milan/transport/ack-polling/late-even-deadline", &late_even_deadline, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/budgets/manual-response", &manual_budget, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/budgets/config-response", &config_budget, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/budgets/manual-deadline", &manual_deadline, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/budgets/config-deadline", &config_deadline, test_scenario);
   return g_test_run ();
 }
