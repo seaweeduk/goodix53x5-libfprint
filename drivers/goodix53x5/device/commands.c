@@ -230,8 +230,13 @@ goodix_arm_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
   g_clear_error (&error);
   if (self->cancel && g_cancellable_is_cancelled (self->cancel))
     {
-      fpi_ssm_mark_failed (ssm, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
-                                                     "FDT arm cancelled"));
+      /* A completed arm must reach the coordinator's cancelled-event drain.
+       * Cancellation still prevents configuration repair or another arm. */
+      if (state != GOODIX_ARM_CONFIG && !native_zero)
+        fpi_ssm_mark_completed (ssm);
+      else
+        fpi_ssm_mark_failed (ssm, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                                       "FDT arm cancelled"));
       return;
     }
   if (state == GOODIX_ARM_CONFIG ||
