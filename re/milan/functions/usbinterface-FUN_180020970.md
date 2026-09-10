@@ -13,6 +13,61 @@ resume session routes call the same `FUN_180007ee0` wrapper and common
 GTLS client owners. See [Profile 0 USB Contract](../PROFILE0-USB-CONTRACT.md)
 for the family boundary, profile-0 validity producer, and cancellation scope.
 
+## Full-Initialization Firmware Probe
+
+Before `device_enable`, the uninitialized branch runs a maximum of five probe
+iterations. Each iteration calls `ChangeMode(0, 0, 0, NULL, 500)` through
+`0x180017ec0`, ignores that result, and then calls version wrapper `0x180017fe8`
+with destination device context `+0x111` and response budget 2000. The category-0
+command is inside the loop, not a one-time prelude.
+
+Version wrapper `0x180017fe8` rejects a null destination with `0xffffffff`;
+otherwise it forwards to `GetEvkVesion` (`0x18001b15c`). The getter sends
+category `0x0a`, command 4, payload `00 00`, checksum enabled, ACK budget 500,
+response budget `(uint16_t) supplied_timeout`, and response selector 3
+(event handle `0x1800688f0`). It makes a second identical transaction only
+when the first sender result is zero. Each attempt resets response readiness
+before sending and uses the ordinary odd-ACK predicate. Response waiting tests
+event completion, not a version status byte or string predicate.
+
+For this query `DataFromDevice` (`0x18001a7ec`) copies the received payload,
+excluding its checksum, to shared cache `0x1800638d3` and signals selector 3.
+The parser does not clear the remainder of that cache; the getter does not
+clear it before sending. On successful sender completion the getter copies
+exactly 64 cache bytes to its caller and returns zero. It neither returns the
+received string length nor appends a terminator or checks a firmware prefix.
+On two zero sender results it returns `0xffffffff` and leaves the caller's
+64-byte destination untouched. A zero response timeout disables event waiting
+in the generic sender; this is distinct from a response packet with no version
+characters and is not the timeout used by `deviceInit`.
+
+Selector 3 and its cache are not private to the version command.
+`DataFromDevice` routes category-`0x0a` commands **0, 1 and 4** through the
+same payload-copy and `SetEvent(0x1800688f0)` branch. There is no active-command
+predicate. A response for command 0 or 1 can therefore satisfy a pending
+version wait and supply that getter's 64-byte cache projection, including when
+received before the version ACK. Category-`0x0a` command 3 also replaces the
+cache prefix but signals selector 4 instead. Category 8 copies its payload to
+the same cache and signals selector 0. These non-version writes affect retained
+suffix bytes observable in a later short version response without themselves
+signalling version readiness.
+
+The same parser's category-`0x0e` branch writes a dword payload length at cache
+offset zero and copies payload at offset four, signalling selector 6;
+category-`0x0f` replaces only cache byte zero and signals selector 2. Those
+stores also belong to the shared-cache lifetime. The version getter observes
+only its first 64 bytes; it does not expose the full backing allocation or
+require a separate version-only cache.
+
+Only getter result `-1` increments the outer iteration count and invokes
+`Sleep(100)`. The sleep precedes the count comparison, so the fifth failed
+iteration also sleeps 100 ms. Success exits the loop immediately, without this
+delay. Five failed iterations log version failure and then continue to the
+existing initialization predicates and `device_enable`; exhaustion itself is
+not a USB bus-reset command or an early thread return. The optional firmware
+update check is entered only after a non-`-1` getter result when device-context
+byte `+0x153 == 1`.
+
 ## Initial Image-Base Path
 
 - On the first/full initialization branch (`device_context +0x110 != 1`), it

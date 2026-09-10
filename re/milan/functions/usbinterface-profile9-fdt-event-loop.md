@@ -29,6 +29,48 @@ queue, so a later packet can replace an event that the worker has not read. No
 software path polls current touch level or synthesizes an event when an arm
 completes; dispatch requires an actual parsed packet.
 
+## Startup Command And Reader Power Lifetime
+
+`deviceInit` (`0x180020970`), when device context `+0x110` is not initialized,
+issues `ChangeMode(0, 0, 0, NULL, 500)` through `0x180017ec0` before querying
+firmware version. Category 0 / command 0 sends two zero payload bytes with
+checksum enabled, ACK budget 500, no response wait and selector `0xff`.
+`ChangeMode` retries a zero result once with the identical payload while
+retaining its lock. `deviceInit` ignores that mode-command result and proceeds
+to the firmware-version query with response budget 2000. A failed version
+query (`-1`) causes a 100-ms delay and another iteration, up to five iterations.
+There is no category-0 exception to the sender's ACK-valid-bit predicate:
+an odd status satisfies its ACK slot, while an even status keeps polling.
+
+`usbEvtDeviceD0Entry` (`0x180022d70`) starts the read I/O target through WDF
+table slot `+0x350` before starting `deviceInit`. On start failure it stops that
+target through slot `+0x358` with action 1. The initialized-entry path does not
+repeat the category-0/version loop; the remembered system-power state instead
+selects the existing handshake path.
+
+`usbEvtDeviceD0Exit` (`0x180022ff0`) first sends stop action `0x13` with state
+`0xf2`. Its power-state branch then requests sleep mode 2 with budget 200 or
+conditionally EC control with budget 200. Only after those actions does it mark
+the protocol power-stop byte and stop the read target through WDF slot `+0x358`,
+action 1. `OnActivate` (`0x1800214d0`) deactivation performs worker stop and
+sleep, but does not stop that read target. Thus deactivation completion is not
+the USB-reader lifetime boundary. Neither `EcControl` (`0x18001afec`) nor that
+deactivation handler adds an EC data-response wait, post-ACK sleep, or explicit
+tail-drain barrier.
+
+`PrepareHardware` (`0x180023600`) creates the USB target once, selects the
+interfaces through `0x180020180`, and configures the continuous reader through
+`0x180020058`. The reader configuration uses device context `+0x30` as transfer
+length (initialized to `0x8000`), one pending read, completion callback
+`0x180021200`, and failure callback `0x1800211a0`. These resources belong to the
+WDF device/power lifetime, not one capture or activation IOCTL.
+
+`ReleaseHardware` (`0x180023c40`) marks power-stop, waits for an outstanding
+initialization thread, disables the profile worker and calls protocol teardown
+`0x18001b40c`. Teardown clears initialized byte `0x180063840`, releases the
+protocol allocation, closes seven response events and deletes its critical
+sections. These teardown operations do not occur in `OnActivate` deactivation.
+
 ## Profile-9 Event Source
 
 `FUN_18000450c` (`GxFNHV_MilanOpen`) installs `FUN_180005b80`
@@ -79,6 +121,22 @@ the manual-FDT base until another owner replaces it; see
 `usbinterface-FUN_180005420.md`.
 
 ## Dispatch
+
+Capture cancellation `gfOnCancel` (`0x180020ef0`) sets device-context bytes
+`+0x154 = 1` and `+0x152 = 1`, completes the pending request with
+`STATUS_CANCELLED` and clears request slot `+0xf8`. It does not clear or replace
+HAL event type `+0x08`, reset worker event `+0x10`, change wait state `+0x1fc`,
+stop the reader, or acquire HAL action lock `0x18005e7c8`. Consequently a
+previously published FDT notification can survive request cancellation while
+an arm waits for its ACK. After the arm releases the action lock, the worker
+can consume that notification and enter the same threshold/refresh/rearm path.
+The worker dispatch and up/down/reverse threshold paths do not consult those two
+request-cancellation bytes or request slot `+0xf8` before such work.
+
+This differs from deactivation's event-`0x15` publication: if it replaces an
+unconsumed FDT event first, the worker observes the replacement. If the worker
+has already selected the FDT handler, later notification replacement does not
+undo that selection. Neither schedule is a universal cancellation barrier.
 
 `FUN_18000df20` maps the profile-9 event types through `FUN_18000e1f0`:
 
@@ -397,6 +455,16 @@ byte 0 other than one, its deactivation branch performs this order:
 Worker event `0x15` invokes action `0x11` with initial power-control bytes
 `00 00`, delay word 500 and command timeout word 200. The action applies its
 screen/power-button policy and sends through `FUN_18001afec`. Event dispatch
+uses the following action-`0x11` policy in `0x18000e1f0`: byte 1 is normally
+copied from incoming byte 0, except device-context `+0x151 == 1` with global
+screen flag `0x18005f398 == 0` forces byte 1 to one. HAL mode `+0x1e0 == 2`
+then forces byte 0 to zero without changing byte 1. If the resulting byte 0
+is zero and the supplied delay word at `+2` is nonzero, `Sleep(delay)` runs
+before calling EC control with the ACK timeout word at `+4`. Thus the worker's
+500-ms delay is a **pre-send power-policy delay**, not a response wait or
+post-ACK drain. The HAL action lock remains held during that delay and send.
+
+Event dispatch
 and direct sleep both hold the HAL action critical section `0x18005e7c8`,
 but each action releases it separately. Thus publishing event `0x15` before
 the sleep action does not guarantee the power-control command runs first.
@@ -405,8 +473,10 @@ the sleep action does not guarantee the power-control command runs first.
 zero response timeout and selector `0xff`. It makes one attempt, returning
 zero on nonzero send/ACK result or `-1` on zero result. Its ACK byte is a
 different slot from sleep (index `0x57`, address `0x180069148`). The event
-worker only logs an action result of `-1`; it does not complete a capture
-request or retry that action.
+worker's `0x15` branch discards the action return; its local dispatch status
+remains zero, so that branch does not enter the worker's generic `-1` error
+log. EC control itself logs its failure. Neither owner completes a capture
+request or retries that action.
 `EcControl` does not require a category-`0x0a`, command-7 data response or
 inspect a response success byte. `DataFromDevice` handles category-`0x0a`
 commands 0, 1, 3 and 4 through its shared response storage/events, but returns
@@ -414,6 +484,18 @@ without a response copy or signal for command 7. An EC data reply received
 after ACK completion therefore does not complete any later command or worker
 event. This is separate from the EC ACK's valid bit and from the worker's
 handling of a failed EC command.
+
+For an ordinary EC data packet, parser return zero passes unchanged through
+`0x180017ed8` to continuous-read callback `0x180021200`. That callback only
+enters handshake-restart handling on return `-1`; zero neither clears nor sets
+its handshake-error history flag `0x1800a2108`, creates a handshake thread, nor
+signals a completion event. Ordinary packet assembly/metadata publication
+still occurs, but EC data has no additional post-parser state transition.
+The callback continues its cell loop and releases device-context receive lock
+`+0x70`. Command serialization instead uses protocol locks `0x180063898`
+(sender transaction), `0x180063848` (write), and `0x180063870` (ChangeMode),
+plus the HAL action lock where applicable. The receive callback does not wait
+for those command locks before dispatching an EC packet.
 
 An up IRQ is still parsed and signals event `0x10` regardless of HAL mode
 `+0x1e0`, wait state `+0x1fc`, or the request's stop bytes. If the worker
