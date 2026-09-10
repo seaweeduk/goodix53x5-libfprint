@@ -94,6 +94,30 @@ No other configuration value is patched by this owner. In particular,
 section-3 `0x0082`, section-1 TCODE, and unrelated section-0 register values
 are not additional calibration outputs here.
 
+## Configuration Response Publication
+
+After ordinary frame assembly and checksum validation, `DataFromDevice`
+(`0x18001a7ec`) dispatches category 9 / command 0 by signalling event handle
+`0x1800688e0` (selector 1). This branch does not test the configuration
+response's status byte or impose an additional command-specific payload-length
+predicate. A conventional one-byte status payload is sufficient: zero, one,
+and other status values have the same event-publication behavior.
+
+There is no category-9/command-0 payload copy into the separate shared response
+cache `0x1800638d3`. Frame bytes occupy assembly scratch `0x18006a113`; the
+ordinary command metadata contains the received wire length and a pointer to
+that scratch. Later packets overwrite the scratch independently of the current
+transaction. Early or duplicate configuration responses signal selector 1
+independently of the current waiter. They do not replace a dedicated retained
+configuration-result byte. The category-9 command-2 branch additionally copies
+the first payload byte to `0x18006a112`; command 0 does not perform that write.
+
+The sender resets selector 1 before each attempt, not after receiving its ACK.
+Consequently an early configuration response can satisfy the ensuing response
+wait; a retry clears the event readiness again. `Dlcfg` tests sender completion,
+not the status payload or scratch contents. A response with status zero is
+therefore completion evidence, not a configuration-failure indication.
+
 ## Producer Constraints
 
 Successful `Milan_CheckSensor` (`FUN_180004a40`) publishes the serialization
