@@ -991,14 +991,22 @@ goodix_milan_estimate_relation (
                 (((int64_t) affine[3] * x +
                   (int64_t) affine[4] * y) >> 8) +
                 affine[5];
+              /* Native rejects mapped coordinates before subtraction, then
+               * bounds each residual before evaluating its square. */
+              if (transformed_x <= -INT64_C(0x100000000) ||
+                  transformed_x >= INT64_C(0x100000000) ||
+                  transformed_y <= -INT64_C(0x100000000) ||
+                  transformed_y >= INT64_C(0x100000000))
+                continue;
               int64_t dx = transformed_x -
                            (uint16_t) prior_records[matches[i].prior_index].refined_x;
               int64_t dy = transformed_y -
                            (uint16_t) prior_records[matches[i].prior_index].refined_y;
+              if (dx < -640 || dx > 640 || dy < -640 || dy > 640)
+                continue;
               int64_t squared = dx * dx + dy * dy;
 
-              if (llabs (dx) < 0x281 && llabs (dy) < 0x281 &&
-                  squared < 0x64000)
+              if (squared < 0x64000)
                 {
                   inliers++;
                   residual_sum += squared;
