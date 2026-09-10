@@ -20,87 +20,74 @@
 #pragma once
 
 #include "driver-private.h"
-#include "device/commands.h"
 
-/* Optional receive lifetime ends only after its USB callback joins. */
-typedef void (*GoodixIdleJoinedCallback) (FpDevice *dev, gpointer data);
-void goodix_idle_recv_stop (FpDevice *dev, GoodixIdleJoinedCallback joined,
-                            gpointer data);
-void goodix_run_cmd_ec_off (FpiSsm *ssm, FpDevice *dev,
-                             const guint8 *payload, gsize payload_len);
+/* Command bytes are copied when the request is accepted. */
+typedef struct
+{
+  guint8   category;
+  guint8   command;
+  guint8  *payload;
+  gsize    payload_len;
+  gboolean use_checksum;
+} GoodixCmd;
+
+typedef struct
+{
+  GoodixCmd cmd;
+  gboolean expect_data;
+  gboolean idle_after_ack;
+  GoodixProfile9FdtWaitMode cancelled_mode;
+} GoodixTransportRequest;
+
+typedef struct
+{
+  /* Last accepted odd ACK; ordinary exhaustion follows native retry policy. */
+  guint8 ack_status;
+  gboolean ordinary_exhaustion;
+  gboolean write_cancelled;
+} GoodixTransportResult;
+
+/* Error ownership transfers to done. Result is borrowed for that call only.
+ * The completed operation is detached before caller code can submit another. */
+typedef void (*GoodixTransportDone) (FpDevice *dev,
+                                    const GoodixTransportResult *result,
+                                    GError *error, gpointer data);
+typedef void (*GoodixTransportJoined) (FpDevice *dev, gpointer data);
+
+/* Copy the request before returning; reserve it while an idle IN joins. */
+void goodix_transport_command (FpDevice *dev, const GoodixTransportRequest *request,
+                                GoodixTransportDone done, gpointer data);
+void goodix_transport_wait_event (FpDevice *dev, GoodixProfile9FdtWaitMode mode,
+                                   GoodixTransportDone done, gpointer data);
+void goodix_transport_wait_reply (FpDevice *dev, guint timeout,
+                                   GoodixTransportDone done, gpointer data);
+void goodix_transport_cancel_event (FpDevice *dev);
+/* Foreground and CPU work must already be settled. Join optional idle IN;
+ * this is not a policy to cancel outstanding commands or CPU work. */
+void goodix_transport_quiesce (FpDevice *dev, GoodixTransportJoined joined,
+                               gpointer data);
 
 /* Timeouts in ms */
 #define GOODIX_ACK_TIMEOUT    2000
 #define GOODIX_DATA_TIMEOUT   5000
 
-typedef void (*GoodixRecvCancelledCallback) (FpiSsm   *ssm,
-                                              FpDevice *dev,
-                                              GError   *error,
-                                              gpointer  user_data);
-
-/**
- * Start receiving a message. Submits a bulk IN read; the RX callback handles
- * chunk reassembly and resubmits until the message is complete, then advances
- * @ssm. Zero-length reads are accepted by resubmitting.
- */
-void goodix_recv_start (FpiSsm       *ssm,
-                        FpDevice     *dev,
-                        guint         timeout_ms,
-                        GCancellable *cancellable);
-
-/* Start an infinite event receive and transfer ownership of a cancellation
- * error to
- * @cancelled_cb. The callback must resolve @ssm exactly once. Returns FALSE
- * without changing @ssm if another receive or a command owns the transport. */
-gboolean goodix_recv_start_cancellable_full (
-  FpiSsm                     *ssm,
-  FpDevice                   *dev,
-  GCancellable               *cancellable,
-  GoodixRecvCancelledCallback cancelled_cb,
-  gpointer                    user_data);
-
 /* Commit the native parser-side base updates before publishing a notification.
- * Dispatch must not apply these updates again for a restored pending event. */
+ * Dispatch must not apply these updates again for a selected notification. */
 void goodix_recv_apply_fdt_event (FpDevice                     *dev,
                                  GoodixFdtEventType             type,
                                  const GoodixProfile9FdtEvent  *event);
 
-/* Restore an already-applied event received before the arm ACK for coordinator
- * dispatch. No transfer is submitted and transport ownership must be idle. */
-gboolean goodix_recv_take_pending_fdt (FpDevice *dev);
+/* Copy the validated notification selected by wait_event. Mode was used at
+ * decode time; selected type/event/predecessor are independent of later RX. */
+gboolean goodix_recv_select_fdt (FpDevice *dev, GoodixFdtEventType *type,
+                                 GoodixProfile9FdtEvent *event,
+                                 guint16 *prior_down, GError **error);
 
-/**
- * Launch a command sub-SSM that sends a command and receives + validates the
- * ACK. If @expect_data is TRUE, the command also receives the data response,
- * which the caller parses with goodix_parse_reply() / goodix_parse_reply_exact()
- * once the parent SSM advances.
- */
-void goodix_run_cmd (FpiSsm       *parent_ssm,
-                     FpDevice     *dev,
-                     guint8        category,
-                     guint8        command,
-                     const guint8 *payload,
-                     gsize         payload_len,
-                     gboolean      expect_data);
+/* Invalidate transport-local reception only after its owners have joined. */
+void goodix_transport_invalidate (FpDevice *dev);
 
-void goodix_run_cmd_result (FpiSsm *ssm, FpDevice *dev,
-                            guint8 category, guint8 command,
-                            const guint8 *payload, gsize payload_len,
-                            gboolean expect_data, GoodixCmdResultCallback callback);
-
-/* Run coordinator cleanup while allowing one event from the receive cancelled
- * during stop to precede the command ACK. */
-void goodix_run_cmd_drain_fdt_once (
-  FpiSsm                    *parent_ssm,
-  FpDevice                  *dev,
-  guint8                     category,
-  guint8                     command,
-  const guint8              *payload,
-  gsize                      payload_len,
-  GoodixProfile9FdtWaitMode  cancelled_mode);
-
-/* Parsed reply payloads point into the current RX buffer and are valid only
- * until the next receive reset. */
+/* Access the transport's once-validated packet view. Payloads borrow the current
+ * RX buffer until the next receive reset; this does not reparse the bytes. */
 gboolean goodix_parse_reply (FpDevice      *dev,
                              guint8        *out_category,
                              guint8        *out_command,

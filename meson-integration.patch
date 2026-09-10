@@ -235,7 +235,7 @@ index 00aa566..f0c5dcf 100644
 +
 +    goodix53x5_milan_transport = executable(
 +        'test-goodix53x5-milan-transport',
-+        'test-goodix53x5-milan-transport.c',
++        ['test-goodix53x5-milan-transport.c', 'test-goodix53x5-milan-transport-fixture.c'],
 +        dependencies: libfprint_private_dep,
 +        include_directories: include_directories('../libfprint/drivers/goodix53x5'),
 +        c_args: common_cflags + goodix53x5_cflags,

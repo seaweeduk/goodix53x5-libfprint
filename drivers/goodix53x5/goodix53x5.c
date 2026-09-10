@@ -61,8 +61,8 @@ goodix_close_joined (FpDevice *dev, gpointer data)
   goodix_clear_pending_result_report (self);
   g_clear_pointer (&self->otp_data, g_free);
   g_clear_pointer (&self->fw_version, g_free);
+  goodix_transport_invalidate (dev);
   g_clear_pointer (&self->rx.buf, g_free);
-  self->rx_idle_partial = FALSE;
 #ifdef GOODIX53X5_DEBUG
   g_clear_pointer (&self->captured_image, g_free);
 #endif
@@ -87,7 +87,7 @@ goodix_close_joined (FpDevice *dev, gpointer data)
 static void
 goodix_close (FpDevice *dev)
 {
-  goodix_idle_recv_stop (dev, goodix_close_joined, NULL);
+  goodix_transport_quiesce (dev, goodix_close_joined, NULL);
 }
 
 static void
