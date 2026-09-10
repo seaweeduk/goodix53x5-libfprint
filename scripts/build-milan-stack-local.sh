@@ -112,6 +112,8 @@ milan_run_stage "test Milan state invariants" meson test -C "$libfprint_build" \
   --print-errorlogs goodix53x5-milan-state
 milan_run_stage "test Milan runtime public contract" meson test -C "$libfprint_build" \
   --print-errorlogs goodix53x5-milan-runtime
+milan_run_stage "test Milan transport scheduling" meson test -C "$libfprint_build" \
+  --print-errorlogs goodix53x5-milan-transport
 
 fprintd_source="$staging/fprintd-source"
 fprintd_build="$staging/fprintd-build"

@@ -76,6 +76,7 @@ typedef struct
   GError                       *stop_error;
   guint16                       prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
   gboolean                      receive_active;
+  gboolean                      event_preparsed;
   gboolean                      dispatching;
   gboolean                      stop_requested;
   gboolean                      cpu_done;
@@ -408,6 +409,15 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_WAIT_EVENT:
+      if (goodix_recv_take_pending_fdt (dev))
+        {
+          /* This receive already completed while the arm held dispatch.
+           * Preserve the completed-event path even if stop is now pending. */
+          data->receive_active = TRUE;
+          data->event_preparsed = TRUE;
+          fpi_ssm_next_state (ssm);
+          return;
+        }
       if (!goodix_scan_begin_receive (data, dev))
         {
           fpi_ssm_mark_failed (
@@ -435,6 +445,9 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
             fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
             return;
           }
+        if (!data->event_preparsed)
+          goodix_recv_apply_fdt_event (dev, data->event_type, &fdt->event);
+        data->event_preparsed = FALSE;
         data->dispatching = TRUE;
 
         if (data->event_type == GOODIX_FDT_EVENT_DOWN)
@@ -453,18 +466,12 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
                 /* A new press raced the prior CPU result. Keep the sensor
                  * event-driven by arming up and discarding this too-early
                  * enrollment press only after its matching release. */
-                goodix_device_generate_fdt_up_base (
-                  fdt->event.raw, fdt->event.touch_flag,
-                  &self->calib, fdt->base_up);
                 fpi_device_report_finger_status_changes (
                   dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
                 fpi_ssm_jump_to_state (
                   ssm, GOODIX_SCAN_COORD_RECOVERY_ARM_UP);
                 return;
               }
-            goodix_device_generate_fdt_up_base (fdt->event.raw,
-                                                fdt->event.touch_flag,
-                                                &self->calib, fdt->base_up);
             fpi_ssm_next_state (ssm);
             return;
           }
@@ -475,16 +482,7 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
 
           goodix_scan_normalize_event (&fdt->event, current);
           if (data->event_type == GOODIX_FDT_EVENT_REVERSE)
-            {
-              for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
-                data->prior_down[i] = fdt->base_down[i * 2 + 1];
-              memcpy (fdt->base_manual, fdt->base_down,
-                      sizeof (fdt->base_manual));
-            }
-
-          goodix_device_generate_fdt_base (fdt->event.raw,
-                                           GOODIX_FDT_BASE_LEN,
-                                           fdt->base_down);
+            memcpy (data->prior_down, self->fdt_prior_down, sizeof (data->prior_down));
           data->release_settled = data->cycle_active;
 
           if (data->event_type == GOODIX_FDT_EVENT_REVERSE)
@@ -638,10 +636,10 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       data->dispatching = FALSE;
       fdt->event.pending = FALSE;
 
-      if (data->stop_requested)
+      if (self->pending_fdt_packet_len || data->stop_requested)
         {
-          /* Resolve the receive associated with this down arm before issuing
-           * shutdown commands, even when stop raced the dispatched handler. */
+          /* An event already received during rearm precedes CPU settlement.
+           * Otherwise resolve the outstanding arm before shutdown as usual. */
           fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
           return;
         }
@@ -744,6 +742,8 @@ goodix_scan_coordinator_done (FpiSsm   *ssm,
   self->profile9_fdt.owner = NULL;
   self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED;
   self->profile9_fdt.wait_mode = GOODIX_PROFILE9_FDT_WAIT_NONE;
+  /* Stop invalidates the notification, not its already committed base updates. */
+  self->pending_fdt_packet_len = 0;
 
   if (error &&
       !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))

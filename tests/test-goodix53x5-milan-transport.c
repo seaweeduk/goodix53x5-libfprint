@@ -1,0 +1,803 @@
+/*
+ * Goodix profile-9 transport/coordinator scheduling contracts.
+ * Copyright (C) 2026 goodix53x5-libfprint contributors
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ */
+
+#include "drivers_api.h"
+#include "drivers/goodix53x5/driver-private.h"
+#include "drivers/goodix53x5/device/base.h"
+
+static void mock_submit (FpiUsbTransfer *, guint, GCancellable *,
+                         FpiUsbTransferCallback, gpointer);
+static void capture_setup (FpDevice *, GoodixMilanGeneration *);
+static gint64 test_clock_us;
+static gint64 G_GNUC_UNUSED
+test_monotonic_time (void)
+{
+  return test_clock_us;
+}
+static void reply (FpiUsbTransfer *, guint8, guint8, const guint8 *, gsize);
+static void boundary_done (FpiSsm *, FpDevice *, GError *);
+
+/* Compile the actual owners, replacing USB submission, the monotonic clock,
+ * and setup preparation preceding our completed-capture boundary. FpiSsm is not mocked.
+ * The executable supplies these owners instead of their archive objects. */
+#define fpi_usb_transfer_submit mock_submit
+#define goodix_milan_generation_prepare_setup capture_setup
+#define g_get_monotonic_time test_monotonic_time
+#include "drivers/goodix53x5/device/transport.c"
+#include "drivers/goodix53x5/device/commands.c"
+#include "drivers/goodix53x5/device/scan.c"
+#undef goodix_milan_generation_prepare_setup
+#undef fpi_usb_transfer_submit
+#undef g_get_monotonic_time
+
+typedef enum {
+  EVENT_CANCELLED,
+  EVENT_BEFORE_SLEEP_ACK,
+  EVENT_COMPLETES_DURING_CANCEL,
+  EVENT_BEFORE_ARM_ACK,
+  DUPLICATE_SLEEP_BEFORE_EC_ACK,
+  DUPLICATE_SLEEP_BEFORE_EC_DATA,
+  DUPLICATE_ARM_IN_EVENT_WAIT,
+  LATE_ACK_DEADLINE,
+  CANCEL_DURING_RETRY,
+  EARLY_REARM_REVERSE,
+  TWO_EARLY_REVERSE,
+  SEND_IO_RETRY,
+  SEND_TIMEOUT_RETRY,
+  SEND_DISCONNECT,
+  SEND_CANCELLED,
+  SAME_COMMAND_PRECEDENCE,
+  MULTICELL_DATA,
+} EventOrder;
+
+typedef struct {
+  guint8 timeout_command;
+  guint timeout_count;
+  guint expected_up_sends;
+  guint expected_sleep_sends;
+  gboolean success;
+  EventOrder event_order;
+  guint8 standalone_arm;
+} Scenario;
+
+static struct {
+  FpiUsbTransfer *pending;
+  FpiUsbTransferCallback callback;
+  gpointer user_data;
+  GCancellable *cancel;
+  guint timeout;
+  guint8 command;
+  guint sends[256];
+  guint captures;
+  guint completions;
+  guint cancellations;
+  guint events;
+  guint dispatches;
+  guint duplicates;
+  guint expected_acks;
+  gint64 ec_ack_started;
+  gboolean deadline_violation;
+  gboolean action_cancelled;
+  guint wait_cpu_count;
+  guint8 settled_down[GOODIX_FDT_BASE_LEN];
+  guint8 settled_manual[GOODIX_FDT_BASE_LEN];
+  guint16 settled_prior[GOODIX_PROFILE9_FDT_AREA_COUNT];
+  guint8 packet_down[2][GOODIX_FDT_BASE_LEN];
+  guint8 packet_manual[2][GOODIX_FDT_BASE_LEN];
+  guint8 last_down_payload[GOODIX_FDT_BASE_LEN];
+  guint data_chunks;
+  gboolean disposition_sent;
+  gboolean ec_data;
+  GError *error;
+  GBytes *first_up;
+  GBytes *first_sleep;
+  GBytes *first_down;
+  const Scenario *scenario;
+} io;
+
+static void
+capture_setup (FpDevice *dev, GoodixMilanGeneration *generation)
+{
+  g_assert_true (generation == FPI_DEVICE_GOODIX53X5 (dev)->milan_generation);
+}
+
+static void
+mock_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel,
+             FpiUsbTransferCallback callback, gpointer user_data)
+{
+  /* Stronger than one IN: no second USB transfer of either direction may
+   * outlive an unresolved completion in this serial command/event protocol. */
+  g_assert_null (io.pending);
+  io.pending = transfer;
+  io.callback = callback;
+  io.user_data = user_data;
+  io.cancel = cancel ? g_object_ref (cancel) : NULL;
+  io.timeout = timeout;
+  if (transfer->endpoint == GOODIX_EP_IN)
+    {
+      g_assert_cmpuint (transfer->length, ==, 64);
+      if (timeout != 0)
+        g_assert_null (cancel);
+    }
+  else
+    {
+      GBytes **first = NULL;
+      g_assert_cmpuint (transfer->endpoint, ==, GOODIX_EP_OUT);
+      g_assert_null (cancel);
+      io.command = transfer->buffer[0];
+      io.sends[io.command]++;
+      io.ec_data = FALSE;
+      if (io.command == 0xae)
+        io.ec_ack_started = 0;
+      if (io.command == 0x34)
+        first = &io.first_up;
+      else if (io.command == 0x60)
+        first = &io.first_sleep;
+      else if (io.command == 0x32)
+        {
+          first = &io.first_down;
+          memcpy (io.last_down_payload, transfer->buffer + 5, GOODIX_FDT_BASE_LEN);
+        }
+      if (first)
+        {
+          g_autoptr(GBytes) bytes = g_bytes_new (transfer->buffer,
+                                                transfer->length);
+          if (*first && !(io.command == 0x32 &&
+                         (io.scenario->event_order == EARLY_REARM_REVERSE ||
+                          io.scenario->event_order == TWO_EARLY_REVERSE) &&
+                         io.sends[0x32] > 1 + io.scenario->timeout_count))
+            g_assert_true (g_bytes_equal (*first, bytes));
+          else if (!*first)
+            *first = g_bytes_ref (bytes);
+        }
+    }
+}
+
+static gboolean
+rearm_case (const Scenario *scenario)
+{
+  return scenario->event_order == EARLY_REARM_REVERSE ||
+         scenario->event_order == TWO_EARLY_REVERSE;
+}
+
+static void
+reverse_event (FpiUsbTransfer *transfer, guint ordinal)
+{
+  guint8 payload[4 + GOODIX_FDT_BASE_LEN] = { 0x80, 0, 0, 0 };
+  for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+    payload[4 + 2 * i] = 100 + 2 * i + 2 * ordinal;
+  reply (transfer, 3, 1, payload, sizeof (payload));
+  io.events++;
+}
+
+static void
+ack_reply (FpiUsbTransfer *transfer, guint8 command)
+{
+  guint8 ack[] = { command, 1 };
+  reply (transfer, 0x0b, 0, ack, sizeof (ack));
+}
+
+static void
+reply (FpiUsbTransfer *transfer, guint8 category, guint8 command,
+       const guint8 *payload, gsize length)
+{
+  gsize size;
+  g_autofree guint8 *bytes = goodix_proto_build_message (
+    category, command, payload, length, TRUE, &size);
+  g_assert_cmpuint (size, <=, transfer->length);
+  memset (transfer->buffer, 0, transfer->length);
+  memcpy (transfer->buffer, bytes, size);
+  transfer->actual_length = transfer->length; /* One padded 64-byte protocol cell. */
+}
+
+static void
+up_event (FpiUsbTransfer *transfer)
+{
+  guint8 payload[4 + GOODIX_FDT_BASE_LEN] = { 0, 2 };
+  for (guint i = 0; i < GOODIX_FDT_BASE_LEN; i++)
+    payload[4 + i] = 3 * i + 1;
+  reply (transfer, 3, 2, payload, sizeof (payload));
+  io.events++;
+}
+
+static void
+stop_after_capture (FpDevice *dev)
+{
+  g_assert_cmpuint (io.captures, ==, 1);
+  g_assert_false (io.disposition_sent);
+  io.disposition_sent = TRUE;
+  goodix_scan_set_disposition (dev, GOODIX_SCAN_DISPOSITION_AUTH_SUCCESS, NULL);
+}
+
+static gboolean
+complete_usb (gpointer unused)
+{
+  FpiUsbTransfer *transfer = io.pending;
+  FpiUsbTransferCallback callback = io.callback;
+  gpointer user_data = io.user_data;
+  g_autoptr(GCancellable) cancel = g_steal_pointer (&io.cancel);
+  GError *error = NULL;
+  const Scenario *scenario = io.scenario;
+  guint events_before = io.events;
+
+  g_assert_nonnull (transfer);
+  /* Request stop with the up-arm ACK still outstanding, except for the
+   * separately controlled event-completion/cancellation boundary. */
+  if (!scenario->standalone_arm && !rearm_case (scenario) && !io.disposition_sent &&
+      scenario->event_order != EVENT_BEFORE_ARM_ACK &&
+      transfer->endpoint == GOODIX_EP_IN &&
+      io.command == 0x34 &&
+      (scenario->event_order != EVENT_COMPLETES_DURING_CANCEL || io.timeout == 0))
+    stop_after_capture (transfer->device);
+  if (!io.disposition_sent && scenario->event_order == EVENT_BEFORE_ARM_ACK &&
+      transfer->endpoint == GOODIX_EP_IN && io.command == 0x32)
+    stop_after_capture (transfer->device);
+
+  if (scenario->event_order == CANCEL_DURING_RETRY && io.command == 0x34 &&
+      io.sends[0x34] == 2 && !io.action_cancelled)
+    {
+      io.action_cancelled = TRUE;
+      g_cancellable_cancel (FPI_DEVICE_GOODIX53X5 (transfer->device)->cancel);
+    }
+
+  if (transfer->endpoint == GOODIX_EP_OUT)
+    {
+      EventOrder order = scenario->event_order;
+      if (io.command == 0x34 && io.sends[0x34] == 1 &&
+          order >= SEND_IO_RETRY && order <= SEND_CANCELLED)
+        {
+          gint code = order == SEND_IO_RETRY ? G_USB_DEVICE_ERROR_IO :
+            order == SEND_TIMEOUT_RETRY ? G_USB_DEVICE_ERROR_TIMED_OUT :
+            order == SEND_DISCONNECT ? G_USB_DEVICE_ERROR_NO_DEVICE :
+            G_USB_DEVICE_ERROR_CANCELLED;
+          stop_after_capture (transfer->device);
+          error = g_error_new_literal (G_USB_DEVICE_ERROR, code, "Scheduled send failure");
+        }
+      else
+        transfer->actual_length = transfer->length;
+    }
+  else if (io.timeout == 0)
+    {
+      if (scenario->standalone_arm)
+        {
+          if (io.duplicates == 0)
+            {
+              io.duplicates++;
+              ack_reply (transfer, scenario->standalone_arm);
+            }
+          else
+            {
+              guint8 payload[4 + GOODIX_FDT_BASE_LEN] = { 0 };
+              guint16 irq = scenario->standalone_arm == 0x32 ? 2 : 0x200;
+              payload[0] = irq & 0xff;
+              payload[1] = irq >> 8;
+              for (guint i = 0; i < GOODIX_FDT_BASE_LEN; i++)
+                payload[4 + i] = 3 * i + 1;
+              reply (transfer, 3, (scenario->standalone_arm & 0xf) >> 1,
+                      payload, sizeof (payload));
+              io.events++;
+            }
+        }
+      else if (scenario->event_order == EVENT_COMPLETES_DURING_CANCEL && io.events == 0)
+        up_event (transfer);
+      else
+        {
+          g_assert_nonnull (cancel);
+          g_assert_true (g_cancellable_is_cancelled (cancel));
+          io.cancellations++;
+          error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                        "Scheduled event cancellation");
+        }
+    }
+  else if (!io.ec_data)
+    {
+      if (rearm_case (scenario) && io.command == 0x32 && io.sends[0x32] == 1 &&
+          io.events < (scenario->event_order == TWO_EARLY_REVERSE ? 2 : 1))
+        reverse_event (transfer, io.events);
+      else if (io.command == scenario->timeout_command &&
+          io.sends[io.command] <= scenario->timeout_count)
+        {
+          test_clock_us += io.timeout * 1000;
+          error = g_error_new_literal (G_USB_DEVICE_ERROR,
+                                       G_USB_DEVICE_ERROR_TIMED_OUT,
+                                       "Scheduled ACK timeout");
+        }
+      else if (io.command == 0x60 &&
+               scenario->event_order == EVENT_BEFORE_SLEEP_ACK && io.events == 0)
+        up_event (transfer);
+      else if (io.command == 0x34 && scenario->event_order == EVENT_BEFORE_ARM_ACK &&
+               io.events == 0)
+        up_event (transfer);
+      else if (io.command == 0xae &&
+               scenario->event_order == DUPLICATE_SLEEP_BEFORE_EC_ACK &&
+               io.duplicates == 0)
+        {
+          io.duplicates++;
+          ack_reply (transfer, 0x60);
+        }
+      else if (io.command == 0xae && scenario->event_order == LATE_ACK_DEADLINE)
+        {
+          gint64 elapsed_ms;
+          if (!io.ec_ack_started)
+            io.ec_ack_started = test_clock_us;
+          elapsed_ms = (test_clock_us - io.ec_ack_started) / 1000;
+          if (io.timeout == 0 || elapsed_ms + io.timeout > GOODIX_ACK_TIMEOUT)
+            io.deadline_violation = TRUE;
+          if (io.duplicates == 0)
+            {
+              /* Exactly the remaining ACK from the two sleep attempts, not
+               * an invented stream of more ACKs than commands sent. */
+              test_clock_us += 1500 * 1000;
+              io.duplicates++;
+              ack_reply (transfer, 0x60);
+            }
+          else
+            {
+              test_clock_us += io.timeout * 1000;
+              error = g_error_new_literal (G_USB_DEVICE_ERROR,
+                                           G_USB_DEVICE_ERROR_TIMED_OUT,
+                                           "Scheduled ACK deadline exhaustion");
+            }
+        }
+      else
+        {
+          /* In retry scenarios this models the delayed first attempt's ACK.
+           * The later injected duplicate belongs to the second send. The wire
+           * has no attempt number; both carry identical command/status bytes. */
+          ack_reply (transfer, io.command);
+          if (io.command == 0xae)
+            io.expected_acks++;
+          io.ec_data = io.command == 0xae || scenario->event_order == MULTICELL_DATA;
+        }
+    }
+  else
+    {
+      const guint8 result[] = { 1 };
+      g_assert_true (io.ec_data);
+      if (scenario->event_order == MULTICELL_DATA)
+        {
+          guint8 payload[150];
+          gsize size;
+          for (guint i = 0; i < sizeof (payload); i++)
+            payload[i] = i * 7 + 3;
+          g_autofree guint8 *message = goodix_proto_build_message (
+            2, 0, payload, sizeof (payload), TRUE, &size);
+          /* Ordinary data retains its per-continuation 5-second budget.
+           * Three valid cells arrive four seconds apart; no wall-clock wait. */
+          if (io.timeout != GOODIX_DATA_TIMEOUT)
+            g_test_fail ();
+          test_clock_us += MIN (io.timeout, 4000) * 1000;
+          if (io.timeout < 4000)
+            error = g_error_new_literal (G_USB_DEVICE_ERROR,
+                                         G_USB_DEVICE_ERROR_TIMED_OUT,
+                                         "Continuation budget shortened");
+          else
+            {
+              gsize offset = io.data_chunks ? 64 + (io.data_chunks - 1) * 63 : 0;
+              guint prefix = io.data_chunks ? 1 : 0;
+              memset (transfer->buffer, 0, transfer->length);
+              if (prefix)
+                transfer->buffer[0] = 0x21;
+              memcpy (transfer->buffer + prefix, message + offset,
+                      MIN (64 - prefix, size - offset));
+              transfer->actual_length = 64;
+              io.data_chunks++;
+            }
+        }
+      else if (scenario->event_order == DUPLICATE_SLEEP_BEFORE_EC_DATA &&
+          io.duplicates == 0)
+        {
+          io.duplicates++;
+          ack_reply (transfer, 0x60);
+        }
+      else
+        {
+          reply (transfer, 0x0a, 7, result, sizeof (result));
+          io.ec_data = FALSE;
+        }
+    }
+
+  /* Transfer completion releases physical ownership before callbacks can
+   * submit another transfer. GCancellable itself never releases ownership. */
+  io.pending = NULL;
+  io.callback = NULL;
+  io.user_data = NULL;
+  callback (transfer, transfer->device, user_data, error);
+  if (rearm_case (scenario) && io.events > events_before)
+    {
+      FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (transfer->device);
+      memcpy (io.packet_down[events_before], self->profile9_fdt.base_down, GOODIX_FDT_BASE_LEN);
+      memcpy (io.packet_manual[events_before], self->profile9_fdt.base_manual, GOODIX_FDT_BASE_LEN);
+    }
+  fpi_usb_transfer_unref (transfer);
+  *(gboolean *) unused = TRUE;
+  return G_SOURCE_REMOVE;
+}
+
+static void
+capture_ready (FpDevice *dev, gpointer unused)
+{
+  (void) dev;
+  (void) unused;
+  io.captures++;
+}
+
+static void
+boundary_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  GoodixScanCoordinatorData *data = fpi_ssm_get_data (ssm);
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  if (fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_WAIT_CPU && rearm_case (io.scenario))
+    {
+      io.wait_cpu_count++;
+      memcpy (io.settled_down, self->profile9_fdt.base_down, sizeof (io.settled_down));
+      memcpy (io.settled_manual, self->profile9_fdt.base_manual, sizeof (io.settled_manual));
+      memcpy (io.settled_prior, data->prior_down, sizeof (io.settled_prior));
+      g_assert_false (data->cpu_done);
+      g_assert_true (data->cpu_outstanding);
+    }
+  if (fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_DISPATCH_EVENT)
+    io.dispatches++;
+  if (fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_ENSURE_REFERENCE)
+    fpi_ssm_jump_to_state (ssm, rearm_case (io.scenario)
+                           ? GOODIX_SCAN_COORD_REARM_DOWN : GOODIX_SCAN_COORD_ARM_UP);
+  else
+    goodix_scan_coordinator_handler (ssm, dev);
+}
+
+/* The two arm-event-wait cases use the public command/receive boundary rather
+ * than inventing a second capture cycle to reach a down-arm wait. */
+static void
+arm_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  gint state = fpi_ssm_get_cur_state (ssm);
+  if (io.scenario->event_order == SAME_COMMAND_PRECEDENCE)
+    {
+      if (state == 1)
+        {
+          goodix_cmd_fdt_up_setup (ssm, dev, self->profile9_fdt.base_up);
+          return;
+        }
+      if (state > 1)
+        state--;
+    }
+  switch (state)
+    {
+    case 0:
+      self->profile9_fdt.wait_mode = io.scenario->standalone_arm == 0x32
+        ? GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
+      if (io.scenario->standalone_arm == 0x32)
+        goodix_cmd_fdt_down_setup (ssm, dev, self->profile9_fdt.base_down);
+      else
+        goodix_cmd_fdt_up_setup (ssm, dev, self->profile9_fdt.base_up);
+      break;
+    case 1:
+      goodix_recv_start (ssm, dev, 0, NULL);
+      break;
+    case 2:
+      {
+        GoodixFdtEventType type;
+        GError *error = NULL;
+        if (!goodix_cmd_parse_fdt_event (dev, self->profile9_fdt.wait_mode,
+                                         &type, &self->profile9_fdt.event, &error))
+          fpi_ssm_mark_failed (ssm, error);
+        else
+          {
+            io.dispatches++;
+            fpi_ssm_mark_completed (ssm);
+          }
+      }
+      break;
+    }
+}
+
+static void
+data_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  /* Opaque multi-cell image-command response at the framing boundary only:
+   * these bytes are never submitted to decryption or biometric processing. */
+  if (fpi_ssm_get_cur_state (ssm) == 0)
+    goodix_cmd_request_image (ssm, dev, TRUE, TRUE, FALSE, 0x80);
+  else
+    {
+      const guint8 *payload;
+      gsize length;
+      GError *error = NULL;
+      if (!goodix_parse_reply_exact (dev, 2, 0, &payload, &length, &error))
+        fpi_ssm_mark_failed (ssm, error);
+      else
+        {
+          g_assert_cmpuint (length, ==, 150);
+          for (guint i = 0; i < length; i++)
+            g_assert_cmpuint (payload[i], ==, (guint8) (i * 7 + 3));
+          fpi_ssm_mark_completed (ssm);
+        }
+    }
+}
+
+static void
+arm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  self->profile9_fdt.owner = NULL;
+  self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED;
+  boundary_done (ssm, dev, error);
+}
+
+static void
+boundary_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  (void) ssm;
+  g_assert_null (self->profile9_fdt.owner);
+  g_assert_cmpuint (self->profile9_fdt.lifecycle, ==,
+                    GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED);
+  io.completions++;
+  g_assert_cmpuint (io.completions, ==, 1);
+  io.error = error;
+}
+
+static void
+parent_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  (void) dev;
+  if (fpi_ssm_get_cur_state (ssm) == 0)
+    fpi_ssm_start (fpi_ssm_get_data (ssm), goodix_scan_coordinator_done);
+  else
+    fpi_ssm_mark_completed (ssm);
+}
+
+static void
+test_scenario (gconstpointer user_data)
+{
+  const Scenario *scenario = user_data;
+  FpDeviceClass *klass = g_type_class_ref (FPI_TYPE_DEVICE_GOODIX53X5);
+  g_autoptr(FpDevice) dev = NULL;
+  FpiDeviceGoodix53x5 *self;
+  GoodixScanCoordinatorData *data;
+  FpiSsm *ssm;
+  FpiSsm *parent;
+
+  memset (&io, 0, sizeof (io));
+  test_clock_us = G_USEC_PER_SEC;
+  io.scenario = scenario;
+  klass->type = FP_DEVICE_TYPE_VIRTUAL;
+  dev = g_object_new (FPI_TYPE_DEVICE_GOODIX53X5, NULL);
+  g_type_class_unref (klass);
+  self = FPI_DEVICE_GOODIX53X5 (dev);
+  self->cancel = g_cancellable_new ();
+
+  /* Explicit abstraction: an admitted frame has already been captured. No
+   * preprocessing, extraction, match score or authentication is fabricated.
+   * The test owns only the subsequent USB/scan scheduling and final status. */
+  self->milan_sensor_subtype = 12;
+  self->milan_generation = g_new0 (GoodixMilanGeneration, 1);
+  self->captured_raw_image = g_new0 (guint16, GOODIX_SENSOR_PIXELS);
+  self->profile9_fdt.base_valid = TRUE;
+  self->profile9_fdt.drift_anchor_empty = TRUE;
+  self->calib.delta_down = 30;
+  if (scenario->standalone_arm)
+    {
+      ssm = scenario->event_order == MULTICELL_DATA
+        ? fpi_ssm_new (dev, data_handler, 2)
+        : fpi_ssm_new (dev, arm_handler,
+                       scenario->event_order == SAME_COMMAND_PRECEDENCE ? 4 : 3);
+      self->profile9_fdt.owner = ssm;
+      self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_ACTIVE;
+      fpi_ssm_start (ssm, arm_done);
+    }
+  else
+    {
+      data = g_new0 (GoodixScanCoordinatorData, 1);
+      ssm = fpi_ssm_new_full (dev, boundary_handler, GOODIX_SCAN_COORD_NUM_STATES,
+                             GOODIX_SCAN_COORD_CLEANUP_JOIN, "transport-boundary");
+      data->ssm = ssm;
+      parent = fpi_ssm_new (dev, parent_handler, 2);
+      data->parent_ssm = parent;
+      fpi_ssm_set_data (parent, ssm, NULL);
+      data->capture_ready = capture_ready;
+      data->dispatching = TRUE;
+      data->action_cancel = g_object_ref (self->cancel);
+      if (rearm_case (scenario))
+        {
+          /* Prior capture and up-release have completed; CPU publication has
+           * not. B0 is a programmed base distinct from either early event. */
+          data->cycle_active = TRUE;
+          data->release_settled = TRUE;
+          data->cpu_outstanding = TRUE;
+          io.captures = 1;
+          memset (self->profile9_fdt.base_down, 45, GOODIX_FDT_BASE_LEN);
+        }
+      fpi_ssm_set_data (ssm, data, (GDestroyNotify) goodix_scan_coordinator_data_free);
+      self->profile9_fdt.owner = ssm;
+      self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_ACTIVE;
+      fpi_ssm_start (parent, boundary_done);
+      if (self->profile9_fdt.owner == ssm)
+        data->action_cancel_id = g_cancellable_connect (
+          data->action_cancel, G_CALLBACK (goodix_scan_action_cancelled), data, NULL);
+    }
+  for (guint step = 0; io.completions == 0 && step < 48; step++)
+    {
+      gboolean completed = FALSE;
+      if (!io.pending && rearm_case (scenario) && io.wait_cpu_count && !io.disposition_sent)
+        stop_after_capture (dev);
+      if (!io.pending && !scenario->standalone_arm && self->profile9_fdt.owner &&
+          fpi_ssm_get_cur_state (self->profile9_fdt.owner) >= GOODIX_SCAN_COORD_CLEANUP_JOIN &&
+          !io.disposition_sent)
+        stop_after_capture (dev); /* Join the deferred CPU callback on failure. */
+      if (io.completions)
+        break;
+      if (!io.pending)
+        {
+          g_assert_true (g_main_context_pending (NULL));
+          g_main_context_iteration (NULL, FALSE);
+          continue;
+        }
+      g_idle_add (complete_usb, &completed);
+      while (!completed)
+        g_main_context_iteration (NULL, TRUE);
+    }
+
+  g_assert_cmpuint (io.completions, ==, 1);
+  g_assert_null (io.pending);
+  g_assert_false (self->rx_active);
+  g_assert_null (self->rx_owner);
+  g_assert_null (self->cmd_owner);
+  g_assert_null (self->cmd_ssm);
+  g_assert_cmpuint (io.captures, ==, scenario->standalone_arm ? 0 : 1);
+  g_test_message ("up=%u sleep=%u cancel=%u events=%u final=%s",
+                  io.sends[0x34], io.sends[0x60], io.cancellations, io.events,
+                  io.error ? io.error->message : "success");
+  /* Report contract differences without aborting, so every scheduled case
+   * releases its owners and the complete suite can expose baseline failures. */
+  gboolean cancelled = scenario->event_order == CANCEL_DURING_RETRY;
+  gboolean delivered = (scenario->standalone_arm && scenario->event_order != MULTICELL_DATA) ||
+    scenario->event_order == EVENT_BEFORE_ARM_ACK ||
+    scenario->event_order == EVENT_COMPLETES_DURING_CANCEL;
+  gboolean duplicate = (scenario->standalone_arm && scenario->event_order != MULTICELL_DATA) ||
+    scenario->event_order == DUPLICATE_SLEEP_BEFORE_EC_ACK ||
+    scenario->event_order == DUPLICATE_SLEEP_BEFORE_EC_DATA;
+  if (rearm_case (scenario))
+    {
+      gboolean two = scenario->event_order == TWO_EARLY_REVERSE;
+      if (io.wait_cpu_count != 1 || io.dispatches != 1 ||
+          io.events != (two ? 2 : 1) || io.sends[0x32] != (two ? 3 : 2) ||
+          self->profile9_fdt.event.irq != 0x80 ||
+          self->profile9_fdt.event.touch_flag != 0 ||
+          fp_device_get_finger_status (dev) != FP_FINGER_STATUS_NONE)
+        g_test_fail ();
+      /* Native transform: ((sample / 2) * 0x101) modulo 16 bits. These
+       * chosen samples stay below wrapping; both programmed bytes equal q.
+       * R2's prior/manual snapshot must be transform(R1), not original B0. */
+      for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+        {
+          guint8 prior = two ? 50 + i : 45;
+          guint8 current = 50 + i + two;
+          if (io.settled_prior[i] != prior ||
+              io.settled_manual[2 * i] != prior ||
+              io.settled_manual[2 * i + 1] != prior ||
+              io.settled_down[2 * i] != current ||
+              io.settled_down[2 * i + 1] != current ||
+              io.last_down_payload[2 * i] != current ||
+              io.last_down_payload[2 * i + 1] != current ||
+              self->profile9_fdt.event.raw[2 * i] != 100 + 2 * i + 2 * two ||
+              self->profile9_fdt.event.raw[2 * i + 1] != 0)
+            g_test_fail ();
+          for (guint packet = 0; packet < (two ? 2 : 1); packet++)
+            {
+              guint8 packet_prior = packet ? 50 + i : 45;
+              guint8 packet_current = 50 + i + packet;
+              if (io.packet_down[packet][2 * i] != packet_current ||
+                  io.packet_down[packet][2 * i + 1] != packet_current ||
+                  io.packet_manual[packet][2 * i] != packet_prior ||
+                  io.packet_manual[packet][2 * i + 1] != packet_prior)
+                g_test_fail ();
+            }
+        }
+      g_test_message ("rearm events=%u dispatch=%u wait_cpu=%u down_sends=%u prior0=%u manual0=%u down0=%u",
+                      io.events, io.dispatches, io.wait_cpu_count, io.sends[0x32],
+                      io.settled_prior[0], io.settled_manual[0], io.settled_down[0]);
+      g_test_message ("packet mutations R1 down/manual=%u/%u R2 down/manual=%u/%u",
+                      io.packet_down[0][0], io.packet_manual[0][0],
+                      io.packet_down[1][0], io.packet_manual[1][0]);
+    }
+  gboolean excluded_send = scenario->event_order == SEND_DISCONNECT ||
+    scenario->event_order == SEND_CANCELLED;
+  if (delivered && io.dispatches == 1)
+    for (guint i = 0; i < GOODIX_FDT_BASE_LEN; i++)
+      if (self->profile9_fdt.event.raw[i] != 3 * i + 1)
+        g_test_fail ();
+  if (io.sends[0x34] != scenario->expected_up_sends ||
+      io.sends[0x60] != scenario->expected_sleep_sends ||
+      (scenario->standalone_arm == 0x32 && io.sends[0x32] != 2) ||
+      (delivered && (io.events != 1 || io.dispatches != 1)) ||
+      (duplicate && io.duplicates != 1) ||
+      (scenario->event_order == MULTICELL_DATA && (io.data_chunks != 3 || io.sends[0x20] != 1)) ||
+      (scenario->event_order == EVENT_BEFORE_ARM_ACK && io.sends[0x32] != 1) ||
+      (scenario->event_order == EVENT_BEFORE_SLEEP_ACK && io.events != 1) ||
+      (scenario->event_order == LATE_ACK_DEADLINE &&
+       (io.deadline_violation || io.expected_acks || io.duplicates != 1 ||
+        test_clock_us - io.ec_ack_started != GOODIX_ACK_TIMEOUT * 1000LL || io.sends[0xae] != 1)) ||
+      (scenario->success && (io.error || self->needs_reinit)) ||
+      (cancelled && (!io.action_cancelled || self->needs_reinit ||
+                    !g_error_matches (io.error, G_IO_ERROR, G_IO_ERROR_CANCELLED))) ||
+      (excluded_send && !g_error_matches (io.error, G_USB_DEVICE_ERROR,
+                           scenario->event_order == SEND_DISCONNECT ?
+                           G_USB_DEVICE_ERROR_NO_DEVICE : G_USB_DEVICE_ERROR_CANCELLED)) ||
+      (!scenario->success && !cancelled && !excluded_send &&
+       (!g_error_matches (io.error, G_USB_DEVICE_ERROR,
+                           G_USB_DEVICE_ERROR_TIMED_OUT) || !self->needs_reinit)))
+    {
+      g_test_message ("expected up=%u sleep=%u success=%d; needs_reinit=%d",
+                      scenario->expected_up_sends, scenario->expected_sleep_sends,
+                      scenario->success, self->needs_reinit);
+      g_test_fail ();
+    }
+  g_clear_error (&io.error);
+  g_clear_pointer (&io.first_up, g_bytes_unref);
+  g_clear_pointer (&io.first_sleep, g_bytes_unref);
+  g_clear_pointer (&io.first_down, g_bytes_unref);
+  g_clear_pointer (&self->captured_raw_image, g_free);
+  g_clear_pointer (&self->rx.buf, g_free);
+  goodix_milan_generation_invalidate (&self->milan_generation);
+  g_clear_object (&self->cancel);
+}
+
+int
+main (int argc, char **argv)
+{
+  static const Scenario control = { 0, 0, 1, 1, TRUE, EVENT_CANCELLED };
+  static const Scenario drain = { 0, 0, 1, 1, TRUE, EVENT_BEFORE_SLEEP_ACK };
+  static const Scenario event_race = { 0, 0, 1, 1, TRUE, EVENT_COMPLETES_DURING_CANCEL };
+  /* Approved usbinterface.dll ChangeMode (RVA 0x19ec8): a zero send/ACK
+   * result retries the identical sleep/FDT-arm command once. These contracts
+   * intentionally fail on the pre-retry production baseline. */
+  static const Scenario up_retry = { 0x34, 1, 2, 1, TRUE, EVENT_CANCELLED };
+  static const Scenario sleep_retry = { 0x60, 1, 1, 2, TRUE, EVENT_CANCELLED };
+  static const Scenario terminal = { 0x60, 2, 1, 2, FALSE, EVENT_CANCELLED };
+  static const Scenario ec_terminal = { 0xae, 1, 1, 1, FALSE, EVENT_CANCELLED };
+  static const Scenario before_arm = { 0, 0, 1, 1, TRUE, EVENT_BEFORE_ARM_ACK };
+  static const Scenario sleep_duplicate_ack = { 0x60, 1, 1, 2, TRUE, DUPLICATE_SLEEP_BEFORE_EC_ACK };
+  static const Scenario sleep_duplicate_data = { 0x60, 1, 1, 2, TRUE, DUPLICATE_SLEEP_BEFORE_EC_DATA };
+  static const Scenario up_duplicate = { 0x34, 1, 2, 0, TRUE, DUPLICATE_ARM_IN_EVENT_WAIT, 0x34 };
+  static const Scenario down_duplicate = { 0x32, 1, 0, 0, TRUE, DUPLICATE_ARM_IN_EVENT_WAIT, 0x32 };
+  static const Scenario deadline = { 0x60, 1, 1, 2, FALSE, LATE_ACK_DEADLINE };
+  static const Scenario cancel_retry = { 0x34, 1, 2, 1, FALSE, CANCEL_DURING_RETRY };
+  static const Scenario early_rearm = { 0, 0, 0, 1, TRUE, EARLY_REARM_REVERSE };
+  static const Scenario two_reverse = { 0x32, 1, 0, 1, TRUE, TWO_EARLY_REVERSE };
+  static const Scenario send_io = { 0, 0, 2, 1, TRUE, SEND_IO_RETRY };
+  static const Scenario send_timeout = { 0, 0, 2, 1, TRUE, SEND_TIMEOUT_RETRY };
+  static const Scenario disconnect = { 0, 0, 1, 1, FALSE, SEND_DISCONNECT };
+  static const Scenario send_cancel = { 0, 0, 1, 1, FALSE, SEND_CANCELLED };
+  static const Scenario precedence = { 0x34, 1, 3, 0, TRUE, SAME_COMMAND_PRECEDENCE, 0x34 };
+  static const Scenario multicell = { 0, 0, 0, 0, TRUE, MULTICELL_DATA, 0x20 };
+
+  g_test_init (&argc, &argv, NULL);
+  g_test_add_data_func ("/goodix53x5/milan/transport/stop-during-arm", &control, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/event-before-sleep-ack", &drain, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/event-completes-during-cancel", &event_race, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/up-ack-retry", &up_retry, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/sleep-ack-retry", &sleep_retry, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/terminal-sleep-timeout", &terminal, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/terminal-ec-timeout", &ec_terminal, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/event-before-arm-ack", &before_arm, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/late-sleep-ack-before-ec-ack", &sleep_duplicate_ack, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/late-sleep-ack-before-ec-data", &sleep_duplicate_data, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/duplicate-up-ack-in-event-wait", &up_duplicate, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/duplicate-down-ack-in-event-wait", &down_duplicate, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/late-ack-deadline", &deadline, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/cancel-during-retry", &cancel_retry, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/early-rearm-before-cpu", &early_rearm, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/two-early-reverse-before-retry", &two_reverse, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/send-io-retry", &send_io, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/send-timeout-retry", &send_timeout, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/send-disconnect-no-retry", &disconnect, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/send-cancel-no-retry", &send_cancel, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/same-command-ack-precedence", &precedence, test_scenario);
+  g_test_add_data_func ("/goodix53x5/milan/transport/ordinary-data-continuations", &multicell, test_scenario);
+  return g_test_run ();
+}
