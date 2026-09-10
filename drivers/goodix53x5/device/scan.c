@@ -35,7 +35,6 @@ typedef enum
   GOODIX_SCAN_COORD_ENSURE_REFERENCE = 0,
   GOODIX_SCAN_COORD_ENSURE_REFERENCE_DONE,
   GOODIX_SCAN_COORD_POWER_ON,
-  GOODIX_SCAN_COORD_POWER_ON_DONE,
   GOODIX_SCAN_COORD_ARM_DOWN,
   GOODIX_SCAN_COORD_WAIT_EVENT,
   GOODIX_SCAN_COORD_DISPATCH_EVENT,
@@ -66,7 +65,6 @@ typedef struct
   GoodixScanCaptureReadyCallback capture_ready;
   GoodixScanCycleSettledCallback cycle_settled;
   gpointer                      user_data;
-  GCancellable                 *event_cancel;
   GCancellable                 *action_cancel;
   gulong                        action_cancel_id;
   GoodixFdtEventType            event_type;
@@ -75,8 +73,7 @@ typedef struct
   GoodixScanDisposition         disposition;
   GError                       *stop_error;
   guint16                       prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
-  gboolean                      receive_active;
-  gboolean                      event_preparsed;
+  gboolean                      waiting_event;
   gboolean                      dispatching;
   gboolean                      stop_requested;
   gboolean                      cpu_done;
@@ -99,7 +96,6 @@ goodix_scan_coordinator_data_free (GoodixScanCoordinatorData *data)
 
   if (data->action_cancel && data->action_cancel_id)
     g_cancellable_disconnect (data->action_cancel, data->action_cancel_id);
-  g_clear_object (&data->event_cancel);
   g_clear_object (&data->action_cancel);
   g_clear_error (&data->stop_error);
   g_free (data);
@@ -197,8 +193,7 @@ goodix_scan_maybe_finish_requested (GoodixScanCoordinatorData *data)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (
     fpi_ssm_get_device (data->ssm));
 
-  if (data->dispatching || data->receive_active || self->rx_active ||
-      self->cmd_owner)
+  if (data->dispatching || data->waiting_event || self->transport)
     return;
   if (data->cpu_outstanding)
     {
@@ -244,9 +239,9 @@ goodix_scan_request_stop (GoodixScanCoordinatorData *data,
   data->stop_requested = TRUE;
   data->stop_error = error;
 
-  if (data->receive_active && !data->dispatching)
+  if (data->waiting_event && !data->dispatching)
     {
-      g_cancellable_cancel (data->event_cancel);
+      goodix_transport_cancel_event (dev);
       return;
     }
 
@@ -266,17 +261,27 @@ goodix_scan_action_cancelled (GCancellable *cancellable,
 }
 
 static void
-goodix_scan_receive_cancelled (FpiSsm   *ssm,
-                               FpDevice *dev,
-                               GError   *error,
-                               gpointer  user_data)
+goodix_scan_event_done (FpDevice *dev, const GoodixTransportResult *result,
+                        GError *error, gpointer user_data)
 {
   GoodixScanCoordinatorData *data = user_data;
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
-  (void) ssm;
-  data->receive_active = FALSE;
-  g_clear_object (&data->event_cancel);
+  data->waiting_event = FALSE;
+  if (!error)
+    {
+      /* Selected work must still dispatch if its packet won cancellation. */
+      data->dispatching = TRUE;
+      fpi_ssm_next_state (data->ssm);
+      return;
+    }
+  if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+    {
+      if (error->domain == G_USB_DEVICE_ERROR || error->domain == G_IO_ERROR)
+        self->needs_reinit = TRUE;
+      fpi_ssm_mark_failed (data->ssm, error);
+      return;
+    }
   g_clear_error (&error);
 
   if (data->stop_requested &&
@@ -291,25 +296,6 @@ goodix_scan_receive_cancelled (FpiSsm   *ssm,
         "Profile-9 event receive was cancelled unexpectedly");
     }
   goodix_scan_maybe_finish_requested (data);
-}
-
-static gboolean
-goodix_scan_begin_receive (GoodixScanCoordinatorData *data,
-                           FpDevice                  *dev)
-{
-  g_assert (!data->receive_active);
-  g_clear_object (&data->event_cancel);
-  data->event_cancel = g_cancellable_new ();
-  data->receive_active = TRUE;
-  if (!goodix_recv_start_cancellable_full (
-        data->ssm, dev, data->event_cancel,
-        goodix_scan_receive_cancelled, data))
-    {
-      data->receive_active = FALSE;
-      g_clear_object (&data->event_cancel);
-      return FALSE;
-    }
-  return TRUE;
 }
 
 static void
@@ -342,7 +328,7 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
 
   if (fpi_ssm_get_cur_state (ssm) < GOODIX_SCAN_COORD_CLEANUP_JOIN &&
       fpi_ssm_get_cur_state (ssm) != GOODIX_SCAN_COORD_WAIT_EVENT &&
-      data->stop_requested && !data->dispatching && !data->receive_active)
+      data->stop_requested && !data->dispatching && !data->waiting_event)
     {
       goodix_scan_maybe_finish_requested (data);
       return;
@@ -391,58 +377,34 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       goodix_cmd_ec_control (ssm, dev, TRUE);
       break;
 
-    case GOODIX_SCAN_COORD_POWER_ON_DONE:
-      fpi_ssm_next_state (ssm);
-      break;
-
     case GOODIX_SCAN_COORD_ARM_DOWN:
       fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
       goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
       break;
 
     case GOODIX_SCAN_COORD_WAIT_EVENT:
-      if (goodix_recv_take_pending_fdt (dev))
-        {
-          /* This receive already completed while the arm held dispatch.
-           * Preserve the completed-event path even if stop is now pending. */
-          data->receive_active = TRUE;
-          data->event_preparsed = TRUE;
-          fpi_ssm_next_state (ssm);
-          return;
-        }
-      if (!goodix_scan_begin_receive (data, dev))
-        {
-          fpi_ssm_mark_failed (
-            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
-                                           "Profile-9 event receive ownership conflict"));
-          return;
-        }
-      if (data->stop_requested)
-        {
-          g_cancellable_cancel (data->event_cancel);
-          return;
-        }
+      {
+        /* A pending notification can complete synchronously and free data.
+         * Preserve the arm/stop receive-and-cancel window without borrowing it
+         * after submission. cancel_event affects only a still-pending wait. */
+        gboolean stop = data->stop_requested;
+        data->waiting_event = TRUE;
+        goodix_transport_wait_event (dev, fdt->wait_mode, goodix_scan_event_done, data);
+        if (stop)
+          goodix_transport_cancel_event (dev);
+      }
       break;
 
     case GOODIX_SCAN_COORD_DISPATCH_EVENT:
       {
         g_autoptr(GError) error = NULL;
 
-        data->receive_active = FALSE;
-        g_clear_object (&data->event_cancel);
-        /* A queued notification retains its receive identity even when a
-         * subsequent arm has changed the worker's current wait mode. */
-        if (!goodix_cmd_parse_fdt_event (dev, data->event_preparsed ?
-                                         self->pending_fdt_mode : fdt->wait_mode,
-                                         &data->event_type, &fdt->event,
-                                         &error))
+        if (!goodix_recv_select_fdt (dev, &data->event_type, &fdt->event,
+                                     data->prior_down, &error))
           {
             fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
             return;
           }
-        if (!data->event_preparsed)
-          goodix_recv_apply_fdt_event (dev, data->event_type, &fdt->event);
-        data->event_preparsed = FALSE;
         data->dispatching = TRUE;
 
         if (data->event_type == GOODIX_FDT_EVENT_DOWN)
@@ -476,8 +438,6 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
           gboolean refresh = FALSE;
 
           goodix_scan_normalize_event (&fdt->event, current);
-          if (data->event_type == GOODIX_FDT_EVENT_REVERSE)
-            memcpy (data->prior_down, self->fdt_prior_down, sizeof (data->prior_down));
           data->release_settled = data->cycle_active;
 
           if (data->event_type == GOODIX_FDT_EVENT_REVERSE)
@@ -593,6 +553,7 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_ARM_UP_DONE:
+    case GOODIX_SCAN_COORD_RECOVERY_ARM_UP_DONE:
       data->dispatching = FALSE;
       fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
       break;
@@ -601,11 +562,6 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       data->dispatching = TRUE;
       fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_UP;
       goodix_cmd_fdt_up_setup (ssm, dev, fdt->base_up);
-      break;
-
-    case GOODIX_SCAN_COORD_RECOVERY_ARM_UP_DONE:
-      data->dispatching = FALSE;
-      fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
       break;
 
     case GOODIX_SCAN_COORD_REFRESH:
@@ -631,7 +587,7 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       data->dispatching = FALSE;
       fdt->event.pending = FALSE;
 
-      if (self->pending_fdt_packet_len || data->stop_requested)
+      if (self->pending_fdt.event.pending || data->stop_requested)
         {
           /* An event already received during rearm precedes CPU settlement.
            * Otherwise resolve the outstanding arm before shutdown as usual. */
@@ -730,7 +686,7 @@ goodix_scan_coordinator_done (FpiSsm   *ssm,
   self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED;
   self->profile9_fdt.wait_mode = GOODIX_PROFILE9_FDT_WAIT_NONE;
   /* Stop invalidates the notification, not its already committed base updates. */
-  self->pending_fdt_packet_len = 0;
+  self->pending_fdt.event.pending = FALSE;
 
   if (error &&
       !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
@@ -878,7 +834,7 @@ goodix_scan_set_disposition (FpDevice             *dev,
       else if (!goodix_scan_disposition_waits_for_up (disposition))
         goodix_scan_request_stop (data, NULL);
       else if (data->release_settled && !data->dispatching &&
-               !data->receive_active && !self->cmd_owner)
+               !data->waiting_event && !self->transport)
         fpi_ssm_jump_to_state (data->ssm,
                                GOODIX_SCAN_COORD_CYCLE_SETTLED);
     }
@@ -950,7 +906,7 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
           self->debug_timing.capture_started_us = now_us;
           self->debug_timing.capture_phase_started_us = now_us;)
         data->needs_reinit_before_read = self->needs_reinit;
-        data->command_started = self->cmd_owner == NULL && !self->rx_active;
+        data->command_started = self->transport == NULL;
         /* Live TX-on finger frame */
         goodix_cmd_request_image (ssm, dev, TRUE, TRUE, TRUE,
                                   self->calib.dac_h);

@@ -21,13 +21,6 @@
 
 #include "driver-private.h"
 
-typedef enum
-{
-  GOODIX_FDT_EVENT_DOWN = 0,
-  GOODIX_FDT_EVENT_UP,
-  GOODIX_FDT_EVENT_REVERSE,
-} GoodixFdtEventType;
-
 /* ========================================================================
  * Named device commands
  *
@@ -75,7 +68,11 @@ void goodix_cmd_production_write (FpiSsm *ssm, FpDevice *dev,
 void goodix_cmd_mcu_send (FpiSsm *ssm, FpDevice *dev, guint32 data_type,
                           const guint8 *data, gsize data_len);
 
-/* Upload the (patched) sensor config blob. Expects data (success flag). */
+/* Post-MCU-ACK GTLS wait; advance the SSM once its ordinary reply is ready. */
+void goodix_recv_reply (FpiSsm *ssm, FpDevice *dev, guint timeout);
+
+/* Upload the (patched) sensor config blob. Waits for the configuration event;
+ * its payload is not a success flag. */
 void goodix_cmd_upload_config (FpiSsm *ssm, FpDevice *dev,
                                const guint8 *config, gsize config_len);
 
@@ -106,14 +103,15 @@ void goodix_cmd_set_sleep_mode_drain_fdt (
   FpDevice                  *dev,
   GoodixProfile9FdtWaitMode  cancelled_mode);
 
-/* Switch sensor EC power on or off. Expects data (success flag). */
+/* Switch sensor EC power on or off. ACK only; off enables idle tail servicing. */
 void goodix_cmd_ec_control (FpiSsm *ssm, FpDevice *dev, gboolean on);
 
 /* ========================================================================
  * Named reply parsers
  *
- * All returned payload pointers point into the current RX buffer and are
- * valid only until the next receive reset.
+ * Ordinary payload pointers borrow the validated RX buffer until receive reset.
+ * Firmware and manual FDT getters borrow independent parser caches, which
+ * survive readiness reset but may be overwritten by a later received packet.
  * ======================================================================== */
 
 gboolean goodix_cmd_parse_fw_version_reply (FpDevice      *dev,
@@ -145,7 +143,7 @@ gboolean goodix_cmd_parse_mcu_reply (FpDevice      *dev,
                                      const guint8 **out_data,
                                      gsize         *out_data_len);
 
-/* TRUE if the config upload reply reports success. */
+/* TRUE if the configuration response event has been published for this send. */
 gboolean goodix_cmd_parse_config_reply (FpDevice *dev);
 
 /* Parse a manual FDT reading returned by goodix_cmd_fdt_manual(). */
@@ -162,7 +160,8 @@ gboolean goodix_cmd_parse_image_reply (FpDevice      *dev,
 
 /* Parse an FDT down/up event delivered after goodix_cmd_fdt_down_setup() /
  * goodix_cmd_fdt_up_setup(). The payload layout is
- * [irq_status(2)][touch_flag(2)][fdt_data(GOODIX_FDT_BASE_LEN)]. */
+ * [irq_status(2)][touch_flag(2)][fdt_data(GOODIX_FDT_BASE_LEN)]. Decoding does
+ * not apply base mutations or select the worker's pending notification. */
 gboolean goodix_cmd_parse_fdt_event (FpDevice      *dev,
                                      GoodixProfile9FdtWaitMode armed_mode,
                                      GoodixFdtEventType       *out_type,

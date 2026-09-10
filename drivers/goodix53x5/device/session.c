@@ -573,7 +573,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_OPEN_GTLS_RECV_IDENTITY:
       /* Receive MCU message with server random + identity */
-      goodix_recv_start (ssm, dev, GOODIX_DATA_TIMEOUT, NULL);
+      goodix_recv_reply (ssm, dev, GOODIX_DATA_TIMEOUT);
       break;
 
     case GOODIX_OPEN_GTLS_SEND_VERIFY:
@@ -629,7 +629,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_OPEN_GTLS_RECV_DONE:
       /* Receive MCU done message */
-      goodix_recv_start (ssm, dev, GOODIX_DATA_TIMEOUT, NULL);
+      goodix_recv_reply (ssm, dev, GOODIX_DATA_TIMEOUT);
       break;
 
     case GOODIX_OPEN_UPLOAD_CONFIG:
@@ -761,9 +761,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
     {
       /* Reset/close ends the transport that could complete retained data.
        * A completion winning idle cancellation may have just appended it. */
-      if (self->rx.buf)
-        goodix_proto_rx_reset (&self->rx);
-      self->rx_idle_partial = FALSE;
+      goodix_transport_invalidate (dev);
       self->open_ref_powered = FALSE;
       goodix_milan_generation_invalidate (&self->milan_generation);
       goodix_milan_persistence_clear (dev);
@@ -814,7 +812,7 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   /* The SSM is freed on return. Transfer only its completion error to the
    * join callback; the open action and idle owner retain the device. */
   if (error)
-    goodix_idle_recv_stop (dev, goodix_open_complete_after_idle, error);
+    goodix_transport_quiesce (dev, goodix_open_complete_after_idle, error);
   else
     goodix_open_complete_after_idle (dev, NULL);
 }
@@ -839,44 +837,14 @@ goodix_start_open_ssm (FpDevice *dev)
  * Post-sleep reinitialization
  * ======================================================================== */
 
-/**
- * If the device needs reinitialization (system sleep happened while it was
- * open), release any stale interface claim and run the full open-time
- * initialization SSM as a sub-SSM of @ssm. The full sequence is required:
- * after an S4 reset/re-enumeration the kernel rebinds cdc_acm to our
- * interface, so recovery needs the same USB reset + claim-with-detach +
- * GTLS handshake as a fresh open.
- *
- * Returns TRUE if a reinit sub-SSM was started (caller returns and the
- * parent advances when it completes), FALSE if no reinit was needed.
- */
 static void
 goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
-{
-  goodix_maybe_start_reinit_subsm (data, dev);
-}
-
-gboolean
-goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
-                                 FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiSsm *sub;
 
-  if (!self->needs_reinit)
-    return FALSE;
-
-  if (self->idle_rx_ssm)
-    {
-      /* Reinitialization also releases the interface; join the idle owner
-       * before either release or USB reset, just as close does. */
-      goodix_idle_recv_stop (dev, goodix_reinit_idle_joined, ssm);
-      return TRUE;
-    }
-
   /* A USB reset ends the transport that could complete the retained packet. */
-  goodix_proto_rx_reset (&self->rx);
-  self->rx_idle_partial = FALSE;
+  goodix_transport_invalidate (dev);
 
   fp_info ("Reinitializing device after system sleep");
   self->action_epoch++;
@@ -903,7 +871,26 @@ goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
                           GOODIX_OPEN_NUM_STATES,
                           GOODIX_OPEN_SLEEP,
                           "goodix-reinit");
-  fpi_ssm_start_subsm (ssm, sub);
+  fpi_ssm_start_subsm (data, sub);
+}
+
+/**
+ * If the device needs reinitialization (system sleep happened while it was
+ * open), join idle reception, release any stale interface claim and run the
+ * full open-time initialization SSM as a sub-SSM of @ssm. After an S4 reset/
+ * re-enumeration the kernel rebinds cdc_acm to our interface, so recovery needs
+ * the same USB reset + claim-with-detach + GTLS handshake as a fresh open.
+ * Returns TRUE if reinit was scheduled (caller returns and the parent advances
+ * when it completes), FALSE if no reinit was needed.
+ */
+gboolean
+goodix_maybe_start_reinit_subsm (FpiSsm *ssm, FpDevice *dev)
+{
+  if (!FPI_DEVICE_GOODIX53X5 (dev)->needs_reinit)
+    return FALSE;
+
+  /* Join before either interface release or USB reset, just as close does. */
+  goodix_transport_quiesce (dev, goodix_reinit_idle_joined, ssm);
   return TRUE;
 }
 
