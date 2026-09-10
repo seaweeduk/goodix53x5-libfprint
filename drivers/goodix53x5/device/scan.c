@@ -76,6 +76,7 @@ typedef struct
   GError                       *stop_error;
   guint16                       prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
   gboolean                      receive_active;
+  gboolean                      event_preparsed;
   gboolean                      dispatching;
   gboolean                      stop_requested;
   gboolean                      cpu_done;
@@ -391,14 +392,6 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_POWER_ON_DONE:
-      if (!goodix_cmd_parse_ec_control_reply (dev))
-        {
-          self->needs_reinit = TRUE;
-          fpi_ssm_mark_failed (
-            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                           "Scan EC power-on failed"));
-          return;
-        }
       fpi_ssm_next_state (ssm);
       break;
 
@@ -408,6 +401,15 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_WAIT_EVENT:
+      if (goodix_recv_take_pending_fdt (dev))
+        {
+          /* This receive already completed while the arm held dispatch.
+           * Preserve the completed-event path even if stop is now pending. */
+          data->receive_active = TRUE;
+          data->event_preparsed = TRUE;
+          fpi_ssm_next_state (ssm);
+          return;
+        }
       if (!goodix_scan_begin_receive (data, dev))
         {
           fpi_ssm_mark_failed (
@@ -428,13 +430,19 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
 
         data->receive_active = FALSE;
         g_clear_object (&data->event_cancel);
-        if (!goodix_cmd_parse_fdt_event (dev, fdt->wait_mode,
+        /* A queued notification retains its receive identity even when a
+         * subsequent arm has changed the worker's current wait mode. */
+        if (!goodix_cmd_parse_fdt_event (dev, data->event_preparsed ?
+                                         self->pending_fdt_mode : fdt->wait_mode,
                                          &data->event_type, &fdt->event,
                                          &error))
           {
             fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
             return;
           }
+        if (!data->event_preparsed)
+          goodix_recv_apply_fdt_event (dev, data->event_type, &fdt->event);
+        data->event_preparsed = FALSE;
         data->dispatching = TRUE;
 
         if (data->event_type == GOODIX_FDT_EVENT_DOWN)
@@ -453,18 +461,12 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
                 /* A new press raced the prior CPU result. Keep the sensor
                  * event-driven by arming up and discarding this too-early
                  * enrollment press only after its matching release. */
-                goodix_device_generate_fdt_up_base (
-                  fdt->event.raw, fdt->event.touch_flag,
-                  &self->calib, fdt->base_up);
                 fpi_device_report_finger_status_changes (
                   dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
                 fpi_ssm_jump_to_state (
                   ssm, GOODIX_SCAN_COORD_RECOVERY_ARM_UP);
                 return;
               }
-            goodix_device_generate_fdt_up_base (fdt->event.raw,
-                                                fdt->event.touch_flag,
-                                                &self->calib, fdt->base_up);
             fpi_ssm_next_state (ssm);
             return;
           }
@@ -475,16 +477,7 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
 
           goodix_scan_normalize_event (&fdt->event, current);
           if (data->event_type == GOODIX_FDT_EVENT_REVERSE)
-            {
-              for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
-                data->prior_down[i] = fdt->base_down[i * 2 + 1];
-              memcpy (fdt->base_manual, fdt->base_down,
-                      sizeof (fdt->base_manual));
-            }
-
-          goodix_device_generate_fdt_base (fdt->event.raw,
-                                           GOODIX_FDT_BASE_LEN,
-                                           fdt->base_down);
+            memcpy (data->prior_down, self->fdt_prior_down, sizeof (data->prior_down));
           data->release_settled = data->cycle_active;
 
           if (data->event_type == GOODIX_FDT_EVENT_REVERSE)
@@ -638,10 +631,10 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       data->dispatching = FALSE;
       fdt->event.pending = FALSE;
 
-      if (data->stop_requested)
+      if (self->pending_fdt_packet_len || data->stop_requested)
         {
-          /* Resolve the receive associated with this down arm before issuing
-           * shutdown commands, even when stop raced the dispatched handler. */
+          /* An event already received during rearm precedes CPU settlement.
+           * Otherwise resolve the outstanding arm before shutdown as usual. */
           fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
           return;
         }
@@ -713,14 +706,6 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_CLEANUP_EC_OFF_DONE:
-      if (!goodix_cmd_parse_ec_control_reply (dev))
-        {
-          self->needs_reinit = TRUE;
-          fpi_ssm_mark_failed (
-            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                           "Scan EC power-off failed"));
-          return;
-        }
       if (data->stop_error)
         fpi_ssm_mark_failed (ssm, g_steal_pointer (&data->stop_error));
       else
@@ -744,6 +729,8 @@ goodix_scan_coordinator_done (FpiSsm   *ssm,
   self->profile9_fdt.owner = NULL;
   self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED;
   self->profile9_fdt.wait_mode = GOODIX_PROFILE9_FDT_WAIT_NONE;
+  /* Stop invalidates the notification, not its already committed base updates. */
+  self->pending_fdt_packet_len = 0;
 
   if (error &&
       !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
@@ -753,6 +740,37 @@ goodix_scan_coordinator_done (FpiSsm   *ssm,
     fpi_ssm_mark_failed (data->parent_ssm, error);
   else
     fpi_ssm_next_state (data->parent_ssm);
+}
+
+void
+goodix_scan_note_command_error (FpiSsm *ssm, FpDevice *dev, const GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixScanCoordinatorData *data;
+  gboolean ordinary;
+  gint state;
+
+  if (self->profile9_fdt.owner != ssm)
+    return;
+  state = fpi_ssm_get_cur_state (ssm);
+  if (state != GOODIX_SCAN_COORD_CLEANUP_SLEEP && state != GOODIX_SCAN_COORD_CLEANUP_EC_OFF)
+    {
+      self->scan_cleanup_only_error = FALSE;
+      return;
+    }
+  data = fpi_ssm_get_data (ssm);
+  ordinary = error->domain == G_USB_DEVICE_ERROR &&
+             (error->code == G_USB_DEVICE_ERROR_TIMED_OUT ||
+              error->code == G_USB_DEVICE_ERROR_IO ||
+              error->code == G_USB_DEVICE_ERROR_FAILED ||
+              error->code == G_USB_DEVICE_ERROR_NOT_SUPPORTED ||
+              error->code == G_USB_DEVICE_ERROR_INTERNAL);
+  if (!ordinary || data->stop_error || !data->cpu_done || data->cpu_outstanding)
+    self->scan_cleanup_only_error = FALSE;
+  else if (!fpi_ssm_get_error (ssm))
+    self->scan_cleanup_only_error = TRUE;
+  /* A preceding capture/processing error retains its first-error ownership.
+   * A later protocol, cancellation or removal failure revokes cleanup-only. */
 }
 
 void
@@ -778,6 +796,7 @@ goodix_scan_start_coordinator_subsm (
     }
 
   data = g_new0 (GoodixScanCoordinatorData, 1);
+  self->scan_cleanup_only_error = FALSE;
   data->parent_ssm = parent_ssm;
   data->capture_ready = capture_ready;
   data->cycle_settled = cycle_settled;

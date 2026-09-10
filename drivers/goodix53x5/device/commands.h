@@ -40,8 +40,16 @@ typedef enum
 /* Ping the MCU. ACK only. */
 void goodix_cmd_ping (FpiSsm *ssm, FpDevice *dev);
 
+/* Composite owners distinguish ordinary exhausted transactions from terminal
+ * protocol/host errors. Callback takes error ownership and resolves ssm. */
+typedef void (*GoodixCmdResultCallback) (FpiSsm *ssm, FpDevice *dev,
+                                        guint8 status, gboolean native_zero,
+                                        GError *error);
+
 /* Read the firmware version string. Expects data. */
 void goodix_cmd_read_fw_version (FpiSsm *ssm, FpDevice *dev);
+void goodix_cmd_probe (FpiSsm *ssm, FpDevice *dev, gboolean firmware,
+                       GoodixCmdResultCallback callback);
 
 /* Reset the sensor (reset type 0, no IRQ status). ACK only. */
 void goodix_cmd_reset_sensor (FpiSsm *ssm, FpDevice *dev);
@@ -139,9 +147,6 @@ gboolean goodix_cmd_parse_mcu_reply (FpDevice      *dev,
 
 /* TRUE if the config upload reply reports success. */
 gboolean goodix_cmd_parse_config_reply (FpDevice *dev);
-
-/* TRUE if the EC power control reply reports success. */
-gboolean goodix_cmd_parse_ec_control_reply (FpDevice *dev);
 
 /* Parse a manual FDT reading returned by goodix_cmd_fdt_manual(). */
 gboolean goodix_cmd_parse_fdt_manual_reply (FpDevice      *dev,

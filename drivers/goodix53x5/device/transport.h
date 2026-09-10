@@ -20,9 +20,16 @@
 #pragma once
 
 #include "driver-private.h"
+#include "device/commands.h"
+
+/* Optional receive lifetime ends only after its USB callback joins. */
+typedef void (*GoodixIdleJoinedCallback) (FpDevice *dev, gpointer data);
+void goodix_idle_recv_stop (FpDevice *dev, GoodixIdleJoinedCallback joined,
+                            gpointer data);
+void goodix_run_cmd_ec_off (FpiSsm *ssm, FpDevice *dev,
+                             const guint8 *payload, gsize payload_len);
 
 /* Timeouts in ms */
-#define GOODIX_CMD_TIMEOUT    1000
 #define GOODIX_ACK_TIMEOUT    2000
 #define GOODIX_DATA_TIMEOUT   5000
 
@@ -52,6 +59,16 @@ gboolean goodix_recv_start_cancellable_full (
   GoodixRecvCancelledCallback cancelled_cb,
   gpointer                    user_data);
 
+/* Commit the native parser-side base updates before publishing a notification.
+ * Dispatch must not apply these updates again for a restored pending event. */
+void goodix_recv_apply_fdt_event (FpDevice                     *dev,
+                                 GoodixFdtEventType             type,
+                                 const GoodixProfile9FdtEvent  *event);
+
+/* Restore an already-applied event received before the arm ACK for coordinator
+ * dispatch. No transfer is submitted and transport ownership must be idle. */
+gboolean goodix_recv_take_pending_fdt (FpDevice *dev);
+
 /**
  * Launch a command sub-SSM that sends a command and receives + validates the
  * ACK. If @expect_data is TRUE, the command also receives the data response,
@@ -65,6 +82,11 @@ void goodix_run_cmd (FpiSsm       *parent_ssm,
                      const guint8 *payload,
                      gsize         payload_len,
                      gboolean      expect_data);
+
+void goodix_run_cmd_result (FpiSsm *ssm, FpDevice *dev,
+                            guint8 category, guint8 command,
+                            const guint8 *payload, gsize payload_len,
+                            gboolean expect_data, GoodixCmdResultCallback callback);
 
 /* Run coordinator cleanup while allowing one event from the receive cancelled
  * during stop to precede the command ACK. */

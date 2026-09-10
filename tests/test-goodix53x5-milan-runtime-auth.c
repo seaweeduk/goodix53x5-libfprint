@@ -277,3 +277,74 @@ test_malformed_current_print (void)
   clear_result (&result);
   close_device (device);
 }
+
+void
+test_auth_cleanup_results (gconstpointer user_data)
+{
+  guint row = GPOINTER_TO_UINT (user_data);
+  gboolean missing = row == 7;
+  gboolean failed_cleanup = row % 2 || row >= 6;
+  gboolean publish = row < 6;
+  gboolean matched = row < 4 || row >= 6;
+  gboolean update_expected = publish && row < 2;
+  gint32 score = matched ? 37 : 0;
+  g_autoptr(FpDevice) device = new_device ();
+  g_autoptr(GBytes) stored = generate_template (0);
+  g_autoptr(GBytes) update = generate_template (1);
+  g_autoptr(FpPrint) print = make_print (device, stored);
+  g_autoptr(GCancellable) cancel = g_cancellable_new ();
+  GBytes *gallery[] = { stored };
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (device);
+  AsyncResult result = { 0 };
+
+  reset_plan (&score, gallery, 1, update);
+  if (row >= 2 && row < 6)
+    plan.study_action = GOODIX_MILAN_STUDY_NONE;
+  pause_before_capture = missing;
+  pause_cycle_settled = !missing;
+  fp_device_verify (device, print, cancel, match_report, &result, NULL, verify_done, &result);
+  wait_paused ();
+  g_assert_cmpuint (result.reports, ==, 0);
+  g_assert_cmpuint (result.completions, ==, 0);
+  g_assert_cmpint (self->pending_result_report, ==, !missing);
+  g_autoptr(GBytes) before = get_print_template (print);
+  g_assert_true (g_bytes_equal (before, stored));
+
+  /* Scan provenance is the seam here; the USB suite proves its actual producer.
+   * All matching, update admission and deferred publication use real owners. */
+  self->scan_cleanup_only_error = failed_cleanup && row != 6;
+  if (failed_cleanup)
+    self->needs_reinit = TRUE;
+  if (row == 8)
+    {
+      g_cancellable_cancel (cancel);
+      wait_cancelled ();
+    }
+  if (row == 9)
+    fpi_device_remove (device);
+  if (failed_cleanup)
+    fpi_ssm_mark_failed (paused_ssm, g_error_new_literal (
+                          G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                          "Scheduled terminal transport failure"));
+  else
+    fpi_ssm_mark_completed (paused_ssm);
+  paused_ssm = NULL;
+  pause_before_capture = FALSE;
+  pause_cycle_settled = FALSE;
+  wait_done (&result);
+
+  /* Nonfatal assertions retain every baseline row's cleanup and evidence. */
+  if (result.completions != 1 || result.success != publish ||
+      result.reports != (publish ? 1 : 0) || result.updated != update_expected ||
+      (publish && result.matched != matched) ||
+      (failed_cleanup && !self->needs_reinit))
+    g_test_fail ();
+  g_autoptr(GBytes) after = get_print_template (print);
+  if (!g_bytes_equal (after, update_expected ? update : stored))
+    g_test_fail ();
+  clear_result (&result);
+  if (row == 9)
+    fp_device_close_sync (device, NULL, NULL);
+  else
+    close_device (device);
+}

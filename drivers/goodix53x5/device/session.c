@@ -40,7 +40,6 @@ typedef enum {
   GOODIX_OPEN_USB_RESET = 0,
   GOODIX_OPEN_CLAIM_INTERFACE,
   GOODIX_OPEN_PING,
-  GOODIX_OPEN_READ_FW_VERSION,
   GOODIX_OPEN_RESET,
   GOODIX_OPEN_READ_CHIP_ID,
   GOODIX_OPEN_READ_OTP,
@@ -75,8 +74,6 @@ goodix_open_state_name (GoodixOpenState state)
       return "claim_interface";
     case GOODIX_OPEN_PING:
       return "ping";
-    case GOODIX_OPEN_READ_FW_VERSION:
-      return "read_fw_version";
     case GOODIX_OPEN_RESET:
       return "reset";
     case GOODIX_OPEN_READ_CHIP_ID:
@@ -201,6 +198,102 @@ out:
  * Open SSM — full device initialization
  * ======================================================================== */
 
+typedef enum {
+  GOODIX_PROBE_PING,
+  GOODIX_PROBE_FIRMWARE,
+  GOODIX_PROBE_AFTER_DELAY,
+  GOODIX_PROBE_NUM_STATES,
+} GoodixProbeState;
+
+static gboolean
+goodix_probe_cancelled (FpiSsm *ssm, FpDevice *dev)
+{
+  GCancellable *cancel = fpi_device_get_cancellable (dev);
+  gboolean removed = FALSE;
+
+  g_object_get (dev, "removed", &removed, NULL);
+  if (cancel && g_cancellable_is_cancelled (cancel))
+    {
+      fpi_ssm_mark_failed (ssm, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                                    "Startup probe cancelled"));
+      return TRUE;
+    }
+  if (removed)
+    {
+      fpi_ssm_mark_failed (ssm, g_error_new_literal (G_USB_DEVICE_ERROR,
+                                                    G_USB_DEVICE_ERROR_NO_DEVICE,
+                                                    "Startup device removed"));
+      return TRUE;
+    }
+  return FALSE;
+}
+
+static void
+goodix_probe_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
+                     gboolean native_zero, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  guint *failures = fpi_ssm_get_data (ssm);
+
+  if (goodix_probe_cancelled (ssm, dev))
+    {
+      g_clear_error (&error);
+      return;
+    }
+  if (error && !native_zero)
+    {
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+  if (fpi_ssm_get_cur_state (ssm) == GOODIX_PROBE_PING)
+    {
+      g_clear_error (&error);
+      fpi_ssm_next_state (ssm);
+    }
+  else if (!error)
+    {
+      /* Native getter copies 64 cache bytes. Keep that cache untouched and
+       * give the Linux string consumer its own guaranteed terminator. */
+      g_free (self->fw_version);
+      self->fw_version = g_strndup ((const gchar *) self->shared_response,
+                                    sizeof (self->shared_response));
+      fpi_ssm_mark_completed (ssm);
+    }
+  else
+    {
+      g_clear_error (&error);
+      (*failures)++;
+      /* Native sleeps after every failed query, including iteration five. */
+      fpi_ssm_jump_to_state_delayed (ssm, GOODIX_PROBE_AFTER_DELAY, 100);
+    }
+}
+
+static void
+goodix_probe_ssm_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  guint *failures = fpi_ssm_get_data (ssm);
+
+  if (goodix_probe_cancelled (ssm, dev))
+    return;
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case GOODIX_PROBE_PING:
+    case GOODIX_PROBE_FIRMWARE:
+      goodix_cmd_probe (ssm, dev, fpi_ssm_get_cur_state (ssm) == GOODIX_PROBE_FIRMWARE,
+                        goodix_probe_result);
+      break;
+    case GOODIX_PROBE_AFTER_DELAY:
+      if (*failures == 5)
+        {
+          fp_dbg ("Startup firmware query exhausted; continuing device initialization");
+          fpi_ssm_mark_completed (ssm);
+        }
+      else
+        fpi_ssm_jump_to_state (ssm, GOODIX_PROBE_PING);
+      break;
+    }
+}
+
 static void
 goodix_open_ssm_handler (FpiSsm   *ssm,
                          FpDevice *dev)
@@ -253,30 +346,15 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_OPEN_PING:
-      goodix_cmd_ping (ssm, dev);
-      break;
-
-    case GOODIX_OPEN_READ_FW_VERSION:
-      goodix_cmd_read_fw_version (ssm, dev);
+      {
+        FpiSsm *probe = fpi_ssm_new (dev, goodix_probe_ssm_handler, GOODIX_PROBE_NUM_STATES);
+        fpi_ssm_set_data (probe, g_new0 (guint, 1), g_free);
+        fpi_ssm_start_subsm (ssm, probe);
+      }
       break;
 
     case GOODIX_OPEN_RESET:
       {
-        /* Parse the firmware version reply before sending the reset */
-        g_autoptr(GError) error = NULL;
-        const guint8 *pl;
-        gsize pl_len;
-
-        if (!goodix_cmd_parse_fw_version_reply (dev, &pl, &pl_len, &error))
-          {
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
-
-        g_clear_pointer (&self->fw_version, g_free);
-        self->fw_version = g_strndup ((const gchar *) pl,
-                                      strnlen ((const gchar *) pl, pl_len));
-
         goodix_cmd_reset_sensor (ssm, dev);
       }
       break;
@@ -640,13 +718,6 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_OPEN_EC_POWER_OFF_DONE:
-      if (!goodix_cmd_parse_ec_control_reply (dev))
-        {
-          fpi_ssm_mark_failed (
-            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                           "Open EC power-off failed"));
-          return;
-        }
       self->open_ref_powered = FALSE;
       fpi_ssm_next_state (ssm);
       break;
@@ -681,14 +752,18 @@ goodix_cleanup_failed_open (FpDevice *dev)
 }
 
 static void
-goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-
-  self->task_ssm = NULL;
+  GError *error = data;
 
   if (error)
     {
+      /* Reset/close ends the transport that could complete retained data.
+       * A completion winning idle cancellation may have just appended it. */
+      if (self->rx.buf)
+        goodix_proto_rx_reset (&self->rx);
+      self->rx_idle_partial = FALSE;
       self->open_ref_powered = FALSE;
       goodix_milan_generation_invalidate (&self->milan_generation);
       goodix_milan_persistence_clear (dev);
@@ -730,6 +805,20 @@ goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   fpi_device_open_complete (dev, NULL);
 }
 
+static void
+goodix_open_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  self->task_ssm = NULL;
+  /* The SSM is freed on return. Transfer only its completion error to the
+   * join callback; the open action and idle owner retain the device. */
+  if (error)
+    goodix_idle_recv_stop (dev, goodix_open_complete_after_idle, error);
+  else
+    goodix_open_complete_after_idle (dev, NULL);
+}
+
 void
 goodix_start_open_ssm (FpDevice *dev)
 {
@@ -761,6 +850,12 @@ goodix_start_open_ssm (FpDevice *dev)
  * Returns TRUE if a reinit sub-SSM was started (caller returns and the
  * parent advances when it completes), FALSE if no reinit was needed.
  */
+static void
+goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
+{
+  goodix_maybe_start_reinit_subsm (data, dev);
+}
+
 gboolean
 goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
                                  FpDevice *dev)
@@ -770,6 +865,18 @@ goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
 
   if (!self->needs_reinit)
     return FALSE;
+
+  if (self->idle_rx_ssm)
+    {
+      /* Reinitialization also releases the interface; join the idle owner
+       * before either release or USB reset, just as close does. */
+      goodix_idle_recv_stop (dev, goodix_reinit_idle_joined, ssm);
+      return TRUE;
+    }
+
+  /* A USB reset ends the transport that could complete the retained packet. */
+  goodix_proto_rx_reset (&self->rx);
+  self->rx_idle_partial = FALSE;
 
   fp_info ("Reinitializing device after system sleep");
   self->action_epoch++;
