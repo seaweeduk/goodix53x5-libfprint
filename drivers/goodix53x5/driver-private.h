@@ -107,6 +107,7 @@ struct _FpiDeviceGoodix53x5
   guint16 fdt_prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
   guint8  pending_fdt_packet[4 + 4 + GOODIX_FDT_BASE_LEN];
   gsize   pending_fdt_packet_len;
+  GoodixProfile9FdtWaitMode pending_fdt_mode;
 
   /* Profile-9 FDT state persists across actions and hardware reinitialization. */
   GoodixProfile9FdtState profile9_fdt;

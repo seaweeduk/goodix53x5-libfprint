@@ -631,6 +631,7 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                * latest worker notification, including during config/manual. */
               goodix_recv_apply_fdt_event (dev, type, &event);
               self->pending_fdt_packet_len = self->rx.expected;
+              self->pending_fdt_mode = mode;
               memcpy (self->pending_fdt_packet, self->rx.buf, self->rx.expected);
               goodix_proto_rx_reset (&self->rx);
               goto receive_more;

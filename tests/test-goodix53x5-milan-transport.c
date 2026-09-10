@@ -70,6 +70,7 @@ typedef enum {
   RESPONSE_STATUS,
   RESPONSE_DUPLICATE,
   RESPONSE_ASYNC,
+  RESPONSE_HANDOFF,
 } EventOrder;
 
 typedef struct {
@@ -301,6 +302,7 @@ complete_usb (gpointer unused)
   /* Request stop with the up-arm ACK still outstanding, except for the
    * separately controlled event-completion/cancellation boundary. */
   if (!scenario->standalone_arm && !rearm_case (scenario) && !io.disposition_sent &&
+      scenario->event_order != RESPONSE_HANDOFF &&
       scenario->event_order != EVENT_BEFORE_ARM_ACK &&
       transfer->endpoint == GOODIX_EP_IN &&
       io.command == 0x34 &&
@@ -385,7 +387,8 @@ complete_usb (gpointer unused)
       test_clock_us += 75 * 1000;
     }
   else if (scenario->event_order >= RESPONSE_EARLY &&
-           io.command == scenario->standalone_arm)
+           io.command == (scenario->event_order == RESPONSE_HANDOFF ?
+                          scenario->timeout_command : scenario->standalone_arm))
     {
       guint8 payload[4 + GOODIX_FDT_BASE_LEN];
       gboolean early = scenario->event_order == RESPONSE_EARLY ||
@@ -395,7 +398,8 @@ complete_usb (gpointer unused)
         payload[i] = i + 1;
       if (io.command == 0x90)
         payload[0] = scenario->ec_status;
-      if (scenario->event_order == RESPONSE_ASYNC && io.events < 2)
+      if ((scenario->event_order == RESPONSE_ASYNC ||
+           scenario->event_order == RESPONSE_HANDOFF) && io.events < 2)
         reverse_event (transfer, io.events);
       else if (early && !io.ec_data && io.early_attempt != io.sends[io.command])
         {
@@ -689,7 +693,10 @@ boundary_handler (FpiSsm *ssm, FpDevice *dev)
 {
   GoodixScanCoordinatorData *data = fpi_ssm_get_data (ssm);
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  if (fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_WAIT_CPU && rearm_case (io.scenario))
+  gboolean handoff = io.scenario->event_order == RESPONSE_HANDOFF;
+
+  if (fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_WAIT_CPU &&
+      (rearm_case (io.scenario) || handoff))
     {
       io.wait_cpu_count++;
       memcpy (io.settled_down, self->profile9_fdt.base_down, sizeof (io.settled_down));
@@ -699,7 +706,38 @@ boundary_handler (FpiSsm *ssm, FpDevice *dev)
       g_assert_true (data->cpu_outstanding);
     }
   if (fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_DISPATCH_EVENT)
-    io.dispatches++;
+    {
+      io.dispatches++;
+      if (handoff)
+        {
+          g_assert_cmpuint (self->profile9_fdt.wait_mode, ==, GOODIX_PROFILE9_FDT_WAIT_UP);
+          g_assert_true (data->event_preparsed);
+        }
+    }
+  /* Model the completed-capture boundary after a response command. Both
+   * reverse events arrive during that command; the real coordinator then
+   * arms UP and consumes the latest DOWN notification, before CPU settlement. */
+  if (handoff && fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_ENSURE_REFERENCE)
+    {
+      self->profile9_fdt.wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
+      if (io.scenario->timeout_command == 0x36)
+        goodix_cmd_fdt_manual (ssm, dev, TRUE, self->profile9_fdt.base_manual);
+      else
+        {
+          gsize len;
+          const guint8 *config = goodix_device_get_default_config (&len);
+          g_autofree guint8 *patched = g_memdup2 (config, len);
+
+          goodix_device_patch_config (patched, len, &self->calib);
+          goodix_cmd_upload_config (ssm, dev, patched, len);
+        }
+      return;
+    }
+  if (handoff && fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_POWER_ON)
+    {
+      fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_ARM_UP);
+      return;
+    }
   if (fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_ENSURE_REFERENCE)
     fpi_ssm_jump_to_state (ssm, (rearm_case (io.scenario) || down_drain_case (io.scenario))
                            ? GOODIX_SCAN_COORD_REARM_DOWN : GOODIX_SCAN_COORD_ARM_UP);
@@ -963,7 +1001,8 @@ test_scenario (gconstpointer user_data)
   for (guint step = 0; io.completions == 0 && step < 48; step++)
     {
       gboolean completed = FALSE;
-      if (!io.pending && rearm_case (scenario) && io.wait_cpu_count && !io.disposition_sent)
+      if (!io.pending && (rearm_case (scenario) || scenario->event_order == RESPONSE_HANDOFF) &&
+          io.wait_cpu_count && !io.disposition_sent)
         stop_after_capture (dev);
       if (!io.pending && !scenario->standalone_arm && self->profile9_fdt.owner &&
           fpi_ssm_get_cur_state (self->profile9_fdt.owner) >= GOODIX_SCAN_COORD_CLEANUP_JOIN &&
@@ -1086,7 +1125,7 @@ test_scenario (gconstpointer user_data)
       (io.sends[scenario->standalone_arm] != (scenario->event_order == RESPONSE_DEADLINE ? 2 : 1) ||
        io.data_chunks != (scenario->event_order == RESPONSE_DEADLINE ? 2 : 1) || io.events || io.dispatches))
     g_test_fail ();
-  if (scenario->event_order >= RESPONSE_EARLY &&
+  if (scenario->event_order >= RESPONSE_EARLY && scenario->event_order != RESPONSE_HANDOFF &&
       (io.sends[scenario->standalone_arm] !=
        (scenario->event_order == RESPONSE_RETRY || scenario->event_order == RESPONSE_EARLY_RESET ? 2 : 1) ||
        io.events != (scenario->event_order == RESPONSE_ASYNC ? 2 : 0) || io.dispatches))
@@ -1101,6 +1140,27 @@ test_scenario (gconstpointer user_data)
           self->profile9_fdt.base_manual[2 * i + 1] != 50 + i ||
           self->fdt_prior_down[i] != 50 + i || !self->pending_fdt_packet_len)
         g_test_fail ();
+  if (scenario->event_order == RESPONSE_HANDOFF)
+    {
+      if (io.events != 2 || io.dispatches != 1 || io.wait_cpu_count != 1 ||
+          io.sends[scenario->timeout_command] != 1 || io.sends[0x32] != 1 ||
+          self->pending_fdt_packet_len || self->profile9_fdt.event.irq != 0x80)
+        g_test_fail ();
+      for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+        if (io.settled_prior[i] != 50 + i ||
+            io.settled_manual[2 * i] != 50 + i ||
+            io.settled_manual[2 * i + 1] != 50 + i ||
+            io.settled_down[2 * i] != 51 + i ||
+            io.settled_down[2 * i + 1] != 51 + i ||
+            io.last_down_payload[2 * i] != 51 + i ||
+            io.last_down_payload[2 * i + 1] != 51 + i ||
+            self->profile9_fdt.event.raw[2 * i] != 102 + 2 * i ||
+            self->profile9_fdt.event.raw[2 * i + 1] != 0)
+          g_test_fail ();
+      g_test_message ("handoff dispatch=%u wait_cpu=%u prior/manual/down=%u/%u/%u",
+                      io.dispatches, io.wait_cpu_count, io.settled_prior[0],
+                      io.settled_manual[0], io.settled_down[0]);
+    }
   if (polling_case (scenario) &&
       (io.even_followups != io.sends[scenario->timeout_command] ||
        (scenario->timeout_command == 0xae && io.sends[0xae] != 1)))
@@ -1217,12 +1277,15 @@ main (int argc, char **argv)
     { 0, 0, 0, 1, TRUE, RESPONSE_DUPLICATE, 0x90 },
     { 0, 0, 0, 1, TRUE, RESPONSE_ASYNC, 0x36 },
     { 0, 0, 0, 1, TRUE, RESPONSE_ASYNC, 0x90 },
+    { 0x36, 0, 1, 1, TRUE, RESPONSE_HANDOFF },
+    { 0x90, 0, 1, 1, TRUE, RESPONSE_HANDOFF },
   };
   const char *response_names[] = {
     "manual-early", "config-early", "manual-response-retry", "config-response-retry",
     "manual-ready-reset", "config-ready-reset", "config-status-zero", "config-status-one",
     "config-status-two",
     "manual-duplicate", "config-duplicate", "manual-two-reverse", "config-two-reverse",
+    "manual-reverse-up-handoff", "config-reverse-up-handoff",
   };
   for (guint i = 0; i < G_N_ELEMENTS (responses); i++)
     {
