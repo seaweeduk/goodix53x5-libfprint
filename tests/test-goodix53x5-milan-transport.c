@@ -38,6 +38,8 @@ static GCancellable *test_action_cancellable (FpDevice *dev)
 #include "drivers/goodix53x5/device/scan.c"
 static gboolean idle_test_release (void);
 static gboolean idle_test_reset (void);
+static gboolean idle_test_usb_close (void);
+static void idle_test_open_complete (FpDevice *dev, GError *error);
 static void idle_test_close_complete (FpDevice *dev, GError *error);
 static FpiSsm *idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handler,
                                     int states, int cleanup, const char *name);
@@ -49,7 +51,17 @@ static FpiSsm *idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handle
 #define g_usb_device_reset(device, error) idle_test_reset ()
 #define g_usb_device_claim_interface(device, interface, flags, error) TRUE
 #define fpi_ssm_new_full idle_test_reinit_ssm
+/* The virtual fixture has no USB handle or outer open GTask. Keep the real
+ * session SSM and completion owner, replacing only those platform seams. */
+#define g_usb_device_close(device, error) ((void) (device), idle_test_usb_close ())
+#define fpi_device_open_complete idle_test_open_complete
+#define fpi_device_action_is_cancelled(device) g_cancellable_is_cancelled (action_cancel_token)
+#define fpi_device_get_usb_device(device) ((GUsbDevice *) NULL)
 #include "drivers/goodix53x5/device/session.c"
+#undef fpi_device_get_usb_device
+#undef fpi_device_action_is_cancelled
+#undef fpi_device_open_complete
+#undef g_usb_device_close
 #undef fpi_ssm_new_full
 #undef g_usb_device_claim_interface
 #undef g_usb_device_reset
@@ -1492,6 +1504,9 @@ static guint idle_releases;
 static guint idle_closes;
 static guint idle_resets;
 static gboolean idle_reinit_testing;
+static gboolean idle_open_testing;
+static guint idle_usb_closes;
+static guint idle_open_ssms_freed;
 static FpDevice *idle_device;
 
 static gboolean
@@ -1501,7 +1516,7 @@ idle_test_release (void)
   g_assert_null (io.pending);
   g_assert_null (self->idle_rx_ssm);
   g_assert_false (self->rx_active);
-  if (idle_reinit_testing && idle_releases == 0)
+  if ((idle_reinit_testing || idle_open_testing) && idle_releases == 0)
     {
       g_assert_cmpuint (self->rx.len, ==, 0);
       g_assert_cmpuint (self->rx.expected, ==, 0);
@@ -1509,6 +1524,29 @@ idle_test_release (void)
     }
   idle_releases++;
   return TRUE;
+}
+
+static gboolean
+idle_test_usb_close (void)
+{
+  g_assert_true (idle_open_testing);
+  g_assert_null (io.pending);
+  g_assert_null (FPI_DEVICE_GOODIX53X5 (idle_device)->idle_rx_ssm);
+  g_assert_cmpuint (idle_releases, ==, 1);
+  idle_usb_closes++;
+  return TRUE;
+}
+
+static void
+idle_test_open_complete (FpDevice *dev, GError *error)
+{
+  g_assert_true (idle_open_testing);
+  g_assert_true (dev == idle_device);
+  g_assert_null (io.pending);
+  g_assert_null (FPI_DEVICE_GOODIX53X5 (dev)->idle_rx_ssm);
+  g_assert_null (io.error);
+  io.error = error;
+  io.completions++;
 }
 
 static void
@@ -1525,7 +1563,7 @@ idle_test_reset (void)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (idle_device);
 
-  g_assert_true (idle_reinit_testing);
+  g_assert_true (idle_reinit_testing || idle_open_testing);
   g_assert_cmpuint (idle_releases, ==, 1);
   g_assert_null (io.pending);
   g_assert_null (self->idle_rx_ssm);
@@ -1540,7 +1578,7 @@ static FpiSsm *
 idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handler,
                       int states, int cleanup, const char *name)
 {
-  g_assert_true (idle_reinit_testing);
+  g_assert_true (idle_reinit_testing || idle_open_testing);
   g_assert_true (handler == goodix_open_ssm_handler);
   /* Run the actual session reset, claim and PING states, stopping before
    * firmware/TLS/calibration. No replacement reset or PING implementation. */
@@ -1791,6 +1829,168 @@ test_idle_lifetime (gconstpointer user_data)
   idle_device = NULL;
 }
 
+static void
+idle_open_cleanup_entry (FpiSsm *ssm, FpDevice *dev)
+{
+  /* Admit the completed reference-capture boundary; all cleanup states and
+   * the failed-open completion/recovery owner below are production code. */
+  if (fpi_ssm_get_cur_state (ssm) == 0)
+    fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_SLEEP);
+  else
+    goodix_open_ssm_handler (ssm, dev);
+}
+
+static void
+idle_open_data_free (gpointer data)
+{
+  g_assert_true (data == &idle_open_ssms_freed);
+  idle_open_ssms_freed++;
+}
+
+static void
+test_idle_failed_open (gconstpointer user_data)
+{
+  guint which = GPOINTER_TO_UINT (user_data);
+  gboolean recover = which < 3 || which == 6;
+  guint completion = which == 8 ? 0 : which >= 6 ? 3 : which % 3;
+  /* cancelled, partial completion, no idle, complete optional response */
+  static const Scenario scenario = { .event_order = EVENT_CANCELLED };
+  FpDeviceClass *klass = g_type_class_ref (FPI_TYPE_DEVICE_GOODIX53X5);
+  g_autoptr(FpDevice) dev = NULL;
+  FpiDeviceGoodix53x5 *self;
+  FpiSsm *ssm;
+  g_autoptr(GError) original = NULL;
+  FpDevice *weak;
+
+  memset (&io, 0, sizeof (io));
+  io.scenario = &scenario;
+  idle_releases = idle_closes = idle_resets = idle_usb_closes = idle_open_ssms_freed = 0;
+  idle_open_testing = TRUE;
+  idle_reinit_testing = FALSE;
+  action_cancel_token = g_cancellable_new ();
+  klass->type = FP_DEVICE_TYPE_VIRTUAL;
+  dev = g_object_new (FPI_TYPE_DEVICE_GOODIX53X5, NULL);
+  g_type_class_unref (klass);
+  weak = dev;
+  g_object_add_weak_pointer (G_OBJECT (dev), (gpointer *) &weak);
+  idle_device = dev;
+  self = FPI_DEVICE_GOODIX53X5 (dev);
+  self->cancel = g_cancellable_new ();
+  self->usb_interface_claimed = TRUE;
+  self->open_ref_powered = TRUE;
+  self->open_recovery_attempted = !(recover || which == 8);
+  ssm = fpi_ssm_new_full (dev, idle_open_cleanup_entry, GOODIX_OPEN_NUM_STATES,
+                          GOODIX_OPEN_SLEEP, "failed-open-cleanup");
+  self->task_ssm = ssm;
+  fpi_ssm_set_data (ssm, &idle_open_ssms_freed, idle_open_data_free);
+  fpi_ssm_start (ssm, goodix_open_ssm_done);
+  for (guint i = 0; i < 2; i++)
+    {
+      g_assert_cmpuint (io.command, ==, 0x60);
+      idle_test_complete (NULL);
+      idle_test_complete (g_error_new_literal (G_USB_DEVICE_ERROR,
+                                               G_USB_DEVICE_ERROR_TIMED_OUT,
+                                               "original sleep timeout"));
+    }
+  original = g_error_copy (fpi_ssm_get_error (ssm));
+  g_assert_error (original, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT);
+  g_assert_nonnull (strstr (original->message, "original sleep timeout"));
+  g_assert_cmpuint (io.sends[0x60], ==, 2);
+  g_assert_cmpuint (io.command, ==, 0xae);
+  idle_test_complete (NULL);
+  if (!recover)
+    g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
+                           "*Device open failed:*original sleep timeout*");
+  if (completion == 2)
+    idle_test_complete (g_error_new_literal (G_USB_DEVICE_ERROR,
+                                            G_USB_DEVICE_ERROR_TIMED_OUT,
+                                            "later EC timeout"));
+  else
+    {
+      ack_reply (io.pending, 0xae);
+      idle_test_complete (NULL);
+      g_assert_cmpuint (idle_open_ssms_freed, ==, 1);
+      g_assert_null (self->task_ssm);
+      g_assert_cmpuint (idle_releases, ==, 0);
+      g_assert_cmpuint (idle_resets, ==, 0);
+      g_assert_cmpuint (idle_usb_closes, ==, 0);
+      g_assert_cmpuint (io.completions, ==, 0);
+      g_assert_true (g_cancellable_is_cancelled (io.cancel));
+      GoodixIdleRecv *idle = fpi_ssm_get_data (self->idle_rx_ssm);
+      GError *retained = idle->joined_data;
+      g_assert_error (retained, original->domain, original->code);
+      g_assert_cmpstr (retained->message, ==, original->message);
+      if (which == 8)
+        g_cancellable_cancel (action_cancel_token);
+      if (completion == 1)
+        {
+          guint8 payload[96] = { 0 };
+          gsize len;
+          g_autofree guint8 *packet = goodix_proto_build_message (
+            9, 0, payload, sizeof (payload), TRUE, &len);
+          g_assert_cmpuint (len, >, 64);
+          memcpy (io.pending->buffer, packet, 64);
+          io.pending->actual_length = 64;
+          idle_test_complete (NULL); /* Partial data wins cancellation. */
+        }
+      else if (completion == 3)
+        {
+          guint8 payload[] = { 1, 0 };
+          reply (io.pending, 0xa, 7, payload, sizeof (payload));
+          idle_test_complete (NULL); /* Complete optional reply wins cancellation. */
+        }
+      else
+        idle_test_complete (g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                                "idle cancellation joined"));
+    }
+  g_assert_cmpuint (idle_releases, ==, 1);
+  g_assert_false (self->rx_idle_partial);
+  g_assert_cmpuint (self->rx.len, ==, 0);
+  if (recover)
+    {
+      g_assert_cmpuint (idle_resets, ==, 1);
+      g_assert_cmpuint (idle_usb_closes, ==, 0);
+      g_assert_cmpuint (io.completions, ==, 0);
+      g_assert_cmpuint (io.command, ==, 0);
+      idle_test_complete (NULL);
+      g_assert_cmpuint (io.timeout, ==, 2000);
+      ack_reply (io.pending, 0);
+      idle_test_complete (NULL);
+      g_assert_no_error (io.error);
+    }
+  else
+    {
+      g_test_assert_expected_messages ();
+      g_assert_cmpuint (idle_resets, ==, 0);
+      g_assert_cmpuint (idle_usb_closes, ==, 1);
+      g_assert_error (io.error, original->domain, original->code);
+      g_assert_cmpstr (io.error->message, ==, original->message);
+    }
+  g_assert_cmpuint (io.completions, ==, 1);
+  g_assert_cmpuint (idle_open_ssms_freed, ==, 1);
+  g_assert_null (io.pending);
+  g_assert_null (self->task_ssm);
+  g_clear_error (&io.error);
+  g_clear_pointer (&io.first_sleep, g_bytes_unref);
+  if (recover)
+    {
+      goodix_close (dev);
+      g_assert_cmpuint (idle_closes, ==, 1);
+    }
+  else
+    {
+      /* A failed open has already closed USB; release fixture allocations. */
+      g_clear_pointer (&self->rx.buf, g_free);
+      g_clear_object (&self->cancel);
+      g_assert_cmpuint (idle_closes, ==, 0);
+    }
+  g_clear_object (&action_cancel_token);
+  idle_device = NULL;
+  g_clear_object (&dev);
+  g_assert_null (weak);
+  idle_open_testing = FALSE;
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1842,6 +2042,15 @@ main (int argc, char **argv)
   static const Scenario drain_control = { 0, 0, 1, 1, TRUE, STOP_DRAIN_CONTROL };
 
   g_test_init (&argc, &argv, NULL);
+  const char *failed_open_names[] = { "recovery-cancel", "recovery-partial-race", "recovery-no-idle",
+                                     "final-cancel", "final-partial-race", "final-no-idle",
+                                     "recovery-reply-race", "final-reply-race", "action-cancel-during-join" };
+  for (guint i = 0; i < G_N_ELEMENTS (failed_open_names); i++)
+    {
+      g_autofree char *name = g_strdup_printf ("/goodix53x5/milan/transport/failed-open/%s",
+                                              failed_open_names[i]);
+      g_test_add_data_func (name, GUINT_TO_POINTER (i), test_idle_failed_open);
+    }
   const char *idle_names[] = { "ack-only-close", "tail", "handoff", "handoff-race",
                               "partial-handoff", "removal", "action-cancel", "close-race", "bad-frame",
                               "stopped-fdt", "response-caches", "partial-reinit" };
