@@ -38,6 +38,7 @@ static GCancellable *test_action_cancellable (FpDevice *dev)
 #include "drivers/goodix53x5/device/scan.c"
 static gboolean idle_test_release (void);
 static gboolean idle_test_reset (void);
+static gboolean idle_test_claim (GError **error);
 static gboolean idle_test_usb_close (void);
 static void idle_test_open_complete (FpDevice *dev, GError *error);
 static void idle_test_close_complete (FpDevice *dev, GError *error);
@@ -49,7 +50,7 @@ static FpiSsm *idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handle
 #define fpi_device_close_complete idle_test_close_complete
 #include "drivers/goodix53x5/goodix53x5.c"
 #define g_usb_device_reset(device, error) idle_test_reset ()
-#define g_usb_device_claim_interface(device, interface, flags, error) TRUE
+#define g_usb_device_claim_interface(device, interface, flags, error) idle_test_claim (error)
 #define fpi_ssm_new_full idle_test_reinit_ssm
 /* The virtual fixture has no USB handle or outer open GTask. Keep the real
  * session SSM and completion owner, replacing only those platform seams. */
@@ -1505,6 +1506,7 @@ static guint idle_closes;
 static guint idle_resets;
 static gboolean idle_reinit_testing;
 static gboolean idle_open_testing;
+static gboolean idle_claim_failure;
 static guint idle_usb_closes;
 static guint idle_open_ssms_freed;
 static FpDevice *idle_device;
@@ -1527,12 +1529,24 @@ idle_test_release (void)
 }
 
 static gboolean
+idle_test_claim (GError **error)
+{
+  if (!idle_claim_failure)
+    return TRUE;
+  g_set_error_literal (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_NO_DEVICE,
+                       "Early claim failure");
+  return FALSE;
+}
+
+static gboolean
 idle_test_usb_close (void)
 {
   g_assert_true (idle_open_testing);
   g_assert_null (io.pending);
   g_assert_null (FPI_DEVICE_GOODIX53X5 (idle_device)->idle_rx_ssm);
-  g_assert_cmpuint (idle_releases, ==, 1);
+  g_assert_cmpuint (idle_releases, ==, idle_claim_failure ? 0 : 1);
+  if (idle_claim_failure)
+    g_assert_null (FPI_DEVICE_GOODIX53X5 (idle_device)->rx.buf);
   idle_usb_closes++;
   return TRUE;
 }
@@ -1988,6 +2002,35 @@ test_idle_failed_open (gconstpointer user_data)
   idle_device = NULL;
   g_clear_object (&dev);
   g_assert_null (weak);
+  if (which == 5)
+    {
+      /* Also fail before the first receive: teardown must not allocate RX. */
+      guint writes = io.started_writes;
+
+      dev = g_object_new (FPI_TYPE_DEVICE_GOODIX53X5, NULL);
+      idle_device = dev;
+      self = FPI_DEVICE_GOODIX53X5 (dev);
+      g_assert_null (self->rx.buf);
+      self->open_recovery_attempted = TRUE;
+      idle_releases = 0;
+      idle_claim_failure = TRUE;
+      ssm = fpi_ssm_new_full (dev, goodix_open_ssm_handler, GOODIX_OPEN_NUM_STATES,
+                              GOODIX_OPEN_SLEEP, "early-failed-open");
+      self->task_ssm = ssm;
+      g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
+                             "*Device open failed: Early claim failure*");
+      fpi_ssm_start (ssm, goodix_open_ssm_done);
+      g_test_assert_expected_messages ();
+      g_assert_error (io.error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_NO_DEVICE);
+      g_assert_cmpstr (io.error->message, ==, "Early claim failure");
+      g_assert_cmpuint (io.completions, ==, 2);
+      g_assert_cmpuint (io.started_writes, ==, writes);
+      g_assert_null (io.pending);
+      g_assert_null (self->rx.buf);
+      g_clear_error (&io.error);
+      idle_device = NULL;
+      idle_claim_failure = FALSE;
+    }
   idle_open_testing = FALSE;
 }
 

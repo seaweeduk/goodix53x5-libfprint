@@ -683,7 +683,8 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
     {
       /* Reset/close ends the transport that could complete retained data.
        * A completion winning idle cancellation may have just appended it. */
-      goodix_proto_rx_reset (&self->rx);
+      if (self->rx.buf)
+        goodix_proto_rx_reset (&self->rx);
       self->rx_idle_partial = FALSE;
       self->open_ref_powered = FALSE;
       goodix_milan_generation_invalidate (&self->milan_generation);
