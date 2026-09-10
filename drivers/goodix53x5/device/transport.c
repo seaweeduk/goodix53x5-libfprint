@@ -559,6 +559,16 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
       gsize payload_len;
       gboolean expected_ack = FALSE;
 
+      /* Native EC has no response event. Optional category-A/command-7 data
+       * is ignored independently of the command or event currently awaited. */
+      if (goodix_proto_rx_parse (&self->rx, &category, &command,
+                                 &payload, &payload_len) &&
+          category == 0x0a && command == 7)
+        {
+          goodix_proto_rx_reset (&self->rx);
+          goto receive_more;
+        }
+
       if (self->cmd_ssm == transfer->ssm)
         {
           GoodixCmdOperation *cmd_operation = fpi_ssm_get_data (transfer->ssm);

@@ -620,13 +620,6 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_BASE_EC_POWER_ON_DONE:
-      if (!goodix_cmd_parse_ec_control_reply (dev))
-        {
-          fpi_ssm_mark_failed (ssm,
-                               fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                         "Reference EC power-on failed"));
-          return;
-        }
       goodix_debug_timing_log (dev, "ref_capture", "ec_power_on",
                                g_get_monotonic_time () -
                                self->debug_timing.ref_capture_phase_started_us,
@@ -831,15 +824,6 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_BASE_CLEANUP_EC_POWER_OFF_DONE:
-      if (!goodix_cmd_parse_ec_control_reply (dev))
-        {
-          if (data->forced_refresh || self->profile9_fdt.owner)
-            self->needs_reinit = TRUE;
-          fpi_ssm_mark_failed (
-            ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                           "Reference EC power-off failed"));
-          return;
-        }
       goodix_base_timing_done (self, dev, "cleanup");
       fpi_ssm_mark_completed (ssm);
       break;

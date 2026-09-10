@@ -267,7 +267,7 @@ goodix_cmd_ec_control (FpiSsm *ssm, FpDevice *dev, gboolean on)
   guint8 payload_on[3] = { 0x01, 0x01, 0x00 };
   guint8 payload_off[3] = { 0x00, 0x00, 0x00 };
 
-  goodix_run_cmd (ssm, dev, 0xA, 0x7, on ? payload_on : payload_off, 3, TRUE);
+  goodix_run_cmd (ssm, dev, 0xA, 0x7, on ? payload_on : payload_off, 3, FALSE);
 }
 
 /* ========================================================================
@@ -351,17 +351,6 @@ goodix_cmd_parse_config_reply (FpDevice *dev)
   gsize payload_len;
 
   return goodix_parse_reply_exact (dev, 0x9, 0x0, &payload, &payload_len,
-                                   NULL) &&
-         payload_len > 0 && payload[0] == 1;
-}
-
-gboolean
-goodix_cmd_parse_ec_control_reply (FpDevice *dev)
-{
-  const guint8 *payload;
-  gsize payload_len;
-
-  return goodix_parse_reply_exact (dev, 0xA, 0x7, &payload, &payload_len,
                                    NULL) &&
          payload_len > 0 && payload[0] == 1;
 }
