@@ -19,8 +19,9 @@ Validation is complete before the first state mutation:
 
 1. A null payload or length below `0x224b0` returns `0x81`.
 2. `FUN_1800668e0` supplies the current version string. The comparison length
-   includes its NUL when the string length is at most 32; longer strings compare
-   only 32 bytes. A mismatch against payload `+0x22490` returns `0x80`.
+   is `min(strlen(version), 32)`, excluding the terminating NUL. A mismatch
+   against payload `+0x22490` returns `0x80`. The serializer separately clears
+   all 32 version bytes before copying that same bounded string length.
 3. `FUN_1800035b0` checks the `rows * columns * 2` bytes at payload `+0x08`
    against dword `+0x00`, then the same byte count at `+0x9928` against dword
    `+0x04`. Either mismatch returns `0x80`.
@@ -96,8 +97,13 @@ when the persisted sensor-ID prefix, version, and both plane checks pass.
 
 ## File Ownership And Write Semantics
 
-The local file is `Goodix\goodix_calib.dat` below the process ProgramData
-directory. Its exact size is `0x224c0`: a 16-byte sensor key followed by the
+The local file path is constructed by `FUN_180005ec0` as
+`<system-drive>:\ProgramData\Goodix\goodix_calib.dat`; the helper obtains the
+drive character from `FUN_1800060c0`, which returns the first character of
+`GetSystemDirectoryW` output or lowercase `c` when that query fails. It formats
+the fixed directory rather than reading a process `ProgramData` environment
+variable. Its exact serialized size
+is `0x224c0`: a 16-byte sensor key followed by the
 `0x224b0`-byte payload described above. `FUN_180034330` attempts one exact-size
 read using `_wfopen_s(..., L"rb")`; open failure or a short read clears the
 entire caller buffer, which naturally produces a sensor-key mismatch and
@@ -122,9 +128,3 @@ state.
   `FUN_18002bfa0:0x18002c4c4..0x18002c76c`.
 - Exact-size reader: `FUN_180034330 -> FUN_18000d060`.
 - Direct final-path writer: `FUN_1800345b0 -> FUN_18000cfa0`.
-
-## Confidence
-
-High for the complete validation, mutation order, field aliases, return values,
-caller fallback, and profile-9 attachment lifetime. Vendor names for the
-remaining auxiliary blocks and scalar are not recovered.

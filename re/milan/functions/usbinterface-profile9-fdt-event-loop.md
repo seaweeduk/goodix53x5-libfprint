@@ -65,8 +65,9 @@ length (initialized to `0x8000`), one pending read, completion callback
 `0x180021200`, and failure callback `0x1800211a0`. These resources belong to the
 WDF device/power lifetime, not one capture or activation IOCTL.
 
-`ReleaseHardware` (`0x180023c40`) marks power-stop, waits for an outstanding
-initialization thread, disables the profile worker and calls protocol teardown
+`ReleaseHardware` (`0x180023c40`) marks power-stop, conditionally waits for an
+outstanding initialization thread when `0x1800600a4 == 1`, disables the profile
+worker and calls protocol teardown
 `0x18001b40c`. Teardown clears initialized byte `0x180063840`, releases the
 protocol allocation, closes seven response events and deletes its critical
 sections. These teardown operations do not occur in `OnActivate` deactivation.
@@ -390,6 +391,49 @@ global active byte `0x1800600a4`, logs the failure and returns byte one; it
 does not itself reset the sensor, clear ACK slots, complete the capture
 request or issue a drain command. This callback is distinct from a command's
 ACK polling timeout.
+
+The byte `0x1800600a4` gates initialization progress, not packet acceptance or
+capture completion. `EvtReadFailed` writes zero unconditionally, without a
+status-dependent branch. Its direct consumers are `deviceInit` (`0x180020970`)
+and `ReleaseHardware` (`0x180023c40`). `deviceInit` exits at entry if the byte
+is zero. In its uninitialized-device path it checks the byte, together with
+protocol power-stop field `+0x68e0 != 1`, before action 10, before action
+`0x0c`, before the final firmware query and before the final sleep/initialized
+publication path. These checks occur between operations, not inside an ACK
+wait. Failure of a later gate falls through to signalling the device's
+initialization event at `+0x108`, without the final store of initialized byte
+`+0x110 = 1`. `ReleaseHardware` waits for the initialization thread only when
+its handle is not `-1` and `0x1800600a4 == 1`; profile disable and protocol
+teardown are outside that conditional wait.
+
+The byte is restored to one by `usbEvtDeviceD0Entry` (`0x180022d70`) immediately
+before starting the read target, and by device construction (`0x1800232a8`)
+when `FUN_180020718` returns zero. Successful read completion (`0x180021200`)
+neither restores nor tests it. Thus it is not a current-read-success flag:
+subsequent accepted packets can be parsed while it remains zero.
+
+The registered failure return is Boolean TRUE (`MOV AL,1` at
+`0x1800211ed`). Under the
+[WDF readers-failed contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfusb/nc-wdfusb-evt_wdf_usb_readers_failed),
+this requests a USB **pipe** reset followed by continuous-reader restart. WDF
+joins the outstanding reads before invoking the failure callback and does not
+queue new reads until it returns. The return requests recovery; it is not proof
+that recovery succeeds on a removed device. The callback itself has no retry
+counter, delay, device-reset call or status-specific removal branch.
+
+Neither sender `0x180018a8c` nor response-wait wrapper `0x180018dd8` tests
+`0x1800600a4`. The former continues polling its independent ACK byte and
+returns zero on exhaustion; the latter retains its response-event waits and
+separate initialized/power-stop checks. `CaptureFramedone` (`0x18001fb40`)
+also has no predicate on this byte. Clearing it does not revoke a completed
+sample, signal a capture failure, or terminate an FDT event wait. A lost reply
+can consequently become observable through ACK/response timeout, while an
+ordinary read failure followed by successful pipe recovery need not produce
+any command or capture failure. A lost FDT notification has no timeout supplied
+by this failure callback. Explicit D0 exit remains separate: `0x180022ff0`
+performs its stop/sleep or EC actions and then stops the read target; a
+readers-failed recovery request is not a new D0-entry invocation and does not
+restore `0x1800600a4` through that entry path.
 
 `EvtUsbReadPipeReadComplete` traverses its receive buffer at **64-byte
 boundaries**, invoking the packet parser for each cell. Its loop increments

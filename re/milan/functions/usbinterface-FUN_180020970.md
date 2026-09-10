@@ -146,6 +146,15 @@ byte `+0x153 == 1`.
 
 ## Scheduling
 
+Entry requires nonzero global byte `0x1800600a4`. The full-init path checks it
+again, together with nested context power-stop byte `+0x68e0 != 1`, between
+the GTLS handshake, action 10, action `0x0c`, the final version query and the
+final sleep/initialized-publication path. A failed later gate signals context
+event `+0x108` without storing initialized byte `+0x110 = 1`; a failed entry
+gate exits directly. Reader failure clears the global; subsequent successful
+read completion does not restore it. D0 entry sets it to one before starting
+the reader. See [reader failure ownership](usbinterface-profile9-fdt-event-loop.md).
+
 - `FUN_180022d70` (`usbEvtDeviceD0Entry`) creates this worker whenever the
   global init-thread handle is the sentinel `-1`.
 - The distinction between first initialization and resume is the persistent

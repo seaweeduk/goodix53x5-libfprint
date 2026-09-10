@@ -8,8 +8,13 @@
 
 ## Findings
 
-- Marks the nested HAL/device context stopped and waits for any outstanding
-  `deviceInit` worker.
+- Marks the nested HAL/device context stopped. It waits for `deviceInit` only
+  when its global handle `0x1800600a8` is not `-1` and byte `0x1800600a4`
+  equals one. The first wait is 3000 ms; timeout (`0x102`) causes a second
+  6000-ms wait. Handle close and restoration of the `-1` sentinel occur inside
+  this conditional branch. Reader failure clears the byte and therefore skips
+  this wait branch; profile disable and the following teardown remain outside
+  it. See [reader failure and initialization gates](usbinterface-profile9-fdt-event-loop.md).
 - Calls `device_disable` (`FUN_18000e8cc`) at `0x180023e27`.
 - `device_disable` stops the HAL event thread and invokes the profile close
   callback; profile 9 reaches `FUN_1800160a0` (`milan_HVseries_disable`).
