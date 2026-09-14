@@ -340,7 +340,7 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       if (self->milan_generation || fdt->initial_recovery_pending)
         fpi_ssm_next_state (ssm);
       else
-        goodix_milan_base_start_ensure_subsm (ssm, dev);
+        goodix_milan_base_start_ensure_subsm (ssm, dev, TRUE);
       break;
 
     case GOODIX_SCAN_COORD_ENSURE_REFERENCE_DONE:

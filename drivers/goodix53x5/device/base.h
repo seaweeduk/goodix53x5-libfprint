@@ -176,7 +176,8 @@ gboolean goodix_milan_replace_raw_frame (guint16 **owner,
                                          GError  **error);
 
 void goodix_milan_base_start_ensure_subsm (FpiSsm   *parent_ssm,
-                                           FpDevice *dev);
+                                           FpDevice *dev,
+                                           gboolean  manage_ec_power);
 void goodix_milan_base_start_forced_refresh_subsm (
   FpiSsm                        *parent_ssm,
   FpDevice                      *dev,
