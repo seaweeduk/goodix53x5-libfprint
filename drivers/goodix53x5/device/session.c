@@ -696,7 +696,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_OPEN_CAPTURE_REF:
-      goodix_milan_base_start_ensure_subsm (ssm, dev);
+      goodix_milan_base_start_ensure_subsm (ssm, dev, FALSE);
       break;
 
     case GOODIX_OPEN_CAPTURE_REF_DONE:
@@ -714,7 +714,12 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_OPEN_EC_POWER_OFF:
-      goodix_cmd_ec_control (ssm, dev, FALSE);
+      /* Native successful initialization ends after sleep. Retain the old
+       * defensive EC shutdown only when that cleanup has failed. */
+      if (fpi_ssm_get_error (ssm))
+        goodix_cmd_ec_control (ssm, dev, FALSE);
+      else
+        fpi_ssm_next_state (ssm);
       break;
 
     case GOODIX_OPEN_EC_POWER_OFF_DONE:

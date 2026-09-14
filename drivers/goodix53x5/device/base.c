@@ -399,6 +399,7 @@ typedef struct
   guint8                 candidate_base_manual[GOODIX_FDT_BASE_LEN];
   guint                  config_attempts;
   gboolean               forced_refresh;
+  gboolean               manage_ec_power;
   gboolean               leave_powered;
 } GoodixBaseSsmData;
 
@@ -480,10 +481,12 @@ goodix_base_parse_fdt (FpDevice *dev,
 }
 
 #ifdef GOODIX53X5_DEBUG
+static void goodix_base_timing_start (FpiDeviceGoodix53x5 *self);
 static void goodix_base_timing_done (FpiDeviceGoodix53x5 *self,
                                      FpDevice            *dev,
                                      const gchar         *event);
 #else
+#define goodix_base_timing_start(...) G_STMT_START { } G_STMT_END
 #define goodix_base_timing_done(...) G_STMT_START { } G_STMT_END
 #endif
 
@@ -538,6 +541,14 @@ goodix_base_complete_recovery (FpiSsm              *ssm,
 
 #ifdef GOODIX53X5_DEBUG
 static void
+goodix_base_timing_start (FpiDeviceGoodix53x5 *self)
+{
+  self->debug_timing.ref_capture_started_us = g_get_monotonic_time ();
+  self->debug_timing.ref_capture_phase_started_us =
+    self->debug_timing.ref_capture_started_us;
+}
+
+static void
 goodix_base_timing_done (FpiDeviceGoodix53x5 *self,
                          FpDevice            *dev,
                          const gchar         *event)
@@ -577,7 +588,10 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
     case GOODIX_BASE_UPLOAD_CONFIG:
       if (!data->forced_refresh)
         {
-          fpi_ssm_jump_to_state (ssm, GOODIX_BASE_EC_POWER_ON);
+          goodix_base_timing_start (self);
+          fpi_ssm_jump_to_state (ssm, data->manage_ec_power ?
+                                GOODIX_BASE_EC_POWER_ON :
+                                GOODIX_BASE_FDT_TX_ON_BEFORE);
           return;
         }
       else
@@ -607,15 +621,13 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
                                            "Profile-9 refresh config upload failed"));
           return;
         }
-      fpi_ssm_next_state (ssm);
+      goodix_base_timing_start (self);
+      fpi_ssm_jump_to_state (ssm, data->manage_ec_power ?
+                            GOODIX_BASE_EC_POWER_ON :
+                            GOODIX_BASE_FDT_TX_ON_BEFORE);
       break;
 
     case GOODIX_BASE_EC_POWER_ON:
-      GOODIX53X5_DEBUG_ONLY (
-      self->debug_timing.ref_capture_started_us = g_get_monotonic_time ();
-      self->debug_timing.ref_capture_phase_started_us =
-        self->debug_timing.ref_capture_started_us;
-      )
       goodix_cmd_ec_control (ssm, dev, TRUE);
       break;
 
@@ -820,7 +832,12 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_BASE_CLEANUP_EC_POWER_OFF:
-      goodix_cmd_ec_control (ssm, dev, FALSE);
+      /* Keep shutdown best-effort after failures even when the nominal native
+       * acquisition path does not own EC power transitions. */
+      if (data->manage_ec_power || fpi_ssm_get_error (ssm))
+        goodix_cmd_ec_control (ssm, dev, FALSE);
+      else
+        fpi_ssm_next_state (ssm);
       break;
 
     case GOODIX_BASE_CLEANUP_EC_POWER_OFF_DONE:
@@ -864,6 +881,7 @@ static void
 goodix_milan_base_start_subsm (FpiSsm                        *parent_ssm,
                                FpDevice                      *dev,
                                gboolean                       forced_refresh,
+                               gboolean                       manage_ec_power,
                                GoodixProfile9FdtRefreshReason reason)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
@@ -908,6 +926,7 @@ goodix_milan_base_start_subsm (FpiSsm                        *parent_ssm,
   data = g_new0 (GoodixBaseSsmData, 1);
   data->parent_ssm = parent_ssm;
   data->forced_refresh = forced_refresh;
+  data->manage_ec_power = manage_ec_power;
   data->leave_powered = forced_refresh;
   goodix_milan_base_attempt_init (&data->attempt);
   sub = fpi_ssm_new_full (dev, goodix_base_ssm_handler,
@@ -920,9 +939,10 @@ goodix_milan_base_start_subsm (FpiSsm                        *parent_ssm,
 
 void
 goodix_milan_base_start_ensure_subsm (FpiSsm   *parent_ssm,
-                                      FpDevice *dev)
+                                      FpDevice *dev,
+                                      gboolean  manage_ec_power)
 {
-  goodix_milan_base_start_subsm (parent_ssm, dev, FALSE,
+  goodix_milan_base_start_subsm (parent_ssm, dev, FALSE, manage_ec_power,
                                  GOODIX_PROFILE9_FDT_REFRESH_NONE);
 }
 
@@ -933,5 +953,5 @@ goodix_milan_base_start_forced_refresh_subsm (
   GoodixProfile9FdtRefreshReason reason)
 {
   g_return_if_fail (reason != GOODIX_PROFILE9_FDT_REFRESH_NONE);
-  goodix_milan_base_start_subsm (parent_ssm, dev, TRUE, reason);
+  goodix_milan_base_start_subsm (parent_ssm, dev, TRUE, FALSE, reason);
 }
