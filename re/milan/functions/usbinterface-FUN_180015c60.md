@@ -249,6 +249,37 @@ or FDT-up detection and invokes no completed-frame callback on either path.
 The exact FDT transform and its command consumers are documented in
 `usbinterface-FUN_1800048d0.md`.
 
+### Acquisition Read Failures
+
+A null context returns `-1` without allocation or transport. Failure of either
+temporary allocation returns zero after freeing any first allocation; it does
+not invoke mode 4 or an acquisition callback.
+
+A mode-4 return of `-1` at `0x180015d42..0x180015d45`, or failure of the first
+TX-on FDT read at `0x180015d58..0x180015d63`, branches directly to temporary
+buffer cleanup. These exits do not run the common FDT postlude, replace the
+retained image or FDT buffers, or change `+0x232/+0x237`.
+
+Once the first TX-on FDT read has succeeded, a `-1` from the first TX-on image,
+TX-off FDT, second TX-off image, or final TX-on FDT acquisition instead reaches
+the common postlude at `0x180015fce`. These failures do not replace the retained
+image bytes and do not change `+0x232/+0x237`. Callback `+0x88` then determines
+whether the first TX-on FDT sample is transformed. If it returns `-1`, the
+function returns `-1` without replacing `+0x268` or programming the FDT stores.
+If it succeeds, the transformed sample replaces `+0x268`, callback `+0x68`
+programs the FDT stores, and that callback's result becomes the function result;
+the earlier image or FDT read error is not preserved as the return value.
+
+The profile-9 initial, temperature, reverse-invalid, and up-invalid callers enter
+these paths with `+0x232` clear. A failed attempt therefore leaves reacquisition
+to a later qualifying down/up/reverse event; ordinary operation start does not
+retry slot `+0x180` merely because validity remains clear.
+
+The function contains no `Sleep`, mode-2 request, or `EcControl` call.
+Allocation, configuration, acquisition, validation, transform, persistence, and
+FDT-store outcomes all return without a power transition; the full-initialization
+worker or event caller owns the continuation.
+
 ## Callers And Lifetime
 
 This owner does not clear software drift-anchor words `+0x320..+0x337` or

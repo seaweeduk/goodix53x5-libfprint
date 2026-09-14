@@ -17,8 +17,14 @@ from the shared HAL layout.
 
 - `usbinterfaceEvtDeviceReleaseHardware` (`FUN_180023c40`) calls
   `device_disable` (`FUN_18000e8cc`).
+- `deviceInit` (`FUN_180020970`) also calls `device_disable` at
+  `0x180020b8a` after `device_enable` failure or a nonzero action-9 sensor-check
+  result. When profile 9 was enabled, this reaches the same close callback
+  before publishing device-context initialized byte `+0x110`.
 - `device_disable` invokes the HAL close callback at its context `+0x1c8`;
   profile-9 initialization installs this function there.
+- D0 exit/entry, request cancellation/reset, queue stop, operation
+  deactivation, and display-power notification do not call `device_disable`.
 
 ## Findings
 

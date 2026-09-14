@@ -15,6 +15,9 @@
   `-1`.
 - It neither clears HAL image-base validity bytes `+0x232/+0x237` nor directly
   invokes `MilanHV_update_allbase`.
+- It does not call `EcControl`, request a sensor mode, or insert a sleep before
+  launching the initialization worker. Its hardware-side preparation is the
+  continuous-read-target start.
 - A first D0 entry reaches full initialization and action `0x0c`; an ordinary
   resume reaches `deviceInit`'s resume branch and preserves the base.
 

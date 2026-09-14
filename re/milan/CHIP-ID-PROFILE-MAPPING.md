@@ -15,6 +15,13 @@ USB product IDs do not select profiles. The USB layer calls its profile field
 (`FUN_18000e9b0`). It takes a context pointer, reads four bytes from register
 zero through `FUN_18001a604(0, buffer, 4, 200)`, and decodes:
 
+Before this call, `device_enable` resets the sensor through
+`FUN_18001b6c8(0, NULL)` and unconditionally sleeps 10 ms. `FUN_18001a604`
+sends category 8, command 1 with payload `00 00 00 04 00`, an ACK budget of
+500 ms, and the supplied 200-ms response budget. A successful first attempt
+returns immediately after copying four response bytes; there is no post-read
+sleep.
+
 ```text
 chip_id = (b2 << 24) | (b3 << 16) | (b0 << 8) | b1
 family = chip_id >> 8
@@ -39,6 +46,9 @@ call `FUN_18001b6c8(0, status)` and sleep 100 ms before the next attempt. There
 are at most six read attempts; exhaustion returns -1. A successful register read
 stores the chip ID even when its family is unknown. The identification function
 does not clear or assign the profile on failure; successful selection returns 0.
+Each `FUN_18001a604` call itself repeats the same command once only when the
+first generic sender result is zero; two zero results become that outer failed
+read. The retry budgets are restarted by the second sender invocation.
 
 `device_enable` supplies context `0x18005e790`, dispatches profiles 0, 1, and 2
 to `FUN_1800112ac`, and profile 9 to `FUN_1800162ac`. After successful profile

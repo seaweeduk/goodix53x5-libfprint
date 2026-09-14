@@ -21,6 +21,9 @@
   itself is owned separately by the post-call `+0x232 == 1` test; an image-pair
   or final TX-on FDT rejection can therefore return zero while leaving `+0x232`
   clear and without writing `+0x236`.
+- It issues no mode-2, sleep, or EC-control operation before or after the
+  acquisition. Its down, up, and reverse callers retain rearm ownership after
+  both admitted and failed attempts.
 
 ## Handoff
 

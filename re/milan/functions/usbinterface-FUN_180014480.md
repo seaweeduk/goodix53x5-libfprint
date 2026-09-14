@@ -64,7 +64,16 @@ through the refresh owner. Failed refresh leaves the anchor and `+0x338`
 unchanged. See `usbinterface-FUN_180013da4.md` and
 `usbinterface-FUN_180015c60.md` for refresh ownership and failure effects.
 
+After either drift refresh, a still-clear `+0x232` causes the handler to call
+slot `+0x178`, when non-null, with the transformed current event vector.
+Profile 9 installs `FUN_180005b50`, which copies those 24 bytes into the retained
+down-arm base at `0x180060730`; it performs no transport or power operation.
+The direct invalid-base acquisition branch does not make this copy when
+acquisition leaves `+0x232` clear.
+
 On a no-refresh path this function calls callback `+0x110` with zero before
 returning to `FUN_180015a60`; the wrapper then rearms FDT-down through `+0xb0`.
 The wrapper supplies a byte argument (`CL = 1` at `0x180015a83`) and tail-calls
-the arm callback, returning its result rather than the handler's result.
+the arm callback, returning its result rather than the handler's result. This
+rearm follows direct invalid-base and drift-refresh admission, rejection, and
+hard failure alike. Neither handler nor wrapper requests mode 2 or EC control.

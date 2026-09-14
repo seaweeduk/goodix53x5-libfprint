@@ -68,6 +68,40 @@ not a USB bus-reset command or an early thread return. The optional firmware
 update check is entered only after a non-`-1` getter result when device-context
 byte `+0x153 == 1`.
 
+## Cold GTLS PSK Acquisition
+
+After action 9 completes sensor checking, the full-initialization route calls
+`FUN_180007ee0`. Its `FUN_180008398` initialization calls
+`FUN_18000979c` (`production_get_psk`). When process-global PSK-valid byte
+`0x1800607bc` is zero, that owner calls `FUN_180008560`, which first tries
+`FUN_180008b54` (`production_psk_check`) up to three times.
+
+A successful first check reads production item `0xb001` through
+`FUN_180008774`, then item `0xb003` through `FUN_180008870`. Both reach
+`FUN_18001b9c4` (`production_read`). An empty process-global item cache causes
+a category-`0x0e`, command-2 transaction carrying the little-endian item type,
+with ACK budget 500, response budget 1000 and response selector 6. A zero sender
+result causes one identical retry. The check requires a type-`0xb001` sealed-PSK
+record and a type-`0xb003`, 32-byte hash record, unseals the 32-byte PSK, hashes
+it and compares all 32 hash bytes. Success stores the PSK in process-global
+storage and sets `0x1800607bc` to one.
+
+When `0x1800607bc` is already one, `production_get_psk` copies the retained
+32-byte process-global PSK without calling `production_initialize_PSK` or
+issuing either production read. `FUN_18001b94c` clears the separate `0xb001`
+and `0xb003` item caches after the selected handshake error, but does not clear
+the PSK-valid byte. Thus the production reads belong to cold PSK initialization,
+not every later handshake in the same DLL lifetime.
+
+The successful client handshake sends type `0xff01`, receives type `0xff02`,
+sends type `0xff03`, and receives type `0xff04`. Both sends use
+`FUN_18001c5a0`, which issues category `0x0d`, command 1 with ACK budget 500,
+no response wait, then unconditionally calls `Sleep(2)`. The nominal two-send
+client sequence therefore contains two fixed 2-ms post-send sleeps. The
+`Sleep(5)` in `FUN_180007ee0` is conditional on its handshake wrapper returning
+the in-progress error, and its `Sleep(10)` occurs only before retrying a failed
+initialization or handshake attempt.
+
 ## Initial Image-Base Path
 
 - On the first/full initialization branch (`device_context +0x110 != 1`), it
@@ -94,10 +128,16 @@ byte `+0x153 == 1`.
   byte `+0x231`, and install FDT stores through slot `+0x68`. The worker still
   proceeds to action `0x0c` whenever the device remains active and is not
   stopping; it does not branch on the loader's return or `+0x231`.
-- The worker does not inspect the action-`0x0c` return before continuing.
-  An image-pair or final TX-on FDT rejection whose common postlude succeeds
-  returns zero in any case, so initialization continues without a valid image
-  reference or an externally reported initialization error.
+- A valid persisted load copies file image bytes into the allocation referenced
+  by `+0x248`, but sets only persisted-base byte `+0x231`. It does not set
+  base-valid `+0x232` or image-valid `+0x237`; those remain clear from
+  `FUN_1800162ac` until action `0x0c` admits a fresh hardware acquisition.
+- The worker does not inspect the action-`0x0c` return before continuing. This
+  applies both to a zero-status validation rejection and to `-1` from the
+  profile callback after a configuration or acquisition failure. Provided the
+  active and power-stop gates still pass, initialization continues without an
+  externally reported action-`0x0c` error and may continue without a valid image
+  reference.
 - After action `0x0c`, the active, non-stopping route calls
   `thunk_FUN_18001b15c` at `0x180020d32` with the 64-byte version destination
   at device context `+0x111` and timeout 2000. This is a category-`0x0a`,
@@ -105,6 +145,18 @@ byte `+0x153 == 1`.
   action `0x0e` at `0x180020dad` with mode 2 and timeout 200. That dispatch
   invokes profile callback `+0x40`; profile 9 sends category-6 sleep mode.
   Neither continuation reacquires an FDT sample or checks image-valid state.
+- The mode-2 action is the last device command on the successful full-init
+  path. After it returns, the worker logs, writes initialized byte `+0x110 = 1`,
+  and signals context event `+0x108` and global event `0x180084860`. It does not
+  invoke `thunk_FUN_18001afec` (`EcControl`) or send category `0x0a`, command 7.
+  The profile-9 action-`0x0c` owner and its configuration, manual-FDT and image
+  callbacks likewise contain no EC-control call. EC control is reached from
+  later power-policy and capture-request owners, not from this initialization
+  sequence.
+- The same final firmware-query and mode-2 sequence follows an action-`0x0c`
+  configuration or acquisition failure when the inter-operation gates remain
+  open. There is no failure-specific sleep or EC-control postlude around the
+  action: the common mode-2 command is the only power-mode transition.
 
 ## Resume Branch
 
@@ -166,6 +218,19 @@ This function consumes device-context byte `+0x110` as the full-initialization
 versus resume predicate. The full-initialization tail sets that byte to one at
 `0x180020ded`, after the mode-2 action and before signalling completion events.
 Image-base validation rejection does not bypass that publication.
+
+The same final sleep/publication block is also reached from
+`0x180020cae` when both initial GTLS handshake attempts fail after
+`device_enable` has created the HAL. This edge precedes actions `0x0a` and
+`0x0c`: it requests mode 2 and writes `+0x110 = 1` at `0x180020ded` while the
+fresh HAL image-valid and base-valid bytes are still clear and no hardware base
+has been acquired. A later D0 entry consequently takes the resume branch and
+does not repair that missing base during initialization.
+
+By contrast, `device_enable` failure or a nonzero action-9 sensor-check result
+reaches `device_disable` at `0x180020b8a` after requesting mode 2. If profile 9
+had been enabled, its close callback frees and nulls `+0x248`; these failure
+paths do not publish `+0x110 = 1`.
 
 ## Initialized-Byte Lifetime
 

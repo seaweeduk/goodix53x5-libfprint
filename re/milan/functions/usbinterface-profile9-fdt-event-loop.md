@@ -479,6 +479,15 @@ continuous reader, clear the FDT worker event or reset the sensor. Its
 construction/request critical sections are device-context `+0xc8/+0x98`,
 distinct from the HAL action lock. See `usbinterface-FUN_18001fb40.md`.
 
+`OnActivate` (`0x1800214d0`) treats input byte one as activation. It writes
+timeout 200 at device context `+0x15c`, derives the two power-control bytes at
+`+0x158/+0x159` from global screen byte `0x18005f398`, dispatches action
+`0x11`, and then writes request-state byte `+0x154 = 1`. This branch does not
+request mode 4, arm FDT, validate or reacquire the retained base, start the
+continuous reader, or change initialized byte `+0x110`. Capture operation
+startup is the separate action-3 owner that requests mode 4 and then arms
+FDT-down; see `usbinterface-FUN_18000e1f0.md`.
+
 `OnActivate` (`0x1800214d0`) owns a separate activation request. On input
 byte 0 other than one, its deactivation branch performs this order:
 

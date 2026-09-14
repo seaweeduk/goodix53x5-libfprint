@@ -18,6 +18,9 @@
 - Calls `device_disable` (`FUN_18000e8cc`) at `0x180023e27`.
 - `device_disable` stops the HAL event thread and invokes the profile close
   callback; profile 9 reaches `FUN_1800160a0` (`milan_HVseries_disable`).
+- Neither `device_disable` nor the profile-9 close callback requests a sensor
+  mode or calls `EcControl`; hardware release adds no power command after HAL
+  teardown.
 - Destroys driver synchronization state, GTLS state, notification registration,
   and device initialization handles after HAL teardown.
 
@@ -38,3 +41,18 @@ callers here and in `deviceInit` initialization-failure handling. D0 exit and
 queue `usbinterfaceEvtIoStop` (`FUN_1800243c0`) do not call it. The latter
 cancels or acknowledges a stopped request and clears pending request `+0xf8`,
 without freeing the HAL image base or clearing `+0x110`.
+
+`usbinterfaceEvtDeviceQueryRemove` (`FUN_180023b50`) and
+`usbinterfaceEvtDeviceSurpriseRemoval` (`FUN_180023f00`) set the nested stop
+byte and unregister the display-power notification through `FUN_18001782c`.
+They do not disable the HAL, free `+0x248`, clear either validity byte, or clear
+`+0x110`; actual destruction remains owned by a subsequent `ReleaseHardware`
+callback. `usbinterfaceEvtQueryStop` (`FUN_180023ff0`) returns zero without any
+of those mutations.
+
+Device creation `FUN_1800232a8` registers PnP/power callbacks and the I/O queue,
+but no file-object cleanup or close callback. The driver-context cleanup callback
+`FUN_1800241d0` releases its separate global container through `FUN_18002d0a0`
+and does not call `device_disable`. Client-file closure therefore has no direct
+image-base mutation in this DLL; framework scheduling of request stop,
+deactivation, device release, and driver cleanup is a separate boundary.
