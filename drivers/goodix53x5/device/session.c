@@ -647,19 +647,15 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
               return;
             }
 
-          if (mcu_len >= 4)
+          /* The native completion is exactly twelve bytes including the MCU
+           * header. Its four trailing bytes are not a result code. */
+          if (mcu_len != 4)
             {
-              guint32 result = mcu_data[0] | ((guint32) mcu_data[1] << 8) |
-                               ((guint32) mcu_data[2] << 16) |
-                               ((guint32) mcu_data[3] << 24);
-              if (result != 0)
-                {
-                  fpi_ssm_mark_failed (ssm,
-                                       fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                                 "GTLS handshake failed: %u",
-                                                                 result));
-                  return;
-                }
+              fpi_ssm_mark_failed (ssm,
+                                   fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                             "Wrong GTLS done payload size: %zu",
+                                                             mcu_len));
+              return;
             }
         }
 
