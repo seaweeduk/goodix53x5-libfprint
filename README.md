@@ -31,8 +31,13 @@ If it reports `COMPATIBLE CANDIDATE`, either:
 
 - [Open a compatibility issue](https://github.com/seaweeduk/goodix53x5-libfprint/issues/new)
   with its output, your laptop model, and Linux distribution; or
-- Submit a PR adding the ID to `drivers/goodix53x5/goodix53x5.c` and the Goodix
-  entries in `meson-integration.patch`, with probe and hardware-test results.
+- Submit a PR adding the ID, with probe and hardware-test results, to:
+  - `drivers/goodix53x5/goodix53x5.c` (driver ID table)
+  - `meson-integration.patch` (hwdb supported/unsupported blocks and the
+    `fprint-list-udev-hwdb.c` allowlist)
+  - `udev/99-goodix53x5-milan-persist.rules` (USB persistence across
+    hibernation)
+  - `scripts/goodix53x5-detect.c` (detector's supported-ID check)
 
 ## How Milan Works
 
@@ -81,30 +86,34 @@ included in, discovered by, or required to run this repository.
 
 ## Install
 
-The supported installation builds pinned libfprint `v1.94.10` and fprintd
-`v1.94.5` sources, then installs them as an isolated paired stack under
-`/opt/goodix53x5-milan`:
+The source installation builds pinned, patched libfprint `v1.94.10` and fprintd
+`v1.94.5` and installs them into your distribution's normal paths under `/usr`,
+including the fprintd commands, PAM module, and systemd/D-Bus integration.
 
-If upgrading from the retired sigfm matcher, delete existing prints before
-switching implementations, then re-enroll after installation:
+If upgrading from the retired sigfm matcher, delete existing prints while the
+old stack is still installed, then re-enroll after installation:
 
 ```sh
-fprintd-delete "$USER"
+sudo fprintd-delete "$USER"
 ```
+
+Remove your distribution's libfprint and fprintd packages first. The installer
+refuses to overwrite package-owned or otherwise unrecorded files.
 
 ```sh
 ./install.sh
 ```
 
-The installer does not overwrite distribution files under `/usr`. It adds a
-managed systemd drop-in so fprintd uses the paired stack while keeping print
-state in `/var/lib/fprint`.
+Print state stays in `/var/lib/fprint`. The installer does not enable
+fingerprint authentication in PAM; configure that through your distribution.
 
 Build dependencies include a C toolchain, Git, Meson, Ninja, pkg-config,
-GLib/GIO, GUsb, OpenSSL 3, and the development dependencies required by
-libfprint and fprintd, including Polkit's GObject library.
+GLib/GIO, GUsb, OpenSSL 3, Python 3, gettext, Perl's `pod2man`, and the
+development dependencies of libfprint and fprintd, including Polkit's GObject
+library, PAM, and libsystemd.
 
-For stack layout, build controls, status checks, and rollback behavior, see the
+To update, check out the desired revision and run `./install.sh` again. For
+layout, build controls, status checks, and removal behaviour, see the
 [Milan stack guide](scripts/MILAN-STACK.md).
 
 ## Enroll And Verify
@@ -153,13 +162,13 @@ byte-parity contracts and replay tooling.
 
 ## Uninstall
 
-Remove only the managed shadow stack and systemd drop-in:
-
 ```sh
 ./uninstall.sh
 ```
 
-Saved fingerprints under `/var/lib/fprint` are left in place.
+This removes the files recorded by the installer and leaves saved fingerprints
+and the imported Windows PSK under `/var/lib/fprint` in place. Reinstall your
+distribution's packages afterwards if you want them.
 
 ## Credits
 

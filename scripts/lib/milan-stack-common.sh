@@ -2,19 +2,15 @@
 
 MILAN_LIBFPRINT_REVISION="0c97a47d8ef405cd577b87058c1e89cae9d242e7"
 MILAN_FPRINTD_REVISION="b54a007ccf58ac0ae074c7151b223f35cbd17306"
-MILAN_LIBFPRINT_SOURCE_TREE="2d08bc33d953cd17b315c5f5199aa7a0d0504506"
-MILAN_FPRINTD_SOURCE_TREE="ff82f8c3c2ab936ddafec9e88e650c04cd6f4f1d"
 MILAN_LIBFPRINT_PATCH_SHA256="fa9a4a89df02894a01013dc787d06cdbb74a4908b8e3cdc5da745e0265fb2f72"
 MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256="743c13782228869b8b5ea834caa096abadd38e5542303d7af8bc7acb4c925ae0"
 MILAN_LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256="ec357fef155b2b6a0be6d91e697e4c4cbd3f5f4cec5218cd95b94008d7e7e548"
 MILAN_FPRINTD_PATCH_SHA256="5d87cd806587fa5f035847a38ba3155b38f9a612a3070d9abfa6f83114e58db8"
-MILAN_PREFIX="/opt/goodix53x5-milan"
-MILAN_SYSTEMD_DIR="/etc/systemd/system/fprintd.service.d"
-MILAN_DROPIN_NAME="98-goodix53x5-milan-stack.conf"
-MILAN_UDEV_DIR="/etc/udev/rules.d"
-MILAN_UDEV_RULE_NAME="99-goodix53x5-milan-persist.rules"
-MILAN_PAYLOAD_MARKER=".goodix53x5-milan-payload"
-MILAN_OWNED_MARKER=".goodix53x5-milan-owned"
+MILAN_METADATA_DIR="/usr/share/goodix53x5-milan"
+MILAN_BUILD_ENV="$MILAN_METADATA_DIR/build.env"
+MILAN_INVENTORY="$MILAN_METADATA_DIR/inventory.json"
+MILAN_UDEV_RULE="/usr/lib/udev/rules.d/99-goodix53x5-milan-persist.rules"
+MILAN_FILES_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/milan-stack-files.py"
 
 milan_die() {
   printf 'error: %s\n' "$*" >&2
@@ -72,62 +68,34 @@ milan_default_stack_root() {
 }
 
 MILAN_STACK_ROOT="${GOODIX_MILAN_STACK_ROOT:-$(milan_default_stack_root)}"
-MILAN_INSTALL_ROOT="${GOODIX_MILAN_INSTALL_ROOT:-/}"
-MILAN_SYSTEMCTL="${GOODIX_MILAN_SYSTEMCTL:-systemctl}"
-MILAN_LDD="${GOODIX_MILAN_LDD:-ldd}"
 
-milan_validate_test_overrides() {
-  local name
-
-  for name in GOODIX_MILAN_INSTALL_ROOT GOODIX_MILAN_SYSTEMD_DIR \
-              GOODIX_MILAN_UDEV_DIR GOODIX_MILAN_SYSFS_USB_DEVICES \
-              GOODIX_MILAN_SYSTEMCTL GOODIX_MILAN_LDD GOODIX_MILAN_TEST_EUID \
-              GOODIX_MILAN_TEST_FPRINTD_REVISION; do
-    if [[ -n "${!name:-}" && "${GOODIX_MILAN_SELF_TEST:-0}" != 1 ]]; then
-      milan_die "$name is accepted only by the repository self-test"
-    fi
-  done
-  if [[ "${GOODIX_MILAN_SELF_TEST:-0}" == 1 ]]; then
-    MILAN_PREFIX="${GOODIX_MILAN_TEST_PREFIX:-$MILAN_PREFIX}"
-    MILAN_SYSTEMD_DIR="${GOODIX_MILAN_SYSTEMD_DIR:-$MILAN_SYSTEMD_DIR}"
-    MILAN_UDEV_DIR="${GOODIX_MILAN_UDEV_DIR:-$MILAN_UDEV_DIR}"
-  fi
-}
-milan_validate_test_overrides
-
-milan_validate_prefix() {
-  milan_require_absolute "Milan prefix" "$MILAN_PREFIX"
-  if [[ "${GOODIX_MILAN_SELF_TEST:-0}" != 1 && "$MILAN_PREFIX" != /opt/goodix53x5-milan ]]; then
-    milan_die "production shadow prefix must be /opt/goodix53x5-milan"
-  fi
-  case "$MILAN_PREFIX/" in
-    /usr/*|/bin/*|/sbin/*|/lib/*|/lib64/*|/etc/*|/var/*)
-      milan_die "refusing package/state path as shadow prefix: $MILAN_PREFIX"
-      ;;
+# Select the distribution's library directory and fprintd executable path.
+milan_detect_layout() {
+  local ID= ID_LIKE= multiarch
+  [[ ! -r /etc/os-release ]] || source /etc/os-release
+  MILAN_LIBDIR=/usr/lib
+  MILAN_DAEMON_PATH=/usr/libexec/fprintd
+  case " $ID $ID_LIKE " in
+    *" arch "*) MILAN_DAEMON_PATH=/usr/lib/fprintd ;;
+    *" debian "*|*" ubuntu "*)
+      multiarch="$("${CC:-cc}" -print-multiarch 2>/dev/null || true)"
+      [[ -n "$multiarch" ]] || multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+      [[ "$multiarch" =~ ^[a-zA-Z0-9_-]+$ ]] || milan_die "cannot determine Debian multiarch tuple"
+      MILAN_LIBDIR="/usr/lib/$multiarch" ;;
+    *" fedora "*|*" rhel "*|*" centos "*|*" suse "*)
+      milan_require_command rpm
+      MILAN_LIBDIR="$(rpm --eval '%{_libdir}')" ;;
   esac
+  MILAN_LIBRARY_PATH="$MILAN_LIBDIR/libfprint-2.so.2.0.0"
 }
 
-milan_root_path() {
-  local root="$1" absolute="$2"
-
-  milan_require_absolute "mapped path" "$absolute"
-  if [[ "$root" == / ]]; then
-    printf '%s\n' "$absolute"
-  else
-    printf '%s%s\n' "${root%/}" "$absolute"
-  fi
-}
-
-milan_actual_prefix() {
-  milan_root_path "$MILAN_INSTALL_ROOT" "$MILAN_PREFIX"
-}
-
-milan_actual_systemd_dir() {
-  milan_root_path "$MILAN_INSTALL_ROOT" "$MILAN_SYSTEMD_DIR"
-}
-
-milan_actual_udev_dir() {
-  milan_root_path "$MILAN_INSTALL_ROOT" "$MILAN_UDEV_DIR"
+# Read the layout recorded by the build that produced $1 (payload dir or /).
+milan_load_layout() {
+  local manifest="${1%/}$MILAN_BUILD_ENV"
+  [[ "$(milan_manifest_value "$manifest" FORMAT)" == 3 ]] || milan_die "unsupported build manifest: $manifest"
+  MILAN_LIBDIR="$(milan_manifest_value "$manifest" LIBDIR)"
+  MILAN_LIBRARY_PATH="$(milan_manifest_value "$manifest" LIBRARY_PATH)"
+  MILAN_DAEMON_PATH="$(milan_manifest_value "$manifest" DAEMON_PATH)"
 }
 
 milan_sha256() {
@@ -135,10 +103,8 @@ milan_sha256() {
 }
 
 milan_overlay_input_sha256() {
-  local repo_dir="$1"
-
   (
-    cd "$repo_dir"
+    cd "$1"
     find drivers/goodix53x5 tests udev -type f -print0 |
       LC_ALL=C sort -z |
       xargs -0 sha256sum
@@ -160,21 +126,15 @@ milan_manifest_value() {
 
 milan_verify_repo_inputs() {
   local repo_dir="$1"
-  local lib_patch="$repo_dir/patches/libfprint/libfprint-update-result.patch"
-  local persist_patch="$repo_dir/patches/libfprint/libfprint-goodix53x5-usb-persist.patch"
-  local idle_suspend_patch="$repo_dir/patches/libfprint/libfprint-idle-suspend-notify.patch"
-  local daemon_patch="$repo_dir/patches/fprintd/1.94.5-milan-update-save.patch"
 
-  [[ "$(milan_sha256 "$lib_patch")" == "$MILAN_LIBFPRINT_PATCH_SHA256" ]] ||
+  [[ "$(milan_sha256 "$repo_dir/patches/libfprint/libfprint-update-result.patch")" == "$MILAN_LIBFPRINT_PATCH_SHA256" ]] ||
     milan_die "libfprint patch digest mismatch"
-  [[ "$(milan_sha256 "$persist_patch")" == "$MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256" ]] ||
+  [[ "$(milan_sha256 "$repo_dir/patches/libfprint/libfprint-goodix53x5-usb-persist.patch")" == "$MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256" ]] ||
     milan_die "libfprint USB persist patch digest mismatch"
-  [[ "$(milan_sha256 "$idle_suspend_patch")" == "$MILAN_LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256" ]] ||
+  [[ "$(milan_sha256 "$repo_dir/patches/libfprint/libfprint-idle-suspend-notify.patch")" == "$MILAN_LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256" ]] ||
     milan_die "libfprint idle suspend notification patch digest mismatch"
-  [[ "$(milan_sha256 "$daemon_patch")" == "$MILAN_FPRINTD_PATCH_SHA256" ]] ||
+  [[ "$(milan_sha256 "$repo_dir/patches/fprintd/1.94.5-milan-update-save.patch")" == "$MILAN_FPRINTD_PATCH_SHA256" ]] ||
     milan_die "fprintd patch digest mismatch"
-  (cd "$(dirname "$daemon_patch")" && sha256sum --check "$(basename "$daemon_patch").sha256" >/dev/null) ||
-    milan_die "fprintd patch sidecar verification failed"
 }
 
 milan_verify_git_pristine() {
@@ -188,178 +148,107 @@ milan_verify_git_pristine() {
 }
 
 milan_run_stage() {
-  local label="$1"
+  milan_note "==> $1"
   shift
-  milan_note "==> $label"
-  timeout --foreground 300 "$@"
+  "$@"
 }
 
-milan_render_dropin() {
-  local repo_dir="$1" line
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line//@GOODIX_MILAN_PREFIX@/$MILAN_PREFIX}"
-    printf '%s\n' "$line"
-  done < "$repo_dir/scripts/98-goodix53x5-milan-stack.conf.in"
+milan_files() {
+  python3 "$MILAN_FILES_HELPER" "$@"
 }
 
-milan_assert_safe_symlinks() {
-  local prefix="$1" link target
+# Locate builds/current and hold it shared so the builder cannot prune it.
+milan_open_publication() {
+  local current="$MILAN_STACK_ROOT/builds/current"
+  [[ -L "$current" && -f "$MILAN_STACK_ROOT/.build.lock" ]] ||
+    milan_die "no published stack; run build-milan-stack-local.sh"
+  exec 8<"$MILAN_STACK_ROOT/.build.lock"
+  flock -sn 8 || milan_die "a Milan build is publishing; retry when it finishes"
+  MILAN_PAYLOAD="$(readlink -f "$current")/payload"
+}
 
-  while IFS= read -r -d '' link; do
-    target="$(readlink "$link")"
-    case "$target" in
-      /*|../*|*/../*|*/..) milan_die "payload symlink escapes prefix: $link -> $target" ;;
-    esac
-    case "$link" in
-      "$prefix/lib/libfprint-2.so.2"|"$prefix/lib/libfprint-2.so") ;;
-      *) milan_die "unexpected payload symlink: $link" ;;
-    esac
-  done < <(find "$prefix" -type l -print0)
+# Check a staged payload against this checkout and its own inventory.
+milan_verify_payload() {
+  local payload="$1" repo_dir="$2" manifest="$1$MILAN_BUILD_ENV" debug path
+
+  milan_files verify-build "$payload"
+  milan_load_layout "$payload"
+  [[ "$(milan_manifest_value "$manifest" LIBFPRINT_REVISION)" == "$MILAN_LIBFPRINT_REVISION" ]] || milan_die "libfprint revision mismatch"
+  [[ "$(milan_manifest_value "$manifest" FPRINTD_REVISION)" == "$MILAN_FPRINTD_REVISION" ]] || milan_die "fprintd revision mismatch"
+  [[ "$(milan_manifest_value "$manifest" OVERLAY_INPUT_SHA256)" == "$(milan_overlay_input_sha256 "$repo_dir")" ]] ||
+    milan_die "published build does not match this checkout; rebuild"
+  debug="$(milan_manifest_value "$manifest" GOODIX53X5_DEBUG)"
+  [[ "$debug" == 0 || "$debug" == 1 ]] || milan_die "invalid debug manifest value"
+  milan_verify_debug_census "$payload" "$debug"
+  for path in "$MILAN_DAEMON_PATH" "$MILAN_LIBRARY_PATH" "$MILAN_LIBDIR/security/pam_fprintd.so" \
+      /usr/bin/fprintd-enroll /usr/bin/fprintd-verify /usr/bin/fprintd-list /usr/bin/fprintd-delete \
+      /usr/share/dbus-1/system-services/net.reactivated.Fprint.service "$MILAN_UDEV_RULE"; do
+    [[ -f "$payload$path" ]] || milan_die "incomplete runtime payload: $path"
+  done
+  [[ "$(readlink "$payload$MILAN_LIBDIR/libfprint-2.so.2")" == libfprint-2.so.2.0.0 ]] || milan_die "invalid soname symlink"
+  grep -Fxq "ExecStart=$MILAN_DAEMON_PATH" "$payload/usr/lib/systemd/system/fprintd.service" ||
+    milan_die "staged service selects wrong daemon"
+}
+
+# $1 is the root holding the library (payload dir or /); $2 is the expected debug flag.
+milan_verify_debug_census() {
+  if grep -Fq GOODIX53X5_DUMP_DIR < <(strings "${1%/}$MILAN_LIBRARY_PATH"); then
+    [[ "$2" == 1 ]] || milan_die "release payload contains debug diagnostics"
+  else
+    [[ "$2" == 0 ]] || milan_die "debug payload lacks debug diagnostics"
+  fi
 }
 
 milan_verify_ldd() {
-  local prefix="$1" daemon="$1/fprintd/fprintd" library_dir="$1/lib" output resolved
+  local output resolved
 
-  [[ -x "$daemon" ]] || milan_die "missing shadow daemon: $daemon"
-  [[ -e "$library_dir/libfprint-2.so.2" ]] || milan_die "missing shadow libfprint soname"
-  output="$(timeout --foreground 300 env LD_LIBRARY_PATH="$library_dir" "$MILAN_LDD" "$daemon")" ||
-    milan_die "ldd failed for shadow daemon"
-  resolved="$(grep -E '^[[:space:]]*libfprint-2\.so\.2[[:space:]]+=>' <<<"$output" | head -n 1 || true)"
-  [[ "$resolved" == *"$library_dir/"* ]] || milan_die "shadow daemon resolves wrong libfprint: $resolved"
+  output="$(env -u LD_LIBRARY_PATH -u LD_PRELOAD ldd "$MILAN_DAEMON_PATH")" ||
+    milan_die "ldd failed for installed daemon"
+  resolved="$(awk '$1 == "libfprint-2.so.2" && $2 == "=>" {print $3}' <<<"$output")"
+  [[ -n "$resolved" && "$(readlink -f "$resolved")" == "$(readlink -f "$MILAN_LIBRARY_PATH")" ]] ||
+    milan_die "daemon resolves wrong libfprint: ${resolved:-none}"
+  [[ "$output" != *"not found"* ]] || milan_die "daemon has unresolved dependencies"
 }
 
-milan_verify_debug_census() {
-  local prefix="$1" expected="$2" library="$1/lib/libfprint-2.so.2.0.0"
+milan_verify_active_system() {
+  local shown
 
-  if grep -Fq GOODIX53X5_DUMP_DIR < <(strings "$library"); then
-    [[ "$expected" == 1 ]] || milan_die "release payload contains debug diagnostics"
-  else
-    [[ "$expected" == 0 ]] || milan_die "debug payload lacks debug diagnostics"
-  fi
-}
-
-milan_verify_manifest() {
-  local prefix="$1" repo_dir="$2" manifest="$1/manifest/build.env" sums="$1/manifest/SHA256SUMS" debug file
-
-  [[ -f "$prefix/$MILAN_PAYLOAD_MARKER" && -f "$manifest" && -f "$sums" ]] ||
-    milan_die "payload markers or manifests are missing"
-  [[ "$(milan_manifest_value "$manifest" FORMAT)" == 1 ]] || milan_die "unsupported manifest format"
-  [[ "$(milan_manifest_value "$manifest" PREFIX)" == "$MILAN_PREFIX" ]] || milan_die "payload prefix mismatch"
-  [[ "$(milan_manifest_value "$manifest" LIBFPRINT_REVISION)" == "$MILAN_LIBFPRINT_REVISION" ]] || milan_die "libfprint revision mismatch"
-  [[ "$(milan_manifest_value "$manifest" LIBFPRINT_SOURCE_TREE)" == "$MILAN_LIBFPRINT_SOURCE_TREE" ]] || milan_die "libfprint source tree mismatch"
-  [[ "$(milan_manifest_value "$manifest" FPRINTD_REVISION)" == "$MILAN_FPRINTD_REVISION" ]] || milan_die "fprintd revision mismatch"
-  [[ "$(milan_manifest_value "$manifest" FPRINTD_SOURCE_TREE)" == "$MILAN_FPRINTD_SOURCE_TREE" ]] || milan_die "fprintd source tree mismatch"
-  [[ "$(milan_manifest_value "$manifest" LIBFPRINT_PATCH_SHA256)" == "$MILAN_LIBFPRINT_PATCH_SHA256" ]] || milan_die "libfprint patch manifest mismatch"
-  [[ "$(milan_manifest_value "$manifest" LIBFPRINT_USB_PERSIST_PATCH_SHA256)" == "$MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256" ]] || milan_die "libfprint USB persist patch manifest mismatch"
-  [[ "$(milan_manifest_value "$manifest" LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256)" == "$MILAN_LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256" ]] || milan_die "libfprint idle suspend notification patch manifest mismatch"
-  [[ "$(milan_manifest_value "$manifest" FPRINTD_PATCH_SHA256)" == "$MILAN_FPRINTD_PATCH_SHA256" ]] || milan_die "fprintd patch manifest mismatch"
-  [[ "$(milan_manifest_value "$manifest" OVERLAY_INPUT_SHA256)" == "$(milan_overlay_input_sha256 "$repo_dir")" ]] || milan_die "overlay input mismatch"
-  debug="$(milan_manifest_value "$manifest" GOODIX53X5_DEBUG)"
-  [[ "$debug" == 0 || "$debug" == 1 ]] || milan_die "invalid debug manifest value"
-  milan_verify_repo_inputs "$repo_dir"
-  (cd "$prefix" && sha256sum --check manifest/SHA256SUMS >/dev/null) || milan_die "payload digest verification failed"
-  while IFS= read -r -d '' file; do
-    file="${file#"$prefix/"}"
-    grep -Fxq -- "./$file" < <(cut -c 67- "$sums") || milan_die "unmanifested payload file: $file"
-  done < <(find "$prefix" -type f ! -path "$sums" ! -name "$MILAN_OWNED_MARKER" -print0)
-  [[ "$(readlink "$prefix/lib/libfprint-2.so.2")" == libfprint-2.so.2.0.0 ]] || milan_die "invalid soname symlink"
-  [[ "$(readlink "$prefix/lib/libfprint-2.so")" == libfprint-2.so.2 ]] || milan_die "invalid linker symlink"
-  milan_assert_safe_symlinks "$prefix"
-  milan_verify_ldd "$prefix"
-  milan_verify_debug_census "$prefix" "$debug"
-}
-
-milan_verify_owned_marker() {
-  local prefix="$1" marker="$1/$MILAN_OWNED_MARKER"
-
-  [[ -f "$marker" ]] || milan_die "refusing unmanaged shadow prefix: $prefix"
-  [[ "$(milan_manifest_value "$marker" FORMAT)" == 1 ]] || milan_die "invalid ownership marker"
-  [[ "$(milan_manifest_value "$marker" PREFIX)" == "$MILAN_PREFIX" ]] || milan_die "ownership prefix mismatch"
-  [[ "$(milan_manifest_value "$marker" MANAGED_BY)" == goodix53x5-milan-stack ]] || milan_die "ownership marker mismatch"
-  [[ "$(milan_manifest_value "$marker" BUILD_MANIFEST_SHA256)" == "$(milan_sha256 "$prefix/manifest/build.env")" ]] || milan_die "ownership manifest mismatch"
+  shown="$(systemctl show fprintd.service --property=ExecStart --no-pager)" || milan_die "cannot query fprintd.service"
+  [[ "$shown" == *"path=$MILAN_DAEMON_PATH ;"* ]] || milan_die "installed daemon is not selected"
+  milan_verify_ldd
 }
 
 milan_require_root() {
-  local uid="${EUID:-$(id -u)}"
-
-  if [[ -n "${GOODIX_MILAN_TEST_EUID:-}" ]]; then
-    [[ "${GOODIX_MILAN_SELF_TEST:-0}" == 1 ]] || milan_die "test EUID override rejected"
-    uid="$GOODIX_MILAN_TEST_EUID"
-  fi
-  [[ "$uid" == 0 ]] || milan_die "run as root: sudo $0"
+  [[ "${EUID:-$(id -u)}" == 0 ]] || milan_die "run as root: sudo $0"
 }
 
-milan_systemctl() {
-  timeout --foreground 300 "$MILAN_SYSTEMCTL" "$@"
+milan_lock_install() {
+  exec 9>/run/goodix53x5-milan-install.lock
+  flock -n 9 || milan_die "another Milan install/remove is active"
 }
 
-milan_apply_usb_persist() {
-  local value="$1" root="${GOODIX_MILAN_SYSFS_USB_DEVICES:-/sys/bus/usb/devices}"
-  local device product vendor
-
-  [[ "$value" == 0 || "$value" == 1 ]] || milan_die "invalid USB persist value: $value"
-  [[ -d "$root" ]] || return 0
-  for device in "$root"/*; do
-    [[ -f "$device/idVendor" && -f "$device/idProduct" ]] || continue
-    read -r vendor < "$device/idVendor"
-    read -r product < "$device/idProduct"
-    [[ "${vendor,,}" == 27c6 ]] || continue
-    case "${product,,}" in
-      5335|5385|5395)
-        if [[ ! -e "$device/power/persist" ]]; then
-          milan_die "USB persistence is unavailable for $vendor:$product at $device"
-        fi
-        printf '%s\n' "$value" > "$device/power/persist"
-        ;;
-    esac
-  done
+milan_check_admin_mask() {
+  [[ "$(systemctl is-enabled fprintd.service 2>/dev/null || true)" != masked ]] ||
+    milan_die "fprintd is permanently masked; unmask it before installing"
 }
 
-milan_verify_usb_persist() {
-  local root="${GOODIX_MILAN_SYSFS_USB_DEVICES:-/sys/bus/usb/devices}"
-  local device product value vendor
-
-  [[ -d "$root" ]] || return 0
-  for device in "$root"/*; do
-    [[ -f "$device/idVendor" && -f "$device/idProduct" ]] || continue
-    read -r vendor < "$device/idVendor"
-    read -r product < "$device/idProduct"
-    [[ "${vendor,,}" == 27c6 ]] || continue
-    case "${product,,}" in
-      5335|5385|5395)
-        [[ -r "$device/power/persist" ]] ||
-          milan_die "USB persistence is unavailable for $vendor:$product at $device"
-        read -r value < "$device/power/persist"
-        [[ "$value" == 1 ]] || milan_die "USB persistence is disabled for $vendor:$product at $device"
-        ;;
-    esac
-  done
+# Block D-Bus activation while files change. Runtime masks never touch /etc.
+milan_mask_runtime() {
+  systemctl mask --runtime --now fprintd.service || return
+  [[ "$(systemctl show fprintd.service --property=LoadState --value)" == masked ]] || {
+    printf 'error: fprintd is still activatable; check for an overriding unit in /etc/systemd/system\n' >&2
+    return 1
+  }
 }
 
-milan_verify_state_directory() {
-  local merged shown
-
-  merged="$(milan_systemctl cat fprintd.service)" || milan_die "cannot read merged fprintd unit"
-  [[ "$merged" == *"StateDirectory=fprint"* ]] || milan_die "StateDirectory=fprint is not preserved"
-  shown="$(milan_systemctl show fprintd.service --property=StateDirectory --no-pager)" || milan_die "cannot query StateDirectory"
-  [[ "$shown" == *"StateDirectory=fprint"* ]] || milan_die "merged StateDirectory is not fprint"
+milan_unmask_runtime() {
+  systemctl unmask --runtime fprintd.service
 }
 
-milan_verify_active_shadow() {
-  local shown
-
-  milan_verify_state_directory
-  shown="$(milan_systemctl show fprintd.service --property=ExecStart --property=Environment --no-pager)" || milan_die "cannot query active service"
-  [[ "$shown" == *"$MILAN_PREFIX/fprintd/fprintd"* ]] || milan_die "shadow daemon is not selected"
-  [[ "$shown" == *"LD_LIBRARY_PATH=$MILAN_PREFIX/lib"* ]] || milan_die "shadow library path is not selected"
-}
-
-milan_verify_packaged_selected() {
-  local shown
-
-  shown="$(milan_systemctl show fprintd.service --property=ExecStart --no-pager)" || milan_die "cannot query packaged service"
-  [[ "$shown" != *"$MILAN_PREFIX/"* ]] || milan_die "shadow daemon remains selected"
+# Apply the persistence rule to Milan sensors that are already attached.
+milan_trigger_udev() {
+  udevadm control --reload-rules
+  udevadm trigger --subsystem-match=usb --attr-match=idVendor=27c6 --action=add
 }
 
 milan_safe_remove_tree() {

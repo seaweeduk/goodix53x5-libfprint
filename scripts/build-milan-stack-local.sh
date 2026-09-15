@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Build the paired libfprint/fprintd shadow stack around build-local.sh.
+# Build and stage paired libfprint and fprintd for the distribution's system paths.
 
 set -euo pipefail
+umask 022
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd "$script_dir/.." && pwd)"
 # shellcheck source=scripts/lib/milan-stack-common.sh
 source "$script_dir/lib/milan-stack-common.sh"
 
-milan_validate_prefix
+milan_detect_layout
 milan_reject_ephemeral_root "GOODIX_MILAN_STACK_ROOT" "$MILAN_STACK_ROOT"
-for command in git flock timeout meson ninja sha256sum ldd install strings od tr; do
+for command in git flock meson ninja sha256sum python3 install strings od tr; do
   milan_require_command "$command"
 done
 milan_verify_repo_inputs "$repo_dir"
@@ -24,42 +25,34 @@ debug_build_id=
 debug_source_id=
 if [[ "$debug_manifest" == 1 ]]; then
   debug_build_id="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')"
-  debug_source_id="$($repo_dir/tools/milan-parity/build-identity "$repo_dir")"
-  if [[ ! $debug_build_id =~ ^[0-9a-f]{64}$ ||
-        ! $debug_source_id =~ ^[0-9a-f]{64}$ ]]; then
+  debug_source_id="$("$repo_dir/tools/milan-parity/build-identity" "$repo_dir")"
+  [[ $debug_build_id =~ ^[0-9a-f]{64}$ && $debug_source_id =~ ^[0-9a-f]{64}$ ]] ||
     milan_die "failed to produce valid Goodix debug build provenance"
-  fi
 fi
+
+# Use an existing pinned checkout, or clone one below the stack root.
+ensure_source() {
+  local label="$1" dir="$2" url="$3" revision="$4" staging
+
+  if [[ ! -e "$dir" ]]; then
+    staging="$dir.fetch.$$"
+    milan_run_stage "clone pinned $label" git clone --no-checkout "$url" "$staging"
+    git -C "$staging" checkout --detach "$revision"
+    mv "$staging" "$dir"
+  fi
+  milan_verify_git_pristine "$dir" "$revision" "$label"
+}
 
 source_root="$MILAN_STACK_ROOT/sources"
 mkdir -p "$source_root"
-libfprint_sibling="$(cd "$repo_dir/.." && pwd)/goodix-fp-dump/derived/external-references/libfprint-v1.94.10"
-if [[ -n "${GOODIX_MILAN_LIBFPRINT_SOURCE:-}" ]]; then
-  libfprint_pristine="$GOODIX_MILAN_LIBFPRINT_SOURCE"
-elif [[ -d "$libfprint_sibling/.git" ]]; then
-  libfprint_pristine="$libfprint_sibling"
-else
-  libfprint_pristine="$source_root/libfprint-v1.94.10"
-fi
-if [[ ! -e "$libfprint_pristine" ]]; then
-  milan_run_stage "clone libfprint source" git clone --no-checkout \
-    "${GOODIX_MILAN_LIBFPRINT_URL:-https://gitlab.freedesktop.org/libfprint/libfprint.git}" \
-    "$libfprint_pristine"
-  milan_run_stage "checkout exact libfprint revision" git -C "$libfprint_pristine" \
-    checkout --detach "$MILAN_LIBFPRINT_REVISION"
-fi
-milan_verify_git_pristine "$libfprint_pristine" "$MILAN_LIBFPRINT_REVISION" "libfprint"
-
-"$script_dir/fetch-fprintd-local.sh"
-fprintd_sibling="$(cd "$repo_dir/.." && pwd)/goodix-fp-dump/derived/milan-stack/sources/fprintd-v1.94.5"
-if [[ -n "${GOODIX_MILAN_FPRINTD_SOURCE:-}" ]]; then
-  fprintd_pristine="$GOODIX_MILAN_FPRINTD_SOURCE"
-elif [[ -d "$fprintd_sibling/.git" ]]; then
-  fprintd_pristine="$fprintd_sibling"
-else
-  fprintd_pristine="$source_root/fprintd-v1.94.5"
-fi
-milan_verify_git_pristine "$fprintd_pristine" "$MILAN_FPRINTD_REVISION" "fprintd"
+libfprint_pristine="${GOODIX_MILAN_LIBFPRINT_SOURCE:-$source_root/libfprint-v1.94.10}"
+fprintd_pristine="${GOODIX_MILAN_FPRINTD_SOURCE:-$source_root/fprintd-v1.94.5}"
+ensure_source libfprint "$libfprint_pristine" \
+  "${GOODIX_MILAN_LIBFPRINT_URL:-https://gitlab.freedesktop.org/libfprint/libfprint.git}" \
+  "$MILAN_LIBFPRINT_REVISION"
+ensure_source fprintd "$fprintd_pristine" \
+  "${GOODIX_MILAN_FPRINTD_URL:-https://gitlab.freedesktop.org/libfprint/fprintd.git}" \
+  "$MILAN_FPRINTD_REVISION"
 "$repo_dir/patches/libfprint/verify-update-result-patch.sh" "$libfprint_pristine"
 "$repo_dir/patches/libfprint/verify-goodix53x5-usb-persist-patch.sh" "$libfprint_pristine"
 "$repo_dir/patches/libfprint/verify-idle-suspend-notify-patch.sh" "$libfprint_pristine"
@@ -67,7 +60,7 @@ milan_verify_git_pristine "$fprintd_pristine" "$MILAN_FPRINTD_REVISION" "fprintd
 
 mkdir -p "$MILAN_STACK_ROOT/builds"
 exec 9>"$MILAN_STACK_ROOT/.build.lock"
-flock -n 9 || milan_die "another Milan stack build is active"
+flock -n 9 || milan_die "another Milan stack build or install is active"
 staging="$MILAN_STACK_ROOT/builds/.staging.$$"
 mkdir "$staging"
 cleanup() {
@@ -90,95 +83,63 @@ milan_run_stage "apply repository libfprint and driver overlay" env \
 
 libfprint_source="$staging/libfprint-overlay/libfprint"
 libfprint_build="$libfprint_source/builddir"
-git -C "$libfprint_source" apply --reverse --check \
-  "$repo_dir/patches/libfprint/libfprint-update-result.patch"
-git -C "$libfprint_source" apply --reverse --check \
-  "$repo_dir/patches/libfprint/libfprint-goodix53x5-usb-persist.patch"
-git -C "$libfprint_source" apply --reverse --check \
-  "$repo_dir/patches/libfprint/libfprint-idle-suspend-notify.patch"
-milan_run_stage "configure paired shadow libfprint" meson setup "$libfprint_build" \
-  "$libfprint_source" --reconfigure --prefix="$MILAN_PREFIX" --libdir=lib \
+for patch in libfprint-update-result libfprint-goodix53x5-usb-persist libfprint-idle-suspend-notify; do
+  git -C "$libfprint_source" apply --reverse --check "$repo_dir/patches/libfprint/$patch.patch"
+done
+milan_run_stage "configure libfprint" meson setup "$libfprint_build" "$libfprint_source" \
+  --reconfigure --prefix=/usr --libdir="$MILAN_LIBDIR" --sysconfdir=/etc --localstatedir=/var \
   -Ddrivers=goodix53x5 -Dudev_hwdb=disabled -Dudev_rules=disabled \
   -Dintrospection=false -Dinstalled-tests=false -Ddoc=false \
   -Dgoodix53x5_debug="$debug_enabled" \
   -Dgoodix53x5_debug_build_id="$debug_build_id" \
   -Dgoodix53x5_debug_source_id="$debug_source_id"
-milan_run_stage "build paired shadow libfprint" ninja -C "$libfprint_build"
-milan_run_stage "test libfprint update result" meson test -C "$libfprint_build" \
-  --print-errorlogs fpi-device
-milan_run_stage "test Milan synthetic public contract" meson test -C "$libfprint_build" \
-  --print-errorlogs goodix53x5-milan-synthetic
-milan_run_stage "test Milan state invariants" meson test -C "$libfprint_build" \
-  --print-errorlogs goodix53x5-milan-state
-milan_run_stage "test Milan runtime public contract" meson test -C "$libfprint_build" \
-  --print-errorlogs goodix53x5-milan-runtime
-milan_run_stage "test Milan transport scheduling" meson test -C "$libfprint_build" \
-  --print-errorlogs goodix53x5-milan-transport
+milan_run_stage "build libfprint" ninja -C "$libfprint_build"
+milan_run_stage "test libfprint and Milan suites" meson test -C "$libfprint_build" --print-errorlogs \
+  fpi-device goodix53x5-milan-synthetic goodix53x5-milan-state \
+  goodix53x5-milan-runtime goodix53x5-milan-transport
 
 fprintd_source="$staging/fprintd-source"
 fprintd_build="$staging/fprintd-build"
 milan_run_stage "clone pinned fprintd checkout" git clone --local --no-hardlinks \
   "$fprintd_pristine" "$fprintd_source"
 git -C "$fprintd_source" apply "$repo_dir/patches/fprintd/1.94.5-milan-update-save.patch"
-git -C "$fprintd_source" apply --reverse --check \
-  "$repo_dir/patches/fprintd/1.94.5-milan-update-save.patch"
 milan_run_stage "configure fprintd against paired libfprint" meson devenv -C "$libfprint_build" \
-  meson setup "$fprintd_build" "$fprintd_source" --prefix="$MILAN_PREFIX" \
-  --libexecdir=fprintd -Dpam=false -Dman=false -Dsystemd=false -Dgtk_doc=false
-milan_run_stage "build paired fprintd daemon" meson devenv -C "$libfprint_build" \
-  ninja -C "$fprintd_build" src/fprintd
+  meson setup "$fprintd_build" "$fprintd_source" --prefix=/usr \
+  --libdir="$MILAN_LIBDIR" --libexecdir="$(dirname "$MILAN_DAEMON_PATH")" \
+  --sysconfdir=/etc --localstatedir=/var \
+  -Dpam=true -Dpam_modules_dir="$MILAN_LIBDIR/security" \
+  -Dman=true -Dsystemd=true -Dsystemd_system_unit_dir=/usr/lib/systemd/system \
+  -Ddbus_service_dir=/usr/share/dbus-1/system-services -Dgtk_doc=false
+milan_run_stage "build fprintd" meson devenv -C "$libfprint_build" ninja -C "$fprintd_build"
 
 payload="$staging/payload"
-payload_prefix="$(milan_root_path "$payload" "$MILAN_PREFIX")"
-payload_udev_dir="$payload_prefix/share/udev/rules.d"
-mkdir -p "$payload_prefix/fprintd" "$payload_prefix/manifest" "$payload_udev_dir"
-milan_run_stage "stage shadow libfprint" env DESTDIR="$payload" ninja -C "$libfprint_build" install
-install -m 0755 "$fprintd_build/src/fprintd" "$payload_prefix/fprintd/fprintd"
-install -m 0644 "$repo_dir/udev/$MILAN_UDEV_RULE_NAME" "$payload_udev_dir/$MILAN_UDEV_RULE_NAME"
-printf '%s\n' goodix53x5-milan-stack-payload-v1 > "$payload_prefix/$MILAN_PAYLOAD_MARKER"
+mkdir -p "$payload$MILAN_METADATA_DIR" "$payload$(dirname "$MILAN_UDEV_RULE")"
+milan_run_stage "stage libfprint" env DESTDIR="$payload" ninja -C "$libfprint_build" install
+milan_run_stage "stage fprintd" env DESTDIR="$payload" ninja -C "$fprintd_build" install
+install -m 0644 "$repo_dir/udev/$(basename "$MILAN_UDEV_RULE")" "$payload$MILAN_UDEV_RULE"
 
-overlay_revision="$(git -C "$repo_dir" rev-parse HEAD)"
-overlay_input_sha256="$(milan_overlay_input_sha256 "$repo_dir")"
-cat > "$payload_prefix/manifest/build.env" <<EOF
-FORMAT=1
-PREFIX=$MILAN_PREFIX
+cat > "$payload$MILAN_BUILD_ENV" <<EOF
+FORMAT=3
+LIBDIR=$MILAN_LIBDIR
+LIBRARY_PATH=$MILAN_LIBRARY_PATH
+DAEMON_PATH=$MILAN_DAEMON_PATH
 GOODIX53X5_DEBUG=$debug_manifest
 GOODIX53X5_DEBUG_BUILD_ID=$debug_build_id
 GOODIX53X5_DEBUG_SOURCE_ID=$debug_source_id
 LIBFPRINT_REVISION=$MILAN_LIBFPRINT_REVISION
-LIBFPRINT_SOURCE_TREE=$(git -C "$libfprint_pristine" rev-parse HEAD^{tree})
 FPRINTD_REVISION=$MILAN_FPRINTD_REVISION
-FPRINTD_SOURCE_TREE=$(git -C "$fprintd_pristine" rev-parse HEAD^{tree})
-LIBFPRINT_PATCH_SHA256=$MILAN_LIBFPRINT_PATCH_SHA256
-LIBFPRINT_USB_PERSIST_PATCH_SHA256=$MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256
-LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256=$MILAN_LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256
-FPRINTD_PATCH_SHA256=$MILAN_FPRINTD_PATCH_SHA256
-OVERLAY_REVISION=$overlay_revision
-OVERLAY_INPUT_SHA256=$overlay_input_sha256
-MESON_INTEGRATION_SHA256=$(milan_sha256 "$repo_dir/meson-integration.patch")
-BUILD_LOCAL_SHA256=$(milan_sha256 "$script_dir/build-local.sh")
-STACK_BUILD_SHA256=$(milan_sha256 "$script_dir/build-milan-stack-local.sh")
-STACK_COMMON_SHA256=$(milan_sha256 "$script_dir/lib/milan-stack-common.sh")
+OVERLAY_REVISION=$(git -C "$repo_dir" rev-parse HEAD)
+OVERLAY_INPUT_SHA256=$(milan_overlay_input_sha256 "$repo_dir")
 BUILT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
-(
-  cd "$payload_prefix"
-  find . -type f ! -path ./manifest/SHA256SUMS -print0 |
-    LC_ALL=C sort -z |
-    xargs -0 sha256sum > manifest/SHA256SUMS
-)
-milan_verify_manifest "$payload_prefix" "$repo_dir"
+milan_files inventory "$payload"
+milan_verify_payload "$payload" "$repo_dir"
 
 for intermediate in "$staging/libfprint-overlay" "$fprintd_source" "$fprintd_build"; do
-  [[ -d "$intermediate" && ! -L "$intermediate" ]] ||
-    milan_die "refusing unexpected build intermediate: $intermediate"
   milan_safe_remove_tree "$intermediate" "$staging"
 done
 
-build_id="$(date -u +%Y%m%dT%H%M%SZ)-$build_kind-${overlay_revision:0:12}"
-published="$MILAN_STACK_ROOT/builds/$build_id"
-[[ ! -e "$published" && ! -L "$published" ]] || published="$published-$$"
-[[ ! -e "$published" && ! -L "$published" ]] || milan_die "build publication path already exists: $published"
+published="$MILAN_STACK_ROOT/builds/$(date -u +%Y%m%dT%H%M%SZ)-$build_kind-$$"
 mv "$staging" "$published"
 trap - EXIT
 link_tmp="$MILAN_STACK_ROOT/builds/.current.$$"
@@ -189,11 +150,8 @@ for obsolete in "$MILAN_STACK_ROOT/builds"/*; do
   [[ "$obsolete" != "$published" && "$obsolete" != "$MILAN_STACK_ROOT/builds/current" ]] || continue
   if [[ -L "$obsolete" ]]; then
     rm -- "$obsolete"
-    continue
+  elif [[ -d "$obsolete" ]]; then
+    milan_safe_remove_tree "$obsolete" "$MILAN_STACK_ROOT/builds"
   fi
-  [[ -d "$obsolete" ]] || continue
-  milan_safe_remove_tree "$obsolete" "$MILAN_STACK_ROOT/builds"
 done
-shopt -u dotglob
 milan_note "published verified $build_kind Milan stack: $published"
-milan_note "no running service was changed"
