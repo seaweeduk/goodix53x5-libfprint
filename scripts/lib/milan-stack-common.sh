@@ -245,41 +245,10 @@ milan_unmask_runtime() {
   systemctl unmask --runtime fprintd.service
 }
 
-milan_apply_usb_persist() {
-  local value="$1" device product vendor
-
-  [[ -d /sys/bus/usb/devices ]] || return 0
-  for device in /sys/bus/usb/devices/*; do
-    [[ -f "$device/idVendor" && -f "$device/idProduct" ]] || continue
-    read -r vendor < "$device/idVendor"
-    read -r product < "$device/idProduct"
-    [[ "${vendor,,}" == 27c6 ]] || continue
-    case "${product,,}" in
-      5335|5385|5395)
-        [[ -e "$device/power/persist" ]] || milan_die "USB persistence is unavailable for $vendor:$product at $device"
-        printf '%s\n' "$value" > "$device/power/persist" || return 1
-        ;;
-    esac
-  done
-}
-
-milan_verify_usb_persist() {
-  local device product value vendor
-
-  [[ -d /sys/bus/usb/devices ]] || return 0
-  for device in /sys/bus/usb/devices/*; do
-    [[ -f "$device/idVendor" && -f "$device/idProduct" ]] || continue
-    read -r vendor < "$device/idVendor"
-    read -r product < "$device/idProduct"
-    [[ "${vendor,,}" == 27c6 ]] || continue
-    case "${product,,}" in
-      5335|5385|5395)
-        [[ -r "$device/power/persist" ]] || milan_die "USB persistence is unavailable for $vendor:$product at $device"
-        read -r value < "$device/power/persist"
-        [[ "$value" == 1 ]] || milan_die "USB persistence is disabled for $vendor:$product at $device"
-        ;;
-    esac
-  done
+# Apply the persistence rule to Milan sensors that are already attached.
+milan_trigger_udev() {
+  udevadm control --reload-rules
+  udevadm trigger --subsystem-match=usb --attr-match=idVendor=27c6 --action=add
 }
 
 milan_safe_remove_tree() {

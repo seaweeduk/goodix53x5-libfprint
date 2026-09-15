@@ -23,7 +23,6 @@ case "${1:---installed}" in
     milan_load_layout /
     milan_verify_debug_census / "$(milan_manifest_value "$MILAN_BUILD_ENV" GOODIX53X5_DEBUG)"
     milan_verify_active_system
-    milan_verify_usb_persist
     milan_note "installed files, service selection, and library resolution verified"
     ;;
   --absent)

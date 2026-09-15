@@ -24,7 +24,6 @@ milan_files remove / ||
   milan_die "file removal incomplete; fprintd stays runtime-masked. Fix the reported problem and rerun."
 ldconfig
 udevadm control --reload-rules
-milan_apply_usb_persist 0
 systemctl daemon-reload
 milan_unmask_runtime
 milan_note "removed the recorded Milan files; no daemon was restarted"

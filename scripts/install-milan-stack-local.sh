@@ -35,9 +35,8 @@ trap install_failed EXIT
 milan_mask_runtime
 milan_files install / "$MILAN_PAYLOAD"
 ldconfig
-udevadm control --reload-rules
+milan_trigger_udev
 systemctl daemon-reload
-milan_apply_usb_persist 1
 milan_unmask_runtime
 systemctl restart fprintd.service
 milan_verify_active_system
