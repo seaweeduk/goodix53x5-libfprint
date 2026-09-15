@@ -23,9 +23,6 @@ else
 fi
 
 expected_revision="$MILAN_FPRINTD_REVISION"
-if [[ -n "${GOODIX_MILAN_TEST_FPRINTD_REVISION:-}" ]]; then
-  expected_revision="$GOODIX_MILAN_TEST_FPRINTD_REVISION"
-fi
 
 if [[ -e "$source_dir" ]]; then
   milan_verify_git_pristine "$source_dir" "$expected_revision" "fprintd"

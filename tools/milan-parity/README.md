@@ -74,14 +74,17 @@ detected exactly without consulting the installed path.
 Create a manifest beside a fresh dump directory:
 
 ```sh
+library="$(grep '^LIBRARY_PATH=' /usr/share/goodix53x5-milan/build.env | cut -d= -f2-)"
 ./tools/milan-parity/milan-parity build-manifest \
   --repo "$PWD" \
-  --library /opt/goodix53x5-milan/lib/libfprint-2.so.2.0.0 \
+  --library "$library" \
   --output /private/CAMPAIGN/driver-build.json \
   --debug
 ```
 
-`build-manifest` never overwrites an existing output.
+`build-manifest` never overwrites an existing output. The source installer creates
+this manifest automatically when installing into a configured capture campaign;
+reuse that manifest rather than running this command again for the same output.
 
 ## Capture Commands
 

@@ -44,6 +44,10 @@ Use persistent owner-only paths, never `/tmp`, `/var/tmp`, or `/run`.
 
 From this repository, as your normal user:
 
+Use the [source installation guide](scripts/MILAN-STACK.md) first if migrating
+from `/opt` or resolving package conflicts. The following procedure assumes a
+working standard-path installation from which existing prints can be deleted.
+
 ```sh
 GOODIX53X5_DEBUG=1 ./scripts/build-milan-stack-local.sh
 ```
@@ -65,10 +69,12 @@ new dump path, finalize any active current campaign:
 ```sh
 existing_dump="/private/EXISTING_CAMPAIGN/debug-dump"
 
-sudo systemctl stop fprintd.service
+sudo systemctl mask --runtime --now fprintd.service
+test "$(systemctl show fprintd.service --property=LoadState --value)" = masked
 ./tools/milan-parity/milan-parity finish-capture --dump-dir "$existing_dump"
 sudo rm -f /etc/systemd/system/fprintd.service.d/99-goodix53x5-parity-capture.conf
 sudo systemctl daemon-reload
+sudo systemctl unmask --runtime fprintd.service
 sudo systemctl start fprintd.service
 ```
 
@@ -80,7 +86,7 @@ After finalizing any active campaign, but before installing the new debug build,
 delete the current user's existing enrollments:
 
 ```sh
-fprintd-delete "$USER"
+sudo fprintd-delete "$USER"
 ```
 
 This ordering is mandatory: finalize the active campaign, delete existing
@@ -123,9 +129,16 @@ Create the fresh drop-in with the new dump path before installing the debug
 stack:
 
 ```sh
+stack_root="${GOODIX_MILAN_STACK_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/goodix53x5-milan}"
+build_env="$stack_root/builds/current/payload/usr/share/goodix53x5-milan/build.env"
+build_id="$(grep '^GOODIX53X5_DEBUG_BUILD_ID=' "$build_env" | cut -d= -f2-)"
+test "${#build_id}" -eq 64
+sudo systemctl mask --runtime --now fprintd.service
+test "$(systemctl show fprintd.service --property=LoadState --value)" = masked
 sudo install -d -m 0755 /etc/systemd/system/fprintd.service.d
 sudo tee /etc/systemd/system/fprintd.service.d/99-goodix53x5-parity-capture.conf >/dev/null <<EOF
 [Service]
+ExecCondition=/usr/bin/grep -qx GOODIX53X5_DEBUG_BUILD_ID=$build_id /usr/share/goodix53x5-milan/build.env
 Environment=G_MESSAGES_DEBUG=libfprint-goodix53x5
 Environment=GOODIX53X5_DUMP_DIR=$dump
 Environment=GOODIX53X5_DUMP_PROBES=all
@@ -137,12 +150,16 @@ ReadWritePaths=$dump
 EOF
 
 sudo systemctl daemon-reload
-sudo ./scripts/install-milan-stack-local.sh
+sudo env GOODIX_MILAN_STACK_ROOT="$stack_root" GOODIX_MILAN_CAPTURE_DIR="$dump" \
+  ./scripts/install-milan-stack-local.sh
 ./scripts/status-milan-stack-local.sh --installed
 systemctl show fprintd.service --property=Environment --value
 ```
 
-The drop-in persists across fprintd restarts and reboots. Do not remove it until
+The installer keeps activation blocked until files and the capture manifest are
+ready, then unmasks and starts fprintd. The build-ID condition prevents another
+build from writing into this campaign. The drop-in persists across fprintd
+restarts and reboots. Do not remove it until
 the capture is deliberately retired. `GOODIX53X5_DUMP_PROBES=all` and
 `GOODIX53X5_DUMP_TEMPLATES=1` are required for full exact parity. TX-on setup
 candidates are emitted whenever the dump directory is configured; TX-off
@@ -156,31 +173,31 @@ emits the runtime manifest and binary parity artifacts without requiring either
 logging option. Probe images remain separately controlled by
 `GOODIX53X5_DUMP_PROBES=none|failed|all`.
 
-## 5. Create The Exact Build Manifest
+## 5. Verify The Exact Build Manifest
 
 First confirm the installed library is the current debug build:
 
 ```sh
-grep '^GOODIX53X5_DEBUG=1$' /opt/goodix53x5-milan/manifest/build.env
-strings /opt/goodix53x5-milan/lib/libfprint-2.so.2.0.0 | \
+installed_env=/usr/share/goodix53x5-milan/build.env
+grep '^GOODIX53X5_DEBUG=1$' "$installed_env"
+library="$(grep '^LIBRARY_PATH=' "$installed_env" | cut -d= -f2-)"
+strings "$library" | \
   grep 'goodix53x5-runtime-debug/v3'
 ```
 
-Both checks must match. Then create a fresh manifest from the installed library:
+Both checks must match. The installer has already created the manifest from the
+installed library before starting capture. Confirm it is present:
 
 ```sh
-./tools/milan-parity/milan-parity build-manifest \
-  --repo "$PWD" \
-  --library /opt/goodix53x5-milan/lib/libfprint-2.so.2.0.0 \
-  --output "$manifest" \
-  --debug
+test -f "$manifest"
 ```
 
 The `milan-parity-driver-build/v2` manifest records the random compile-time
 build ID, deterministic production source identity, source commit, runtime
 schema, fixed profile-9 policy, and the installed library's absolute path,
 exact byte size, and SHA-256. Manifest creation rehashes the library and verifies
-both embedded identities against the repository.
+both embedded identities against the repository. Do not create a second manifest
+or overwrite the installer's existing output.
 
 Live `capture` rehashes the manifest path, verifies the embedded build and
 source identities, and confirms that fprintd mapped that exact library. Later
@@ -226,8 +243,10 @@ service briefly, copy the dump to a new owner-only path, then resume collection:
 snapshot="$campaign_root/snapshots/VALIDATION_SNAPSHOT"
 test ! -e "$snapshot"
 mkdir -p -m 0700 "$(dirname "$snapshot")"
-sudo systemctl stop fprintd.service
+sudo systemctl mask --runtime --now fprintd.service
+test "$(systemctl show fprintd.service --property=LoadState --value)" = masked
 sudo cp -a -- "$dump" "$snapshot"
+sudo systemctl unmask --runtime fprintd.service
 sudo systemctl start fprintd.service
 sudo chown -R "$USER:$(id -gn)" "$snapshot"
 chmod -R u+rwX,go-rwx "$snapshot"
@@ -294,10 +313,12 @@ not implemented yet.
 When collection is complete, stop fprintd so no operation can race finalization:
 
 ```sh
-sudo systemctl stop fprintd.service
+sudo systemctl mask --runtime --now fprintd.service
+test "$(systemctl show fprintd.service --property=LoadState --value)" = masked
 ./tools/milan-parity/milan-parity finish-capture --dump-dir "$dump"
 sudo rm -f /etc/systemd/system/fprintd.service.d/99-goodix53x5-parity-capture.conf
 sudo systemctl daemon-reload
+sudo systemctl unmask --runtime fprintd.service
 sudo systemctl start fprintd.service
 ```
 
@@ -312,7 +333,7 @@ absolute library path.
 
 ```sh
 ./scripts/status-milan-stack-local.sh --installed
-grep '^GOODIX53X5_DEBUG=1$' /opt/goodix53x5-milan/manifest/build.env
+grep '^GOODIX53X5_DEBUG=1$' /usr/share/goodix53x5-milan/build.env
 systemctl show fprintd.service --property=Environment --value
 systemctl cat fprintd.service
 journalctl -u fprintd.service -n 100 --no-pager

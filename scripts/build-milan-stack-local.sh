@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Build the paired libfprint/fprintd shadow stack around build-local.sh.
+# Build and stage paired libfprint and full fprintd for standard system paths.
 
 set -euo pipefail
+umask 022
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd "$script_dir/.." && pwd)"
 # shellcheck source=scripts/lib/milan-stack-common.sh
 source "$script_dir/lib/milan-stack-common.sh"
 
-milan_validate_prefix
+milan_detect_layout
 milan_reject_ephemeral_root "GOODIX_MILAN_STACK_ROOT" "$MILAN_STACK_ROOT"
-for command in git flock timeout meson ninja sha256sum ldd install strings od tr; do
+for command in git flock timeout meson ninja sha256sum python3 install strings od tr; do
   milan_require_command "$command"
 done
 milan_verify_repo_inputs "$repo_dir"
@@ -96,14 +97,15 @@ git -C "$libfprint_source" apply --reverse --check \
   "$repo_dir/patches/libfprint/libfprint-goodix53x5-usb-persist.patch"
 git -C "$libfprint_source" apply --reverse --check \
   "$repo_dir/patches/libfprint/libfprint-idle-suspend-notify.patch"
-milan_run_stage "configure paired shadow libfprint" meson setup "$libfprint_build" \
-  "$libfprint_source" --reconfigure --prefix="$MILAN_PREFIX" --libdir=lib \
+milan_run_stage "configure paired system libfprint" meson setup "$libfprint_build" \
+  "$libfprint_source" --reconfigure --prefix=/usr --libdir="$MILAN_LIBDIR" \
+  --sysconfdir=/etc --localstatedir=/var \
   -Ddrivers=goodix53x5 -Dudev_hwdb=disabled -Dudev_rules=disabled \
   -Dintrospection=false -Dinstalled-tests=false -Ddoc=false \
   -Dgoodix53x5_debug="$debug_enabled" \
   -Dgoodix53x5_debug_build_id="$debug_build_id" \
   -Dgoodix53x5_debug_source_id="$debug_source_id"
-milan_run_stage "build paired shadow libfprint" ninja -C "$libfprint_build"
+milan_run_stage "build paired system libfprint" ninja -C "$libfprint_build"
 milan_run_stage "test libfprint update result" meson test -C "$libfprint_build" \
   --print-errorlogs fpi-device
 milan_run_stage "test Milan synthetic public contract" meson test -C "$libfprint_build" \
@@ -123,25 +125,31 @@ git -C "$fprintd_source" apply "$repo_dir/patches/fprintd/1.94.5-milan-update-sa
 git -C "$fprintd_source" apply --reverse --check \
   "$repo_dir/patches/fprintd/1.94.5-milan-update-save.patch"
 milan_run_stage "configure fprintd against paired libfprint" meson devenv -C "$libfprint_build" \
-  meson setup "$fprintd_build" "$fprintd_source" --prefix="$MILAN_PREFIX" \
-  --libexecdir=fprintd -Dpam=false -Dman=false -Dsystemd=false -Dgtk_doc=false
-milan_run_stage "build paired fprintd daemon" meson devenv -C "$libfprint_build" \
-  ninja -C "$fprintd_build" src/fprintd
+  meson setup "$fprintd_build" "$fprintd_source" --prefix=/usr \
+  --libdir="$MILAN_LIBDIR" --libexecdir="$(dirname "$MILAN_DAEMON_PATH")" \
+  --sysconfdir=/etc --localstatedir=/var \
+  -Dpam=true -Dpam_modules_dir="$MILAN_LIBDIR/security" \
+  -Dman=true -Dsystemd=true -Dsystemd_system_unit_dir=/usr/lib/systemd/system \
+  -Ddbus_service_dir=/usr/share/dbus-1/system-services -Dgtk_doc=false
+milan_run_stage "build full paired fprintd runtime" meson devenv -C "$libfprint_build" \
+  ninja -C "$fprintd_build"
 
 payload="$staging/payload"
-payload_prefix="$(milan_root_path "$payload" "$MILAN_PREFIX")"
-payload_udev_dir="$payload_prefix/share/udev/rules.d"
-mkdir -p "$payload_prefix/fprintd" "$payload_prefix/manifest" "$payload_udev_dir"
-milan_run_stage "stage shadow libfprint" env DESTDIR="$payload" ninja -C "$libfprint_build" install
-install -m 0755 "$fprintd_build/src/fprintd" "$payload_prefix/fprintd/fprintd"
+payload_metadata="$(milan_root_path "$payload" "$MILAN_METADATA_DIR")"
+payload_udev_dir="$(milan_root_path "$payload" "$MILAN_UDEV_DIR")"
+mkdir -p "$payload_metadata" "$payload_udev_dir"
+milan_run_stage "stage system libfprint" env DESTDIR="$payload" ninja -C "$libfprint_build" install
+milan_run_stage "stage full fprintd runtime" env DESTDIR="$payload" ninja -C "$fprintd_build" install
 install -m 0644 "$repo_dir/udev/$MILAN_UDEV_RULE_NAME" "$payload_udev_dir/$MILAN_UDEV_RULE_NAME"
-printf '%s\n' goodix53x5-milan-stack-payload-v1 > "$payload_prefix/$MILAN_PAYLOAD_MARKER"
 
 overlay_revision="$(git -C "$repo_dir" rev-parse HEAD)"
 overlay_input_sha256="$(milan_overlay_input_sha256 "$repo_dir")"
-cat > "$payload_prefix/manifest/build.env" <<EOF
-FORMAT=1
+cat > "$payload_metadata/build.env" <<EOF
+FORMAT=2
 PREFIX=$MILAN_PREFIX
+LIBDIR=$MILAN_LIBDIR
+LIBRARY_PATH=$MILAN_LIBRARY_PATH
+DAEMON_PATH=$MILAN_DAEMON_PATH
 GOODIX53X5_DEBUG=$debug_manifest
 GOODIX53X5_DEBUG_BUILD_ID=$debug_build_id
 GOODIX53X5_DEBUG_SOURCE_ID=$debug_source_id
@@ -161,13 +169,8 @@ STACK_BUILD_SHA256=$(milan_sha256 "$script_dir/build-milan-stack-local.sh")
 STACK_COMMON_SHA256=$(milan_sha256 "$script_dir/lib/milan-stack-common.sh")
 BUILT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
-(
-  cd "$payload_prefix"
-  find . -type f ! -path ./manifest/SHA256SUMS -print0 |
-    LC_ALL=C sort -z |
-    xargs -0 sha256sum > manifest/SHA256SUMS
-)
-milan_verify_manifest "$payload_prefix" "$repo_dir"
+milan_files inventory "$payload"
+milan_verify_manifest "$payload" "$repo_dir"
 
 for intermediate in "$staging/libfprint-overlay" "$fprintd_source" "$fprintd_build"; do
   [[ -d "$intermediate" && ! -L "$intermediate" ]] ||

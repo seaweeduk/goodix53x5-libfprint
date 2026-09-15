@@ -1,81 +1,52 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_dir="$(cd "$script_dir/.." && pwd)"
-# shellcheck source=scripts/lib/milan-stack-common.sh
 source "$script_dir/lib/milan-stack-common.sh"
-
 milan_require_root
-milan_validate_prefix
-milan_require_absolute "install root" "$MILAN_INSTALL_ROOT"
-for command in flock timeout udevadm "$MILAN_SYSTEMCTL"; do
+for command in python3 flock timeout udevadm systemctl ldconfig; do
   milan_require_command "$command"
 done
 
-actual_prefix="$(milan_actual_prefix)"
-actual_parent="$(dirname "$actual_prefix")"
-actual_systemd_dir="$(milan_actual_systemd_dir)"
-dropin="$actual_systemd_dir/$MILAN_DROPIN_NAME"
-actual_udev_dir="$(milan_actual_udev_dir)"
-udev_rule="$actual_udev_dir/$MILAN_UDEV_RULE_NAME"
-mkdir -p "$actual_parent"
-exec 9>"$actual_parent/.goodix53x5-milan.install.lock"
-flock -n 9 || milan_die "another Milan install/remove is active"
-
-if [[ ! -e "$actual_prefix" && ! -e "$dropin" && ! -e "$udev_rule" ]]; then
-  milan_note "paired Milan shadow stack is already absent"
-  exit 0
-fi
-[[ -e "$actual_prefix" && -e "$dropin" && -e "$udev_rule" ]] || milan_die "refusing partial or unmanaged removal"
-milan_verify_owned_marker "$actual_prefix"
-cmp -s "$actual_prefix/share/udev/rules.d/$MILAN_UDEV_RULE_NAME" "$udev_rule" ||
-  milan_die "refusing unmanaged or modified USB persistence rule: $udev_rule"
-expected_dropin="$actual_systemd_dir/.$MILAN_DROPIN_NAME.expected.$$"
-milan_render_dropin "$repo_dir" > "$expected_dropin"
-chmod 0644 "$expected_dropin"
-cmp -s "$expected_dropin" "$dropin" || {
-  rm -f -- "$expected_dropin"
-  milan_die "refusing unmanaged or modified drop-in: $dropin"
-}
-rm -f -- "$expected_dropin"
-
-tombstone="$actual_parent/.goodix53x5-milan.remove.$$"
-saved_dropin="$actual_systemd_dir/.$MILAN_DROPIN_NAME.remove.$$"
-saved_udev_rule="$actual_udev_dir/.$MILAN_UDEV_RULE_NAME.remove.$$"
-[[ ! -e "$tombstone" && ! -e "$saved_dropin" && ! -e "$saved_udev_rule" ]] || milan_die "remove transaction path exists"
-committed=0
-rollback() {
-  local rc=$?
-  set +e
-  if [[ "$committed" == 0 ]]; then
-    [[ ! -e "$tombstone" ]] || mv "$tombstone" "$actual_prefix"
-    [[ ! -e "$saved_dropin" ]] || mv "$saved_dropin" "$dropin"
-    [[ ! -e "$saved_udev_rule" ]] || mv "$saved_udev_rule" "$udev_rule"
-    udevadm control --reload-rules >/dev/null 2>&1 || true
-    milan_apply_usb_persist 1 >/dev/null 2>&1 || true
-    milan_systemctl daemon-reload >/dev/null 2>&1 || true
-    milan_systemctl restart fprintd.service >/dev/null 2>&1 || true
+metadata="$(milan_root_path "$MILAN_INSTALL_ROOT" "$MILAN_METADATA_DIR")"
+installed=1
+if [[ ! -e "$metadata/ownership.json" && ! -L "$metadata/ownership.json" ]]; then
+  [[ ! -e "$metadata/build.env" && ! -e "$metadata/inventory.json" && ! -e "$metadata/SHA256SUMS" ]] ||
+    milan_die "installation metadata exists without ownership; inspect partial installation"
+  if [[ ! -e "$(milan_runtime_marker)" && ! -L "$(milan_runtime_marker)" ]]; then
+    milan_note "manual Milan installation is already absent"
+    exit 0
   fi
-  exit "$rc"
-}
-trap rollback EXIT
-
-mv "$actual_prefix" "$tombstone"
-mv "$dropin" "$saved_dropin"
-mv "$udev_rule" "$saved_udev_rule"
-udevadm control --reload-rules
-milan_apply_usb_persist 0
-milan_systemctl daemon-reload
-milan_verify_packaged_selected
-milan_systemctl restart fprintd.service
-milan_verify_packaged_selected
-committed=1
-trap - EXIT
-
-milan_verify_owned_marker "$tombstone"
-milan_safe_remove_tree "$tombstone" "$actual_parent"
-rm -f -- "$saved_dropin" "$saved_udev_rule"
-milan_note "removed only the owned Milan prefix, drop-in, and USB persistence rule"
-milan_note "packaged fprintd restarted; /var/lib/fprint was not touched"
+  installed=0
+fi
+# Check every owned file and package takeover before stopping the daemon.
+if [[ "$installed" == 1 ]]; then
+  milan_files verify-installed "$MILAN_INSTALL_ROOT"
+  milan_load_layout "$MILAN_INSTALL_ROOT"
+fi
+milan_lock_install
+# Recheck after locking, including an installation completed while we waited.
+if [[ -e "$metadata/ownership.json" || -L "$metadata/ownership.json" ]]; then
+  milan_files verify-installed "$MILAN_INSTALL_ROOT"
+  milan_mask_runtime
+  milan_files remove "$MILAN_INSTALL_ROOT" ||
+    milan_die "file removal incomplete; fprintd remains runtime-masked while you inspect the recorded files"
+else
+  [[ ! -e "$metadata/build.env" && ! -e "$metadata/inventory.json" && ! -e "$metadata/SHA256SUMS" ]] ||
+    milan_die "partial installation metadata remains"
+fi
+# Each cleanup is independent; an absent retry must complete all of them too.
+cleanup_failed=0
+(milan_refresh_linker) || { printf 'error: linker-cache cleanup failed\n' >&2; cleanup_failed=1; }
+udevadm control --reload-rules || { printf 'error: udev reload failed\n' >&2; cleanup_failed=1; }
+(milan_apply_usb_persist 0) || { printf 'error: USB persistence cleanup failed\n' >&2; cleanup_failed=1; }
+milan_systemctl daemon-reload || { printf 'error: daemon reload failed\n' >&2; cleanup_failed=1; }
+[[ "$cleanup_failed" == 0 ]] || milan_die "removal cleanup incomplete; retry uninstall (the maintenance mask is retained)"
+if [[ -f "$(milan_runtime_marker)" && ! -L "$(milan_runtime_marker)" ]]; then
+  if ! milan_unmask_runtime; then
+    milan_mask_runtime || true
+    milan_die "could not clear the temporary runtime mask; retry uninstall"
+  fi
+fi
+milan_note "removed only recorded unchanged Milan files; no daemon was restarted"
+milan_note "preserved /var/lib/fprint and the imported Windows PSK"
