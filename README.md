@@ -82,48 +82,34 @@ included in, discovered by, or required to run this repository.
 ## Install
 
 The source installation builds pinned, patched libfprint `v1.94.10` and fprintd
-`v1.94.5`, then installs them into the distribution's normal paths under `/usr`.
-It includes the fprintd commands, PAM module, and systemd/D-Bus integration.
+`v1.94.5` and installs them into your distribution's normal paths under `/usr`,
+including the fprintd commands, PAM module, and systemd/D-Bus integration.
 
 If upgrading from the retired sigfm matcher, delete existing prints while the
-old stack is still installed and working, then re-enroll after installation:
+old stack is still installed, then re-enroll after installation:
 
 ```sh
 sudo fprintd-delete "$USER"
 ```
 
-Remove conflicting libfprint/fprintd packages with your package manager before
-installing from source. The installer reports package-owned or unmanaged files
-and stops instead of overwriting them. Package removal may also affect dependent
-packages; review your package manager's proposed changes. Package-managed builds
-use their own installation process rather than this source installer.
-
-If you have the older `/opt/goodix53x5-milan` installation, run `./uninstall.sh`
-from that older checkout before switching to this version. See the
-[migration instructions](scripts/MILAN-STACK.md#moving-from-the-opt-installation).
+Remove your distribution's libfprint and fprintd packages first. The installer
+refuses to overwrite package-owned or otherwise unrecorded files.
 
 ```sh
 ./install.sh
 ```
 
-fprintd uses the normal system library path and keeps print state in
-`/var/lib/fprint`. The installer does not enable fingerprint authentication in
-your PAM configuration; configure that through your distribution as needed.
+Print state stays in `/var/lib/fprint`. The installer does not enable
+fingerprint authentication in PAM; configure that through your distribution.
 
 Build dependencies include a C toolchain, Git, Meson, Ninja, pkg-config,
-GLib/GIO, GUsb, OpenSSL 3, and the development dependencies required by
-libfprint and fprintd, including Polkit's GObject library, PAM, and libsystemd.
-Python 3, gettext, and Perl's `pod2man` are also required.
+GLib/GIO, GUsb, OpenSSL 3, Python 3, gettext, Perl's `pod2man`, and the
+development dependencies of libfprint and fprintd, including Polkit's GObject
+library, PAM, and libsystemd.
 
-For layout, build controls, status checks, and removal behavior, see the
+To update, check out the desired revision and run `./install.sh` again. For
+layout, build controls, status checks, and removal behaviour, see the
 [Milan stack guide](scripts/MILAN-STACK.md).
-
-### Update
-
-Update your checkout to the desired revision, then run `./install.sh` again
-(`./install.sh --debug` for a diagnostic build). The installer replaces its own
-previous installation after checking the recorded files. Retire an active debug
-capture before changing builds, as described in the debug capture guide.
 
 ## Enroll And Verify
 
@@ -171,16 +157,13 @@ byte-parity contracts and replay tooling.
 
 ## Uninstall
 
-Remove the files recorded by the source installer:
-
 ```sh
 ./uninstall.sh
 ```
 
-Saved fingerprints and the imported Windows PSK under `/var/lib/fprint` are left
-in place. Uninstall does not reinstall distribution packages; use your package
-manager if you want those afterward. Modified or package-owned files are reported
-instead of removed.
+This removes the files recorded by the installer and leaves saved fingerprints
+and the imported Windows PSK under `/var/lib/fprint` in place. Reinstall your
+distribution's packages afterwards if you want them.
 
 ## Credits
 

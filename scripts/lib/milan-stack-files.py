@@ -1,20 +1,31 @@
 #!/usr/bin/env python3
-"""Exact-file bookkeeping for the manual source installation (never packages)."""
+"""File bookkeeping for the manual Milan source installation.
+
+The build stages a DESTDIR payload and records every file in inventory.json.
+Installation copies that payload into the real filesystem and keeps the
+inventory as the record of what is owned, so updates and removal only touch
+files this installer put there.
+"""
 
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
 import shutil
 import stat
 import subprocess
 import sys
+from pathlib import Path, PurePosixPath
 
+FORMAT = 3
+MANAGED_BY = "goodix53x5-milan-stack"
 META = "/usr/share/goodix53x5-milan"
 INVENTORY = META + "/inventory.json"
-SUMS = META + "/SHA256SUMS"
-OWNED = META + "/ownership.json"
-CONTROL = (INVENTORY, SUMS, OWNED)
+BUILD_ENV = META + "/build.env"
+# User-editable files: never overwritten or removed once they differ.
+CONFIG = {"/etc/fprintd.conf"}
+# Old layout that must be uninstalled with its own script first.
+OLD_LAYOUT = ("opt/goodix53x5-milan",
+              "etc/systemd/system/fprintd.service.d/98-goodix53x5-milan-stack.conf")
 
 
 def fail(message):
@@ -26,231 +37,265 @@ def digest(path):
 
 
 def safe_name(name):
-    p = PurePosixPath(name)
-    if (str(p) != name or ".." in p.parts or any(c.isspace() for c in name)
-            or not (name.startswith("/usr/") or name == "/etc/fprintd.conf")):
+    parts = PurePosixPath(name)
+    if (str(parts) != name or ".." in parts.parts or any(c.isspace() for c in name)
+            or not (name.startswith("/usr/") or name in CONFIG)):
         fail(f"unsafe inventory path: {name}")
 
 
 def mapped(root, name):
     safe_name(name)
-    path = root / name.lstrip("/")
-    # Never follow a substituted directory into unrelated files.
-    for parent in path.parents:
-        if parent == root:
-            break
-        if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
-            fail(f"unsafe parent directory: {parent}")
-    return path
+    return root / name.lstrip("/")
 
 
 def entry(root, name):
+    """Record describing the file at name below root, or None when absent."""
     path = mapped(root, name)
-    mode = path.lstat().st_mode
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return None
     if stat.S_ISLNK(mode):
-        target = os.readlink(path)
+        return {"path": name, "target": os.readlink(path)}
+    if stat.S_ISREG(mode):
+        return {"path": name, "sha256": digest(path), "mode": stat.S_IMODE(mode)}
+    return {"path": name, "type": "other"}
+
+
+def check_staged(root, item):
+    """A payload record must be a sane regular file or relative in-payload symlink."""
+    name = item["path"]
+    if "target" in item:
+        target = item["target"]
         if os.path.isabs(target) or any(c.isspace() for c in target):
             fail(f"unsafe symlink: {name} -> {target}")
-        resolved = os.path.normpath(str(PurePosixPath(name).parent / target))
-        safe_name(resolved)
-        return {"path": name, "target": target}
-    if not stat.S_ISREG(mode) or mode & 0o7022:
+        resolved = mapped(root, name).resolve(strict=True)
+        if not resolved.is_relative_to(root) or not resolved.is_file():
+            fail(f"symlink leaves payload: {name}")
+    elif "sha256" not in item or item["mode"] & 0o7022:
         fail(f"unsafe file type or permissions: {name}")
-    return {"path": name, "sha256": digest(path), "mode": stat.S_IMODE(mode)}
 
 
-def inventory(root):
-    if root.name != "payload":
-        fail("inventory requires a bounded publication/payload directory")
-    records = []
-    # Only a bounded build payload is enumerated; installed roots never are.
+def scan(root):
+    """Absolute names of every file and symlink below a payload root."""
+    names = set()
     for parent, dirs, files in os.walk(root, followlinks=False):
         for name in list(dirs):
             if (Path(parent) / name).is_symlink():
                 dirs.remove(name)
                 files.append(name)
-        for name in files:
-            absolute = "/" + str((Path(parent) / name).relative_to(root))
-            if absolute not in CONTROL:
-                records.append(entry(root, absolute))
-    records.sort(key=lambda item: item["path"])
-    mapped(root, INVENTORY).write_text(json.dumps(records, indent=2) + "\n")
-    sums = [(item["sha256"], item["path"]) for item in records if "sha256" in item]
-    sums.append((digest(mapped(root, INVENTORY)), INVENTORY))
-    mapped(root, SUMS).write_text("".join(f"{value}  .{name}\n" for value, name in sums))
+        names.update("/" + str((Path(parent) / name).relative_to(root)) for name in files)
+    return names
 
 
-def load(root, owned=False, complete=False):
-    if complete and root.name != "payload":
-        fail("build verification requires a bounded publication/payload directory")
-    for name in (INVENTORY, SUMS, META + "/build.env") + ((OWNED,) if owned else ()):
-        p = mapped(root, name)
-        if p.is_symlink() or not p.is_file():
-            fail(f"missing or unsafe metadata: {p}")
-        if p.stat().st_mode & 0o7022:
-            fail(f"unsafe metadata permissions: {p}")
-        if owned and p.stat().st_uid != 0:
-            fail(f"installation metadata is not root-owned: {p}")
-    records = json.loads(mapped(root, INVENTORY).read_text())
+def write_inventory(root, records):
+    records = sorted(records, key=lambda item: item["path"])
+    document = {"format": FORMAT, "managed_by": MANAGED_BY, "files": records}
+    path = mapped(root, INVENTORY)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document, indent=2) + "\n")
+    path.chmod(0o644)
+
+
+def read_inventory(root):
+    path = mapped(root, INVENTORY)
+    if path.is_symlink() or not path.is_file():
+        fail(f"missing inventory: {path}")
+    document = json.loads(path.read_text())
+    if document.get("format") != FORMAT or document.get("managed_by") != MANAGED_BY:
+        fail(f"unsupported inventory: {path}")
     names = set()
+    for item in document["files"]:
+        safe_name(item["path"])
+        if item["path"] in names or item["path"] == INVENTORY:
+            fail(f"duplicate or reserved inventory path: {item['path']}")
+        names.add(item["path"])
+    return document["files"]
+
+
+def inventory(payload):
+    if payload.name != "payload":
+        fail("inventory requires a bounded publication/payload directory")
+    records = [entry(payload, name) for name in scan(payload) if name != INVENTORY]
     for item in records:
-        name = item["path"]
-        safe_name(name)
-        if name in names or name in CONTROL:
-            fail(f"duplicate or reserved inventory path: {name}")
-        names.add(name)
-        if entry(root, name) != item:
-            fail(f"modified installed/staged file: {name}")
-        if owned and mapped(root, name).lstat().st_uid != 0:
-            fail(f"installed file is no longer root-owned: {name}")
-        if "target" in item:
-            resolved = mapped(root, name).resolve(strict=True)
-            if not resolved.is_relative_to(root) or not resolved.is_file():
-                fail(f"symlink leaves payload: {name}")
-    if META + "/build.env" not in names:
+        check_staged(payload, item)
+    write_inventory(payload, records)
+
+
+def verify_build(payload):
+    if payload.name != "payload":
+        fail("build verification requires a bounded publication/payload directory")
+    records = read_inventory(payload)
+    names = {item["path"] for item in records}
+    if BUILD_ENV not in names:
         fail("build.env is not inventoried")
-    expected = "".join(f"{item['sha256']}  .{item['path']}\n" for item in records if "sha256" in item)
-    expected += f"{digest(mapped(root, INVENTORY))}  .{INVENTORY}\n"
-    if mapped(root, SUMS).read_text() != expected:
-        fail("checksum inventory mismatch")
-    if owned:
-        marker = json.loads(mapped(root, OWNED).read_text())
-        if marker != ownership(root):
-            fail("installation ownership seal mismatch")
-    if complete:
-        actual = set()
-        for parent, dirs, files in os.walk(root, followlinks=False):
-            for name in list(dirs):
-                if (Path(parent) / name).is_symlink():
-                    dirs.remove(name)
-                    files.append(name)
-            actual.update("/" + str((Path(parent) / name).relative_to(root)) for name in files)
-        if actual != names | {INVENTORY, SUMS}:
-            fail("payload contains unrecorded files")
+    for item in records:
+        check_staged(payload, item)
+        if entry(payload, item["path"]) != item:
+            fail(f"modified staged file: {item['path']}")
+    if scan(payload) != names | {INVENTORY}:
+        fail("payload contains unrecorded files")
     return records
 
 
-def ownership(root):
-    return {"format": 2, "managed_by": "goodix53x5-milan-stack",
-            "inventory_sha256": digest(mapped(root, INVENTORY)),
-            "checksums_sha256": digest(mapped(root, SUMS))}
+def classify(root, records):
+    """Split an installed inventory into unchanged, changed, and missing names."""
+    unchanged, changed, missing = [], [], []
+    for item in records:
+        actual = entry(root, item["path"])
+        if actual is None:
+            missing.append(item["path"])
+        elif actual == item:
+            unchanged.append(item["path"])
+        else:
+            changed.append(item["path"])
+    return unchanged, changed, missing
+
+
+def report(label, names):
+    for name in sorted(names):
+        print(f"{label}: {name}", file=sys.stderr)
 
 
 def package_conflicts(names):
-    commands = [cmd for cmd in (["pacman", "-Qo", "--"], ["dpkg-query", "-S"],
-                                ["rpm", "-qf", "--"]) if shutil.which(cmd[0])]
-    if not commands:
+    """Refuse destinations owned by a distribution package."""
+    names = sorted(names)
+    if shutil.which("pacman"):
+        owned = subprocess.run(["pacman", "-Qo", "--", *names], capture_output=True,
+                               text=True).stdout.splitlines()
+    elif shutil.which("dpkg-query"):
+        # dpkg may record the pre-merged-/usr alias of a path.
+        aliases = [n[4:] for n in names if n.startswith(("/usr/lib", "/usr/bin/", "/usr/sbin/"))]
+        owned = subprocess.run(["dpkg-query", "-S", *names, *aliases], capture_output=True,
+                               text=True).stdout.splitlines()
+    elif shutil.which("rpm"):
+        owned = []
+        for name in names:
+            result = subprocess.run(["rpm", "-qf", "--", name], capture_output=True, text=True)
+            if result.returncode == 0:
+                owned.append(f"{result.stdout.strip()}: {name}")
+    else:
         fail("no package ownership query available (pacman, dpkg-query, or rpm)")
-    conflicts = []
-    for name in sorted(names):
-        # Query merged-/usr aliases too: dpkg may record the old /lib path.
-        aliases = [name]
-        if name.startswith(("/usr/lib/", "/usr/lib64/", "/usr/bin/", "/usr/sbin/")):
-            aliases.append(name[4:])
-        for cmd in commands:
-            for alias in aliases:
-                result = subprocess.run(cmd + [alias], capture_output=True, text=True)
-                if result.returncode == 0:
-                    conflicts.append(f"{alias}: {result.stdout.strip()}")
-                elif result.returncode != 1:
-                    fail(f"package ownership query failed: {' '.join(cmd)}: {result.stderr.strip()}")
-    if conflicts:
-        fail("package-owned destination files; resolve/remove these packages first:\n" + "\n".join(conflicts))
+    if owned:
+        fail("package-owned destination files; remove these packages first:\n" + "\n".join(owned))
 
 
-def preflight(source, root):
-    new = load(source, complete=True)
-    marker = mapped(root, OWNED)
-    old = load(root, owned=True) if marker.exists() or marker.is_symlink() else []
-    old_names = {item["path"] for item in old} | (set(CONTROL) if old else set())
-    names = {item["path"] for item in new} | set(CONTROL)
-    package_conflicts(names | old_names)
-    for name in names:
+def preflight(payload, root):
+    new = verify_build(payload)
+    old = read_inventory(root) if mapped(root, INVENTORY).exists() else []
+    old_names = {item["path"] for item in old} | ({INVENTORY} if old else set())
+    new_names = {item["path"] for item in new} | {INVENTORY}
+    package_conflicts(new_names | old_names)
+    for name in sorted(new_names - old_names):
         path = mapped(root, name)
-        if (path.exists() or path.is_symlink()) and name not in old_names:
-            fail(f"refusing unmanaged destination: {name}")
-    for old_path in ("opt/goodix53x5-milan", "etc/systemd/system/fprintd.service.d/98-goodix53x5-milan-stack.conf"):
-        path = root / old_path
         if path.exists() or path.is_symlink():
-            fail("old /opt installation detected; run its old uninstall script first")
+            fail(f"refusing unmanaged destination: {name}")
+    for old_path in OLD_LAYOUT:
+        if (root / old_path).exists() or (root / old_path).is_symlink():
+            fail("the previous /opt installation is still present; remove it with its uninstall script first")
     return new, old
 
 
-def selinux_enabled():
-    return shutil.which("restorecon") and (
-        Path("/sys/fs/selinux/enforce").exists() or
-        (shutil.which("selinuxenabled") and
-         subprocess.run(["selinuxenabled"], check=False).returncode == 0))
-
-
-def copy_file(source, root, name, label_parents):
-    src, dst = mapped(source, name), mapped(root, name)
-    missing = []
-    for parent in dst.parents:
-        if parent.exists():
-            break
-        missing.append(parent)
-    for parent in reversed(missing):
+def copy_file(payload, root, name):
+    """Copy one payload file into place; returns directories created."""
+    src, dst = mapped(payload, name), mapped(root, name)
+    created = [parent for parent in dst.parents if not parent.exists()]
+    for parent in reversed(created):
         parent.mkdir()
-        if label_parents:
-            # Only directories created by this install, before creating children.
-            subprocess.run(["restorecon", "--", str(parent)], check=True)
     if dst.exists() or dst.is_symlink():
-        dst.unlink()
+        dst.unlink()  # never overwrite in place: the old file may be mapped
     if src.is_symlink():
         dst.symlink_to(os.readlink(src))
     else:
-        # copyfile deliberately does not preserve home-directory xattrs/labels.
-        shutil.copyfile(src, dst)
+        shutil.copyfile(src, dst)  # no xattrs: labels come from restorecon below
         dst.chmod(stat.S_IMODE(src.stat().st_mode))
+    return created
 
 
-def main():
-    action = sys.argv[1]
-    root = Path(sys.argv[2]).resolve()
+def restore_labels(paths):
+    if shutil.which("restorecon") and Path("/sys/fs/selinux/enforce").exists():
+        subprocess.run(["restorecon", "--", *map(str, paths)], check=True)
+
+
+def install(payload, root):
+    """Copy the payload into root. The caller has already run preflight."""
+    new = read_inventory(payload)
+    old = read_inventory(root) if mapped(root, INVENTORY).exists() else []
+    new_names = {item["path"] for item in new}
+    kept = []
+    for item in old:
+        if item["path"] in new_names:
+            continue
+        actual = entry(root, item["path"])
+        if actual is None:
+            continue
+        if actual != item and item["path"] in CONFIG:
+            kept.append(item["path"])
+            continue
+        mapped(root, item["path"]).unlink()
+    # Record ownership first so an interrupted install can be rerun or removed.
+    write_inventory(root, new)
+    labelled = {mapped(root, INVENTORY), mapped(root, META)}
+    for item in new:
+        current = entry(root, item["path"])
+        if item["path"] in CONFIG and current is not None and current != item:
+            kept.append(item["path"])
+            continue
+        labelled.update(copy_file(payload, root, item["path"]))
+        labelled.add(mapped(root, item["path"]))
+    restore_labels(labelled)
+    report("kept modified configuration", kept)
+
+
+def remove(root):
+    records = read_inventory(root)
+    unchanged, changed, _ = classify(root, records)
+    for name in unchanged:
+        mapped(root, name).unlink()
+    if changed:
+        write_inventory(root, [item for item in records if item["path"] in changed])
+        report("kept modified file", changed)
+        print("inventory retained for the kept files; delete them and rerun to finish",
+              file=sys.stderr)
+    else:
+        mapped(root, INVENTORY).unlink()
+    # Shared directories and everything under /var/lib/fprint are left alone.
+
+
+def verify_installed(root):
+    records = read_inventory(root)
+    if BUILD_ENV not in {item["path"] for item in records}:
+        fail("installation is partially removed; delete the kept files and rerun uninstall")
+    _, changed, missing = classify(root, records)
+    report("modified configuration", [name for name in changed if name in CONFIG])
+    problems = [name for name in changed if name not in CONFIG]
+    report("modified file", problems)
+    report("missing file", missing)
+    if problems or missing:
+        fail("installed files differ from the inventory")
+
+
+def main(argv):
+    action, root = argv[1], Path(argv[2]).resolve()
     if action == "inventory":
         inventory(root)
     elif action == "verify-build":
-        load(root, complete=True)
+        verify_build(root)
     elif action == "verify-installed":
-        records = load(root, owned=True)
-        package_conflicts({item["path"] for item in records} | set(CONTROL))
-    elif action in ("preflight", "install"):
-        source = Path(sys.argv[3]).resolve()
-        new, old = preflight(source, root)
-        if action == "install":
-            label_parents = selinux_enabled()
-            names = {item["path"] for item in new}
-            for item in new:
-                copy_file(source, root, item["path"], label_parents)
-            for item in old:
-                if item["path"] not in names:
-                    mapped(root, item["path"]).unlink()
-            for name in (INVENTORY, SUMS):
-                copy_file(source, root, name, label_parents)
-            mapped(root, OWNED).write_text(json.dumps(ownership(root), indent=2) + "\n")
-            mapped(root, OWNED).chmod(0o644)
+        verify_installed(root)
+    elif action == "preflight":
+        preflight(Path(argv[3]).resolve(), root)
+    elif action == "install":
+        install(Path(argv[3]).resolve(), root)
     elif action == "remove":
-        records = load(root, owned=True)
-        names = [item["path"] for item in records] + list(CONTROL)
-        package_conflicts(set(names))
-        for name in names:
-            mapped(root, name).unlink()
-        # Shared directories and all persistent state are deliberately retained.
-    elif action == "relabel":
-        if not selinux_enabled():
-            return
-        records = load(root, owned=True)
-        names = {item["path"] for item in records} | set(CONTROL)
-        for name in names:
-            # Exact installed paths only; shared /usr directories are not relabeled.
-            subprocess.run(["restorecon", "--", str(mapped(root, name))], check=True)
+        remove(root)
     else:
         fail(f"unknown action: {action}")
 
 
 if __name__ == "__main__":
     try:
-        main()
-    except (ValueError, OSError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+        main(sys.argv)
+    except (ValueError, OSError, KeyError, TypeError, IndexError,
+            subprocess.CalledProcessError) as error:
         sys.exit(f"error: {error}")

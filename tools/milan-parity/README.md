@@ -82,9 +82,7 @@ library="$(grep '^LIBRARY_PATH=' /usr/share/goodix53x5-milan/build.env | cut -d=
   --debug
 ```
 
-`build-manifest` never overwrites an existing output. The source installer creates
-this manifest automatically when installing into a configured capture campaign;
-reuse that manifest rather than running this command again for the same output.
+`build-manifest` never overwrites an existing output.
 
 ## Capture Commands
 
