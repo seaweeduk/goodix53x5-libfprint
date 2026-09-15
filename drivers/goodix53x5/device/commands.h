@@ -153,11 +153,10 @@ gboolean goodix_cmd_parse_fdt_manual_reply (FpDevice      *dev,
                                              gsize         *out_payload_len,
                                              GError       **error);
 
-/* Parse the encrypted frame returned by goodix_cmd_request_image(). */
-gboolean goodix_cmd_parse_image_reply (FpDevice      *dev,
-                                       const guint8 **out_payload,
-                                       gsize         *out_payload_len,
-                                       GError       **error);
+/* Copy the receiver-decoded frame selected by goodix_cmd_request_image().
+ * The caller owns the copy; subsequent reception cannot replace its bytes. */
+guint16 *goodix_cmd_dup_image_reply (FpDevice *dev,
+                                     GError  **error);
 
 /* Parse an FDT down/up event delivered after goodix_cmd_fdt_down_setup() /
  * goodix_cmd_fdt_up_setup(). The payload layout is

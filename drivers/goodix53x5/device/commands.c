@@ -456,7 +456,8 @@ goodix_cmd_request_image (FpiSsm *ssm, FpDevice *dev,
   guint8 img_req[4];
 
   goodix_build_image_request (tx_enable, hv_enable, is_finger, dac, img_req);
-  goodix_run_cmd (ssm, dev, 0x2, 0x0, img_req, sizeof (img_req), TRUE);
+  goodix_run_cmd (ssm, dev, GOODIX_PROTO_CATEGORY_IMAGE, GOODIX_PROTO_CMD_IMAGE,
+                  img_req, sizeof (img_req), TRUE);
 }
 
 void
@@ -604,15 +605,20 @@ goodix_cmd_parse_fdt_manual_reply (FpDevice      *dev,
   return TRUE;
 }
 
-gboolean
-goodix_cmd_parse_image_reply (FpDevice      *dev,
-                              const guint8 **out_payload,
-                              gsize         *out_payload_len,
-                              GError       **error)
+guint16 *
+goodix_cmd_dup_image_reply (FpDevice *dev,
+                            GError  **error)
 {
-  return goodix_parse_reply_exact (dev, GOODIX_PROTO_CATEGORY_IMAGE,
-                                   GOODIX_PROTO_CMD_IMAGE,
-                                   out_payload, out_payload_len, error);
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (!(self->command_response_ready & 8) || !self->image_response ||
+      self->image_response_failed)
+    {
+      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                           "Image response is unavailable");
+      return NULL;
+    }
+  return g_memdup2 (self->image_response, GOODIX_SENSOR_PIXELS * sizeof (guint16));
 }
 
 gboolean
