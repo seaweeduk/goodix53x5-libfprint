@@ -31,8 +31,13 @@ If it reports `COMPATIBLE CANDIDATE`, either:
 
 - [Open a compatibility issue](https://github.com/seaweeduk/goodix53x5-libfprint/issues/new)
   with its output, your laptop model, and Linux distribution; or
-- Submit a PR adding the ID to `drivers/goodix53x5/goodix53x5.c` and the Goodix
-  entries in `meson-integration.patch`, with probe and hardware-test results.
+- Submit a PR adding the ID, with probe and hardware-test results, to:
+  - `drivers/goodix53x5/goodix53x5.c` (driver ID table)
+  - `meson-integration.patch` (hwdb supported/unsupported blocks and the
+    `fprint-list-udev-hwdb.c` allowlist)
+  - `udev/99-goodix53x5-milan-persist.rules` (USB persistence across
+    hibernation)
+  - `scripts/goodix53x5-detect.c` (detector's supported-ID check)
 
 ## How Milan Works
 
