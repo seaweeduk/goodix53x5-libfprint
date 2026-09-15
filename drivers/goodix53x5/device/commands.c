@@ -164,6 +164,15 @@ goodix_recv_reply (FpiSsm *ssm, FpDevice *dev, guint timeout)
   goodix_transport_wait_reply (dev, timeout, goodix_command_done, completion);
 }
 
+void
+goodix_recv_mcu (FpiSsm *ssm, FpDevice *dev, guint timeout, gsize length)
+{
+  GoodixCommandCompletion *completion = g_new0 (GoodixCommandCompletion, 1);
+
+  completion->ssm = ssm;
+  goodix_transport_wait_mcu (dev, timeout, length, goodix_command_done, completion);
+}
+
 /* ========================================================================
  * Payload builders
  * ======================================================================== */

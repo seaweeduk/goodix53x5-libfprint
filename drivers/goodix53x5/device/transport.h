@@ -61,6 +61,9 @@ void goodix_transport_wait_event (FpDevice *dev, GoodixProfile9FdtWaitMode mode,
                                    GoodixTransportDone done, gpointer data);
 void goodix_transport_wait_reply (FpDevice *dev, guint timeout,
                                    GoodixTransportDone done, gpointer data);
+void goodix_transport_wait_mcu (FpDevice *dev, guint timeout, gsize length,
+                                GoodixTransportDone done, gpointer data);
+void goodix_transport_reset_mcu (FpDevice *dev);
 void goodix_transport_cancel_event (FpDevice *dev);
 /* Foreground and CPU work must already be settled. Join optional idle IN;
  * this is not a policy to cancel outstanding commands or CPU work. */
