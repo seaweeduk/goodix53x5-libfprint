@@ -36,16 +36,20 @@ the production count. Graph establishment on the last requested stage is visible
 immediately because the stage update writes `f2/f5` before returning; it is not
 deferred to this accessor or to packing.
 
+If the first graph is established by an insertion at the requested count and
+adapter policy subsequently deletes that incoming feature, deletion retains the
+graph whenever its reference is an earlier feature. The borrowed handle can
+therefore have `f5=1`, one active surviving reference, and no serializable
+reference edge while its used count has returned below the request. Retrieval
+still succeeds; only the completion caller's separate count gate prevents
+publication as a completed enrollment. A later accepted retry can restore the
+newest reference edge without establishing the graph a second time.
+The retained graph and pair-score ownership belong to `FUN_180037a30`;
+`enrolDeleteImage` owns the corresponding used-count/progress rewind.
+
 ## Evidence
 
 - Session validation and handle copy: `0x180001a0c..0x180001a1f`.
 - Invalid-session return: `0x180001a2c..0x180001a38`.
 - Absence of output validation is visible at the unconditional store through
   `RDI` at `0x180001a1c`.
-
-## Confidence And Unresolved
-
-- Confidence: high for handle indirection, borrowed ownership, and absence of
-  graph validation.
-- Unresolved: whether callers outside the observed graph rely on retrieval
-  before requested-count completion.

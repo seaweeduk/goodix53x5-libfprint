@@ -99,8 +99,30 @@ sends type `0xff03`, and receives type `0xff04`. Both sends use
 no response wait, then unconditionally calls `Sleep(2)`. The nominal two-send
 client sequence therefore contains two fixed 2-ms post-send sleeps. The
 `Sleep(5)` in `FUN_180007ee0` is conditional on its handshake wrapper returning
-the in-progress error, and its `Sleep(10)` occurs only before retrying a failed
-initialization or handshake attempt.
+the in-progress error. Its `Sleep(10)` follows each failed initialization or
+handshake attempt, including the third/final attempt before returning failure.
+
+The client step's completion admission requires an actual twelve-byte read,
+type `0xff04`, and a declared total length of twelve; it does not inspect the
+last four bytes as a result code. The step initializes both counters and state
+five only after these predicates. See the owning
+[client handshake contract](usbinterface-FUN_180025400.md) for state, error and
+re-establishment ownership.
+
+At the selected-PSK full-init boundary `0x180020c38`, the worker calls the
+three-attempt wrapper at `0x180020c49`. Nonzero return takes the absolute-value
+comparison against `0x700003` at `0x180020c57`; only that identity error calls
+the production-item cache clear at `0x180020c5e`. Every first-wrapper failure
+then calls the wrapper once more at `0x180020c6d`. The resume boundary repeats
+the same branches at `0x180020e7c`, `0x180020e8e`, `0x180020e95` and
+`0x180020ea4`. Thus either `deviceInit` route permits six handshake attempts,
+in two groups of three, with no sensor/USB reset, chip rediscovery, calibration
+reload or PSK reselection between groups. Success exits the group loop
+immediately. A second-wrapper failure leaves GTLS completion zero and takes
+the route-specific postlude, not another whole-device initialization. The
+full-init postlude still publishes initialized byte `+0x110`; see the
+initialization-predicate boundary below. The direct restart entry
+`FUN_1800210c0` has one wrapper call, hence at most three attempts.
 
 ## Initial Image-Base Path
 
@@ -220,7 +242,7 @@ versus resume predicate. The full-initialization tail sets that byte to one at
 Image-base validation rejection does not bypass that publication.
 
 The same final sleep/publication block is also reached from
-`0x180020cae` when both initial GTLS handshake attempts fail after
+`0x180020cae` when both initial three-attempt GTLS wrapper calls fail after
 `device_enable` has created the HAL. This edge precedes actions `0x0a` and
 `0x0c`: it requests mode 2 and writes `+0x110 = 1` at `0x180020ded` while the
 fresh HAL image-valid and base-valid bytes are still clear and no hardware base

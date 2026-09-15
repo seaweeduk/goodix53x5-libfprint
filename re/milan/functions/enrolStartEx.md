@@ -24,8 +24,22 @@ For the profile-9 table row `[1,0,0,800,88,108,12]`, the packed word is
 `108`, then applies subtype-12 match normalization to columns `104`. The live
 template therefore begins `[12,104,88,1,1,150,150]`.
 
-## Evidence And Confidence
+## Mode-0 Session Ownership
+
+The export returns the allocated 32-byte session pointer in `RAX`, rather than
+a status code. Its first qword owns an eight-byte wrapper whose first qword is
+the public template handle; that handle in turn points to the live template.
+Session `+0x08` stores the requested signed16 count, `+0x0a` starts at zero,
+and the progress/overlap dwords `+0x0c..+0x14` start at zero.
+
+The first argument is an in/out physical-capacity pointer. The export initially
+caps it at 50, passes that capacity to `FUN_180037c80`, then replaces it with
+the resulting template maximum. In mode zero, the third argument is the
+independent requested count; a negative value or a value above the physical
+maximum rejects construction. Requested count zero is not rejected here.
+Successful construction returns the session at `0x1800012af`; allocation and
+configuration failure paths return null. `enrolFinish` owns teardown.
+
+## Instruction Anchors
 
 - Profile-global packing and `FUN_180037c80` call: `0x180001135..0x1800011e6`.
-- Confidence is high for the profile-to-template provenance and decoded fields.
-- Enrollment option semantics unrelated to geometry remain unnamed.
