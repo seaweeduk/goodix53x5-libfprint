@@ -33,6 +33,7 @@
 
 /* USB chunk size */
 #define GOODIX_USB_CHUNK_SIZE 64
+#define GOODIX_MCU_RX_SIZE (0x40000)
 
 #define GOODIX_PROTO_CATEGORY_ACK     0x0B
 #define GOODIX_PROTO_CMD_ACK          0x00
@@ -79,6 +80,7 @@ struct _GoodixTransport
   guint                     attempt;
   guint                     ack_timeout_ms;
   guint                     response_timeout_ms;
+  gsize                     mcu_length;
 };
 
 static void goodix_transport_send (GoodixTransport *operation);
@@ -112,6 +114,7 @@ goodix_cmd_set_budgets (GoodixTransport *operation)
       G_GNUC_FALLTHROUGH;
 
     case 0x00: /* Startup mode */
+    case 0xd2: /* GTLS MCU send */
       operation->ack_timeout_ms = 500;
       break;
 
@@ -414,6 +417,32 @@ goodix_transport_new (FpDevice             *dev,
   return operation;
 }
 
+/* Consume one coalesced MCU signal, retaining any unread stream suffix. */
+static gboolean
+goodix_transport_take_mcu (GoodixTransport *operation)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (operation->dev);
+  gsize count;
+
+  if (operation->phase != GOODIX_TRANSPORT_REPLY || !self->mcu_ready)
+    return FALSE;
+
+  count = self->mcu_rx ? self->mcu_rx->len : 0;
+  if (operation->mcu_length)
+    count = MIN (count, operation->mcu_length);
+  g_clear_pointer (&self->mcu_reply, g_bytes_unref);
+  self->mcu_reply = g_bytes_new (count ? self->mcu_rx->data : NULL, count);
+  if (count)
+    g_byte_array_remove_range (self->mcu_rx, 0, count);
+  self->mcu_ready = FALSE;
+  self->reply_valid = TRUE;
+  self->reply_category = 0x0d;
+  self->reply_command = 1;
+  self->reply_payload = g_bytes_get_data (self->mcu_reply, &self->reply_payload_len);
+  goodix_transport_complete (operation, NULL);
+  return TRUE;
+}
+
 /* Start a new packet wait, retaining only a partial inherited from idle. */
 static void
 goodix_transport_receive (GoodixTransport *operation, guint timeout)
@@ -422,6 +451,9 @@ goodix_transport_receive (GoodixTransport *operation, guint timeout)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiUsbTransfer *transfer;
 
+  if (goodix_transport_take_mcu (operation))
+    return;
+  g_clear_pointer (&self->mcu_reply, g_bytes_unref);
   operation->timeout_ms = timeout;
   if (!self->rx_idle_partial)
     goodix_proto_rx_reset (&self->rx);
@@ -497,7 +529,8 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
   GoodixTransport *operation = user_data;
   FpiUsbTransfer *next;
   gboolean fixed_deadline = operation->phase == GOODIX_TRANSPORT_ACK ||
-    (operation->phase == GOODIX_TRANSPORT_RESPONSE && operation->response_bit);
+    (operation->phase == GOODIX_TRANSPORT_RESPONSE && operation->response_bit) ||
+    (operation->phase == GOODIX_TRANSPORT_REPLY && operation->mcu_length);
 
   g_assert (self->transport == operation);
 
@@ -546,6 +579,20 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
 
       if (self->reply_valid)
         {
+          if (category == 0x0d)
+            {
+              /* Parser publication is independent of command, ACK, and GTLS
+               * state. Preserve the native bounded byte stream and event. */
+              if (!self->mcu_rx)
+                self->mcu_rx = g_byte_array_new ();
+              g_byte_array_append (self->mcu_rx, payload,
+                                   MIN (payload_len, GOODIX_MCU_RX_SIZE - self->mcu_rx->len));
+              self->mcu_ready = TRUE;
+              goodix_proto_rx_reset (&self->rx);
+              if (goodix_transport_take_mcu (operation))
+                return;
+              goto receive_more;
+            }
           guint8 bit = category == 3 && command == 3 ? 1 :
                        category == 9 && command == 0 ? 2 :
                        category == 0x0a && (command == 0 || command == 1 || command == 4) ? 4 : 0;
@@ -697,6 +744,12 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
             }
           return;
         }
+      if (operation->phase == GOODIX_TRANSPORT_REPLY && operation->mcu_length)
+        {
+          /* A bounded MCU read observes only the category-D ring signal. */
+          goodix_proto_rx_reset (&self->rx);
+          goto receive_more;
+        }
       if (operation->phase == GOODIX_TRANSPORT_EVENT)
         {
           GoodixFdtNotification *pending = &self->pending_fdt;
@@ -753,11 +806,27 @@ receive_more:
 }
 
 void
+goodix_transport_reset_mcu (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  g_assert (!self->transport);
+  if (self->mcu_rx)
+    g_byte_array_set_size (self->mcu_rx, 0);
+  g_clear_pointer (&self->mcu_reply, g_bytes_unref);
+  self->reply_valid = FALSE;
+  /* The native attempt resets ring indices, not the auto-reset event. */
+}
+
+void
 goodix_transport_invalidate (FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
   g_assert (!self->transport);
+  g_clear_pointer (&self->mcu_rx, g_byte_array_unref);
+  g_clear_pointer (&self->mcu_reply, g_bytes_unref);
+  self->mcu_ready = FALSE;
   if (self->rx.buf)
     goodix_proto_rx_reset (&self->rx);
   self->reply_valid = FALSE;
@@ -865,6 +934,7 @@ static void
 goodix_transport_wait (FpDevice                  *dev,
                         GoodixTransportPhase       phase,
                         guint                      timeout,
+                        gsize                      mcu_length,
                         GoodixProfile9FdtWaitMode  mode,
                         GoodixTransportDone        done,
                         gpointer                   data)
@@ -880,6 +950,7 @@ goodix_transport_wait (FpDevice                  *dev,
       return;
     }
   operation = goodix_transport_new (dev, phase, done, data);
+  operation->mcu_length = mcu_length;
   operation->event_mode = mode;
   operation->deadline_us = timeout ? g_get_monotonic_time () + timeout * 1000LL : 0;
   if (phase == GOODIX_TRANSPORT_EVENT)
@@ -900,7 +971,7 @@ goodix_transport_wait_event (FpDevice                  *dev,
                               GoodixTransportDone       done,
                               gpointer                  data)
 {
-  goodix_transport_wait (dev, GOODIX_TRANSPORT_EVENT, 0, mode, done, data);
+  goodix_transport_wait (dev, GOODIX_TRANSPORT_EVENT, 0, 0, mode, done, data);
 }
 
 void
@@ -909,7 +980,18 @@ goodix_transport_wait_reply (FpDevice           *dev,
                               GoodixTransportDone done,
                               gpointer            data)
 {
-  goodix_transport_wait (dev, GOODIX_TRANSPORT_REPLY, timeout,
+  goodix_transport_wait (dev, GOODIX_TRANSPORT_REPLY, timeout, 0,
+                         GOODIX_PROFILE9_FDT_WAIT_NONE, done, data);
+}
+
+void
+goodix_transport_wait_mcu (FpDevice           *dev,
+                           guint               timeout,
+                           gsize               length,
+                           GoodixTransportDone done,
+                           gpointer            data)
+{
+  goodix_transport_wait (dev, GOODIX_TRANSPORT_REPLY, timeout, length,
                          GOODIX_PROFILE9_FDT_WAIT_NONE, done, data);
 }
 

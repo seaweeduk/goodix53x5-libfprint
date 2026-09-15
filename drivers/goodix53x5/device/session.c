@@ -562,6 +562,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
           }
 
         /* Generate client_random and send via MCU */
+        goodix_transport_reset_mcu (dev);
         RAND_bytes (self->gtls.client_random, 32);
         goodix_crypto_gtls_init (&self->gtls, self->psk);
         RAND_bytes (self->gtls.client_random, 32);
@@ -573,7 +574,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_OPEN_GTLS_RECV_IDENTITY:
       /* Receive MCU message with server random + identity */
-      goodix_recv_reply (ssm, dev, GOODIX_DATA_TIMEOUT);
+      goodix_recv_mcu (ssm, dev, 2000, 72);
       break;
 
     case GOODIX_OPEN_GTLS_SEND_VERIFY:
@@ -629,7 +630,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_OPEN_GTLS_RECV_DONE:
       /* Receive MCU done message */
-      goodix_recv_reply (ssm, dev, GOODIX_DATA_TIMEOUT);
+      goodix_recv_mcu (ssm, dev, 2000, 12);
       break;
 
     case GOODIX_OPEN_UPLOAD_CONFIG:

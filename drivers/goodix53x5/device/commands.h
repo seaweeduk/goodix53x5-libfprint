@@ -70,6 +70,7 @@ void goodix_cmd_mcu_send (FpiSsm *ssm, FpDevice *dev, guint32 data_type,
 
 /* Post-MCU-ACK GTLS wait; advance the SSM once its ordinary reply is ready. */
 void goodix_recv_reply (FpiSsm *ssm, FpDevice *dev, guint timeout);
+void goodix_recv_mcu (FpiSsm *ssm, FpDevice *dev, guint timeout, gsize length);
 
 /* Upload the (patched) sensor config blob. Waits for the configuration event;
  * its payload is not a success flag. */
