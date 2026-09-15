@@ -21,18 +21,18 @@ typedef struct
   int32_t metric1;
   int32_t metric4;
   int32_t metric5;
-  int32_t metric8;
+  int32_t metric9;
   int32_t initial_sum;
   int32_t initial_count;
-  int32_t winner4;
+  int32_t winner5;
   int32_t winner1;
-  int32_t winner8;
+  int32_t winner9;
   int expected_status;
   int32_t expected_sum;
   int32_t expected_count;
-  int32_t expected_winner4;
+  int32_t expected_winner5;
   int32_t expected_winner1;
-  int32_t expected_winner8;
+  int32_t expected_winner9;
   int expected_replaced;
   int32_t expected_term;
 } SelectionCase;
@@ -43,15 +43,15 @@ test_selection_rows (void)
   static const int32_t identity[6] = { 256, 0, 0, 0, 256, 0 };
   static const SelectionCase cases[] = {
     { "positive", 0, 10, 208, 196, 10, 0, 0, 0, 0, 0,
-      1, 61, 1, 208, 10, 10, 1, 61 },
+      1, 61, 1, 196, 10, 10, 1, 61 },
     { "metric4-boundary", 0, 10, 207, 196, 10, 5, 1, 300, 20, 30,
       0, 5, 1, 300, 20, 30, 0, 0 },
     { "metric5-boundary", 0, 10, 208, 195, 10, 5, 1, 300, 20, 30,
       0, 5, 1, 300, 20, 30, 0, 0 },
-    { "winner", 0, 10, 210, 200, 30, 5, 1, 209, 20, 30,
-      1, 66, 2, 210, 10, 30, 1, 61 },
-    { "tie", 0, 10, 210, 200, 30, 5, 1, 210, 10, 30,
-      1, 66, 2, 210, 10, 30, 0, 61 },
+    { "winner", 0, 10, 210, 200, 30, 5, 1, 199, 20, 30,
+      1, 66, 2, 200, 10, 30, 1, 61 },
+    { "tie", 0, 10, 210, 200, 30, 5, 1, 200, 10, 30,
+      1, 66, 2, 200, 10, 30, 0, 61 },
     { "positive-wrap", 1, 8388607, 0, 0, 0, 2147483640, 1, 0, 0, 0,
       1, -2096353099, 2, 0, 8388607, 0, 1, 51130557 },
     { "negative-wrap", 1, 8388608, 0, 0, 0, 0, INT32_MAX, 0, 0, 0,
@@ -70,13 +70,13 @@ test_selection_rows (void)
       selection.q8_sum = test->initial_sum;
       selection.q8_contributor_count = test->initial_count;
       selection.winner_valid = test->initial_count != 0;
-      selection.winner_metrics[4] = test->winner4;
+      selection.winner_metrics[5] = test->winner5;
       selection.winner_metrics[1] = test->winner1;
-      selection.winner_metrics[8] = test->winner8;
+      selection.winner_metrics[9] = test->winner9;
       metrics[1] = test->metric1;
       metrics[4] = test->metric4;
       metrics[5] = test->metric5;
-      metrics[8] = test->metric8;
+      metrics[9] = test->metric9;
 
       status = goodix_milan_match_selection_contribute (
         &selection, metrics, identity, 2, 0, 0, test->candidate_flag, &event);
@@ -85,12 +85,12 @@ test_selection_rows (void)
       g_assert_cmpint (selection.q8_sum, ==, test->expected_sum);
       g_assert_cmpint (selection.q8_contributor_count,
                        ==, test->expected_count);
-      g_assert_cmpint (selection.winner_metrics[4],
-                       ==, test->expected_winner4);
+      g_assert_cmpint (selection.winner_metrics[5],
+                       ==, test->expected_winner5);
       g_assert_cmpint (selection.winner_metrics[1],
                        ==, test->expected_winner1);
-      g_assert_cmpint (selection.winner_metrics[8],
-                       ==, test->expected_winner8);
+      g_assert_cmpint (selection.winner_metrics[9],
+                       ==, test->expected_winner9);
       g_assert_cmpint (event.winner_replaced, ==, test->expected_replaced);
       g_assert_cmpint (event.q8_term, ==, test->expected_term);
     }

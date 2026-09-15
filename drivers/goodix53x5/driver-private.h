@@ -95,12 +95,17 @@ struct _FpiDeviceGoodix53x5
 
   /* Reassembly buffer for multi-chunk reads */
   GoodixReassembly rx;
-  /* Validated view of the last complete packet, borrowed until RX reset. */
+  /* Validated borrowed view, consumed before the next receive/invalidation. */
   gboolean         reply_valid;
   guint8           reply_category;
   guint8           reply_command;
   const guint8    *reply_payload;
   gsize            reply_payload_len;
+  /* Category-D stream and coalesced receive signal survive ACK ownership.
+   * The selected view remains owned until the next receive or invalidation. */
+  GByteArray      *mcu_rx;
+  GBytes          *mcu_reply;
+  gboolean         mcu_ready;
   /* Demand-driven physical IN/OUT and the accepted foreground operation. */
   GoodixTransport *transport;
 
@@ -126,6 +131,7 @@ struct _FpiDeviceGoodix53x5
   gboolean               open_ref_powered;
   gboolean               open_usb_reset_required;
   gboolean               open_recovery_attempted;
+  gboolean               open_gtls_failed;
 
   /* OTP raw data */
   guint8 *otp_data;

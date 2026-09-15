@@ -48,9 +48,6 @@ typedef enum {
   GOODIX_OPEN_WRITE_PSK,
   GOODIX_OPEN_VERIFY_PSK_WRITE,
   GOODIX_OPEN_GTLS_CLIENT_HELLO,
-  GOODIX_OPEN_GTLS_RECV_IDENTITY,
-  GOODIX_OPEN_GTLS_SEND_VERIFY,
-  GOODIX_OPEN_GTLS_RECV_DONE,
   GOODIX_OPEN_UPLOAD_CONFIG,
   GOODIX_OPEN_VALIDATE_CONFIG,
   GOODIX_OPEN_CAPTURE_REF,
@@ -90,12 +87,6 @@ goodix_open_state_name (GoodixOpenState state)
       return "verify_psk_write";
     case GOODIX_OPEN_GTLS_CLIENT_HELLO:
       return "gtls_client_hello";
-    case GOODIX_OPEN_GTLS_RECV_IDENTITY:
-      return "gtls_recv_identity";
-    case GOODIX_OPEN_GTLS_SEND_VERIFY:
-      return "gtls_send_verify";
-    case GOODIX_OPEN_GTLS_RECV_DONE:
-      return "gtls_recv_done";
     case GOODIX_OPEN_UPLOAD_CONFIG:
       return "upload_config";
     case GOODIX_OPEN_VALIDATE_CONFIG:
@@ -292,6 +283,168 @@ goodix_probe_ssm_handler (FpiSsm *ssm, FpDevice *dev)
         fpi_ssm_jump_to_state (ssm, GOODIX_PROBE_PING);
       break;
     }
+}
+
+typedef enum {
+  GOODIX_GTLS_HELLO,
+  GOODIX_GTLS_IDENTITY,
+  GOODIX_GTLS_VERIFY,
+  GOODIX_GTLS_COMPLETION,
+  GOODIX_GTLS_READY,
+  GOODIX_GTLS_NUM_STATES,
+} GoodixGtlsState;
+
+typedef struct {
+  guint attempt;
+  GError *error;
+} GoodixGtlsRetry;
+
+static void
+goodix_gtls_retry_free (GoodixGtlsRetry *retry)
+{
+  g_clear_error (&retry->error);
+  g_free (retry);
+}
+
+static void
+goodix_gtls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  const guint8 *mcu_data;
+  gsize mcu_len;
+  g_autoptr(GError) error = NULL;
+
+  if (g_cancellable_set_error_if_cancelled (fpi_device_get_cancellable (dev), &error))
+    {
+      fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+      return;
+    }
+
+  switch ((GoodixGtlsState) fpi_ssm_get_cur_state (ssm))
+    {
+    case GOODIX_GTLS_HELLO:
+      goodix_transport_reset_mcu (dev);
+      RAND_bytes (self->gtls.client_random, 32);
+      goodix_crypto_gtls_init (&self->gtls, self->psk);
+      RAND_bytes (self->gtls.client_random, 32);
+      goodix_cmd_mcu_send (ssm, dev, 0xFF01, self->gtls.client_random, 32);
+      break;
+
+    case GOODIX_GTLS_IDENTITY:
+      self->gtls.state = 2;
+      goodix_recv_mcu (ssm, dev, 2000, 72);
+      break;
+
+    case GOODIX_GTLS_VERIFY:
+      if (!goodix_cmd_parse_mcu_reply (dev, 0xFF02, &mcu_data, &mcu_len) || mcu_len != 64)
+        {
+          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                                FP_DEVICE_ERROR_PROTO, "Invalid GTLS server identity"));
+          return;
+        }
+      memcpy (self->gtls.server_random, mcu_data, 32);
+      memcpy (self->gtls.server_identity, mcu_data + 32, 32);
+      goodix_crypto_gtls_derive_keys (&self->gtls);
+      if (!goodix_crypto_gtls_verify_identity (&self->gtls))
+        {
+          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                                FP_DEVICE_ERROR_PROTO, "GTLS identity verification failed"));
+          return;
+        }
+      {
+        guint8 verify_data[36];
+
+        memcpy (verify_data, self->gtls.client_identity, 32);
+        memset (verify_data + 32, 0xEE, 4);
+        goodix_cmd_mcu_send (ssm, dev, 0xFF03, verify_data, 36);
+      }
+      break;
+
+    case GOODIX_GTLS_COMPLETION:
+      self->gtls.state = 4;
+      goodix_recv_mcu (ssm, dev, 2000, 12);
+      break;
+
+    case GOODIX_GTLS_READY:
+      if (!goodix_cmd_parse_mcu_reply (dev, 0xFF04, &mcu_data, &mcu_len))
+        {
+          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                                FP_DEVICE_ERROR_PROTO, "Failed to parse GTLS done"));
+          return;
+        }
+      /* The native completion is exactly twelve bytes including the MCU
+       * header. Its four trailing bytes are not a result code. */
+      if (mcu_len != 4)
+        {
+          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                                FP_DEVICE_ERROR_PROTO, "Wrong GTLS done payload size: %zu", mcu_len));
+          return;
+        }
+      self->gtls.hmac_client_counter = self->gtls.hmac_client_counter_init;
+      self->gtls.hmac_server_counter = self->gtls.hmac_server_counter_init;
+      self->gtls.state = 5;
+      fpi_ssm_next_state (ssm);
+      break;
+
+    case GOODIX_GTLS_NUM_STATES:
+      g_assert_not_reached ();
+    }
+}
+
+static void
+goodix_gtls_attempt_done (FpiSsm *attempt, FpDevice *dev, GError *error)
+{
+  FpiSsm *ssm = fpi_ssm_get_data (attempt);
+  GoodixGtlsRetry *retry = fpi_ssm_get_data (ssm);
+
+  if (!error)
+    {
+      fpi_ssm_mark_completed (ssm);
+      return;
+    }
+  /* Host cancellation, removal and ownership rejection are terminal. Ordinary
+   * native send/read/protocol failure retries the selected-PSK handshake only. */
+  if (!(g_error_matches (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO) ||
+        g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO) ||
+        g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_FAILED) ||
+        g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_NOT_SUPPORTED) ||
+        g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_INTERNAL) ||
+        g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT)))
+    {
+      FPI_DEVICE_GOODIX53X5 (dev)->open_gtls_failed = TRUE;
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+  retry->error = error;
+  /* deviceInit calls the three-attempt wrapper once more after failure, without
+   * reset or PSK reload. Linux has no production-item cache to clear between
+   * those groups. Each failed attempt, including the last, sleeps ten ms. */
+  fpi_ssm_jump_to_state_delayed (ssm, retry->attempt < 6 ? 0 : 1, 10);
+}
+
+static void
+goodix_gtls_retry_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  GoodixGtlsRetry *retry = fpi_ssm_get_data (ssm);
+  g_autoptr(GError) error = NULL;
+
+  if (g_cancellable_set_error_if_cancelled (fpi_device_get_cancellable (dev), &error))
+    {
+      fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+      return;
+    }
+  if (fpi_ssm_get_cur_state (ssm) == 1)
+    {
+      FPI_DEVICE_GOODIX53X5 (dev)->open_gtls_failed = TRUE;
+      fpi_ssm_mark_failed (ssm, g_steal_pointer (&retry->error));
+      return;
+    }
+  g_clear_error (&retry->error);
+  retry->attempt++;
+  FpiSsm *attempt = fpi_ssm_new (dev, goodix_gtls_ssm_handler, GOODIX_GTLS_NUM_STATES);
+
+  fpi_ssm_set_data (attempt, ssm, NULL);
+  fpi_ssm_start (attempt, goodix_gtls_attempt_done);
 }
 
 static void
@@ -561,111 +714,17 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
             self->psk_write_verify_pending = FALSE;
           }
 
-        /* Generate client_random and send via MCU */
-        RAND_bytes (self->gtls.client_random, 32);
-        goodix_crypto_gtls_init (&self->gtls, self->psk);
-        RAND_bytes (self->gtls.client_random, 32);
-        self->gtls.state = 2;
+        FpiSsm *sub = fpi_ssm_new (dev, goodix_gtls_retry_handler, 2);
 
-        goodix_cmd_mcu_send (ssm, dev, 0xFF01, self->gtls.client_random, 32);
+        self->open_gtls_failed = FALSE;
+        fpi_ssm_set_data (sub, g_new0 (GoodixGtlsRetry, 1),
+                          (GDestroyNotify) goodix_gtls_retry_free);
+        fpi_ssm_start_subsm (ssm, sub);
       }
-      break;
-
-    case GOODIX_OPEN_GTLS_RECV_IDENTITY:
-      /* Receive MCU message with server random + identity */
-      goodix_recv_reply (ssm, dev, GOODIX_DATA_TIMEOUT);
-      break;
-
-    case GOODIX_OPEN_GTLS_SEND_VERIFY:
-      {
-        /* Parse server identity response */
-        const guint8 *mcu_data;
-        gsize mcu_len;
-
-        if (!goodix_cmd_parse_mcu_reply (dev, 0xFF02, &mcu_data, &mcu_len))
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Failed to parse GTLS server identity"));
-            return;
-          }
-
-        if (mcu_len != 0x40)
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Wrong GTLS identity payload size: %zu",
-                                                           mcu_len));
-            return;
-          }
-
-        memcpy (self->gtls.server_random, mcu_data, 32);
-        memcpy (self->gtls.server_identity, mcu_data + 32, 32);
-
-        /* Derive session keys */
-        goodix_crypto_gtls_derive_keys (&self->gtls);
-
-        /* Verify identity */
-        if (!goodix_crypto_gtls_verify_identity (&self->gtls))
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "GTLS identity verification failed"));
-            return;
-          }
-
-        /* Send client identity + \xee\xee\xee\xee via MCU */
-        {
-          guint8 verify_data[36];
-          memcpy (verify_data, self->gtls.client_identity, 32);
-          memset (verify_data + 32, 0xEE, 4);
-
-          goodix_cmd_mcu_send (ssm, dev, 0xFF03, verify_data, 36);
-        }
-
-        self->gtls.state = 4;
-      }
-      break;
-
-    case GOODIX_OPEN_GTLS_RECV_DONE:
-      /* Receive MCU done message */
-      goodix_recv_reply (ssm, dev, GOODIX_DATA_TIMEOUT);
       break;
 
     case GOODIX_OPEN_UPLOAD_CONFIG:
       {
-        /* First validate GTLS done response */
-        {
-          const guint8 *mcu_data;
-          gsize mcu_len;
-
-          if (!goodix_cmd_parse_mcu_reply (dev, 0xFF04, &mcu_data, &mcu_len))
-            {
-              fpi_ssm_mark_failed (ssm,
-                                   fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                             "Failed to parse GTLS done"));
-              return;
-            }
-
-          if (mcu_len >= 4)
-            {
-              guint32 result = mcu_data[0] | ((guint32) mcu_data[1] << 8) |
-                               ((guint32) mcu_data[2] << 16) |
-                               ((guint32) mcu_data[3] << 24);
-              if (result != 0)
-                {
-                  fpi_ssm_mark_failed (ssm,
-                                       fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                                 "GTLS handshake failed: %u",
-                                                                 result));
-                  return;
-                }
-            }
-        }
-
-        self->gtls.hmac_client_counter = self->gtls.hmac_client_counter_init;
-        self->gtls.hmac_server_counter = self->gtls.hmac_server_counter_init;
-        self->gtls.state = 5;
         self->open_ref_powered = FALSE;
 
         fp_info ("GTLS handshake completed");
@@ -776,7 +835,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
       goodix_debug_timing_open_done (self, dev, error->message);
       fpi_device_report_finger_status (dev, FP_FINGER_STATUS_NONE);
 
-      if (!self->open_recovery_attempted &&
+      if (!self->open_recovery_attempted && !self->open_gtls_failed &&
           !fpi_device_action_is_cancelled (dev) &&
           !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
           error->domain != FP_DEVICE_RETRY)
@@ -830,6 +889,7 @@ goodix_start_open_ssm (FpDevice *dev)
 
   g_clear_object (&self->cancel);
   self->cancel = g_cancellable_new ();
+  self->open_gtls_failed = FALSE;
   ssm = fpi_ssm_new_full (dev, goodix_open_ssm_handler,
                           GOODIX_OPEN_NUM_STATES,
                           GOODIX_OPEN_SLEEP,
@@ -855,6 +915,7 @@ goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
   self->action_epoch++;
   goodix_milan_generation_invalidate (&self->milan_generation);
   self->open_recovery_attempted = FALSE;
+  self->open_gtls_failed = FALSE;
   self->open_usb_reset_required = TRUE;
 
   if (self->usb_interface_claimed)

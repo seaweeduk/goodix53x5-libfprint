@@ -60,7 +60,7 @@ static int
 selection_rank_better (const int32_t candidate[77],
                        const int32_t winner[77])
 {
-  static const int rank_fields[] = { 4, 1, 8 };
+  static const int rank_fields[] = { 5, 1, 9 };
 
   for (size_t i = 0; i < sizeof(rank_fields) / sizeof(rank_fields[0]); i++)
     if (candidate[rank_fields[i]] != winner[rank_fields[i]])
