@@ -131,6 +131,7 @@ struct _FpiDeviceGoodix53x5
   gboolean               open_ref_powered;
   gboolean               open_usb_reset_required;
   gboolean               open_recovery_attempted;
+  gboolean               open_gtls_failed;
 
   /* OTP raw data */
   guint8 *otp_data;
