@@ -261,6 +261,8 @@ def remove(root):
               file=sys.stderr)
     else:
         mapped(root, INVENTORY).unlink()
+        if not any(mapped(root, META).iterdir()):
+            mapped(root, META).rmdir()
     # Shared directories and everything under /var/lib/fprint are left alone.
 
 
