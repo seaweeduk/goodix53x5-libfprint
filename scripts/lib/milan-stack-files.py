@@ -186,10 +186,10 @@ def preflight(payload, root):
     old_names = {item["path"] for item in old} | ({INVENTORY} if old else set())
     new_names = {item["path"] for item in new} | {INVENTORY}
     package_conflicts(new_names | old_names)
-    for name in sorted(new_names - old_names):
-        path = mapped(root, name)
-        if path.exists() or path.is_symlink():
-            fail(f"refusing unmanaged destination: {name}")
+    unmanaged = [name for name in sorted(new_names - old_names)
+                 if mapped(root, name).exists() or mapped(root, name).is_symlink()]
+    if unmanaged:
+        fail("refusing unmanaged destinations; remove them first:\n" + "\n".join(unmanaged))
     for old_path in OLD_LAYOUT:
         if (root / old_path).exists() or (root / old_path).is_symlink():
             fail("the previous /opt installation is still present; remove it with its uninstall script first")
