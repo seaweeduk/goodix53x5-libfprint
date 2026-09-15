@@ -93,8 +93,10 @@ def write_inventory(root, records):
     document = {"format": FORMAT, "managed_by": MANAGED_BY, "files": records}
     path = mapped(root, INVENTORY)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document, indent=2) + "\n")
-    path.chmod(0o644)
+    temp = path.with_suffix(".json.tmp")
+    temp.write_text(json.dumps(document, indent=2) + "\n")
+    temp.chmod(0o644)
+    os.replace(temp, path)  # never leave a torn inventory behind
 
 
 def read_inventory(root):
