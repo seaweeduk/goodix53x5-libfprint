@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and install the complete paired Milan libfprint/fprintd shadow stack.
+# Build and manually install paired libfprint and full fprintd in system paths.
 
 set -euo pipefail
 

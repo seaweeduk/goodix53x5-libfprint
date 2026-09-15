@@ -123,9 +123,13 @@ Create the fresh drop-in with the new dump path before installing the debug
 stack:
 
 ```sh
+build_env=~/.local/state/goodix53x5-milan/builds/current/payload/usr/share/goodix53x5-milan/build.env
+build_id="$(grep '^GOODIX53X5_DEBUG_BUILD_ID=' "$build_env" | cut -d= -f2-)"
+test "${#build_id}" -eq 64
 sudo install -d -m 0755 /etc/systemd/system/fprintd.service.d
 sudo tee /etc/systemd/system/fprintd.service.d/99-goodix53x5-parity-capture.conf >/dev/null <<EOF
 [Service]
+ExecCondition=/usr/bin/grep -qx GOODIX53X5_DEBUG_BUILD_ID=$build_id /usr/share/goodix53x5-milan/build.env
 Environment=G_MESSAGES_DEBUG=libfprint-goodix53x5
 Environment=GOODIX53X5_DUMP_DIR=$dump
 Environment=GOODIX53X5_DUMP_PROBES=all
@@ -142,8 +146,9 @@ sudo ./scripts/install-milan-stack-local.sh
 systemctl show fprintd.service --property=Environment --value
 ```
 
-The drop-in persists across fprintd restarts and reboots. Do not remove it until
-the capture is deliberately retired. `GOODIX53X5_DUMP_PROBES=all` and
+The `ExecCondition` line stops any other build from starting into this
+campaign's dump directory. The drop-in persists across fprintd restarts and
+reboots. Do not remove it until the capture is deliberately retired. `GOODIX53X5_DUMP_PROBES=all` and
 `GOODIX53X5_DUMP_TEMPLATES=1` are required for full exact parity. TX-on setup
 candidates are emitted whenever the dump directory is configured; TX-off
 reference frames are not replay setup.
@@ -161,17 +166,18 @@ logging option. Probe images remain separately controlled by
 First confirm the installed library is the current debug build:
 
 ```sh
-grep '^GOODIX53X5_DEBUG=1$' /opt/goodix53x5-milan/manifest/build.env
-strings /opt/goodix53x5-milan/lib/libfprint-2.so.2.0.0 | \
-  grep 'goodix53x5-runtime-debug/v3'
+grep '^GOODIX53X5_DEBUG=1$' /usr/share/goodix53x5-milan/build.env
+library="$(grep '^LIBRARY_PATH=' /usr/share/goodix53x5-milan/build.env | cut -d= -f2-)"
+strings "$library" | grep 'goodix53x5-runtime-debug/v3'
 ```
 
-Both checks must match. Then create a fresh manifest from the installed library:
+Both checks must match. Then create a fresh manifest from the installed library
+before enrolling or verifying anything:
 
 ```sh
 ./tools/milan-parity/milan-parity build-manifest \
   --repo "$PWD" \
-  --library /opt/goodix53x5-milan/lib/libfprint-2.so.2.0.0 \
+  --library "$library" \
   --output "$manifest" \
   --debug
 ```
@@ -312,7 +318,7 @@ absolute library path.
 
 ```sh
 ./scripts/status-milan-stack-local.sh --installed
-grep '^GOODIX53X5_DEBUG=1$' /opt/goodix53x5-milan/manifest/build.env
+grep '^GOODIX53X5_DEBUG=1$' /usr/share/goodix53x5-milan/build.env
 systemctl show fprintd.service --property=Environment --value
 systemctl cat fprintd.service
 journalctl -u fprintd.service -n 100 --no-pager

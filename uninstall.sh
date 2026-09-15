@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Remove the managed paired Milan shadow stack without touching print state.
+# Remove recorded unchanged Milan files without touching print or PSK state.
 
 set -euo pipefail
 
