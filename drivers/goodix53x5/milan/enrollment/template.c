@@ -559,7 +559,8 @@ goodix_milan_match_combine_templates (GPtrArray *templates)
               best_connected_inliers = candidate.values[0];
               best_connected_prior = prior;
             }
-          if (prior_view.record_count > 40 && current_view.record_count > 40)
+          if (prior_view.fields.tagged_values[4] > 40 &&
+              current_view.fields.tagged_values[4] > 40)
             {
               gint32 pair_metrics[5];
 
@@ -919,8 +920,8 @@ goodix_enrollment_transaction_insert (
               best_connected_inliers = candidate.values[0];
               best_connected_prior = prior;
             }
-          if (transaction->features[prior].record_count > 40 &&
-              transaction->features[current].record_count > 40)
+          if (transaction->features[prior].fields.tagged_values[4] > 40 &&
+              transaction->features[current].fields.tagged_values[4] > 40)
             {
               gint32 pair_metrics[5];
 
