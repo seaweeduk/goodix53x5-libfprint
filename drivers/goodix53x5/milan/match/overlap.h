@@ -12,6 +12,11 @@
 
 #include "milan/milan.h"
 
+int goodix_milan_match_masked_classes (const uint8_t probe_inline_mask[72],
+                                       const uint8_t classification[52 * 44],
+                                       const int32_t transform[6],
+                                       int32_t       counts[3]);
+
 int goodix_milan_match_overlap_metrics_with_context (
   const GoodixMilanFeatureView *enrolled_feature,
   const GoodixMilanFeatureView *probe_feature,
