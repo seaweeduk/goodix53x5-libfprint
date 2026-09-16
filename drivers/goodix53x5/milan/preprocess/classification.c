@@ -1912,12 +1912,12 @@ goodix_milan_profile9_build_broken_mask (
       for (size_t i = 0; i < count; i++)
         if (adaptive[i] != 0 && broken_mask[i] < 3)
           broken_mask[i] = 1;
-      size_t selected = 0;
-      for (size_t i = 0; i < count; i++)
-        selected += broken_mask[i] != 0;
-      if (selected > 150)
-        milan_profile9_density_class1 (scores, rows, columns, broken_mask);
     }
+  size_t selected = 0;
+  for (size_t i = 0; i < count; i++)
+    selected += broken_mask[i] != 0;
+  if (selected > 150)
+    milan_profile9_density_class1 (scores, rows, columns, broken_mask);
 
   milan_profile9_component_class1 (
     state, gradient, rows, columns, broken_mask,
