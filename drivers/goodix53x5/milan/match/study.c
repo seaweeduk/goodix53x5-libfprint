@@ -24,6 +24,7 @@
 #include "milan/match/match.h"
 #include "milan/match/info-private.h"
 #include "milan/match/lifecycle-private.h"
+#include "milan/match/overlap.h"
 #include "milan/match/rescue.h"
 #include "milan/milan.h"
 #include "milan/print.h"
@@ -38,19 +39,21 @@ goodix_milan_match_queue_duplicate_metric (const GoodixMatchInfo *incoming,
                                      gint                  *metric,
                                      gpointer               user_data)
 {
-  static const gint32 identity[6] = { 0x100, 0, 0, 0, 0x100, 0 };
-  gint32 metrics[3];
+  GoodixMilanFeatureView incoming_view = { 0 };
+  GoodixMilanFeatureView newest_view = { 0 };
 
   (void) user_data;
   if (!goodix_milan_match_info_is_complete (incoming) ||
-      !goodix_milan_match_info_is_complete (newest) || !metric ||
-      goodix_milan_match_low_bitmap_metrics (
-        newest->feature_bitmaps.low_bitmap, newest->inline_mask,
-        incoming->feature_bitmaps.low_bitmap,
-        incoming->inline_mask, identity, metrics) != 0)
+      !goodix_milan_match_info_is_complete (newest) || !metric)
     return FALSE;
-  *metric = metrics[0];
-  return TRUE;
+  incoming_view.high_bitmap = incoming->feature_bitmaps.high_bitmap;
+  incoming_view.enhanced_bitmap = incoming->feature_bitmaps.enhanced_bitmap;
+  incoming_view.inline_mask = incoming->inline_mask;
+  newest_view.high_bitmap = newest->feature_bitmaps.high_bitmap;
+  newest_view.enhanced_bitmap = newest->feature_bitmaps.enhanced_bitmap;
+  newest_view.inline_mask = newest->inline_mask;
+  return goodix_milan_match_queue_duplicate_score (
+    &newest_view, &incoming_view, metric) == 0;
 }
 
 static GoodixStudyQueueEnqueueResult
