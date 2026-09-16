@@ -488,6 +488,7 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
                                  "Image receiver rejected the frame");
   GoodixTransportResult result = {
     .ack_status = operation->ack_status,
+    .restart_gtls = operation->phase == GOODIX_TRANSPORT_EVENT && self->gtls_restart_pending,
     .ordinary_exhaustion = error && goodix_cmd_native_zero (operation->phase, error),
     .write_cancelled = operation->phase == GOODIX_TRANSPORT_SEND &&
       (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
@@ -626,7 +627,28 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                 {
                   self->image_response_failed = TRUE;
                 }
+              if (!frame)
+                {
+                  /* Successful parser/image calls do not clear native history.
+                   * Every second error consumes it even during a restart. */
+                  if (self->image_error_history)
+                    {
+                      self->image_error_history = FALSE;
+                      if (!self->gtls_restart_active)
+                        self->gtls_restart_pending = TRUE;
+                    }
+                  else
+                    {
+                      self->image_error_history = TRUE;
+                    }
+                }
               goodix_proto_rx_reset (&self->rx);
+              if (operation->phase == GOODIX_TRANSPORT_EVENT &&
+                  self->gtls_restart_pending)
+                {
+                  goodix_transport_complete (operation, NULL);
+                  return;
+                }
               if (current && operation->phase == GOODIX_TRANSPORT_RESPONSE &&
                   current->response_bit == 8 && (self->command_response_ready & 8))
                 goodix_transport_complete (operation, NULL);
@@ -703,7 +725,8 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                 }
             }
           else if (category == 3 && (command == 1 || command == 2) &&
-                   (idle_packet || (current && (current->response_bit ||
+                   (idle_packet || self->gtls_restart_active ||
+                    (current && (current->response_bit ||
                                                 (current->cmd.category == 3 && current->cmd.command <= 2)))))
             {
               GoodixFdtEventType type;
@@ -884,6 +907,8 @@ goodix_transport_invalidate (FpDevice *dev)
   self->mcu_ready = FALSE;
   g_clear_pointer (&self->image_response, g_free);
   self->image_response_failed = FALSE;
+  self->image_error_history = FALSE;
+  self->gtls_restart_pending = FALSE;
   self->command_response_ready &= ~8;
   if (self->rx.buf)
     goodix_proto_rx_reset (&self->rx);
@@ -1016,7 +1041,7 @@ goodix_transport_wait (FpDevice                  *dev,
   if (phase == GOODIX_TRANSPORT_EVENT)
     {
       operation->cancellable = g_cancellable_new ();
-      if (self->pending_fdt.event.pending)
+      if (self->pending_fdt.event.pending || self->gtls_restart_pending)
         {
           goodix_transport_complete (operation, NULL);
           return;

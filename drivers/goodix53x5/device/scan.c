@@ -27,6 +27,7 @@
 #include "device/image.h"
 #include "device/base.h"
 #include "device/scan.h"
+#include "device/session.h"
 
 #include <string.h>
 
@@ -261,6 +262,20 @@ goodix_scan_action_cancelled (GCancellable *cancellable,
 }
 
 static void
+goodix_scan_gtls_restarted (FpDevice *dev, GError *error, gpointer user_data)
+{
+  GoodixScanCoordinatorData *data = user_data;
+
+  data->dispatching = FALSE;
+  if (error)
+    {
+      goodix_scan_request_stop (data, error);
+      return;
+    }
+  fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+}
+
+static void
 goodix_scan_event_done (FpDevice *dev, const GoodixTransportResult *result,
                         GError *error, gpointer user_data)
 {
@@ -268,6 +283,14 @@ goodix_scan_event_done (FpDevice *dev, const GoodixTransportResult *result,
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
   data->waiting_event = FALSE;
+  if (!error && result->restart_gtls)
+    {
+      /* Keep the coordinator alive through asynchronous recovery and cancellation.
+       * One transport owner serializes GTLS with capture and arm commands. */
+      data->dispatching = TRUE;
+      goodix_start_gtls_restart (dev, goodix_scan_gtls_restarted, data);
+      return;
+    }
   if (!error)
     {
       /* Selected work must still dispatch if its packet won cancellation. */
