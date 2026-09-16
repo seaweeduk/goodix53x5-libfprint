@@ -497,7 +497,7 @@ goodix_milan_match_extract_planes (const guint8                              *im
   if (!image || !primary_contrast_plane || !classification_state ||
       !auxiliary_state)
     return status;
-  published_class = auxiliary_state->primary_histogram_state;
+  published_class = auxiliary_plane ? auxiliary_state->primary_histogram_state : 0;
   info = g_new0 (GoodixMatchInfo, 1);
   cropped = g_malloc (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS);
   high = g_malloc0 (286);
@@ -543,7 +543,7 @@ goodix_milan_match_extract_planes (const guint8                              *im
         GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS, enhanced_bitmap,
         &enhanced_threshold) != 0)
     goto out;
-  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE)
+  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE && auxiliary_plane)
     {
       /* Native commits history before record extraction, anti-fake, or packing
        * failures. */
@@ -615,7 +615,8 @@ goodix_milan_match_extract_planes (const guint8                              *im
   info->extraction_metadata.quality = quality;
   info->extraction_metadata.coverage = coverage;
   info->extraction_metadata.optional_c7 = fields.optional_c7;
-  info->extraction_metadata.auxiliary = *auxiliary_state;
+  if (auxiliary_plane)
+    info->extraction_metadata.auxiliary = *auxiliary_state;
   /* Live classification publishes the history-promoted mode, independently of
    * the preprocessing seed and the packed c7 high class. */
   info->extraction_metadata.auxiliary.primary_histogram_state = published_class;
