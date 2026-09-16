@@ -156,6 +156,8 @@ typedef struct
   uint32_t                           sensor_type;
   int32_t                            image_quality;
   int32_t                            image_coverage;
+  const uint8_t                     *probe_classification;
+  int                                probe_live_class_available;
   int32_t                            sibling_tail_hamming_limit;
   size_t                             feature_index;
   GoodixMilanMatcherPolicy          *matcher_policy;
@@ -185,6 +187,7 @@ typedef struct
   const GoodixMilanFeatureRecord        *probe_records;
   size_t                                 probe_record_count;
   int32_t                                probe_primary_histogram_class;
+  const uint8_t                         *probe_classification;
   int32_t                                image_quality;
   int32_t                                image_coverage;
   const GoodixMilanAntifakeBlob         *probe_antifake;
@@ -877,6 +880,61 @@ bonus:
     }
 }
 
+/* FUN_18005b440: the live extraction summary and optional overlap counts are
+ * independent of packed c7. This gate precedes refinement and flag policy. */
+static int
+milan_match_contextual_veto (const int32_t *metrics,
+                             int32_t        quality,
+                             int32_t        high_class,
+                             int32_t        live_class,
+                             const int32_t  counts[3])
+{
+  int32_t c0 = counts[0], c1 = counts[1], c2 = counts[2];
+  int32_t total = c0 + c1 + c2 + 1;
+  int32_t ratio = (c0 + c2) * 256 / total;
+  int both_large = 25 * total < 100 * c0 && 25 * total < 100 * c2;
+  int32_t detail = metrics[5];
+
+  if (live_class == 5)
+    {
+      if (detail >= 220 || quality >= 91 ||
+          (metrics[10] >= 76 &&
+           (quality >= 51 || metrics[0] >= 9 || detail >= 200)))
+        return 0;
+      if (high_class >= 4)
+        {
+          if (!both_large)
+            return 0;
+          if ((ratio >= 166 && detail <= 214) ||
+              (ratio >= 129 && metrics[9] <= 79))
+            return 1;
+        }
+      if (!both_large)
+        return 0;
+      if (ratio >= 166 && high_class <= 3 && detail <= 209)
+        return 1;
+      return ratio > 220;
+    }
+  int32_t scaled = metrics[11] * metrics[9] >> 8;
+  if (live_class == 2)
+    return scaled <= 19 && quality <= 60 && high_class >= 2 &&
+           detail <= 219 && metrics[6] <= 215 && metrics[0] <= 15;
+  if (live_class != 3 && live_class != 4)
+    return 0;
+  int32_t secondary_total = c1 + c2 + 1;
+  int32_t secondary_ratio = c2 * 256 / secondary_total;
+  int secondary_guard = c2 + 1 + 25 * c0 + c1 < 100 * secondary_total ||
+                        secondary_total > 250;
+  if (secondary_ratio < 211 || !secondary_guard || scaled > 19 || quality > 70)
+    return 0;
+  if (secondary_ratio >= 226 && detail <= 214 && metrics[6] <= 215)
+    return 1;
+  if (live_class == 3 && high_class >= 2 && detail <= 214 &&
+      metrics[6] <= 214 && metrics[0] <= 15)
+    return 1;
+  return detail <= 209 && metrics[6] <= 209 && metrics[0] <= 15;
+}
+
 static int
 milan_match_build_feature_candidate (
   const MilanMatchFeatureContext *context,
@@ -886,6 +944,7 @@ milan_match_build_feature_candidate (
   int32_t overlap_coverage;
   int32_t overlap_detail;
   int32_t low_bitmap_metrics[3];
+  int32_t masked_counts[3] = { 0 };
   const MilanMatchDirection *direction = &context->direction;
   const GoodixMilanFeatureView *feature = direction->enrolled_feature;
   const GoodixMilanFeatureView *probe_feature = direction->probe_feature;
@@ -938,6 +997,12 @@ milan_match_build_feature_candidate (
         feature, probe_feature, feature_result->transform, &overlap_score,
         &overlap_coverage, &overlap_detail, low_bitmap_metrics,
         (int32_t) feature_result->filtered_count) != 0)
+    return 1;
+  if (sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
+      context->probe_classification &&
+      goodix_milan_match_masked_classes (
+        probe_feature->inline_mask, context->probe_classification,
+        feature_result->transform, masked_counts) != 0)
     return 1;
 #ifdef GOODIX53X5_DEBUG
   if (context->diagnostics &&
@@ -1009,6 +1074,19 @@ milan_match_build_feature_candidate (
         feature_result->metrics[GOODIX_MILAN_CANDIDATE_OVERLAP_COVERAGE_Q8];
     }
 #endif
+  if (sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE &&
+      context->probe_live_class_available &&
+      milan_match_contextual_veto (
+        feature_result->metrics, context->image_quality,
+        late_policy_context->accumulated_high_class,
+        late_policy_context->probe_primary_histogram_class, masked_counts))
+    {
+      /* Rescue consumes rejected rows too, before affine/low-bitmap publication. */
+      memcpy (context->rescue_record, feature_result->metrics,
+              GOODIX_MILAN_MATCH_RESCUE_METRICS *
+              sizeof (*context->rescue_record));
+      return 1;
+    }
   if (goodix_milan_match_initial_flags (
         feature_result->metrics, context->image_quality, context->image_coverage,
         matcher_policy->configuration, &feature_result->match_flag,
@@ -1156,12 +1234,15 @@ milan_match_build_feature_candidate (
         &feature_result->match_flag, context->late_policy_status_counter);
       if (status)
         return 1;
-      /* The native profile-9 probe has no active masked-overlap context;
-       * its caller class tuple and therefore its support ratio are zero. */
+      /* These counts belong to the original admitted affine, even if later
+       * refinement replaced the candidate transform. */
+      int32_t support_ratio = (masked_counts[0] + masked_counts[2]) * 256 /
+                              (masked_counts[0] + masked_counts[1] +
+                               masked_counts[2] + 1);
       goodix_milan_matcher_policy_apply_final (
         feature_result->metrics, context->image_quality,
         late_policy_context->accumulated_high_class,
-        context->late_policy_state[1], 0,
+        context->late_policy_state[1], support_ratio,
         &feature_result->match_flag, &feature_result->candidate_flag);
     }
   else
@@ -2281,6 +2362,8 @@ milan_match_prepared_probe (
           .probe_feature = probe_feature,
         },
         .sensor_type = enrolled->metadata.sensor_type,
+        .probe_classification = input->probe_classification,
+        .probe_live_class_available = input->probe_primary_histogram_class >= 0,
         .image_quality = image_quality,
         .image_coverage = image_coverage,
         .sibling_tail_hamming_limit = sibling_tail_hamming_limit,
@@ -2527,6 +2610,7 @@ milan_match_probe_result_internal (
   int32_t                        image_coverage,
   int32_t                        probe_optional_c7,
   int32_t                        probe_primary_histogram_class,
+  const uint8_t                 *probe_classification,
   const GoodixMilanAntifakeBlob *probe_antifake,
   int                            caller_blocking_enabled,
   const uint8_t                 *enrolled_template,
@@ -2571,6 +2655,7 @@ milan_match_probe_result_internal (
     .probe_records = probe_records,
     .probe_record_count = probe_record_count,
     .probe_primary_histogram_class = probe_primary_histogram_class,
+    .probe_classification = probe_classification,
     .image_quality = image_quality,
     .image_coverage = image_coverage,
     .probe_antifake = probe_antifake,
@@ -2612,6 +2697,19 @@ goodix_milan_match_info_result (
   if (!probe)
     return -1;
 
+  const guint8 *classification = NULL;
+  gint32 live_class = 0;
+  if (probe->classification)
+    {
+      gsize size;
+      const guint8 *output = g_bytes_get_data (probe->classification, &size);
+
+      if (size >= 3)
+        live_class = output[0];
+      if (size == 52 * 44 && live_class > 2)
+        classification = output;
+    }
+
   return milan_match_probe_result_internal (
     probe->feature_bitmaps.high_bitmap,
     probe->feature_bitmaps.enhanced_bitmap,
@@ -2620,7 +2718,8 @@ goodix_milan_match_info_result (
     (size_t) probe->partition_count, probe->extraction_metadata.quality,
     probe->extraction_metadata.coverage,
     probe->extraction_metadata.optional_c7,
-    probe->extraction_metadata.auxiliary.primary_histogram_state,
+    live_class,
+    classification,
     live_records ? NULL : &probe->antifake, live_records == NULL,
     enrolled_template, enrolled_template_size,
     live_records, live_record_counts, live_partition_counts, triggering_index,
@@ -2655,7 +2754,7 @@ goodix_milan_match_probe_result_debug (
     probe_high_bitmap, probe_enhanced_bitmap, probe_low_bitmap,
     probe_inline_mask, probe_rescue_mask, probe_records, probe_record_count,
     probe_partition_count, image_quality, image_coverage, probe_optional_c7,
-    MILAN_PROBE_PRIMARY_HISTOGRAM_CLASS_UNAVAILABLE,
+    MILAN_PROBE_PRIMARY_HISTOGRAM_CLASS_UNAVAILABLE, NULL,
     probe_antifake, probe_antifake != NULL,
     enrolled_template, enrolled_template_size, NULL, NULL, NULL, SIZE_MAX,
     match_result, diagnostics);
@@ -2688,7 +2787,7 @@ goodix_milan_match_live_probe_result (
     probe_high_bitmap, probe_enhanced_bitmap, probe_low_bitmap,
     probe_inline_mask, probe_rescue_mask, probe_records, probe_record_count,
     probe_partition_count, image_quality, image_coverage, probe_optional_c7,
-    MILAN_PROBE_PRIMARY_HISTOGRAM_CLASS_UNAVAILABLE,
+    MILAN_PROBE_PRIMARY_HISTOGRAM_CLASS_UNAVAILABLE, NULL,
     NULL, 0, enrolled_template, enrolled_template_size, live_records,
     live_record_counts, live_partition_counts, triggering_index,
     match_result
@@ -2725,7 +2824,7 @@ goodix_milan_match_live_probe_result_debug (
     probe_high_bitmap, probe_enhanced_bitmap, probe_low_bitmap,
     probe_inline_mask, probe_rescue_mask, probe_records, probe_record_count,
     probe_partition_count, image_quality, image_coverage, probe_optional_c7,
-    MILAN_PROBE_PRIMARY_HISTOGRAM_CLASS_UNAVAILABLE,
+    MILAN_PROBE_PRIMARY_HISTOGRAM_CLASS_UNAVAILABLE, NULL,
     NULL, 0, enrolled_template, enrolled_template_size, live_records,
     live_record_counts, live_partition_counts, triggering_index,
     match_result, diagnostics);
