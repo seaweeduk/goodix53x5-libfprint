@@ -2209,7 +2209,8 @@ milan_match_prepared_probe (
         (size_t) probe_feature->fields.tagged_values[2];
       score_denominator = 42;
       goodix_milan_matcher_policy_init (&matcher_policy,
-                                        probe_feature->fields.optional_c7);
+                                        triggering_index == SIZE_MAX ?
+                                        probe_feature->fields.optional_c7 : 0);
       if (triggering_index != SIZE_MAX)
         {
           if (triggering_index >= enrolled->feature_count)
@@ -2217,13 +2218,17 @@ milan_match_prepared_probe (
           matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_MODE] = 0;
           matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_INDEX] =
             (int32_t) triggering_index;
+          /* Native queued word 19 is unwritten on entry. Canonical zero keeps
+           * that undefined state distinct from ordinary recognition mode one. */
+          matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_RECOGNITION_MODE] = 0;
         }
       goodix_milan_matcher_late_context_init (
-        &late_policy_context, probe_feature->fields.optional_c7,
+        &late_policy_context,
+        matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE],
         probe_primary_histogram_class);
       retention_gate =
         matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_RETENTION_GATE] != 0 &&
-        (((uint32_t) probe_feature->fields.optional_c7 >> 8) &
+        (((uint32_t) matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_PACKED_MODE] >> 8) &
          7) != 5;
       sibling_tail_hamming_limit =
         matcher_policy.configuration[GOODIX_MILAN_MATCHER_CONFIGURATION_OFFSET +

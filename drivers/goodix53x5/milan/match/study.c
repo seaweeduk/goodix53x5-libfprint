@@ -489,7 +489,7 @@ goodix_milan_match_study_followup (GoodixMatchInfo *queued,
 
   g_clear_pointer (&context->current, g_bytes_unref);
   context->current = g_bytes_ref (after_match);
-  if (match_result.score <= 0 ||
+  if (match_result.study_control.study_action_gate == 0 ||
       match_result.matched_feature_index == SIZE_MAX)
     {
       g_bytes_unref (after_match);
