@@ -2,8 +2,7 @@
 
 ## Identity
 
-- Binary: `GoodixEngineAdapter.dll` 2.0.310.900, SHA-256
-  `6673db3874fea66a58e2da29e371d797b890c767ba0491134d4a372c5b27e3b4`.
+- Binary: `GoodixEngineAdapter.dll` 2.0.310.900.
 - Export/body: `preprocess_init_calidata`,
   `0x1800030d0..0x180003171`.
 - Production caller: `_InitPreProcessor_E` (`FUN_18002bfa0`) after either a
@@ -56,6 +55,17 @@ Q13 unity before they can affect rendering. Thus the initializer's entry Q13
 calibration plane and the process globals' initial zero gain planes converge to
 the same live-call inputs before consumption.
 
+The zero-sample branch of `FUN_1800672e0` also writes zero to auxiliary sample
+count `DAT_1801efbf4` and to gain-initialization `DAT_1801efbf8`; its common tail
+then changes zero gain-initialization to one. It does not clear stability
+`DAT_1801efbf0` there. When the next live calibration update reaches
+`FUN_180064170` with auxiliary sample count zero, that admission owner skips
+the old-reference difference test, replaces every coarse-reference sample from
+the current even/even image coordinates, and writes stability zero at
+`0x1800642e5`. This also happens after default initialization in a warm DLL with
+nonzero prior stability. Type12 then admits the update because zero is <=3;
+stale stability above three cannot reject this first auxiliary sample.
+
 ## Evidence
 
 - Profile loops and interleaved plane stores: `0x1800030e2..0x18000313e`.
@@ -64,8 +74,3 @@ the same live-call inputs before consumption.
 - Final scalar reset and zero return: `0x180003164..0x180003171`.
 - Production fallback calls: `FUN_18002bfa0:0x18002c501` and
   `0x18002c5ae`.
-
-## Confidence
-
-High for every write, loop bound, omitted field, return value, and caller
-mapping.
