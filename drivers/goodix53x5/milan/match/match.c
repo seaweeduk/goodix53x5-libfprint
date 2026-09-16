@@ -2720,7 +2720,8 @@ goodix_milan_match_info_result (
     probe->extraction_metadata.optional_c7,
     live_class,
     classification,
-    live_records ? NULL : &probe->antifake, live_records == NULL,
+    triggering_index == SIZE_MAX ? &probe->antifake : NULL,
+    triggering_index == SIZE_MAX,
     enrolled_template, enrolled_template_size,
     live_records, live_record_counts, live_partition_counts, triggering_index,
     match_result

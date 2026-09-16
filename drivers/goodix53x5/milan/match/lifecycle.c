@@ -73,22 +73,48 @@ goodix_milan_match_serialized_feature_result_internal (
   size_t normalized_milan_len = 0;
   size_t updated_milan_len = 0;
   GoodixMilanUnpackedTemplate *unpacked;
+  gboolean retained_gallery;
+  const GoodixMilanFeatureRecord *live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
+  size_t live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
+  size_t live_partition_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
+  GBytes *private_update = NULL;
+  GBytes *input_identity = NULL;
+  const guint8 *requested_feature = feature;
+  gsize requested_size = feature_len;
+  gboolean publish_result = updated_feature != NULL;
 
+  if (queue && !updated_feature)
+    updated_feature = &private_update;
   if (updated_feature)
     *updated_feature = NULL;
 
   if (!probe_info || !probe_info->template || !feature || !match_result)
-    return GOODIX_SIGFM_TEMPLATE_INVALID;
+    goto invalid;
   if (queue && !goodix_milan_study_queue_validate (queue))
-    return GOODIX_SIGFM_TEMPLATE_INVALID;
+    goto invalid;
+  retained_gallery = goodix_milan_study_queue_resolve_gallery (
+    queue, &feature, &feature_len);
   gsize enrolled_milan_len = feature_len;
   const guint8 *enrolled_milan = feature;
 
   if (feature_len > GOODIX_MILAN_TEMPLATE_MAX_SIZE)
-    return GOODIX_SIGFM_TEMPLATE_INVALID;
+    goto invalid;
   if (queue && !goodix_milan_match_queue_matches_template (
         queue, feature, feature_len))
-    return GOODIX_SIGFM_TEMPLATE_INVALID;
+    goto invalid;
+  if (queue && !publish_result)
+    input_identity = g_bytes_new (requested_feature, requested_size);
+  if (retained_gallery)
+    {
+      normalize = FALSE;
+      for (size_t i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
+        if (queue->live_features[i])
+          {
+            live_records[i] = queue->live_features[i]->records;
+            live_record_counts[i] = queue->live_features[i]->record_count;
+            live_partition_counts[i] = queue->live_features[i]->partition_count;
+          }
+    }
   normalized_milan = g_malloc (enrolled_milan_len);
   if (normalize)
     {
@@ -97,7 +123,7 @@ goodix_milan_match_serialized_feature_result_internal (
             enrolled_milan_len, &normalized_milan_len) != 0)
         {
           g_free (normalized_milan);
-          return GOODIX_SIGFM_TEMPLATE_INVALID;
+          goto invalid;
         }
     }
   else
@@ -108,7 +134,7 @@ goodix_milan_match_serialized_feature_result_internal (
   if (normalized_milan_len != enrolled_milan_len)
     {
       g_free (normalized_milan);
-      return GOODIX_SIGFM_TEMPLATE_INVALID;
+      goto invalid;
     }
   unpacked = g_malloc (sizeof (*unpacked));
   if (goodix_milan_template_unpack (
@@ -119,7 +145,7 @@ goodix_milan_match_serialized_feature_result_internal (
         {
           GoodixMilanFeatureView view;
 
-          if (goodix_milan_template_parse_feature_element (
+          if (!retained_gallery && goodix_milan_template_parse_feature_element (
                 unpacked->feature_elements[i], unpacked->feature_element_sizes[i],
                 &view) == 0 && view.record_count > 0 &&
               view.record_count <= 150 &&
@@ -134,7 +160,7 @@ goodix_milan_match_serialized_feature_result_internal (
                   g_free (unpacked);
                   g_free (updated_milan);
                   g_free (normalized_milan);
-                  return GOODIX_SIGFM_TEMPLATE_INVALID;
+                  goto invalid;
                 }
               if (!updated_milan)
                 updated_milan = g_malloc (normalized_milan_len);
@@ -153,7 +179,7 @@ goodix_milan_match_serialized_feature_result_internal (
           g_free (unpacked);
           g_free (updated_milan);
           g_free (normalized_milan);
-          return GOODIX_SIGFM_TEMPLATE_INVALID;
+          goto invalid;
         }
       g_free (normalized_milan);
       normalized_milan = g_steal_pointer (&updated_milan);
@@ -162,7 +188,8 @@ goodix_milan_match_serialized_feature_result_internal (
   matched_milan = normalized_milan;
 
   if (goodix_milan_match_info_result (
-        probe_info, matched_milan, normalized_milan_len, NULL, NULL, NULL,
+        probe_info, matched_milan, normalized_milan_len,
+        live_records, live_record_counts, live_partition_counts,
         SIZE_MAX, match_result
 #ifdef GOODIX53X5_DEBUG
         , diagnostics
@@ -170,7 +197,7 @@ goodix_milan_match_serialized_feature_result_internal (
         ) != 0)
     {
       g_free (normalized_milan);
-      return GOODIX_SIGFM_TEMPLATE_INVALID;
+      goto invalid;
     }
 
   if (updated_feature)
@@ -187,7 +214,7 @@ goodix_milan_match_serialized_feature_result_internal (
             {
               g_free (updated_milan);
               g_free (normalized_milan);
-              return GOODIX_SIGFM_TEMPLATE_INVALID;
+              goto invalid;
             }
           normalized_milan_len = updated_milan_len;
         }
@@ -214,10 +241,28 @@ goodix_milan_match_serialized_feature_result_internal (
           if (updated_feature)
             g_clear_pointer (updated_feature, g_bytes_unref);
           g_free (normalized_milan);
-          return GOODIX_SIGFM_TEMPLATE_INVALID;
+          goto invalid;
         }
     }
   g_free (normalized_milan);
 
+  if (queue)
+    {
+      if (!retained_gallery)
+        goodix_milan_study_queue_clear_gallery (queue);
+      g_clear_pointer (&queue->live_gallery, g_bytes_unref);
+      g_clear_pointer (&queue->live_input, g_bytes_unref);
+      queue->live_input = g_steal_pointer (&input_identity);
+      if (updated_feature && *updated_feature)
+        queue->live_gallery = g_bytes_ref (*updated_feature);
+    }
+
+  g_clear_pointer (&private_update, g_bytes_unref);
   return GOODIX_SIGFM_TEMPLATE_OK;
+
+invalid:
+  g_clear_pointer (&input_identity, g_bytes_unref);
+  g_clear_pointer (&private_update, g_bytes_unref);
+  goodix_milan_study_queue_clear_gallery (queue);
+  return GOODIX_SIGFM_TEMPLATE_INVALID;
 }
