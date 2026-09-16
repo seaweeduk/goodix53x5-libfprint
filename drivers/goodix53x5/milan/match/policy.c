@@ -926,7 +926,7 @@ late_eligibility (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                    metrics[GOODIX_MILAN_POLICY_METRIC_OVERLAP] > 215 &&
                    metrics[GOODIX_MILAN_POLICY_METRIC_DETAIL] > 203 &&
                    metrics[GOODIX_MILAN_POLICY_METRIC_TOPOLOGY] > 33 &&
-                   metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 135;
+                   metrics[GOODIX_MILAN_POLICY_METRIC_COVERAGE] > 115;
           break;
         }
     }
