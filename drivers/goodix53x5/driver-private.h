@@ -89,6 +89,9 @@ struct _FpiDeviceGoodix53x5
 
   /* GTLS session (persists across captures) */
   GoodixGtlsCtx gtls;
+  gboolean      image_error_history;
+  gboolean      gtls_restart_pending;
+  gboolean      gtls_restart_active;
 
   /* Calibration (from OTP, persists across captures) */
   GoodixCalibParams calib;

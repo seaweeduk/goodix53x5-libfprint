@@ -76,7 +76,9 @@ goodix_command_done (FpDevice                    *dev,
   else if (error)
     {
       goodix_scan_note_command_error (ssm, dev, error);
-      if (self->profile9_fdt.owner &&
+      /* The active GTLS restart owns handshake retries and terminal failure.
+       * Do not turn an intermediate attempt into a deferred full reset. */
+      if (self->profile9_fdt.owner && !self->gtls_restart_active &&
           !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
         self->needs_reinit = TRUE;
       fpi_ssm_mark_failed (ssm, error);
