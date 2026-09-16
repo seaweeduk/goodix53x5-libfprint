@@ -1,15 +1,13 @@
 # Runtime Identify Arbitration
 
-## Scope And Baseline
+## Scope
 
-This contract covers profile 9 / sensor type 12 identify arbitration at
-production commit `c182b140a86e70312bd9f637ba68cf8a9140f6c0`, from the ordered
+This contract covers profile 9 / sensor type 12 identify arbitration, from the ordered
 gallery loop in `drivers/goodix53x5/milan/runtime.c` through study and final
 candidate publication. Matcher, extraction, and study leaf policy are outside
 this contract.
 
-The native reference is `GoodixEngineAdapter.dll` 2.0.310.900, SHA-256
-`6673db3874fea66a58e2da29e371d797b890c767ba0491134d4a372c5b27e3b4`.
+The native reference is `GoodixEngineAdapter.dll` 2.0.310.900.
 Its public candidate-array behavior is documented in
 `functions/identifyImage.md`.
 
@@ -203,10 +201,49 @@ boundary as follows:
 - each row retains its own after-match hash and natural queue observations;
 - only the winner row has after-study queue observations.
 
-This reconstruction is valid because production matching gives each row an
-independent serialized template and queue, reject state is discarded, the probe
-is unchanged between row calls, and study begins only after the first positive.
-Fresh complete checker projections confirm the boundary below.
+The decomposition has the following ownership preconditions:
+
+- Each DLL candidate is a separately unpacked internal template. The export
+  borrows handles and permits aliases; repeated slots that alias an internal
+  template can carry earlier mutations into a later row. Separately unpacked
+  copies of equal bytes, and duplicate opaque caller indexes, do not alias.
+- Each row begins with its own natural queue, derived from its input template.
+  A rejected row may enqueue even though no study follows. Its queue is not an
+  input to the next row or the winning study.
+- Every job reconstructs the same complete live probe, including live records,
+  classification summary/projection, packed class, masks and anti-fake owner.
+  Equal packed probe bytes alone do not establish this precondition: live record
+  fields and classification `+0x158` are not all serialized.
+- The first candidate's extraction configuration must be equivalent in every
+  job, and preprocessing/extraction history must start from the same state.
+  Ordinary type-12 configuration is `[12,104,88,1,1,150,150]`; enrolled feature
+  count is not an extraction configuration field.
+- Matching shares the probe read-only. Its per-row class accumulation and
+  evidence reset do not feed another row. Study runs only after the first
+  positive and receives that exact after-match gallery, evidence and queue.
+
+Under these preconditions, ordered one-candidate decomposition and the DLL's
+actual candidate-array loop have the same reached rows and winner handoff.
+This is a boundary contract, not a claim that matching serialized probe
+projections verifies all of the reconstruction preconditions.
+
+This read-only lifetime includes producer-generated live modes 3, 4, and 5,
+not only the three-byte summaries. `FUN_180071d40` receives the exact shared
+`+0x158` pointer in its live-classification context. Its masked-class arm calls
+`FUN_180072710` with separately allocated temporary planes; it does not rewrite
+that owner, the preprocessing auxiliary source, or retained extraction history.
+A rejecting row that reaches this arm can therefore be followed by a positive
+row using a different gallery class or geometry without advancing or replacing
+the probe classification. The shared owner remains intact at the winner study
+handoff. A positive score still does not imply a study update: an action-0
+completion consumes the probe but retains the original persistent gallery.
+
+Mode 4 is a reachable selector-zero producer state: primary seed 1 plus more
+than 600 stable class-1 pixels yields the same history-projection ownership as
+mode 3. Mode 5 instead samples the same-call auxiliary decision plane. Equal
+packed `c7` values neither distinguish these producers nor establish equality
+of their live projections. See `functions/identifyImage.md` and
+`functions/FUN_180048260.md`.
 
 Invalid or unevaluated rows are outside this native aggregation boundary. Dump
 validation marks any selected operation containing such a row structurally
@@ -215,83 +252,13 @@ record's `valid` and `evaluated` flags: admissibility already requires every row
 to be both valid and evaluated. Directly sending an invalid template to the DLL
 oracle fails unpacking rather than producing a comparable native row.
 
-## Contract Witnesses
+## Native Ownership References
 
-All generation-use-1 witnesses below use no preprocessing prelude. The current
-runner identity is source digest
-`de4629d676889fbaa9bd4365b7ee1cf5672bb8d1bb1d03996625bf2f480653cf`
-and backend SHA-256
-`2d66a669c96d8764b2ca4a7216ddf55700b5be1628758c94537522429b5bad5d`.
-For every native-admissible row, the complete checker projection has no field
-difference, including processed/probe identity and counts, ordered gallery
-outputs, overall result, winner, queue observations, candidate, and lifecycle.
-
-### Reject Then Positive Action 4
-
-```text
-setup        d125efb9a807406a0e7ad8c7384ba88826ae7d20230e14cada6c7231a468b3a2
-live         7e5157f4e955ebe12336d21137c236e1d76163184e2a531a89a8c81ce3d58184
-gallery[0]   27fbc4a35d0bc18582d31c52a4e31804082dcb9a6d2c07a8ed4475d5ad7ab7bc
-gallery[1]   9325710f80a48809ea5190b0a74d5287df57b7b009ef34852f084c2634d07399
-rows         (-7, reject, after a73c26c99695c964c07f1408ee2a565f950460d5c4f8c43c6e37d36c14b1b12a, queue 0->1)
-             (26, accept, after e9e9128cf01b0807f4bda127ecec23b9fa90382fc702613a19f60d7d68186e6b, queue 0->0->0)
-overall      MATCH, score 26, index 1, position 1, action 4
-candidate    0656dd56d3c06071f9bb5d8b2825d7fb0c167b398cf3724ea9c759c0df8ad461
-lifecycle    preprocess/extraction/study attempted and completed
-```
-
-Replacing both caller indexes with `31337` preserves every byte, score, queue,
-action, and lifecycle output. The winner becomes index `31337`, position `1`.
-
-### Multiple Positives And Input Order
-
-The same setup/live pair scores two gallery versions independently:
-
-```text
-setup           8f8a55aff83ccfb9b8c3c4b9b70847556eea85d7b9b34d01307b2655fcbcaa96
-live            e8407a978f598e46cfd614838b43324e276181a6e5af500ff54fb54aa9279967
-older gallery   d5ad334ed30ffcc36acba7b908cb6da74f7947b73728e8c016e0b04e9ad376ca -> 35
-current gallery adb3fa07a57870b790bef6ea3e7aa06ddc29c63b70f5ae079f202be24e0c4f41 -> 26
-```
-
-Both single-candidate calls match with completed action-0 study. Ordered
-`[older(90), current(91)]` returns score/index/position `35/90/0` and one row.
-Ordered `[current(91), older(90)]` returns `26/91/0` and one row. The independently
-higher score 35 is not evaluated in the second order. Current and native
-projections are exact in both orders.
-
-### All Negative With Differing Scores
-
-```text
-setup        b8bab814600d60de58134e806c4baac31e17a3860c12c39f1bbb9a3933d1b48c
-live         ef4539ff64078fb1b59f2a59a50b7d38829ec10a4c486e1a38ebff5588036226
-rows         -4 then -1
-after-match  f5dedeb706f39e8d2328e5128006aa7c405c2b7b1e48772de7c1119493b9280c
-             2a7ee9ed1e85a42d1b3513507900d77fedc616f319befde771c4e99ed16ef9c9
-overall      NO_MATCH, score -1, sentinel winner, no study or candidate
-```
-
-Both rows have queue occupancy `0->0`. Preprocessing and extraction are
-attempted/completed; study is neither attempted nor completed. The complete
-current/native projection is exact.
-
-### Action 0
-
-The current gallery from the multiple-positive witness returns score 26,
-`MATCH`, winner `0/0`, completed study action 0, after-match SHA-256
-`795074d91a45be6702dd39b58f1ca956fb7b2e23b5bb0e0a9c32eed7c0800e94`,
-queue occupancy `0->0->0`, and no candidate. The complete current/native
-projection is exact.
-
-### Invalid Rows
-
-With the action-4 valid rows around an invalid 19,008-byte frame, the current
-runtime emits positions `0,1,2`: reject `-7`, invalid/unevaluated score 0 with
-null hash and queues, then accepted `26`. Overall output is `MATCH`, index 7,
-position 2, action 4, and the same action-4 candidate. With two invalid frames,
-overall output is `INVALID_DATA`, score 0, sentinel winner, no study, and two
-rows with null hashes and queues.
-
-Both cases are intentionally native-unavailable. The one-candidate DLL oracle
-fails at the invalid row (`gallery_index_u32=6` or `8`), matching the dump
-validator's rule that invalid or unevaluated rows cannot enter native replay.
+- `functions/identifyImage.md`: borrowed candidate array, first-positive return,
+  public array position, retained winner and probe lifetime.
+- `functions/FUN_18005edb0.md`: per-candidate policy and blocker-seed reset.
+- `functions/FUN_180055a40.md`: read-only probe consumers, row-local workspaces,
+  gallery lifecycle and natural queue producer.
+- `functions/FUN_180048260.md`: live classification summary/projection and its
+  distinction from packed `c7`.
+- `functions/templateStudy.md`: retained winner dispatch and probe destruction.

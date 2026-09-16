@@ -21,7 +21,7 @@ The export validates and copies the supplied processed image, calls
 `DAT_180218e*` globals used for anti-fake chip information. The exported image
 path does not replace the probe object's dimensions after feature extraction.
 
-For the authoritative profile-9 runs, the input processed artifact is the full
+For profile 9, the input processed image is the full
 `108x88` 9,504-byte frame. `FUN_18004ae70` performs the subtype-12 matcher
 normalization to `104x88`; that normalized descriptor, not the raw image header,
 is what later reaches `FUN_180058700`.
@@ -42,7 +42,7 @@ enrolled-feature counts therefore do not themselves change the first
 candidate's extraction configuration. See `FUN_180037c80.md` and
 `FUN_18004ae70.md`.
 
-## Evidence And Confidence
+## Array ABI And Retained Owners
 
 - Live extraction call and retained probe object: `0x180001c8a` calls
   `FUN_18004ae70` before the candidate loop.
@@ -55,56 +55,27 @@ candidate's extraction configuration. See `FUN_180037c80.md` and
 - On a positive score, the export stores the matched internal template at
   `0x18024e548`; the retained live probe remains at `0x18024ebe8` for the
   immediately following `templateStudy` call.
-- Confidence is high for the exported production route and distinction between
-  the raw `108x88` frame and the normalized match object.
-- Unresolved ABI names for unrelated exported arguments do not affect geometry.
 
-## Safe-Zero Policy Boundary
+## Pre-Match Construction
 
-The v2 study authority supplies a DLL-unpacked native safe-zero probe at global
-`0x18024ebe8`, replaces only the extraction call at `0x180001c8a` with a
-successful no-op, and replaces only the anti-fake rebuild call at `0x180001dd3`
-with a no-op. The candidate loop from `0x180001df0`, `FUN_18005edb0`, global
-evidence at `0x18024e550`, positive winner publication at `0x180001ed3`, and the
-subsequent `templateStudy` call remain official DLL code. This is an oracle-only
-input bridge, not native runtime behavior and not a claim that patched Windows
-execution is the production Windows byte path.
+At `0x180001dbd`, after extraction and metadata setup, global `0x18024ebe8`
+owns the `0x168` live feature and its active 56-byte records. Feature matrix
+`+0x20` is the pre-filter `52x44` owner built before optional broken-pixel
+clearing; it supplies the later anti-fake mask. Rescue matrix `+0x140` is a
+different owner derived from finalized inline mask `+0x28` and consumed by
+`FUN_18005d9e0`.
 
-## Controlled-Boundary Intervention Point
+These matrix owners use a `0x20`-byte header: width, height, stride, payload byte
+count and element size occupy `+0x00..+0x10`, and the payload pointer is at
+`+0x18`. `FUN_180068700` initializes those fields but does not initialize the
+alignment gap at `+0x14..+0x17`. That gap is not matrix shape or pixel state.
 
-The replacement normal-extraction oracle intervenes at `0x180001dbd`, after
-the successful `FUN_18004ae70` return and all metadata calculations, but before
-the argument loads and untouched call to `FUN_1800392f0` at `0x180001dd3`.
-At that point owning global `0x18024ebe8` contains the normal `0x168` live
-feature and its active 56-byte records. Replacing only feature matrix `+0x20`
-with an allocator-compatible shadow does not bypass extraction, anti-fake
-construction, candidate matching, evidence publication, or ownership cleanup.
-This matrix is the pre-filter `52x44` owner built before optional broken-pixel
-clearing and is the later anti-fake mask input. It is independent of rescue
-matrix `+0x140`, which extraction derives from finalized inline mask `+0x28` and
-which `FUN_18005d9e0` consumes during aggregate rescue.
-
-The intervention resumes the original instruction at `0x180001dbd` through a
-single-step breakpoint rearm. It does not alter the extraction call at
-`0x180001c8a`, the anti-fake call at `0x180001dd3`, or the matcher call at
-`0x180001e32`.
-
-There is no successful-extraction branch around this intervention point. The
-status test at `0x180001c96` sends nonzero extraction status directly to the
-`0x80000001` return at `0x180001cb2`; status zero falls through metadata setup
-and the logging calls to `0x180001dbd`. No conditional branch occurs between
-the successful status test and that instruction. Consequently, an
-`identifyImage` status-zero result with a retained serializable probe must have
-crossed the pre-anti-fake boundary exactly once. A zero boundary-hit count is
-not a valid low-coverage success path.
-
-A focused low-coverage diagnostic supplied an already sealed processed frame
-with quality 28 and coverage 14 directly to `identifyImage`. The DLL produced a
-serializable 20-record probe and two valid no-match gallery rows, and the
-`0x180001dbd` breakpoint fired once. This independently confirms the static
-control flow. The exported preprocessor rejected the corresponding raw-frame
-call earlier with `0x29aa`; that separate preprocessing rejection must not be
-misclassified as a skipped identify boundary.
+The status test at `0x180001c96` sends nonzero extraction status to the
+`0x80000001` return at `0x180001cb2`. Status zero falls through metadata setup
+and `0x180001dbd` without a conditional bypass, then calls `FUN_1800392f0` at
+`0x180001dd3`. Low coverage does not introduce a second successful route around
+this construction boundary. Preprocessing rejection occurs before this export
+and is a separate status boundary.
 
 ## Retained-Probe Serialization Window
 
@@ -115,12 +86,9 @@ feature `+0x160` is normally null. `FUN_1800392f0` begins by allocating the
 it. The completed object is observable at `0x180001dd8`, immediately after the
 call, and remains owned by global `0x18024ebe8` after `identifyImage` returns.
 
-The narrow non-handler serialization window is therefore immediately after
-`identifyImage` returns and before `templateStudy`. The latter consumes,
-destroys, and clears the retained feature. The `0x180001dbd` exception handler
-should remain limited to the allocator-compatible matrix shadow; invoking the
-template packer there would encode an absent anti-fake block and add complex
-DLL work while execution is interrupted.
+The post-return/pre-study window contains the complete retained probe.
+`templateStudy` consumes, destroys, and clears it. Serializing before anti-fake
+construction would instead encode an absent anti-fake block.
 
 ## Canonical One-Feature Probe Projection
 
@@ -131,8 +99,8 @@ normal return. `templateStudy` consumes and clears it through `FUN_180037b10`,
 so post-return/pre-study is the complete ownership window for exact probe
 serialization.
 
-The reduced profile-9 oracle reads the pointer through module RVA `0x24ebe8` and
-serializes the live feature independently of the DLL's outer template packer.
+The live feature can be projected into a one-feature template independently of
+the DLL's outer gallery packer.
 The one-feature projection has a fixed 1,433-byte contribution around the
 feature element:
 
@@ -164,20 +132,21 @@ probe size:
 9378 + 32 * record_count + (c7 != 0 ? 5 : 0)
 ```
 
-Current extraction owns the same immutable boundary: it builds the feature and
-one-feature template before publishing `GoodixMatchInfo`, and
-`goodix_match_serialize_template()` only returns a reference to those bytes.
+This projection does not contain the live classification owner `+0x158` or all
+56-byte record fields. Equality of packed projections alone is therefore weaker
+than equality of the complete inputs used by successive matcher calls.
 
-## Sequence-2 Builder Boundary
-
-A focused passive breakpoint at `0x180001dd8`, immediately after the untouched
-anti-fake call and before the candidate loop, captured the live probe's complete
-anti-fake block. It is byte-identical to the existing post-return snapshot,
-SHA-256
-`7bb448a5159838c3218820f2e4c62ef7626b52789a412ab4ac0453c3726ba354`,
-and already contains boundary score `+0x12d0 = 13`. Matching does not introduce
-the value. The temporary breakpoint instrumentation was removed after capture;
-only derived artifacts and this provenance note remain.
+The live owner is not limited to three-byte modes 0..2. Ordinary selector-zero
+profile-9 producers can reach modes 3, 4, and 5 after three successful retained
+plane appends. In particular, a broad primary histogram can produce seed 1;
+a stable class-1 count above 600 pixels then promotes it to mode 4. Mode 4
+is not excluded by sensor type 12 or this export. Modes 3/4 own the complete
+2,288-byte history projection; mode 5 owns the complete projection of the
+same-call auxiliary decision plane. These buffers include the final summary
+overwrite at bytes 0..2. The preprocessor seed, promoted live mode, and packed
+`c7` high class are distinct values; none can substitute for the complete live
+owner when comparing successive candidate calls. See
+[`FUN_180048260`](FUN_180048260.md) for the producer transitions and strides.
 
 ## Outer Candidate Selection
 
@@ -199,8 +168,11 @@ The adapter validates all top-level output pointers at
 32-bit value. Count zero returns `GF_NO_Candidate` (`0x81`) before entering the
 loop and leaves those initialized outputs at `0/UINT32_MAX`; it is not an
 empty-list invocation of the selection loop. The first candidate and its
-template pointer are checked before preprocessing, and each later null candidate
-returns `0x81` when reached.
+template pointer are checked before extraction. For later entries the loop
+dereferences the public handle first, then checks its internal template pointer.
+A null internal template returns `0x81` when reached; a null later public handle
+is not protected by that check. Even count zero is tested only after the first
+handle and its internal pointer have been read and validated.
 
 For each successful matcher call, `0x180001e87..0x180001ea3` tests the signed
 score with `JG`. Negative and zero scores continue; a positive score publishes
@@ -218,25 +190,27 @@ probe at `0x18024ebe8` is shared by the ordered loop. `templateStudy` receives
 the retained winner and probe, then consumes the probe. Entry clears the retained
 winner, so an all-nonpositive call leaves no candidate eligible for study.
 
+The array borrows handles; it does not clone, deduplicate, or restore their
+internal templates. Independent per-row ownership therefore requires distinct
+internal template objects, not merely distinct array slots. If two supplied
+handles alias one internal template, the later occurrence sees the earlier
+occurrence's gallery and queue mutations. Repeated packed bytes unpacked into
+separate handles do not have that aliasing behavior.
+
 The loop counter and count cannot wrap during a valid traversal: after index
 `count-1`, increment produces `count` and the unsigned-below branch stops.
 Native trusts that the caller's candidate pointer array has `count` entries;
 an overstated count is a malformed out-of-bounds/crash surface, not a score
-policy. The public clean-room helper rejects a null score array, zero count, or
-null outputs with `-1` and leaves outputs untouched, so its empty-list behavior
-is intentionally safer than the adapter's pre-loop `0x81` plus initialized
-outputs.
+policy.
 
-The native helper `goodix_milan_match_select_first_positive()` models this
-contract for valid nonempty score arrays, and the native Milan runtime invokes
-equivalent first-positive behavior. Publication order and signed-positive
-selection already match and require no production change; only the helper's
-explicit fail-closed API validation differs from the adapter's fault/status
-surface.
-Every native live probe reaches this loop after complete anti-fake construction
-with semantic zero at the documented one-past source. Zero/nonzero differential
-construction is offline diagnostics only and cannot stop verification,
-identification, matching, or study.
+Immediately before each matcher call, `0x180001e27` restores the operation's
+anti-fake mode at shared evidence `+0x690`. The dispatcher builds fresh policy
+from that row, including packed probe class; the type-12 matcher saves the seed
+and clears/reinitializes the remaining evidence. Its accumulated gallery classes,
+late-status counter, affine workspaces and candidate flags are invocation-local.
+These mutable values are not written back to the probe's packed class or live
+classification owner. See `FUN_18005edb0.md` and the cross-gallery ownership
+contract in `FUN_180055a40.md`.
 
 The clean-room runtime's index/position mapping, invalid-row handling,
 per-candidate queue ownership, study handoff, and parity aggregation contract are

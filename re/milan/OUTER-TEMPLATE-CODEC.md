@@ -186,10 +186,12 @@ checks the same declared payload domain before allocation.
 
 ## Public Ownership And Return Values
 
-`templateUnPack(packed, length, context, out)` accepts a null context. The
-natural parity caller uses null, selecting the type-12 defaults of 40 feature
-owners and 150 records from `FUN_180040700`, then retaining larger serialized
-allocation requirements where applicable. On success it allocates an eight-byte
+`templateUnPack(packed, length, context, out)` accepts a null context. Null
+preserves the serialized maximum-feature count; only a nonnull context selects
+unsigned `min(40, *context)`. Both type-12 record limits reconcile to 150.
+Initial allocation retains larger serialized requirements before post-decode
+reconciliation. See `functions/FUN_18003e3a0.md` and
+`functions/FUN_18003fef0.md`. On success it allocates an eight-byte
 public handle whose first field owns the decoded `0x8e08` live object. Null
 input, output, or zero length returns `0x81`; public-handle allocation failure
 returns `0x82`; internal decode statuses are otherwise propagated. The output
@@ -215,17 +217,26 @@ under one cleanup owner.
 
 ## Round-Trip And Mutation Boundary
 
-The outer codec preserves valid header, relation, graph, and tail state. A
+With null context, count at most serialized maximum, and canonical 150-record
+limits, reconciliation preserves header, relation, graph, and tail state. A
 freshly unpacked object reconstructs queue allocation from `fa` only: state zero
 creates 20 empty owners with every rank `-1`, while state one creates none.
 Queue bodies, occupancy, and ranks are never serialized. The `fb` counter is
 preserved but ordinary type-12 identify/study does not change it.
 
+An explicit feature cap below decoded count takes the separate shrink path in
+`functions/FUN_18003fef0.md`: it retains a physical feature prefix, filters order,
+rewrites ordinals and registration count, and may reset or reanchor the graph.
+That path retains matrix cells but does not fill a new reference star. A later
+pack projects only the new reference's nonnegative cells. Null-context callers
+do not invoke this clipping behavior.
+
 Whole-template first-pack identity is not guaranteed merely by valid outer
 framing. `FUN_18003e3a0` runs post-decode feature normalization before returning,
 and that normalization can change feature-owned scalar bytes. A subsequent pack
 therefore changes those feature bytes and the dependent outer CRC while leaving
-the other outer fields intact. Once this normalization is represented, a second
+the other outer fields intact under the null/canonical-limit preconditions above.
+Once this normalization is represented, a second
 unpack/pack is byte-identical. This is feature-state canonicalization, not an
 alternate outer layout.
 
