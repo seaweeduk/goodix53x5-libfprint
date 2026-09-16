@@ -2277,6 +2277,35 @@ milan_match_prepared_probe (
         continue;
       if (feature.record_count == 0 || feature.record_count > 150)
         continue;
+      if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
+        {
+          if (goodix_milan_match_candidate_skip_pre_primary (
+                matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_MODE],
+                matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_INDEX],
+                feature_index, enrolled->feature_count,
+                (int32_t) enrolled->metadata.maximum_features,
+                match_selection.rejection_evidence,
+                match_selection.retained_active_evidence,
+                feature.fields.tagged_values[0]))
+            continue;
+          goodix_milan_matcher_late_context_derive (
+            &late_policy_context, feature.fields.optional_c7,
+            late_policy_state);
+          if (late_policy_status_counter > 5 &&
+              late_policy_context.accumulated_high_class < 5 &&
+              !retention_gate_latched)
+            {
+              late_policy_context.accumulated_high_class++;
+              retention_gate_latched = 1;
+              retention_gate = 0;
+            }
+          else if (late_policy_status_counter > 10)
+            {
+              break;
+            }
+          /* The capped sum is saved before either high-class update. */
+          late_policy_state[0] = late_policy_context.accumulated_high_class;
+        }
       if (live_records && live_records[feature_index])
         {
           if (!live_record_counts || !live_partition_counts ||
@@ -2323,29 +2352,6 @@ milan_match_prepared_probe (
           fallback_workspace =
             &match_fallback.workspaces[match_fallback.workspace_count - 1];
           fallback_by_feature[feature_index] = fallback_workspace;
-        }
-      if (enrolled->metadata.sensor_type == GOODIX_MILAN_PRINT_SENSOR_TYPE)
-        {
-          goodix_milan_matcher_late_context_derive (
-            &late_policy_context, feature.fields.optional_c7,
-            late_policy_state);
-          if (late_policy_status_counter > 5 &&
-              late_policy_context.accumulated_high_class < 5 &&
-              !retention_gate_latched)
-            {
-              late_policy_context.accumulated_high_class++;
-              retention_gate_latched = 1;
-              retention_gate = 0;
-            }
-          if (goodix_milan_match_candidate_skip_pre_primary (
-                matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_MODE],
-                matcher_policy.configuration[GOODIX_MILAN_POLICY_CONFIG_FEATURE_INDEX],
-                feature_index, enrolled->feature_count,
-                (int32_t) enrolled->metadata.maximum_features,
-                match_selection.rejection_evidence,
-                match_selection.retained_active_evidence,
-                feature.fields.tagged_values[0]))
-            continue;
         }
       MilanMatchFeatureContext feature_context = {
         .primary_reductions =
