@@ -1080,7 +1080,13 @@ milan_match_build_feature_candidate (
         feature_result->metrics, context->image_quality,
         late_policy_context->accumulated_high_class,
         late_policy_context->probe_primary_histogram_class, masked_counts))
-    return 1;
+    {
+      /* Rescue consumes rejected rows too, before affine/low-bitmap publication. */
+      memcpy (context->rescue_record, feature_result->metrics,
+              GOODIX_MILAN_MATCH_RESCUE_METRICS *
+              sizeof (*context->rescue_record));
+      return 1;
+    }
   if (goodix_milan_match_initial_flags (
         feature_result->metrics, context->image_quality, context->image_coverage,
         matcher_policy->configuration, &feature_result->match_flag,
