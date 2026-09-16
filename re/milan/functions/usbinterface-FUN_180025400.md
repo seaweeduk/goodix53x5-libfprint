@@ -115,6 +115,37 @@ failure. This image-consumer-error restart route is separate from the
 initialization and D0-resume worker. See
 [reader and FDT ownership](usbinterface-profile9-fdt-event-loop.md).
 
+The second-error history clear at `0x1800213b6` is unconditional after the
+admission branch: it also occurs when the existing thread wait returns
+`WAIT_TIMEOUT` or `CreateThread` returns null. Timeout retains the existing
+handle; every other wait result, including `WAIT_FAILED`, reaches creation
+and overwrites the handle with the creation result. This callback does not
+close the previous handle. The wait and creation occur while receive-context
+critical section `+0x70` is held. The new thread receives that same device
+context, calls the wrapper with ring `+0x190` and completion dword `+0x198`,
+and only logs a nonzero result; it does not clear its handle on return or
+complete the pending capture request. Its own body does not acquire the
+receive-context critical section.
+
+Direct restart has no raw-image invalidation postlude. The wrapper resets the
+ring indices and completion dword, and the client initializer resets the GTLS
+context; neither resets image status `0x180060cc0`, decoded storage pointer
+`0x180060708`, image event `HAL+0x2c8`, protocol partial-assembly globals, HAL
+reference `+0x248`, image validity, remaining capture count or frame callback.
+Incoming ACK/MCU cells can subsequently replace partial assembly by the normal
+selector rule. A previously signalled image event remains signalled until its
+normal wait/reset owner consumes it. A later successful image replaces decoded
+contents and clears raw status under the newly installed keys/counter.
+
+Restart does not take the HAL action lock or clear the FDT worker's event/type
+store. Category-3 packets can publish FDT state while the GTLS wrapper holds
+its separate critical section and waits for MCU input. They return zero through
+the reader and do not change image-error history. The controller may consume
+the retained FDT notification after handshake completion, but restart itself
+does not impose that ordering on the controller. Individual command sends share
+the sender lock; the entire FDT handler and restart are not one atomic action.
+See [FDT publication and worker ownership](usbinterface-profile9-fdt-event-loop.md).
+
 ## Server identity and key publication
 
 `FUN_180026490` requests exactly 72 bytes. It requires a positive count of 72,
