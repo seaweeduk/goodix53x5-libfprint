@@ -477,7 +477,7 @@ command_reply (FpiUsbTransfer *transfer)
           for (guint i = 0; i < sizeof (payload); i++)
             payload[i] = i * 7 + 3;
           g_autofree guint8 *message = goodix_proto_build_message (
-            2, 0, payload, sizeof (payload), TRUE, &size);
+            8, 1, payload, sizeof (payload), TRUE, &size);
           /* Ordinary data retains its per-continuation 5-second budget.
            * Three valid cells arrive four seconds apart; no wall-clock wait. */
           if (usb.timeout != GOODIX_DATA_TIMEOUT)
@@ -493,7 +493,7 @@ command_reply (FpiUsbTransfer *transfer)
               guint prefix = io.data_chunks ? 1 : 0;
               memset (transfer->buffer, 0, transfer->length);
               if (prefix)
-                transfer->buffer[0] = 0x21;
+                transfer->buffer[0] = 0x83;
               memcpy (transfer->buffer + prefix, message + offset,
                       MIN (64 - prefix, size - offset));
               transfer->actual_length = 64;
@@ -511,16 +511,18 @@ command_reply (FpiUsbTransfer *transfer)
 static void
 data_handler (FpiSsm *ssm, FpDevice *dev)
 {
-  /* Opaque multi-cell image-command response at the framing boundary only:
-   * these bytes are never submitted to decryption or biometric processing. */
+  /* Opaque multi-cell register response at the framing boundary only.
+   * Image responses instead have a fixed deadline and receiver-side decoding. */
   if (fpi_ssm_get_cur_state (ssm) == 0)
-    goodix_cmd_request_image (ssm, dev, TRUE, TRUE, FALSE, 0x80);
+    {
+      goodix_cmd_read_chip_id (ssm, dev);
+    }
   else
     {
       const guint8 *payload;
       gsize length;
       GError *error = NULL;
-      if (!goodix_parse_reply_exact (dev, 2, 0, &payload, &length, &error))
+      if (!goodix_parse_reply_exact (dev, 8, 1, &payload, &length, &error))
         fpi_ssm_mark_failed (ssm, error);
       else
         {
@@ -734,7 +736,7 @@ register_command_tests (void)
   static const Scenario send_timeout = { 0, 0, 2, 1, TRUE, SEND_TIMEOUT_RETRY };
   static const Scenario disconnect = { 0, 0, 1, 1, FALSE, SEND_DISCONNECT };
   static const Scenario send_cancel = { 0, 0, 1, 1, FALSE, SEND_CANCELLED };
-  static const Scenario multicell = { 0, 0, 0, 0, TRUE, MULTICELL_DATA, 0x20 };
+  static const Scenario multicell = { 0, 0, 0, 0, TRUE, MULTICELL_DATA, 0x82 };
   static const Scenario zero_ack = { 0x34, 0, 1, 1, TRUE, ACK_ZERO_THEN_ONE };
   static const Scenario two_ack = { 0x34, 0, 1, 1, TRUE, ACK_TWO_THEN_ONE };
   static const Scenario even_retry = { 0x60, 1, 1, 2, TRUE, ACK_EVEN_TIMEOUT };

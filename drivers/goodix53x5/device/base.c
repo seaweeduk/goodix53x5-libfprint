@@ -437,29 +437,10 @@ goodix_base_decode_reply (FpDevice     *dev,
                           const gchar  *role,
                           GError      **error)
 {
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  const guint8 *payload;
-  gsize payload_len, decrypted_len;
-  g_autofree guint8 *decrypted = NULL;
-  guint16 *frame;
+  guint16 *frame = goodix_cmd_dup_image_reply (dev, error);
 
-  if (!goodix_cmd_parse_image_reply (dev, &payload, &payload_len, error))
-    return NULL;
-
-  decrypted = goodix_crypto_gtls_decrypt_sensor_data (&self->gtls,
-                                                       payload, payload_len,
-                                                       &decrypted_len);
-  if (!decrypted)
-    {
-      g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
-                   "%s image decryption failed", role);
-      return NULL;
-    }
-
-  frame = goodix_device_decode_image (decrypted, decrypted_len);
   if (!frame)
-    g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
-                 "%s image decode failed", role);
+    g_prefix_error (error, "%s: ", role);
   return frame;
 }
 
