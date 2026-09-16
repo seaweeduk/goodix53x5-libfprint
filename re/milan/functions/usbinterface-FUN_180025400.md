@@ -186,6 +186,15 @@ including the last. Its secondary in-progress loop allows five calls, with
 five-millisecond sleeps only before another call. Invalid null ring or completion
 pointer returns `-0x100001` without attempting initialization.
 
+Send and read failures belong to this wrapper's attempt, not to a deferred
+device-initialization request. The return from each new handshake replaces the
+previous attempt's return in `EBX` at `0x180008068`; zero reaches the completion
+store at `0x18000816d` and exits without retaining the earlier error. Nonzero
+returns take the ten-millisecond delay and retry through attempt three. The
+restart entry tests only the wrapper's final return at `0x180021115`; failure
+adds a log call, and both branches share the same return tail. Neither branch
+queues a device initialization or changes the HAL reference/capture owner.
+
 The first authenticated reply uses the newly derived HMAC key and the
 zero-extended server counter at `+0xd0`; no extra initial increment occurs in
 the handshake. `FUN_180024940` authenticates before incrementing that dword.
