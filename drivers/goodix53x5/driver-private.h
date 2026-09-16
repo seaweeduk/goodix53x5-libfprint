@@ -159,6 +159,8 @@ struct _FpiDeviceGoodix53x5
 
   /* One admitted TX-on setup generation per valid hardware session. */
   GoodixMilanGeneration *milan_generation;
+  /* Algorithm state surviving close/reset, released with this device object. */
+  GoodixMilanGeneration *milan_retained_generation;
   guint64                last_milan_generation_id;
 
   /* Action-owned state to commit after post-scan hardware cleanup. */

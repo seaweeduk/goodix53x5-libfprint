@@ -204,7 +204,7 @@ goodix_milan_runtime_initialize_setup (GoodixMilanProfileState *profile_state,
     return profile_state->setup_not_ready ?
            GOODIX_MILAN_PREPROCESS_NOT_READY : 0;
 
-  profile_state->calibration_ready = 0;
+  /* Gain-ready is process state, distinct from native setup-ready. */
   profile_state->setup_refresh_pending = 0;
   /* Native retries setup once against the same retained frame. */
   for (guint attempt = 0; attempt < 2; attempt++)

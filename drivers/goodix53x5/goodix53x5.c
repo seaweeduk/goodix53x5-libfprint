@@ -68,7 +68,7 @@ goodix_close_joined (FpDevice *dev, gpointer data)
 #endif
   g_clear_pointer (&self->captured_raw_image, g_free);
   g_clear_pointer (&self->pending_persistence_state, g_free);
-  goodix_milan_generation_invalidate (&self->milan_generation);
+  goodix_milan_generation_retain_process (dev);
   g_clear_pointer (&self->enroll_transaction,
                    goodix_milan_enrollment_transaction_free);
   goodix_milan_persistence_clear (dev);
@@ -163,10 +163,20 @@ static const FpIdEntry goodix53x5_id_table[] = {
 };
 
 static void
+goodix_finalize (GObject *object)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (object);
+
+  goodix_milan_generation_invalidate (&self->milan_retained_generation);
+  G_OBJECT_CLASS (fpi_device_goodix53x5_parent_class)->finalize (object);
+}
+
+static void
 fpi_device_goodix53x5_class_init (FpiDeviceGoodix53x5Class *klass)
 {
   FpDeviceClass *dev_class = FP_DEVICE_CLASS (klass);
 
+  G_OBJECT_CLASS (klass)->finalize = goodix_finalize;
   dev_class->id = "goodix53x5";
   dev_class->full_name = "Goodix HTK32 Fingerprint Sensor";
   dev_class->type = FP_DEVICE_TYPE_USB;
