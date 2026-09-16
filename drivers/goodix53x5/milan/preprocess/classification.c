@@ -38,6 +38,7 @@ enum
   MILAN_HISTOGRAM_VALLEY_CANDIDATE_PERCENT = 85,
   MILAN_HISTOGRAM_VALLEY_GLOBAL_PERCENT = 60,
   MILAN_HISTOGRAM_MODE_LIMIT = 8192,
+  MILAN_COMPONENT_QUEUE_CAPACITY = 2450,
 };
 
 static void
@@ -1048,17 +1049,20 @@ milan_profile9_density_class1 (const uint16_t *scores,
 
 static void
 milan_profile9_component_class1 (GoodixMilanPreprocessState *state,
-                                  const uint16_t             *gradient,
-                                  size_t                      rows,
-                                  size_t                      columns,
-                                  uint8_t                    *classes,
-                                  int                         update_retained_state)
+                                 const uint16_t             *gradient,
+                                 size_t                      rows,
+                                 size_t                      columns,
+                                 uint8_t                    *classes,
+                                 int                         update_retained_state)
 {
   static const int dx[4] = { -1, 0, 1, 0 };
   static const int dy[4] = { 0, -1, 0, 1 };
   size_t count = rows * columns;
-  int *labels = malloc (count * sizeof(*labels));
-  int *queue = malloc (count * sizeof(*queue));
+  int *labels = malloc (count * sizeof (*labels));
+  int *queue = malloc (MILAN_COMPONENT_QUEUE_CAPACITY * sizeof (*queue));
+  size_t begin = 0;
+  size_t end = 0;
+  size_t pending = 0;
   int component_sizes[72] = { 0 };
   int top[3] = { -2, -2, -2 };
   uint64_t sum = 0;
@@ -1089,9 +1093,6 @@ milan_profile9_component_class1 (GoodixMilanPreprocessState *state,
 
   for (size_t seed = 0; seed < count && !stop; seed++)
     {
-      size_t begin;
-      size_t end;
-
       if (labels[seed] != -1)
         continue;
       if ((int16_t) gradient[seed] <= threshold ||
@@ -1104,16 +1105,20 @@ milan_profile9_component_class1 (GoodixMilanPreprocessState *state,
         break;
       components++;
       labels[seed] = components;
-      begin = 0;
-      end = 0;
+      component_sizes[components]++;
       queue[end++] = (int) seed;
-      while (begin < end)
+      if (end == MILAN_COMPONENT_QUEUE_CAPACITY)
+        end = 0;
+      pending++;
+      while (pending != 0)
         {
           int current = queue[begin++];
           int row = current / (int) columns;
           int column = current % (int) columns;
 
-          component_sizes[components]++;
+          if (begin == MILAN_COMPONENT_QUEUE_CAPACITY)
+            begin = 0;
+          pending--;
           for (int direction = 0; direction < 4; direction++)
             {
               int x = column + dx[direction];
@@ -1126,13 +1131,21 @@ milan_profile9_component_class1 (GoodixMilanPreprocessState *state,
               if (labels[neighbor] != -1)
                 continue;
               if ((int16_t) gradient[neighbor] <= threshold ||
-                   state->profile9_component_age[neighbor] < age_threshold)
+                  state->profile9_component_age[neighbor] < age_threshold)
                 {
                   labels[neighbor] = 0;
                   continue;
                 }
               labels[neighbor] = components;
-              queue[end++] = neighbor;
+              component_sizes[components]++;
+              /* Native counts discoveries even when the pending ring is full. */
+              if (pending < MILAN_COMPONENT_QUEUE_CAPACITY)
+                {
+                  queue[end++] = neighbor;
+                  if (end == MILAN_COMPONENT_QUEUE_CAPACITY)
+                    end = 0;
+                  pending++;
+                }
             }
         }
     }
