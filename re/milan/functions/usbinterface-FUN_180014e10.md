@@ -107,7 +107,15 @@ validity, retained image base, or the remaining capture count. A first-frame
 failure therefore leaves the original count; a later-frame failure leaves the
 unread remainder.
 
-The down handler propagates this `-1`, skips sensor-mode callback `+0x110`, and
+If all reads succeed but the callback is null or global image-initialized byte
+`0x18005f398` is zero at the final publication gate, `FUN_1800150e0` restores
+the original requested count and frees the temporary buffer without publication.
+The ordinary admitted callback branch instead retains count zero. Image parser
+readiness and authenticated-counter mutation precede this gate and can precede
+the sender's ACK result; see
+`usbinterface-FUN_180015c60.md#independent-image-reception`.
+
+The down handler propagates the read-error `-1`, skips sensor-mode callback `+0x110`, and
 calls arm callback `+0xb0(1)`. The registered callback and pending standard
 request remain available to a later real-down event. On success, the handler
 calls `+0x110(1)` and then `+0xb0(0)` to arm FDT-up.

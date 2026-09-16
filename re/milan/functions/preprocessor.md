@@ -33,6 +33,17 @@
   Exact producers and helper arithmetic are in `FUN_18004d510.md`,
   `FUN_18004e0e0.md`, `FUN_18004ef90.md`, `FUN_18004f990.md`, and
   `FUN_18004eba0.md`.
+- The auxiliary owner is the caller's engine allocation, separate from the
+  calibration/persistence workspace. After selected-image rendering and the
+  post-render pass, `FUN_18006d540` clears all `0x4c98` auxiliary bytes before
+  calling `FUN_18006b290`. The latter's decision writer defines the first
+  9,504 bytes at the same base, then overwrites bytes0..2 with the summary.
+  The remaining allocation tail stays zero. This transient output is not part
+  of the `FUN_18004ff40` state packet. Early raw-admission failure precedes the
+  clear and writer; late classification/post-render retry retains their writes.
+  The caller retains the buffer through extraction, which consumes its base for
+  mode5; see `FUN_18006b290.md` and `FUN_180048260.md`.
+
 - Before any of those operations, the profile-9 live path applies
   `FUN_180069820` to a copied frame. That helper clamps every sample above
   `0x0fff` before `FUN_1800695e0` tests the two-pixel raw interior. More than

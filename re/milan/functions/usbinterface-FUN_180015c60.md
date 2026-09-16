@@ -197,6 +197,75 @@ set. Only an unset ACK causes `timeBeginPeriod(1)`, `Sleep(1)`, and
 `timeEndPeriod(1)` before the next poll, bounded by the supplied ACK count.
 This is ACK polling, not a mandatory settling delay after a received ACK.
 
+For a single-cell command, `FUN_180018a8c` writes the selector, two-byte length,
+payload and checksum into its stack cell, then passes all 64 bytes to
+`FUN_18001c73c`. It does not initialize the suffix after the checksum. The image
+request defines eight protocol bytes; manual-FDT and arm requests define thirty.
+The remaining transferred bytes are outside the declared protocol message.
+
+### Independent Image Reception
+
+`DataFromDevice` (`FUN_18001a7ec`) assembles 64-byte protocol cells and checks
+the declared message checksum before dispatching category 2 through HAL callback
+`+0x140`. It does not require an active image sender, an image ACK, or command
+selector zero for that category dispatch. Profile 9 installs `FUN_1800048a0`,
+which calls `FUN_180007968` with the assembled payload and its length excluding
+the protocol checksum.
+
+The raw callback performs authenticated reply processing, CRC verification and
+raw12 conversion before signalling selector 8 through `FUN_18000dd84`. The
+selector maps to HAL event `+0x2c8`. Successful conversion writes the persistent
+decoded-frame buffer `DAT_180060708`; the signal precedes publication of zero
+to raw-status global `DAT_180060cc0`. The reader callback completes those stores
+before returning. Authentication/CRC failure does not signal image readiness.
+CRC failure writes raw status `-1`; reply-processing failure writes the callback's
+local status `-1` without updating that global. Neither failure converts a frame.
+See `usbinterface-FUN_180024940.md` for authenticated counter mutation and
+`usbinterface-FUN_180009a64.md` for complete-frame conversion.
+
+The sender resets only the event before writing. An image that is fully received
+while the sender polls ACK can therefore advance the authenticated receive
+counter and replace the decoded buffer before ACK succeeds or times out. ACK
+success subsequently consumes the already-signalled event; ACK exhaustion skips
+the event wait and leaves the decoded buffer and counter mutations intact.
+The next image request resets readiness again, rather than reusing that signal.
+
+Protocol assembly belongs to the continuous receiver, independently of those
+command deadlines. `FUN_18001a7ec` retains the declared length at
+`DAT_180084120`, copied-byte count at `+4`, cell count at `+8`, and active-partial
+byte at `DAT_180084130` between calls. Neither the image sender's ACK/response
+timeout nor its next command write clears this assembly. An incoming cell with
+a different `cell[0] >> 1` clears partial-active; an even first-cell selector
+starts a new message. An odd continuation is ignored when partial-active is
+not one, otherwise it appends to the retained message. Thus an unfinished image
+can finish during a later command's ACK wait if its remaining cells arrive
+before a different-selector packet. A later ACK received first instead
+interrupts that partial image through the receiver's selector rule.
+
+The profile-9 down procedure can therefore return image failure and issue its
+down-arm command while an authenticated image is still incomplete. Completing
+that image before the down-arm ACK advances the receive counter, replaces the
+decoded cache and signals selector 8 without publishing the failed acquisition.
+The following manual-FDT request leaves that image state intact; the following
+image request clears only its readiness before acquiring another frame. These
+transitions do not replace the retained image reference at HAL `+0x248`.
+
+If another image is received before ACK satisfaction, the single readiness
+event and raw-status store have distinct ownership. A successful first image
+followed by an authenticated CRC failure leaves readiness signalled and the
+first decoded frame intact, but raw status `-1` makes the image callback fail
+after ACK. Both authenticated replies have advanced the receive counter. An
+unauthenticated second reply leaves the first frame, its zero raw status and
+the signal intact, so the sender can still publish the first image after ACK.
+
+The authenticated counter increments modulo `2^32`, including for CRC failure:
+`0xffffffff` becomes zero. A later authentication failure preserves both that
+wrapped counter and an already-failed raw status. A new request does not clear
+the failed status or decoded cache; a later successfully authenticated and
+converted image replaces the cache and restores raw status zero. This is the
+raw callback's state contract; the continuous reader's separate error-history
+and GTLS-restart policy is owned by `usbinterface-FUN_180025400.md`.
+
 ## Ownership
 
 - The first temporary image is allocated at `0x180015d03..0x180015d0b`; the
