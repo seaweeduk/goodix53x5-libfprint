@@ -27,6 +27,16 @@
  */
 void goodix_start_open_ssm (FpDevice *dev);
 
+typedef void (*GoodixGtlsRestartDone) (FpDevice *dev,
+                                       GError   *error,
+                                       gpointer  data);
+
+/* Run the native three-attempt restart with the retained selected PSK.
+ * The caller joins the asynchronous completion before resuming scan work. */
+void goodix_start_gtls_restart (FpDevice             *dev,
+                                GoodixGtlsRestartDone done,
+                                gpointer              data);
+
 /**
  * If the device needs reinitialization (system sleep happened while it was
  * open), release any stale interface claim and run the full open-time

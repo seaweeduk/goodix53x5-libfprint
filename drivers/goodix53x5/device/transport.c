@@ -24,6 +24,7 @@
 #include "device/transport.h"
 #include "device/commands.h"
 #include "device/calibration.h"
+#include "device/image.h"
 
 #include <string.h>
 
@@ -118,6 +119,7 @@ goodix_cmd_set_budgets (GoodixTransport *operation)
       operation->ack_timeout_ms = 500;
       break;
 
+    case 0x20: /* Image */
     case 0x36: /* Manual FDT */
     case 0x90: /* Configuration */
       operation->response_timeout_ms = 500;
@@ -163,6 +165,9 @@ goodix_mode_ack_bit (guint8 cmd_byte)
 
     case 0xa8:
       return 64;
+
+    case 0x20:
+      return 128;
 
     default:
       return 0;
@@ -443,7 +448,7 @@ goodix_transport_take_mcu (GoodixTransport *operation)
   return TRUE;
 }
 
-/* Start a new packet wait, retaining only a partial inherited from idle. */
+/* Command deadlines do not own the continuous receiver's partial packet. */
 static void
 goodix_transport_receive (GoodixTransport *operation, guint timeout)
 {
@@ -455,7 +460,7 @@ goodix_transport_receive (GoodixTransport *operation, guint timeout)
     return;
   g_clear_pointer (&self->mcu_reply, g_bytes_unref);
   operation->timeout_ms = timeout;
-  if (!self->rx_idle_partial)
+  if (!self->rx.len || goodix_proto_rx_complete (&self->rx))
     goodix_proto_rx_reset (&self->rx);
   self->reply_valid = FALSE;
 
@@ -475,8 +480,15 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
   GoodixTransportJoined joined = operation->joined;
   gpointer joined_data = operation->joined_data;
   gboolean idle_after_ack = !error && operation->idle_after_ack;
+
+  if (!error && operation->response_bit == 8 && self->image_response_failed &&
+      (operation->phase == GOODIX_TRANSPORT_ACK ||
+       operation->phase == GOODIX_TRANSPORT_RESPONSE))
+    error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO,
+                                 "Image receiver rejected the frame");
   GoodixTransportResult result = {
     .ack_status = operation->ack_status,
+    .restart_gtls = operation->phase == GOODIX_TRANSPORT_EVENT && self->gtls_restart_pending,
     .ordinary_exhaustion = error && goodix_cmd_native_zero (operation->phase, error),
     .write_cancelled = operation->phase == GOODIX_TRANSPORT_SEND &&
       (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
@@ -550,6 +562,18 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
       goto receive_more;
     }
 
+  /* Native reassembly restarts on a first cell or a different selector;
+   * orphan continuations are ignored. This also permits an ACK to interrupt
+   * a partial reply retained across a command timeout. */
+  if (!(transfer->buffer[0] & 1) ||
+      (transfer->buffer[0] & 0xfe) != self->rx.cmd_byte)
+    {
+      goodix_proto_rx_reset (&self->rx);
+      self->rx_idle_partial = FALSE;
+    }
+  if (!self->rx.len && (transfer->buffer[0] & 1))
+    goto receive_more;
+
   if (!goodix_proto_rx_feed_chunk (&self->rx, transfer->buffer,
                                    transfer->actual_length))
     {
@@ -579,6 +603,59 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
 
       if (self->reply_valid)
         {
+          if (category == 2)
+            {
+              gsize decoded_len;
+              guint32 counter = self->gtls.hmac_server_counter;
+              g_autofree guint8 *decoded = goodix_crypto_gtls_decrypt_sensor_data (
+                &self->gtls, payload, payload_len, &decoded_len);
+              guint16 *frame = decoded ?
+                               goodix_device_decode_image (decoded, decoded_len) : NULL;
+
+              /* The native raw callback authenticates, converts and signals
+               * before the sender consumes ACK. Failed authentication leaves
+               * the counter/cache intact; an authenticated bad frame retains
+               * the advanced counter but does not signal readiness. */
+              if (frame)
+                {
+                  g_free (self->image_response);
+                  self->image_response = frame;
+                  self->image_response_failed = FALSE;
+                  self->command_response_ready |= 8;
+                }
+              else if (self->gtls.hmac_server_counter != counter)
+                {
+                  self->image_response_failed = TRUE;
+                }
+              if (!frame)
+                {
+                  /* Successful parser/image calls do not clear native history.
+                   * Every second error consumes it even during a restart. */
+                  if (self->image_error_history)
+                    {
+                      self->image_error_history = FALSE;
+                      if (!self->gtls_restart_active)
+                        self->gtls_restart_pending = TRUE;
+                    }
+                  else
+                    {
+                      self->image_error_history = TRUE;
+                    }
+                }
+              goodix_proto_rx_reset (&self->rx);
+              if (operation->phase == GOODIX_TRANSPORT_EVENT &&
+                  self->gtls_restart_pending)
+                {
+                  goodix_transport_complete (operation, NULL);
+                  return;
+                }
+              if (current && operation->phase == GOODIX_TRANSPORT_RESPONSE &&
+                  current->response_bit == 8 && (self->command_response_ready & 8))
+                goodix_transport_complete (operation, NULL);
+              else
+                goto receive_more;
+              return;
+            }
           if (category == 0x0d)
             {
               /* Parser publication is independent of command, ACK, and GTLS
@@ -648,7 +725,8 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                 }
             }
           else if (category == 3 && (command == 1 || command == 2) &&
-                   (idle_packet || (current && (current->response_bit ||
+                   (idle_packet || self->gtls_restart_active ||
+                    (current && (current->response_bit ||
                                                 (current->cmd.category == 3 && current->cmd.command <= 2)))))
             {
               GoodixFdtEventType type;
@@ -827,6 +905,11 @@ goodix_transport_invalidate (FpDevice *dev)
   g_clear_pointer (&self->mcu_rx, g_byte_array_unref);
   g_clear_pointer (&self->mcu_reply, g_bytes_unref);
   self->mcu_ready = FALSE;
+  g_clear_pointer (&self->image_response, g_free);
+  self->image_response_failed = FALSE;
+  self->image_error_history = FALSE;
+  self->gtls_restart_pending = FALSE;
+  self->command_response_ready &= ~8;
   if (self->rx.buf)
     goodix_proto_rx_reset (&self->rx);
   self->reply_valid = FALSE;
@@ -914,11 +997,13 @@ goodix_transport_command (FpDevice                     *dev,
   operation->response_bit = request->expect_data ?
                             (category == 3 && command == 3 ? 1 :
                              category == 9 && command == 0 ? 2 :
-                             category == 0x0a && command == 4 ? 4 : 0) : 0;
-  operation->retry_mode = operation->response_bit || (!request->expect_data &&
-                         ((category == GOODIX_PROTO_CATEGORY_FDT &&
-                           (command == GOODIX_PROTO_CMD_FDT_DOWN || command == GOODIX_PROTO_CMD_FDT_UP)) ||
-                          ((category == 0x06 || category == 0) && command == 0)));
+                             category == 0x0a && command == 4 ? 4 :
+                             category == 2 && command == 0 ? 8 : 0) : 0;
+  operation->retry_mode = (operation->response_bit && operation->response_bit != 8) ||
+                          (!request->expect_data &&
+                           ((category == GOODIX_PROTO_CATEGORY_FDT &&
+                             (command == GOODIX_PROTO_CMD_FDT_DOWN || command == GOODIX_PROTO_CMD_FDT_UP)) ||
+                            ((category == 0x06 || category == 0) && command == 0)));
   goodix_cmd_set_budgets (operation);
 
   if (operation->phase == GOODIX_TRANSPORT_IDLE)
@@ -956,7 +1041,7 @@ goodix_transport_wait (FpDevice                  *dev,
   if (phase == GOODIX_TRANSPORT_EVENT)
     {
       operation->cancellable = g_cancellable_new ();
-      if (self->pending_fdt.event.pending)
+      if (self->pending_fdt.event.pending || self->gtls_restart_pending)
         {
           goodix_transport_complete (operation, NULL);
           return;

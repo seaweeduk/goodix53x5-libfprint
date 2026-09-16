@@ -27,6 +27,7 @@
 #include "device/image.h"
 #include "device/base.h"
 #include "device/scan.h"
+#include "device/session.h"
 
 #include <string.h>
 
@@ -261,6 +262,20 @@ goodix_scan_action_cancelled (GCancellable *cancellable,
 }
 
 static void
+goodix_scan_gtls_restarted (FpDevice *dev, GError *error, gpointer user_data)
+{
+  GoodixScanCoordinatorData *data = user_data;
+
+  data->dispatching = FALSE;
+  if (error)
+    {
+      goodix_scan_request_stop (data, error);
+      return;
+    }
+  fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+}
+
+static void
 goodix_scan_event_done (FpDevice *dev, const GoodixTransportResult *result,
                         GError *error, gpointer user_data)
 {
@@ -268,6 +283,14 @@ goodix_scan_event_done (FpDevice *dev, const GoodixTransportResult *result,
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
   data->waiting_event = FALSE;
+  if (!error && result->restart_gtls)
+    {
+      /* Keep the coordinator alive through asynchronous recovery and cancellation.
+       * One transport owner serializes GTLS with capture and arm commands. */
+      data->dispatching = TRUE;
+      goodix_start_gtls_restart (dev, goodix_scan_gtls_restarted, data);
+      return;
+    }
   if (!error)
     {
       /* Selected work must still dispatch if its packet won cancellation. */
@@ -915,9 +938,7 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_CAPTURE_DECRYPT:
       {
-        const guint8 *pl;
-        gsize pl_len, dec_len;
-        guint8 *decrypted;
+        g_autoptr(GError) error = NULL;
 
         goodix_debug_timing_log (dev, "capture", "get_image",
                                  now_us - self->debug_timing.capture_phase_started_us,
@@ -925,36 +946,14 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
         GOODIX53X5_DEBUG_ONLY (
           self->debug_timing.capture_phase_started_us = now_us;)
 
-        if (!goodix_cmd_parse_image_reply (dev, &pl, &pl_len, NULL))
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Failed to parse capture response"));
-            return;
-          }
-
-        decrypted = goodix_crypto_gtls_decrypt_sensor_data (&self->gtls,
-                                                             pl, pl_len,
-                                                             &dec_len);
-        if (decrypted == NULL)
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Capture image decryption failed"));
-            return;
-          }
-
-        /* Decode and retain the canonical live frame. Native preprocessing is
+        /* Retain the receiver-decoded canonical live frame. Preprocessing is
          * performed exactly once by the bounded runtime worker. */
         {
-          guint16 *img12 = goodix_device_decode_image (decrypted, dec_len);
+          guint16 *img12 = goodix_cmd_dup_image_reply (dev, &error);
 
           if (img12 == NULL)
             {
-              g_free (decrypted);
-              fpi_ssm_mark_failed (ssm,
-                                   fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                             "Capture image decode failed"));
+              fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
               return;
             }
 
@@ -963,14 +962,11 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
                                                 GOODIX_SENSOR_PIXELS,
                                                 NULL))
             {
-              g_free (decrypted);
               fpi_ssm_mark_failed (ssm,
                                    fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                              "Invalid canonical live raw frame"));
               return;
             }
-
-          g_free (decrypted);
         }
 
         GOODIX53X5_DEBUG_ONLY (

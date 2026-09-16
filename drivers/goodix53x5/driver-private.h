@@ -89,6 +89,9 @@ struct _FpiDeviceGoodix53x5
 
   /* GTLS session (persists across captures) */
   GoodixGtlsCtx gtls;
+  gboolean      image_error_history;
+  gboolean      gtls_restart_pending;
+  gboolean      gtls_restart_active;
 
   /* Calibration (from OTP, persists across captures) */
   GoodixCalibParams calib;
@@ -115,6 +118,10 @@ struct _FpiDeviceGoodix53x5
   /* Native response events reset per send; the manual cache survives reset.
    * Retain its four metadata bytes for existing Linux touch-flag consumers. */
   guint8 command_response_ready;
+  /* Receiver-owned decoded image, independent of the command ACK and of the
+   * captured frame handed to the runtime worker. Readiness resets per send. */
+  guint16 *image_response;
+  gboolean image_response_failed;
   /* Current scan's first error is ordinary deactivation transport failure,
    * after worker join. Only authentication may preserve a computed result. */
   gboolean scan_cleanup_only_error;

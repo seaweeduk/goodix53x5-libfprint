@@ -237,6 +237,7 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   if (state)
     {
       state->primary_contrast_valid = 0;
+      state->extraction_auxiliary_valid = 0;
       state->post_render.primary_metric = 0;
       state->post_render.fallback_metric = 0;
       state->post_render.disagreement = 0;

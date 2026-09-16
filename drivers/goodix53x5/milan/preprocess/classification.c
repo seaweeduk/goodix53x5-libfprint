@@ -38,6 +38,7 @@ enum
   MILAN_HISTOGRAM_VALLEY_CANDIDATE_PERCENT = 85,
   MILAN_HISTOGRAM_VALLEY_GLOBAL_PERCENT = 60,
   MILAN_HISTOGRAM_MODE_LIMIT = 8192,
+  MILAN_COMPONENT_QUEUE_CAPACITY = 2450,
 };
 
 static void
@@ -345,9 +346,50 @@ milan_profile9_histogram_local_maximum (
   return 1;
 }
 
+static int
+milan_profile9_decision_threshold (const int32_t histogram[MILAN_HISTOGRAM_BIN_COUNT])
+{
+  int64_t sum = 0;
+  int64_t weights[MILAN_HISTOGRAM_BIN_COUNT];
+  int64_t total = 0;
+  int64_t moment = 0;
+  int64_t lower_weight = 0;
+  int64_t lower_moment = 0;
+  int64_t best_score = -1;
+  int threshold = MILAN_HISTOGRAM_LAST_BIN;
+
+  for (int bin = 0; bin < MILAN_HISTOGRAM_BIN_COUNT; bin++)
+    sum += histogram[bin];
+  for (int bin = 0; bin < MILAN_HISTOGRAM_BIN_COUNT; bin++)
+    {
+      weights[bin] = (int64_t) histogram[bin] * 65536 / sum;
+      total += weights[bin];
+      moment += weights[bin] * bin;
+    }
+  for (int bin = 0; bin < MILAN_HISTOGRAM_LAST_BIN; bin++)
+    {
+      lower_weight += weights[bin];
+      lower_moment += weights[bin] * bin;
+      if (lower_weight == 0 || lower_weight == total)
+        continue;
+      int64_t delta = lower_moment * 65536 / lower_weight -
+                      (moment - lower_moment) * 65536 / (total - lower_weight);
+      int64_t score = ((delta * delta) >> 16) *
+                      (((total - lower_weight) * lower_weight) >> 16);
+
+      if (score > best_score)
+        {
+          best_score = score;
+          threshold = bin;
+        }
+    }
+  return threshold;
+}
+
 static uint8_t
 milan_profile9_primary_histogram_state (
-  const MilanProfile9Histogram *clipped)
+  const MilanProfile9Histogram *clipped,
+  int                          *decision_threshold)
 {
   int32_t smooth[MILAN_HISTOGRAM_BIN_COUNT];
   int32_t box[MILAN_HISTOGRAM_BIN_COUNT];
@@ -428,7 +470,12 @@ milan_profile9_primary_histogram_state (
             (int64_t) box[bin] * MILAN_HISTOGRAM_VALLEY_CANDIDATE_PERCENT &&
           (int64_t) valley * MILAN_PERCENT_SCALE <=
             (int64_t) box[global_peak] * MILAN_HISTOGRAM_VALLEY_GLOBAL_PERCENT)
-        return 2;
+        {
+          *decision_threshold = clipped->minimum +
+                                (clipped->range * milan_profile9_decision_threshold (smooth) + 128) /
+                                MILAN_HISTOGRAM_LAST_BIN;
+          return 2;
+        }
     }
   return state;
 }
@@ -485,7 +532,8 @@ static uint8_t
 milan_profile9_histogram_state (const uint16_t *image,
                                 const uint8_t  *valid,
                                 size_t          count,
-                                int             primary)
+                                int             primary,
+                                int            *decision_threshold)
 {
   MilanProfile9Histogram input;
   MilanProfile9Histogram clipped;
@@ -495,8 +543,8 @@ milan_profile9_histogram_state (const uint16_t *image,
     return 0;
   milan_profile9_clip_histogram (
     image, valid, count, &input, &clipped);
-  return primary != 0 ? milan_profile9_primary_histogram_state (&clipped)
-                      : milan_profile9_secondary_histogram_state (&clipped);
+  return primary != 0 ? milan_profile9_primary_histogram_state (&clipped, decision_threshold) :
+         milan_profile9_secondary_histogram_state (&clipped);
 }
 
 static void
@@ -1001,17 +1049,20 @@ milan_profile9_density_class1 (const uint16_t *scores,
 
 static void
 milan_profile9_component_class1 (GoodixMilanPreprocessState *state,
-                                  const uint16_t             *gradient,
-                                  size_t                      rows,
-                                  size_t                      columns,
-                                  uint8_t                    *classes,
-                                  int                         update_retained_state)
+                                 const uint16_t             *gradient,
+                                 size_t                      rows,
+                                 size_t                      columns,
+                                 uint8_t                    *classes,
+                                 int                         update_retained_state)
 {
   static const int dx[4] = { -1, 0, 1, 0 };
   static const int dy[4] = { 0, -1, 0, 1 };
   size_t count = rows * columns;
-  int *labels = malloc (count * sizeof(*labels));
-  int *queue = malloc (count * sizeof(*queue));
+  int *labels = malloc (count * sizeof (*labels));
+  int *queue = malloc (MILAN_COMPONENT_QUEUE_CAPACITY * sizeof (*queue));
+  size_t begin = 0;
+  size_t end = 0;
+  size_t pending = 0;
   int component_sizes[72] = { 0 };
   int top[3] = { -2, -2, -2 };
   uint64_t sum = 0;
@@ -1042,9 +1093,6 @@ milan_profile9_component_class1 (GoodixMilanPreprocessState *state,
 
   for (size_t seed = 0; seed < count && !stop; seed++)
     {
-      size_t begin;
-      size_t end;
-
       if (labels[seed] != -1)
         continue;
       if ((int16_t) gradient[seed] <= threshold ||
@@ -1057,16 +1105,20 @@ milan_profile9_component_class1 (GoodixMilanPreprocessState *state,
         break;
       components++;
       labels[seed] = components;
-      begin = 0;
-      end = 0;
+      component_sizes[components]++;
       queue[end++] = (int) seed;
-      while (begin < end)
+      if (end == MILAN_COMPONENT_QUEUE_CAPACITY)
+        end = 0;
+      pending++;
+      while (pending != 0)
         {
           int current = queue[begin++];
           int row = current / (int) columns;
           int column = current % (int) columns;
 
-          component_sizes[components]++;
+          if (begin == MILAN_COMPONENT_QUEUE_CAPACITY)
+            begin = 0;
+          pending--;
           for (int direction = 0; direction < 4; direction++)
             {
               int x = column + dx[direction];
@@ -1079,13 +1131,21 @@ milan_profile9_component_class1 (GoodixMilanPreprocessState *state,
               if (labels[neighbor] != -1)
                 continue;
               if ((int16_t) gradient[neighbor] <= threshold ||
-                   state->profile9_component_age[neighbor] < age_threshold)
+                  state->profile9_component_age[neighbor] < age_threshold)
                 {
                   labels[neighbor] = 0;
                   continue;
                 }
               labels[neighbor] = components;
-              queue[end++] = neighbor;
+              component_sizes[components]++;
+              /* Native counts discoveries even when the pending ring is full. */
+              if (pending < MILAN_COMPONENT_QUEUE_CAPACITY)
+                {
+                  queue[end++] = neighbor;
+                  if (end == MILAN_COMPONENT_QUEUE_CAPACITY)
+                    end = 0;
+                  pending++;
+                }
             }
         }
     }
@@ -1816,6 +1876,9 @@ milan_profile9_publish_classification (GoodixMilanPreprocessState *state,
     *mode = 5;
   state->extraction_auxiliary.promoted_secondary_histogram_state =
     secondary_histogram_state;
+  state->extraction_auxiliary_workspace[0] = primary_histogram_state;
+  state->extraction_auxiliary_workspace[1] = 0;
+  state->extraction_auxiliary_workspace[2] = secondary_histogram_state;
   return result;
 }
 
@@ -1848,6 +1911,7 @@ goodix_milan_profile9_build_broken_mask (
   uint16_t *class2_scores = NULL;
   int low;
   int high;
+  int decision_threshold = 0;
   size_t active_count = 0;
   uint8_t primary_histogram_state;
   uint8_t secondary_histogram_state = 0;
@@ -1856,6 +1920,7 @@ goodix_milan_profile9_build_broken_mask (
   int history_initialized;
   int result = -1;
 
+  state->extraction_auxiliary_valid = 0;
   if (rows < 3 || columns < 3 ||
       columns > SIZE_MAX / rows || rows * columns > GOODIX_MILAN_SENSOR_PIXELS)
     return -1;
@@ -1897,7 +1962,7 @@ goodix_milan_profile9_build_broken_mask (
   milan_profile9_filter_q16 (
     prepared, rows, columns, primary_kernel, 3, blurred);
   primary_histogram_state = milan_profile9_histogram_state (
-    blurred, valid, count, 1);
+    blurred, valid, count, 1, &decision_threshold);
   milan_profile9_histogram_thresholds (blurred, valid, count, 1, &low, &high);
   milan_profile9_primary_path_scores (
     blurred, valid, rows, columns, low, high, gradient, direction, scores);
@@ -1912,12 +1977,12 @@ goodix_milan_profile9_build_broken_mask (
       for (size_t i = 0; i < count; i++)
         if (adaptive[i] != 0 && broken_mask[i] < 3)
           broken_mask[i] = 1;
-      size_t selected = 0;
-      for (size_t i = 0; i < count; i++)
-        selected += broken_mask[i] != 0;
-      if (selected > 150)
-        milan_profile9_density_class1 (scores, rows, columns, broken_mask);
     }
+  size_t selected = 0;
+  for (size_t i = 0; i < count; i++)
+    selected += broken_mask[i] != 0;
+  if (selected > 150)
+    milan_profile9_density_class1 (scores, rows, columns, broken_mask);
 
   milan_profile9_component_class1 (
     state, gradient, rows, columns, broken_mask,
@@ -1930,27 +1995,43 @@ goodix_milan_profile9_build_broken_mask (
   if (primary_histogram_state < 2)
     {
       size_t classified_count = 0;
+      int32_t classified_sum = 0;
 
       for (size_t i = 0; i < count; i++)
         if (broken_mask[i] != 0)
-          classified_count++;
+          {
+            classified_count++;
+            classified_sum += (int16_t) blurred[i];
+          }
 
       if (classified_count * 100 > active_count * 30)
-        primary_histogram_state = 2;
+        {
+          primary_histogram_state = 2;
+          decision_threshold = (classified_sum + (int32_t) (classified_count / 2)) /
+                               (int32_t) classified_count;
+        }
     }
+  /* FUN_18004d510 writes at the auxiliary allocation's base, under the
+   * eroded mask. FUN_18006b290 subsequently overwrites only summary bytes0..2.
+   * Neither retained-component processing nor this projection reads the other
+   * output, so publishing the final decision plane here covers both writers. */
+  for (size_t i = 0; i < count; i++)
+    state->extraction_auxiliary_workspace[i] =
+      primary_histogram_state == 2 && valid[i] != 0 ?
+      ((int16_t) blurred[i] > decision_threshold ? 1 : 2) : 0;
   if (state->profile9_history_count > 20)
     {
       milan_profile9_build_history_qualified (
         state, valid, rows, columns, history_qualified);
       secondary_histogram_state = milan_profile9_histogram_state (
-        state->profile9_history_reference, history_qualified, count, 0);
+        state->profile9_history_reference, history_qualified, count, 0, NULL);
       secondary_count_state = milan_profile9_secondary_count_state (
         state->profile9_history_reference, history_qualified, rows, columns);
       if (secondary_histogram_state == 0 && secondary_count_state == 0 &&
           !history_initialized)
         {
           secondary_histogram_state = milan_profile9_histogram_state (
-            state->calibration_map, history_qualified, count, 0);
+            state->calibration_map, history_qualified, count, 0, NULL);
           secondary_count_state = milan_profile9_secondary_count_state (
             state->calibration_map, history_qualified, rows, columns);
         }
@@ -1974,6 +2055,8 @@ goodix_milan_profile9_build_broken_mask (
     state, contrast_mask, count, active_count, broken_mask, class_plane,
     primary_histogram_state, secondary_histogram_state, secondary_count_state,
     directional_state, mode, apply_mask);
+  state->extraction_auxiliary_valid =
+    rows == GOODIX_MILAN_SENSOR_ROWS && columns == GOODIX_MILAN_SENSOR_COLUMNS;
 
 out:
   free (class2_scores);

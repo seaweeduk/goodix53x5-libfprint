@@ -39,6 +39,9 @@ struct _GoodixMatchInfo
   GoodixMilanAntifakeBlob antifake;
   GoodixMilanFeatureRecord *records;
   GoodixMilanExtractionMetadata extraction_metadata;
+  /* Live +0x158 output: three summary bytes, or the complete 52x44 plane.
+   * Absent on serialized and native-style queued/study copies. */
+  GBytes *classification;
 };
 
 G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMilanExtractionMetadata, quality) == 0);
@@ -68,7 +71,8 @@ G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMatchInfo, extraction_metadata.quality) 
 G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMatchInfo, extraction_metadata.coverage) == 8116);
 G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMatchInfo, extraction_metadata.optional_c7) == 8120);
 G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMatchInfo, extraction_metadata.auxiliary) == 8124);
-G_STATIC_ASSERT (sizeof(GoodixMatchInfo) == 8128);
+G_STATIC_ASSERT (G_STRUCT_OFFSET (GoodixMatchInfo, classification) == 8128);
+G_STATIC_ASSERT (sizeof(GoodixMatchInfo) == 8136);
 G_STATIC_ASSERT (G_ALIGNOF (GoodixMatchInfo) == 8);
 
 int goodix_milan_match_info_result (

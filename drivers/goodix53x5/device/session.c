@@ -297,6 +297,8 @@ typedef enum {
 typedef struct {
   guint attempt;
   GError *error;
+  GoodixGtlsRestartDone restart_done;
+  gpointer              restart_data;
 } GoodixGtlsRetry;
 
 static void
@@ -411,7 +413,8 @@ goodix_gtls_attempt_done (FpiSsm *attempt, FpDevice *dev, GError *error)
         g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_INTERNAL) ||
         g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT)))
     {
-      FPI_DEVICE_GOODIX53X5 (dev)->open_gtls_failed = TRUE;
+      if (!retry->restart_done)
+        FPI_DEVICE_GOODIX53X5 (dev)->open_gtls_failed = TRUE;
       fpi_ssm_mark_failed (ssm, error);
       return;
     }
@@ -419,7 +422,8 @@ goodix_gtls_attempt_done (FpiSsm *attempt, FpDevice *dev, GError *error)
   /* deviceInit calls the three-attempt wrapper once more after failure, without
    * reset or PSK reload. Linux has no production-item cache to clear between
    * those groups. Each failed attempt, including the last, sleeps ten ms. */
-  fpi_ssm_jump_to_state_delayed (ssm, retry->attempt < 6 ? 0 : 1, 10);
+  fpi_ssm_jump_to_state_delayed (ssm,
+                                 retry->attempt < (retry->restart_done ? 3 : 6) ? 0 : 1, 10);
 }
 
 static void
@@ -435,6 +439,14 @@ goodix_gtls_retry_handler (FpiSsm *ssm, FpDevice *dev)
     }
   if (fpi_ssm_get_cur_state (ssm) == 1)
     {
+      if (retry->restart_done)
+        {
+          /* The native restart worker logs ordinary exhaustion; it does not
+           * complete or discard the pending capture request. */
+          fp_dbg ("GTLS restart failed: %s", retry->error->message);
+          fpi_ssm_mark_completed (ssm);
+          return;
+        }
       FPI_DEVICE_GOODIX53X5 (dev)->open_gtls_failed = TRUE;
       fpi_ssm_mark_failed (ssm, g_steal_pointer (&retry->error));
       return;
@@ -445,6 +457,37 @@ goodix_gtls_retry_handler (FpiSsm *ssm, FpDevice *dev)
 
   fpi_ssm_set_data (attempt, ssm, NULL);
   fpi_ssm_start (attempt, goodix_gtls_attempt_done);
+}
+
+static void
+goodix_gtls_restart_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixGtlsRetry *retry = fpi_ssm_get_data (ssm);
+
+  self->gtls_restart_active = FALSE;
+  /* Host cancellation/removal can interrupt key replacement. The next action
+   * must not treat that incomplete session as an established one. */
+  if (error)
+    self->needs_reinit = TRUE;
+  retry->restart_done (dev, error, retry->restart_data);
+}
+
+void
+goodix_start_gtls_restart (FpDevice *dev, GoodixGtlsRestartDone done,
+                           gpointer data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixGtlsRetry *retry = g_new0 (GoodixGtlsRetry, 1);
+  FpiSsm *ssm = fpi_ssm_new (dev, goodix_gtls_retry_handler, 2);
+
+  g_assert (!self->transport && !self->gtls_restart_active);
+  self->gtls_restart_pending = FALSE;
+  self->gtls_restart_active = TRUE;
+  retry->restart_done = done;
+  retry->restart_data = data;
+  fpi_ssm_set_data (ssm, retry, (GDestroyNotify) goodix_gtls_retry_free);
+  fpi_ssm_start (ssm, goodix_gtls_restart_done);
 }
 
 static void

@@ -152,7 +152,10 @@ goodix_milan_match_update_extraction_classification (
   guint8       promoted_secondary_histogram_state,
   gint         coverage,
   gint32       entry_low_class,
-  gint32       entry_high_class)
+  gint32       entry_high_class,
+  guint8      *published_class,
+  const guint8 *optional_source,
+  GBytes      **published_output)
 {
   g_autofree guint8 *component_mask = g_malloc (
     GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS);
@@ -266,6 +269,32 @@ goodix_milan_match_update_extraction_classification (
       if (state->retained_count < 3)
         state->retained_count++;
     }
+  *published_class = (guint8) current_class;
+  guint8 output[52 * 44];
+  gsize output_size = 3;
+
+  if (current_class == 3 || current_class == 4)
+    {
+      for (guint y = 0; y < 44; y++)
+        for (guint x = 0; x < 52; x++)
+          output[y * 52 + x] = stable_classes[y * 2 * 104 + x * 2] ? 2 : 1;
+      output_size = sizeof (output);
+    }
+  else if (current_class == 5)
+    {
+      if (!optional_source)
+        return packed;
+      for (guint y = 0; y < 44; y++)
+        for (guint x = 0; x < 52; x++)
+          output[y * 52 + x] = optional_source[y * 2 * 108 + x * 2];
+      output_size = sizeof (output);
+    }
+  /* The native summary overwrites the first three projected pixels. Ordinary
+   * calls have selector zero. Do not manufacture a mode-5 workspace source. */
+  output[0] = (guint8) current_class;
+  output[1] = 0;
+  output[2] = promoted_secondary_histogram_state;
+  *published_output = g_bytes_new (output, output_size);
   return packed;
 }
 
@@ -323,6 +352,7 @@ static GoodixMilanExtractionStatus goodix_milan_match_extract_planes (const guin
                                                                       const guint8                              *primary_contrast_plane,
                                                                       GoodixMilanExtractionClassificationState  *classification_state,
                                                                       const GoodixMilanExtractionAuxiliaryState *auxiliary_state,
+                                                                      const guint8                              *auxiliary_plane,
                                                                       const guint16                             *calibration,
                                                                       const guint16                             *raw_frame,
                                                                       guint16                                    t_code,
@@ -373,7 +403,10 @@ goodix_milan_match_extract_native_result (
   return goodix_milan_match_extract_planes (
     image, preprocess_state->primary_contrast,
     &preprocess_state->extraction_classification,
-    &preprocess_state->extraction_auxiliary, preprocess_state->setup_map,
+    &preprocess_state->extraction_auxiliary,
+    preprocess_state->extraction_auxiliary_valid ?
+    preprocess_state->extraction_auxiliary_workspace : NULL,
+    preprocess_state->setup_map,
     raw_frame, t_code, dac_high, dac_low, sensor_subtype,
     preprocess_state->selected_refined, info, NULL);
 }
@@ -405,7 +438,10 @@ goodix_milan_match_extract_native_result_debug (
   return goodix_milan_match_extract_planes (
     image, preprocess_state->primary_contrast,
     &preprocess_state->extraction_classification,
-    &preprocess_state->extraction_auxiliary, preprocess_state->setup_map,
+    &preprocess_state->extraction_auxiliary,
+    preprocess_state->extraction_auxiliary_valid ?
+    preprocess_state->extraction_auxiliary_workspace : NULL,
+    preprocess_state->setup_map,
     raw_frame, t_code, dac_high, dac_low, sensor_subtype,
     preprocess_state->selected_refined, info, diagnostics);
 }
@@ -416,6 +452,7 @@ goodix_milan_match_extract_planes (const guint8                              *im
                                    const guint8                              *primary_contrast_plane,
                                    GoodixMilanExtractionClassificationState  *classification_state,
                                    const GoodixMilanExtractionAuxiliaryState *auxiliary_state,
+                                   const guint8                              *auxiliary_plane,
                                    const guint16                             *calibration,
                                    const guint16                             *raw_frame,
                                    guint16                                    t_code,
@@ -449,6 +486,7 @@ goodix_milan_match_extract_planes (const guint8                              *im
   size_t feature_element_size = 0;
   size_t milan_template_size = 0;
   guint8 enhanced_threshold;
+  guint8 published_class;
   gint32 entry_low_class = 0;
   gint32 entry_high_class = 0;
   int quality;
@@ -459,6 +497,7 @@ goodix_milan_match_extract_planes (const guint8                              *im
   if (!image || !primary_contrast_plane || !classification_state ||
       !auxiliary_state)
     return status;
+  published_class = auxiliary_state->primary_histogram_state;
   info = g_new0 (GoodixMatchInfo, 1);
   cropped = g_malloc (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS);
   high = g_malloc0 (286);
@@ -512,7 +551,10 @@ goodix_milan_match_extract_planes (const guint8                              *im
         classification_state, enhanced, validity_mask,
         auxiliary_state->primary_histogram_state,
         auxiliary_state->promoted_secondary_histogram_state, coverage,
-        entry_low_class, entry_high_class);
+        entry_low_class, entry_high_class, &published_class, auxiliary_plane,
+        &info->classification);
+      if (!info->classification)
+        goto out;
     }
   if (goodix_milan_feature_extract_records_mode_masked (
         image, GOODIX_MILAN_SENSOR_ROWS, GOODIX_MILAN_SENSOR_COLUMNS, records,
@@ -574,6 +616,9 @@ goodix_milan_match_extract_planes (const guint8                              *im
   info->extraction_metadata.coverage = coverage;
   info->extraction_metadata.optional_c7 = fields.optional_c7;
   info->extraction_metadata.auxiliary = *auxiliary_state;
+  /* Live classification publishes the history-promoted mode, independently of
+   * the preprocessing seed and the packed c7 high class. */
+  info->extraction_metadata.auxiliary.primary_histogram_state = published_class;
   records = NULL;
   status = GOODIX_MILAN_EXTRACTION_OK;
 
@@ -593,7 +638,7 @@ out:
   g_free (high);
   g_free (cropped);
   if (!info->template)
-    g_clear_pointer (&info, g_free);
+    g_clear_pointer (&info, goodix_milan_match_free_info);
   *result = info;
   return status;
 }
@@ -617,6 +662,7 @@ goodix_milan_match_info_clear (GoodixMatchInfo *info)
     return;
   g_clear_pointer (&info->template, g_bytes_unref);
   g_clear_pointer (&info->records, g_free);
+  g_clear_pointer (&info->classification, g_bytes_unref);
   memset (info, 0, sizeof(*info));
 }
 
@@ -663,6 +709,10 @@ goodix_milan_match_info_copy (GoodixMatchInfo       *destination,
   memcpy (copy.rescue_mask, source->rescue_mask, sizeof(copy.rescue_mask));
   memcpy (&copy.antifake, &source->antifake, sizeof(copy.antifake));
   copy.extraction_metadata = source->extraction_metadata;
+  /* FUN_180045a50 does not transfer the live histogram/plane owner. Both
+   * callers create queue or gallery owners, which have no live summary. */
+  memset (&copy.extraction_metadata.auxiliary, 0,
+          sizeof(copy.extraction_metadata.auxiliary));
 
   goodix_milan_match_info_clear (destination);
   *destination = copy;

@@ -540,6 +540,53 @@ goodix_milan_match_low_bitmap_metrics (
 }
 
 int
+goodix_milan_match_masked_classes (
+  const uint8_t probe_inline_mask[72],
+  const uint8_t classification[52 * 44],
+  const int32_t transform[6],
+  int32_t       counts[3])
+{
+  uint8_t source_valid[52 * 44];
+  uint8_t direct_valid[52 * 44];
+  uint8_t overlap_mask[52 * 44];
+  uint8_t binary[286] = { 0 };
+  int32_t half_transform[6];
+  int32_t adjusted_transform[6];
+  int32_t classes[4];
+  int32_t valid_count;
+  size_t origin_x, origin_y, rows, columns;
+
+  if (!probe_inline_mask || !classification || !transform || !counts)
+    return -1;
+  goodix_milan_feature_mask_expand (probe_inline_mask, source_valid);
+  memcpy (direct_valid, source_valid, sizeof (direct_valid));
+  for (size_t i = 0; i < 52 * 44; i++)
+    {
+      if (classification[i] == 2)
+        binary[i / 8] |= 1u << (i % 8);
+      else if (classification[i] != 1)
+        direct_valid[i] = 0;
+    }
+  /* Native leaves invalid-class temporary pixels unwritten. Initialize those
+   * unspecified values to zero, but do not clear the earlier warped validity.
+   * Both binary images and the direct validity belong to the probe. */
+  memcpy (half_transform, transform, sizeof (half_transform));
+  half_transform[2] = (half_transform[2] + 1) / 2;
+  half_transform[5] = (half_transform[5] + 1) / 2;
+  if (milan_build_overlap_mask (
+        source_valid, direct_valid, half_transform, overlap_mask, &origin_x,
+        &origin_y, &rows, &columns, adjusted_transform) != 0 ||
+      goodix_milan_match_bitmap_classes (
+        binary, binary, overlap_mask, 44, 52, origin_x, origin_y, rows,
+        columns, adjusted_transform, classes, &valid_count) != 0)
+    return -1;
+  counts[0] = classes[0];
+  counts[1] = classes[1] + classes[2];
+  counts[2] = classes[3];
+  return 0;
+}
+
+int
 goodix_milan_match_overlap_metrics_with_context (const GoodixMilanFeatureView *enrolled_feature,
                               const GoodixMilanFeatureView *probe_feature,
                               const int32_t                 transform[6],

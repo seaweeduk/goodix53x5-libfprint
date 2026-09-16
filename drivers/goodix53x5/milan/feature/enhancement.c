@@ -394,8 +394,9 @@ goodix_milan_feature_enhanced_bitmap (
       histogram[value] += histogram[value - 1];
       if (target <= histogram[value])
         {
-          selected = histogram[value] - target <=
-                     target - histogram[value - 1] ?
+          /* Bin zero can already exceed target; native distances are signed. */
+          selected = (int32_t) (histogram[value] - target) <=
+                     (int32_t) (target - histogram[value - 1]) ?
                      (uint8_t) value :
                      (uint8_t) (value - 1);
           break;

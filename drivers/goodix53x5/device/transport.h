@@ -45,6 +45,7 @@ typedef struct
   guint8 ack_status;
   gboolean ordinary_exhaustion;
   gboolean write_cancelled;
+  gboolean restart_gtls;
 } GoodixTransportResult;
 
 /* Error ownership transfers to done. Result is borrowed for that call only.

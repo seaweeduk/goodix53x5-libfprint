@@ -719,7 +719,7 @@ test_scenario (gconstpointer user_data)
       (scenario->standalone_arm == 0x32 && !arm_repair_case (scenario) && io.sends[0x32] != 2) ||
       (delivered && (io.events != 1 || io.dispatches != 1)) ||
       (duplicate && io.duplicates != 1) ||
-      (scenario->schedule == MULTICELL_DATA && (io.data_chunks != 3 || io.sends[0x20] != 1)) ||
+      (scenario->schedule == MULTICELL_DATA && (io.data_chunks != 3 || io.sends[0x82] != 1)) ||
       (scenario->schedule == EVENT_BEFORE_ARM_ACK && io.sends[0x32] != 1) ||
       (scenario->schedule == EVENT_BEFORE_SLEEP_ACK && io.events != 1) ||
       ((scenario->schedule == LATE_ACK_DEADLINE ||
