@@ -784,25 +784,43 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
         memcpy (data->candidate_base_manual, data->candidate_base_down,
                 GOODIX_FDT_BASE_LEN);
         data->attempt.stage = GOODIX_MILAN_BASE_STAGE_PUBLISH;
-        if (!goodix_milan_generation_allocate_id (&self->last_milan_generation_id,
-                                                   &generation_id, &error) ||
-            !goodix_milan_base_attempt_publish (&data->attempt, generation_id,
-                                                &generation,
-                                                &error))
+        if (data->forced_refresh && self->milan_generation &&
+            self->milan_generation->profile_state.setup_initialized &&
+            !self->milan_generation->profile_state.setup_refresh_pending &&
+            (self->profile9_fdt.refresh_reason ==
+             GOODIX_PROFILE9_FDT_REFRESH_INVALID_BASE ||
+             self->profile9_fdt.refresh_reason ==
+             GOODIX_PROFILE9_FDT_REFRESH_UP_INVALID_BASE))
           {
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
+            /* Direct checkbase recovery replaces hardware bases without setting
+             * the native one-shot engine marker. An initialized preprocessor
+             * keeps its workspace and consumed reference until a marked refresh.
+             * A pending marker instead consumes the newest admitted reference. */
+            goodix_milan_base_attempt_release_frames (&data->attempt);
+            generation_id = self->milan_generation->generation_id;
           }
+        else
+          {
+            if (!goodix_milan_generation_allocate_id (&self->last_milan_generation_id,
+                                                      &generation_id, &error) ||
+                !goodix_milan_base_attempt_publish (&data->attempt, generation_id,
+                                                    &generation,
+                                                    &error))
+              {
+                fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+                return;
+              }
 
-        if (data->forced_refresh && self->milan_generation)
-          goodix_milan_generation_transfer_process_state (
-            generation, self->milan_generation);
-        else if (self->milan_retained_generation)
-          goodix_milan_generation_transfer_process_state (
-            generation, self->milan_retained_generation);
-        goodix_milan_generation_invalidate (&self->milan_generation);
-        goodix_milan_generation_invalidate (&self->milan_retained_generation);
-        self->milan_generation = generation;
+            if (data->forced_refresh && self->milan_generation)
+              goodix_milan_generation_transfer_process_state (
+                generation, self->milan_generation);
+            else if (self->milan_retained_generation)
+              goodix_milan_generation_transfer_process_state (
+                generation, self->milan_retained_generation);
+            goodix_milan_generation_invalidate (&self->milan_generation);
+            goodix_milan_generation_invalidate (&self->milan_retained_generation);
+            self->milan_generation = generation;
+          }
         memcpy (self->profile9_fdt.base_down, data->candidate_base_down,
                 GOODIX_FDT_BASE_LEN);
         memcpy (self->profile9_fdt.base_up, data->candidate_base_up,
