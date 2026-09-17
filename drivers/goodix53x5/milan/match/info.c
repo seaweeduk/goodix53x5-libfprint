@@ -314,17 +314,6 @@ goodix_milan_match_update_extraction_classification (
 }
 
 static void
-goodix_milan_match_snapshot_extraction_classification (
-  GoodixMilanPreprocessState *state)
-{
-  memcpy (state->extraction_persistence.retained_class_planes,
-          state->extraction_classification.retained_class_planes,
-          sizeof (state->extraction_persistence.retained_class_planes));
-  state->extraction_persistence.retained_count =
-    state->extraction_classification.retained_count;
-}
-
-static void
 goodix_milan_match_decode_entry_classes (const guint8 *image,
                                     gint32       *packed,
                                     gint32       *low_class,
@@ -412,9 +401,6 @@ goodix_milan_match_extract_native_result (
       !preprocess_state->primary_contrast_valid || !info)
     return GOODIX_MILAN_EXTRACTION_INVALID;
 
-  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE)
-    goodix_milan_match_snapshot_extraction_classification (preprocess_state);
-
   return goodix_milan_match_extract_planes (
     image, preprocess_state->primary_contrast,
     &preprocess_state->extraction_classification,
@@ -446,9 +432,6 @@ goodix_milan_match_extract_native_result_debug (
   if (!image || !preprocess_state || !raw_frame ||
       !preprocess_state->primary_contrast_valid || !info)
     return GOODIX_MILAN_EXTRACTION_INVALID;
-
-  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE)
-    goodix_milan_match_snapshot_extraction_classification (preprocess_state);
 
   return goodix_milan_match_extract_planes (
     image, preprocess_state->primary_contrast,

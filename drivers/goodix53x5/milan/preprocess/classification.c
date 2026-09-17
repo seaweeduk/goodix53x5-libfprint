@@ -2057,6 +2057,14 @@ goodix_milan_profile9_build_broken_mask (
     directional_state, mode, apply_mask);
   state->extraction_auxiliary_valid =
     rows == GOODIX_MILAN_SENSOR_ROWS && columns == GOODIX_MILAN_SENSOR_COLUMNS;
+  /* Native serializes at classifier completion, before later retry gates and
+   * before extraction can append another plane. */
+  memcpy (state->extraction_persistence.retained_class_planes,
+          state->extraction_classification.retained_class_planes,
+          sizeof (state->extraction_persistence.retained_class_planes));
+  state->extraction_persistence.retained_count =
+    state->extraction_classification.retained_count;
+  state->profile9_classifier_initialized = 1;
 
 out:
   free (class2_scores);

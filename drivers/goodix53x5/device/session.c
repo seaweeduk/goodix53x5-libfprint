@@ -870,7 +870,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
        * A completion winning idle cancellation may have just appended it. */
       goodix_transport_invalidate (dev);
       self->open_ref_powered = FALSE;
-      goodix_milan_generation_invalidate (&self->milan_generation);
+      goodix_milan_generation_retain_process (dev);
       goodix_milan_persistence_clear (dev);
       OPENSSL_cleanse (self->psk, sizeof (self->psk));
       OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
@@ -956,7 +956,7 @@ goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
 
   fp_info ("Reinitializing device after system sleep");
   self->action_epoch++;
-  goodix_milan_generation_invalidate (&self->milan_generation);
+  goodix_milan_generation_retain_process (dev);
   self->open_recovery_attempted = FALSE;
   self->open_gtls_failed = FALSE;
   self->open_usb_reset_required = TRUE;

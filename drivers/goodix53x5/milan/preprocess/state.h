@@ -119,6 +119,8 @@ typedef struct
    * The decision writer and extraction's borrowed view both start at byte 0.
    * Neither this workspace nor its validity is serialized. */
   uint8_t extraction_auxiliary_workspace[GOODIX_MILAN_SENSOR_PIXELS];
+  /* Native packet import runs only before the first completed classifier. */
+  uint32_t profile9_classifier_initialized;
 } GoodixMilanPreprocessState;
 
 _Static_assert (sizeof (GoodixMilanProfile9ClassCounts) == 12,
@@ -248,7 +250,7 @@ _Static_assert (offsetof (GoodixMilanPreprocessState,
 _Static_assert (offsetof (GoodixMilanPreprocessState,
                           extraction_auxiliary_workspace) == 202324,
                 "Milan extraction auxiliary workspace moved");
-_Static_assert (sizeof (GoodixMilanPreprocessState) == 211828,
+_Static_assert (sizeof (GoodixMilanPreprocessState) == 211832,
                 "Milan preprocess state size changed");
 _Static_assert (_Alignof (GoodixMilanPreprocessState) == 4,
                 "Milan preprocess state alignment changed");

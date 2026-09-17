@@ -122,6 +122,7 @@ typedef struct
   gboolean                   identify_prelude_seen;
   guint                      identify_prelude_count;
   guint64                    use_count;
+  gboolean                   process_state_retained;
 } GoodixMilanGeneration;
 
 typedef enum
@@ -167,6 +168,7 @@ void goodix_milan_generation_prepare_setup (FpDevice              *dev,
                                             GoodixMilanGeneration *generation);
 void goodix_milan_generation_free (GoodixMilanGeneration *generation);
 void goodix_milan_generation_invalidate (GoodixMilanGeneration **generation);
+void goodix_milan_generation_retain_process (FpDevice *dev);
 guint64 goodix_milan_generation_note_use (GoodixMilanGeneration *generation);
 void goodix_milan_generation_note_identify_prelude (GoodixMilanGeneration *generation);
 

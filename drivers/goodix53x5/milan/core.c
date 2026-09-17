@@ -781,6 +781,10 @@ profile9_calibration_admit (const uint16_t             *source,
       else
         state->stable_count = 0;
     }
+  else
+    {
+      state->stable_count = 0;
+    }
 
   if (state->auxiliary_sample_count == 0 || state->stable_count == 0)
     for (size_t row = 0; row < coarse_rows; row++)
