@@ -124,9 +124,10 @@ milan_affine_is_valid (const int32_t affine[6])
   int64_t b = affine[1];
   int64_t c = affine[3];
   int64_t d = affine[4];
-  int64_t first = (int32_t) ((uint32_t) (a * a) + (uint32_t) (b * b));
-  int64_t cross = (int32_t) ((uint32_t) (a * c) + (uint32_t) (b * d));
-  int64_t second = (int32_t) ((uint32_t) (c * c) + (uint32_t) (d * d));
+  /* Native sign-extends each wrapped dword product before the qword sum. */
+  int64_t first = (int64_t) (int32_t) (a * a) + (int32_t) (b * b);
+  int64_t cross = (int64_t) (int32_t) (a * c) + (int32_t) (b * d);
+  int64_t second = (int64_t) (int32_t) (c * c) + (int32_t) (d * d);
   int64_t trace = first + second;
   int64_t discriminant = (int64_t) (
     (uint64_t) trace * (uint64_t) trace +
