@@ -286,7 +286,7 @@ goodix_enroll_task_done (GObject      *source_object,
       self->pending_enroll_stage = self->enroll_stage;
       g_clear_error (&self->pending_enroll_error);
       self->pending_enroll_error = fpi_device_retry_new (
-        output->coverage <= GOODIX_MILAN_ENROLL_MIN_COVERAGE ?
+        output->coverage < GOODIX_MILAN_ENROLL_MIN_COVERAGE ?
         FP_DEVICE_RETRY_CENTER_FINGER : FP_DEVICE_RETRY_REMOVE_FINGER);
     }
   else

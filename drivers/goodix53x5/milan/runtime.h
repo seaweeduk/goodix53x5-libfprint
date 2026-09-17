@@ -157,7 +157,7 @@ _Static_assert (offsetof (GoodixMilanRuntimeOutput, winner_index) == 56,
 _Static_assert (_Alignof (GoodixMilanRuntimeOutput) == 8,
                 "runtime output alignment changed");
 
-#define GOODIX_MILAN_ENROLL_MIN_QUALITY  15
+#define GOODIX_MILAN_ENROLL_MIN_QUALITY 25
 #define GOODIX_MILAN_ENROLL_MIN_COVERAGE 65
 
 gboolean goodix_milan_runtime_enrollment_admitted (
