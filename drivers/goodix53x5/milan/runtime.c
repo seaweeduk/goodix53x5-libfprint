@@ -595,6 +595,19 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
         G_MAXSIZE))
     return output;
 
+  /* Native sample admission precedes UpdateEnrollment and its extraction-state
+   * mutations. Attach installs inclusive quality/coverage thresholds 25/65. */
+  if (input->purpose == GOODIX_MILAN_PURPOSE_ENROLL &&
+      (output->quality < GOODIX_MILAN_ENROLL_MIN_QUALITY ||
+       output->coverage < GOODIX_MILAN_ENROLL_MIN_COVERAGE))
+    {
+      output->status = GOODIX_MILAN_RUNTIME_RETRY;
+      g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
+                           GOODIX_MILAN_PRINT_ERROR_INVALID,
+                           "Native Milan enrollment sample quality is insufficient");
+      return output;
+    }
+
   if (!goodix_milan_runtime_build_probe (
         input, output, processed, &probe, &probe_template))
     return output;
@@ -647,6 +660,6 @@ goodix_milan_runtime_enrollment_admitted (const GoodixMilanRuntimeOutput *output
 {
   return output != NULL && output->preprocess_state_valid &&
          output->probe_template != NULL && output->probe_record_count > 0 &&
-         output->quality > GOODIX_MILAN_ENROLL_MIN_QUALITY &&
-         output->coverage > GOODIX_MILAN_ENROLL_MIN_COVERAGE;
+         output->quality >= GOODIX_MILAN_ENROLL_MIN_QUALITY &&
+         output->coverage >= GOODIX_MILAN_ENROLL_MIN_COVERAGE;
 }
