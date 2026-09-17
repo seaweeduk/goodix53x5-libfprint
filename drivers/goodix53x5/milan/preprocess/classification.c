@@ -1729,6 +1729,9 @@ milan_profile9_build_severe_mask (const uint16_t *scores,
               edge_map[index] = UINT8_MAX;
           }
       milan_profile9_flood (edge_map, 1, rows, columns, broken_mask);
+      severe_count = 0;
+      for (size_t i = 0; i < count; i++)
+        severe_count += broken_mask[i] != 0;
     }
   milan_profile9_invalid_fill (
     blurred, valid, rows, columns, broken_mask);
