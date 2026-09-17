@@ -90,7 +90,7 @@ selection_type12_blocked (int32_t texture_delta,
          (texture_delta >= 25 && shape_delta >= 370 && boundary_delta >= 450 &&
           boundary_score >= 88 && pair_count >= 10 && pair_coverage <= 1900) ||
          (texture_delta >= 90 && shape_delta >= 95 && boundary_delta >= 250 &&
-          boundary_score >= 85 && pair_count >= 20 && adjusted_detail > 77) ||
+          boundary_score >= 85 && pair_count >= 20 && adjusted_detail <= 77) ||
          (texture_delta >= 88 && shape_delta >= 130 && boundary_delta >= 280 &&
           candidate_coverage >= 80 && pair_count >= 3 && adjusted_detail <= 78 &&
           pair_coverage <= 1700 && support_ratio >= 2700) ||
