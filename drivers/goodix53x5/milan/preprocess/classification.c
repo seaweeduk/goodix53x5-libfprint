@@ -1698,9 +1698,13 @@ milan_profile9_build_severe_mask (const uint16_t *scores,
     {
       for (size_t i = 0; i < count; i++)
         broken_mask[i] = scores[i] >= seed_threshold ? UINT8_MAX : 0;
-      milan_profile9_flood (
-        (const int16_t *) scores, (int16_t) grow_threshold,
-        rows, columns, broken_mask);
+      size_t seeds = 0;
+      for (size_t i = 0; i < count; i++)
+        seeds += broken_mask[i] != 0;
+      if (seeds > 50)
+        milan_profile9_flood (
+          (const int16_t *) scores, (int16_t) grow_threshold,
+          rows, columns, broken_mask);
     }
   size_t selected = 0;
   for (size_t i = 0; i < count; i++)
