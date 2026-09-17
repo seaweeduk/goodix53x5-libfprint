@@ -22,6 +22,7 @@
 #include <string.h>
 
 #define GOODIX_MILAN_OPTIONAL_C7_LEN 5
+#define GOODIX_MILAN_EXTRACTION_COMPONENT_QUEUE_CAPACITY 2450
 
 static void
 goodix_milan_match_pack_rescue_mask (
@@ -63,6 +64,9 @@ goodix_milan_match_retain_class_components (
   guint component_sizes[72] = { 0 };
   guint selected_labels[3] = { 0 };
   guint label_count = 0;
+  guint begin = 0;
+  guint end = 0;
+  guint pending = 0;
 
   memset (labels, 0xff,
           GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS * sizeof(*labels));
@@ -70,9 +74,6 @@ goodix_milan_match_retain_class_components (
        seed < GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS;
        seed++)
     {
-      guint begin = 0;
-      guint end = 0;
-
       if (labels[seed] != -1)
         continue;
       if (mask[seed] == 0)
@@ -84,8 +85,12 @@ goodix_milan_match_retain_class_components (
         break;
       label_count++;
       labels[seed] = (gint) label_count;
+      component_sizes[label_count]++;
       queue[end++] = (gint) seed;
-      while (begin < end)
+      if (end == GOODIX_MILAN_EXTRACTION_COMPONENT_QUEUE_CAPACITY)
+        end = 0;
+      pending++;
+      while (pending != 0)
         {
           gint current = queue[begin++];
           gint row = current / GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS;
@@ -93,7 +98,9 @@ goodix_milan_match_retain_class_components (
           static const gint dx[4] = { -1, 0, 1, 0 };
           static const gint dy[4] = { 0, -1, 0, 1 };
 
-          component_sizes[label_count]++;
+          if (begin == GOODIX_MILAN_EXTRACTION_COMPONENT_QUEUE_CAPACITY)
+            begin = 0;
+          pending--;
           for (guint direction = 0; direction < 4; direction++)
             {
               gint x = column + dx[direction];
@@ -114,7 +121,15 @@ goodix_milan_match_retain_class_components (
                   continue;
                 }
               labels[neighbor] = (gint) label_count;
-              queue[end++] = neighbor;
+              component_sizes[label_count]++;
+              /* Native labels/counts discoveries even when enqueue is full. */
+              if (pending < GOODIX_MILAN_EXTRACTION_COMPONENT_QUEUE_CAPACITY)
+                {
+                  queue[end++] = neighbor;
+                  if (end == GOODIX_MILAN_EXTRACTION_COMPONENT_QUEUE_CAPACITY)
+                    end = 0;
+                  pending++;
+                }
             }
         }
     }
@@ -166,7 +181,7 @@ goodix_milan_match_update_extraction_classification (
   g_autofree gint *labels = g_new (gint,
                                    GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS);
   g_autofree gint *queue = g_new (gint,
-                                  GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS);
+                                  GOODIX_MILAN_EXTRACTION_COMPONENT_QUEUE_CAPACITY);
   guint stable_class1_count = 0;
   guint stable_class2_count = 0;
   gint32 current_class = primary_histogram_state;
@@ -299,17 +314,6 @@ goodix_milan_match_update_extraction_classification (
 }
 
 static void
-goodix_milan_match_snapshot_extraction_classification (
-  GoodixMilanPreprocessState *state)
-{
-  memcpy (state->extraction_persistence.retained_class_planes,
-          state->extraction_classification.retained_class_planes,
-          sizeof (state->extraction_persistence.retained_class_planes));
-  state->extraction_persistence.retained_count =
-    state->extraction_classification.retained_count;
-}
-
-static void
 goodix_milan_match_decode_entry_classes (const guint8 *image,
                                     gint32       *packed,
                                     gint32       *low_class,
@@ -397,9 +401,6 @@ goodix_milan_match_extract_native_result (
       !preprocess_state->primary_contrast_valid || !info)
     return GOODIX_MILAN_EXTRACTION_INVALID;
 
-  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE)
-    goodix_milan_match_snapshot_extraction_classification (preprocess_state);
-
   return goodix_milan_match_extract_planes (
     image, preprocess_state->primary_contrast,
     &preprocess_state->extraction_classification,
@@ -431,9 +432,6 @@ goodix_milan_match_extract_native_result_debug (
   if (!image || !preprocess_state || !raw_frame ||
       !preprocess_state->primary_contrast_valid || !info)
     return GOODIX_MILAN_EXTRACTION_INVALID;
-
-  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE)
-    goodix_milan_match_snapshot_extraction_classification (preprocess_state);
 
   return goodix_milan_match_extract_planes (
     image, preprocess_state->primary_contrast,
@@ -497,7 +495,7 @@ goodix_milan_match_extract_planes (const guint8                              *im
   if (!image || !primary_contrast_plane || !classification_state ||
       !auxiliary_state)
     return status;
-  published_class = auxiliary_state->primary_histogram_state;
+  published_class = auxiliary_plane ? auxiliary_state->primary_histogram_state : 0;
   info = g_new0 (GoodixMatchInfo, 1);
   cropped = g_malloc (GOODIX_MILAN_EXTRACTION_CLASSIFICATION_PIXELS);
   high = g_malloc0 (286);
@@ -543,7 +541,7 @@ goodix_milan_match_extract_planes (const guint8                              *im
         GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS, enhanced_bitmap,
         &enhanced_threshold) != 0)
     goto out;
-  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE)
+  if (sensor_subtype == GOODIX_MILAN_PRINT_SENSOR_TYPE && auxiliary_plane)
     {
       /* Native commits history before record extraction, anti-fake, or packing
        * failures. */
@@ -615,7 +613,8 @@ goodix_milan_match_extract_planes (const guint8                              *im
   info->extraction_metadata.quality = quality;
   info->extraction_metadata.coverage = coverage;
   info->extraction_metadata.optional_c7 = fields.optional_c7;
-  info->extraction_metadata.auxiliary = *auxiliary_state;
+  if (auxiliary_plane)
+    info->extraction_metadata.auxiliary = *auxiliary_state;
   /* Live classification publishes the history-promoted mode, independently of
    * the preprocessing seed and the packed c7 high class. */
   info->extraction_metadata.auxiliary.primary_histogram_state = published_class;

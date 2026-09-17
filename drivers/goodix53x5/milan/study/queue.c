@@ -12,6 +12,7 @@
 #include "milan/study/queue.h"
 
 #include <stdint.h>
+#include <string.h>
 
 GoodixStudyQueue *
 goodix_milan_study_queue_new (uint32_t enabled_state,
@@ -41,12 +42,43 @@ goodix_milan_study_queue_new (uint32_t enabled_state,
 }
 
 void
+goodix_milan_study_queue_clear_gallery (GoodixStudyQueue *queue)
+{
+  if (!queue)
+    return;
+  g_clear_pointer (&queue->live_gallery, g_bytes_unref);
+  g_clear_pointer (&queue->live_input, g_bytes_unref);
+  for (gsize i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
+    g_clear_pointer (&queue->live_features[i], goodix_milan_match_free_info);
+  queue->live_overlap_counts_valid = FALSE;
+}
+
+gboolean
+goodix_milan_study_queue_resolve_gallery (const GoodixStudyQueue *queue,
+                                          const guint8          **feature,
+                                          gsize                  *feature_len)
+{
+  if (!queue || !queue->live_gallery || !feature || !*feature || !feature_len)
+    return FALSE;
+  GBytes *identities[2] = { queue->live_gallery, queue->live_input };
+  for (gsize i = 0; i < G_N_ELEMENTS (identities); i++)
+    if (identities[i] && g_bytes_get_size (identities[i]) == *feature_len &&
+        memcmp (g_bytes_get_data (identities[i], NULL), *feature, *feature_len) == 0)
+      {
+        *feature = g_bytes_get_data (queue->live_gallery, feature_len);
+        return TRUE;
+      }
+  return FALSE;
+}
+
+void
 goodix_milan_study_queue_free (GoodixStudyQueue *queue)
 {
   if (!queue)
     return;
   for (gsize i = 0; i < GOODIX_STUDY_QUEUE_CAPACITY; i++)
     goodix_milan_match_free_info (queue->entries[i].info);
+  goodix_milan_study_queue_clear_gallery (queue);
   g_free (queue);
 }
 
@@ -82,6 +114,14 @@ goodix_milan_study_queue_validate (const GoodixStudyQueue *queue)
 
   if (!queue || queue->enabled_state > 1)
     return FALSE;
+  if (!queue->live_gallery &&
+      (queue->live_input || queue->live_overlap_counts_valid))
+    return FALSE;
+  for (gsize i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
+    if (queue->live_features[i] &&
+        (!queue->live_gallery ||
+         !goodix_milan_match_info_is_complete (queue->live_features[i])))
+      return FALSE;
   occupied = goodix_milan_study_queue_occupied (queue);
   if (queue->enabled_state == 1)
     {

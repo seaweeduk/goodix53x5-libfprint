@@ -13,6 +13,8 @@
 #include <glib.h>
 #include <stdint.h>
 
+#include "milan/capacity.h"
+
 #define GOODIX_STUDY_QUEUE_CAPACITY 20
 
 typedef struct _GoodixMatchInfo GoodixMatchInfo;
@@ -28,7 +30,21 @@ typedef struct _GoodixStudyQueue
   GoodixStudyQueueEntry entries[GOODIX_STUDY_QUEUE_CAPACITY];
   uint32_t               enabled_state;
   uint32_t               transaction_counter;
+  /* Last published gallery for this retained queue; a fresh input still takes
+  * serialized admission normalization. Never serialized as queue metadata. */
+  GBytes          *live_gallery;
+  /* Input alias when action zero advances live state without publishing bytes. */
+  GBytes          *live_input;
+  GoodixMatchInfo *live_features[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY];
+  /* Unencoded live +0x148 values, refreshed only at normalization boundaries. */
+  int32_t          live_overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY];
+  gboolean         live_overlap_counts_valid;
 } GoodixStudyQueue;
+
+void goodix_milan_study_queue_clear_gallery (GoodixStudyQueue *queue);
+gboolean goodix_milan_study_queue_resolve_gallery (const GoodixStudyQueue *queue,
+                                                   const guint8          **feature,
+                                                   gsize                  *feature_len);
 
 typedef enum
 {

@@ -208,28 +208,35 @@ goodix_milan_generation_transfer_process_state (
   memcpy (destination->state.application_gain_map,
           source->state.application_gain_map,
           sizeof (destination->state.application_gain_map));
-  destination->state.profile9_history_count =
-    source->state.profile9_history_count;
-  destination->state.profile9_history_update_count =
-    source->state.profile9_history_update_count;
-  destination->state.profile9_history_mask_threshold =
-    source->state.profile9_history_mask_threshold;
-  destination->state.profile9_history_mask_average =
-    source->state.profile9_history_mask_average;
-  memcpy (destination->state.profile9_history_reference,
-          source->state.profile9_history_reference,
-          sizeof (destination->state.profile9_history_reference));
-  memcpy (destination->state.profile9_reference_age,
-          source->state.profile9_reference_age,
-          sizeof (destination->state.profile9_reference_age));
-  memcpy (destination->state.profile9_component_age,
-          source->state.profile9_component_age,
-          sizeof (destination->state.profile9_component_age));
-  destination->state.extraction_classification =
-    source->state.extraction_classification;
+  /* Setup reloads the packet, but an entered native classifier imports it only
+   * once per process lifetime. Keep the loaded snapshot separate from globals. */
+  if (source->state.profile9_classifier_initialized)
+    {
+      destination->state.profile9_history_count =
+        source->state.profile9_history_count;
+      destination->state.profile9_history_update_count =
+        source->state.profile9_history_update_count;
+      destination->state.profile9_history_mask_threshold =
+        source->state.profile9_history_mask_threshold;
+      destination->state.profile9_history_mask_average =
+        source->state.profile9_history_mask_average;
+      memcpy (destination->state.profile9_history_reference,
+              source->state.profile9_history_reference,
+              sizeof (destination->state.profile9_history_reference));
+      memcpy (destination->state.profile9_reference_age,
+              source->state.profile9_reference_age,
+              sizeof (destination->state.profile9_reference_age));
+      memcpy (destination->state.profile9_component_age,
+              source->state.profile9_component_age,
+              sizeof (destination->state.profile9_component_age));
+      destination->state.extraction_classification =
+        source->state.extraction_classification;
+      destination->state.profile9_classifier_initialized = 1;
+    }
   destination->profile_state = source->profile_state;
   destination->profile_state.setup_refresh_pending = 1;
   destination->profile_state.setup_not_ready = 0;
+  destination->process_state_retained = TRUE;
 }
 
 gboolean
@@ -346,6 +353,23 @@ goodix_milan_replace_raw_frame (guint16 **owner,
 #include "device/transport.h"
 
 void
+goodix_milan_generation_retain_process (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (!self->milan_generation)
+    return;
+  /* Native detach clears setup/workspace, not algorithm process globals. Keep
+   * their source owner until the next base publication; never reuse its frame. */
+  goodix_milan_generation_invalidate (&self->milan_retained_generation);
+  self->milan_retained_generation = g_steal_pointer (&self->milan_generation);
+  g_clear_pointer (&self->milan_retained_generation->setup_tx_on, g_free);
+  self->milan_retained_generation->profile_state.setup_initialized = 0;
+  self->milan_retained_generation->profile_state.setup_refresh_pending = 0;
+  self->milan_retained_generation->profile_state.setup_not_ready = 0;
+}
+
+void
 goodix_milan_generation_prepare_setup (FpDevice              *dev,
                                        GoodixMilanGeneration *generation)
 {
@@ -361,7 +385,8 @@ goodix_milan_generation_prepare_setup (FpDevice              *dev,
   restored = g_new0 (GoodixMilanGeneration, 1);
   goodix_milan_generation_reset_preprocess (restored);
   goodix_milan_persistence_restore (dev, restored);
-  if (generation->profile_state.setup_initialized)
+  if (generation->profile_state.setup_initialized ||
+      generation->process_state_retained)
     goodix_milan_generation_transfer_process_state (restored, generation);
   generation->state = restored->state;
 }
@@ -502,7 +527,7 @@ goodix_base_complete_recovery (FpiSsm              *ssm,
       return;
     }
 
-  goodix_milan_generation_invalidate (&self->milan_generation);
+  goodix_milan_generation_retain_process (dev);
   memset (&self->profile9_fdt.event, 0, sizeof (self->profile9_fdt.event));
   if (fdt_tx_on)
     {
@@ -772,7 +797,11 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
         if (data->forced_refresh && self->milan_generation)
           goodix_milan_generation_transfer_process_state (
             generation, self->milan_generation);
+        else if (self->milan_retained_generation)
+          goodix_milan_generation_transfer_process_state (
+            generation, self->milan_retained_generation);
         goodix_milan_generation_invalidate (&self->milan_generation);
+        goodix_milan_generation_invalidate (&self->milan_retained_generation);
         self->milan_generation = generation;
         memcpy (self->profile9_fdt.base_down, data->candidate_base_down,
                 GOODIX_FDT_BASE_LEN);
