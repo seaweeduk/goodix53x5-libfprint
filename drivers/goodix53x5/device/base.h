@@ -115,6 +115,7 @@ typedef struct
 typedef struct
 {
   guint64                    generation_id;
+  /* Reference consumed by preprocessing; unmarked hardware recovery retains it. */
   guint16                   *setup_tx_on;
   GoodixMilanPreprocessState state;
   GoodixMilanProfileState    profile_state;
