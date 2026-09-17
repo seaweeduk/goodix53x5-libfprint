@@ -360,8 +360,8 @@ goodix_milan_study_finalize_action0_transient (
   return 0;
 }
 
-int
-goodix_milan_study_action0_transient (
+static int
+milan_study_action0_state (
   const uint8_t *current_template,
   size_t         current_template_size,
   const int32_t  relation_values[7],
@@ -369,7 +369,11 @@ goodix_milan_study_action0_transient (
   const int32_t  retained_transforms[][6],
   size_t         retained_count,
   int32_t        retained_flag,
-  GoodixMilanStudyTransientState *transient_state)
+  GoodixMilanStudyTransientState *transient_state,
+  int32_t                        *live_overlap_counts,
+  uint8_t                        *packed,
+  size_t                          packed_capacity,
+  size_t                         *packed_size)
 {
   GoodixMilanUnpackedTemplate *current = NULL;
   GoodixMilanRelationMatrix *relation_matrix = NULL;
@@ -377,7 +381,7 @@ goodix_milan_study_action0_transient (
   uint8_t *normalization_copies[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
   int result = -1;
 
-  if (!current_template || !relation_values || !transient_state)
+  if (!current_template || !relation_values || (!transient_state && !packed))
     return -1;
   current = malloc (sizeof(*current));
   if (!current || goodix_milan_template_unpack (
@@ -397,10 +401,19 @@ goodix_milan_study_action0_transient (
           (current->feature_count == current->metadata.maximum_features &&
            goodix_milan_template_normalize_unpacked (
              current, normalization_copies,
+             live_overlap_counts ? live_overlap_counts :
              current->normalization_overlap_counts) != 0))
         goto out;
     }
-  result = milan_capture_study_transient (current, transient_state);
+  result = transient_state ? milan_capture_study_transient (current, transient_state) : 0;
+  if (result == 0 && packed)
+    {
+      result = goodix_milan_template_pack (
+        current->feature_elements, current->feature_element_sizes,
+        current->feature_count, current->relations, current->relation_count,
+        &current->metadata, current->tail_state, sizeof (current->tail_state),
+        packed, packed_capacity, packed_size);
+    }
 
 out:
   for (size_t i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
@@ -411,6 +424,45 @@ out:
   free (relation_matrix);
   free (current);
   return result;
+}
+
+int
+goodix_milan_study_action0_transient (
+  const uint8_t                  *current_template,
+  size_t                          current_template_size,
+  const int32_t                   relation_values[7],
+  const int32_t                  *retained_feature_indices,
+  const int32_t                   retained_transforms[][6],
+  size_t                          retained_count,
+  int32_t                         retained_flag,
+  GoodixMilanStudyTransientState *transient_state)
+{
+  return milan_study_action0_state (
+    current_template, current_template_size, relation_values,
+    retained_feature_indices, retained_transforms, retained_count, retained_flag,
+    transient_state, NULL, NULL, 0, NULL);
+}
+
+int
+goodix_milan_study_action0_gallery (
+  const uint8_t *current_template,
+  size_t         current_template_size,
+  const int32_t  relation_values[7],
+  const int32_t *retained_feature_indices,
+  const int32_t  retained_transforms[][6],
+  size_t         retained_count,
+  int32_t        retained_flag,
+  int32_t        live_overlap_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY],
+  uint8_t       *packed,
+  size_t         packed_capacity,
+  size_t        *packed_size)
+{
+  if (!live_overlap_counts || !packed || !packed_size)
+    return -1;
+  return milan_study_action0_state (
+    current_template, current_template_size, relation_values,
+    retained_feature_indices, retained_transforms, retained_count, retained_flag,
+    NULL, live_overlap_counts, packed, packed_capacity, packed_size);
 }
 
 int

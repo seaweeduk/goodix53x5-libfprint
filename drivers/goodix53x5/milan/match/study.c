@@ -583,20 +583,6 @@ goodix_milan_match_finalize_study (GBytes                 *feature,
   return result;
 }
 
-static gboolean
-goodix_milan_match_finish_action0_transient (
-  GoodixMilanStudyTransientState *transient,
-  const GoodixMilanMatchResult   *match_result)
-{
-  if (!transient->valid)
-    return TRUE;
-  if (match_result->study_control.study_finalization_gate == 0)
-    return TRUE;
-  if (goodix_milan_study_finalize_action0_transient (transient) != 0)
-    return FALSE;
-  return TRUE;
-}
-
 GoodixSigfmTemplateStatus
 goodix_milan_match_study_feature_queued (
   GoodixMatchInfo              *probe_info,
@@ -610,7 +596,7 @@ goodix_milan_match_study_feature_queued (
 {
   GoodixStudyFollowupContext context = { 0 };
   GoodixMilanStudyTransientState transient = { 0 };
-  GoodixSigfmTemplateStatus status;
+  GoodixSigfmTemplateStatus status = GOODIX_SIGFM_TEMPLATE_INVALID;
   GoodixMilanStudyAction primary_action = GOODIX_MILAN_STUDY_NONE;
   GBytes *probe_feature = NULL;
   GBytes *primary_update = NULL;
@@ -619,6 +605,10 @@ goodix_milan_match_study_feature_queued (
   gsize probe_size;
   gsize selected_index = SIZE_MAX;
   gboolean queued_mutation = FALSE;
+  gboolean retained_gallery;
+  GBytes *input_identity = NULL;
+  const guint8 *requested_feature = feature;
+  gsize requested_size = feature_len;
 
   if (updated_feature)
     *updated_feature = NULL;
@@ -626,15 +616,32 @@ goodix_milan_match_study_feature_queued (
     *action = GOODIX_MILAN_STUDY_NONE;
   if (!goodix_milan_match_info_is_complete (probe_info) || !feature ||
       !match_result || !queue || !updated_feature || !action ||
-      !goodix_milan_study_queue_validate (queue) ||
-      !goodix_milan_match_queue_matches_template (queue, feature, feature_len))
-    return GOODIX_SIGFM_TEMPLATE_INVALID;
-  if (!goodix_milan_match_initialize_study_overlap_counts (
-        feature, feature_len, context.live_overlap_counts))
-    return GOODIX_SIGFM_TEMPLATE_INVALID;
+      !goodix_milan_study_queue_validate (queue))
+    {
+      goodix_milan_study_queue_clear_gallery (queue);
+      return GOODIX_SIGFM_TEMPLATE_INVALID;
+    }
+  retained_gallery = goodix_milan_study_queue_resolve_gallery (
+    queue, &feature, &feature_len);
+  if (!goodix_milan_match_queue_matches_template (queue, feature, feature_len))
+    goto out;
+  input_identity = g_bytes_new (requested_feature, requested_size);
+  context.current = g_bytes_new (feature, feature_len);
+  feature = g_bytes_get_data (context.current, NULL);
+  if (retained_gallery && queue->live_overlap_counts_valid)
+    memcpy (context.live_overlap_counts, queue->live_overlap_counts,
+            sizeof (context.live_overlap_counts));
+  else if (!goodix_milan_match_initialize_study_overlap_counts (
+             feature, feature_len, context.live_overlap_counts))
+    goto out;
+  if (retained_gallery)
+    for (gsize i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
+      context.live_features[i] = g_steal_pointer (&queue->live_features[i]);
+  else
+    goodix_milan_study_queue_clear_gallery (queue);
   probe_feature = goodix_milan_match_serialize_template (probe_info);
   if (!probe_feature)
-    return GOODIX_SIGFM_TEMPLATE_INVALID;
+    goto out;
   probe_data = g_bytes_get_data (probe_feature, &probe_size);
   status = goodix_milan_match_study_feature_internal (
     probe_data, probe_size, feature, feature_len, match_result, study_eligible,
@@ -664,9 +671,39 @@ goodix_milan_match_study_feature_queued (
               goto out;
             }
         }
-      if (!goodix_milan_match_finish_action0_transient (&transient, match_result))
-        status = GOODIX_SIGFM_TEMPLATE_INVALID;
-      goto out;
+      if (transient.valid)
+        {
+          guint8 *packed = g_malloc (GOODIX_MILAN_TEMPLATE_MAX_SIZE);
+          size_t packed_size = 0;
+
+          if (goodix_milan_study_action0_gallery (
+                feature, feature_len, match_result->relation.relation_values,
+                match_result->retained_evidence_feature_indices,
+                match_result->retained_evidence_transforms,
+                match_result->retained_evidence_count,
+                match_result->retained_evidence_flag, context.live_overlap_counts,
+                packed, GOODIX_MILAN_TEMPLATE_MAX_SIZE, &packed_size) != 0)
+            {
+              g_free (packed);
+              status = GOODIX_SIGFM_TEMPLATE_INVALID;
+              goto out;
+            }
+          g_clear_pointer (&context.current, g_bytes_unref);
+          context.current = g_bytes_new_take (packed, packed_size);
+          final_update = goodix_milan_match_finalize_study (
+            context.current, queue,
+            match_result->study_control.study_finalization_gate != 0);
+        }
+      else
+        {
+          final_update = g_bytes_ref (context.current);
+        }
+      if (!final_update)
+        {
+          status = GOODIX_SIGFM_TEMPLATE_INVALID;
+          goto out;
+        }
+      goto publish;
     }
   if (!primary_update || selected_index == SIZE_MAX)
     {
@@ -679,6 +716,7 @@ goodix_milan_match_study_feature_queued (
       status = GOODIX_SIGFM_TEMPLATE_INVALID;
       goto out;
     }
+  g_clear_pointer (&context.current, g_bytes_unref);
   context.current = g_bytes_ref (primary_update);
   if (!goodix_milan_match_set_live_feature (&context, selected_index, probe_info))
     {
@@ -703,14 +741,28 @@ goodix_milan_match_study_feature_queued (
       status = GOODIX_SIGFM_TEMPLATE_INVALID;
       goto out;
     }
-  *updated_feature = g_steal_pointer (&final_update);
-  *action = queued_mutation ? GOODIX_MILAN_STUDY_QUEUED : primary_action;
+publish:
+  goodix_milan_study_queue_clear_gallery (queue);
+  queue->live_gallery = g_bytes_ref (final_update);
+  if (primary_action == GOODIX_MILAN_STUDY_NONE)
+    queue->live_input = g_steal_pointer (&input_identity);
+  for (gsize i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
+    queue->live_features[i] = g_steal_pointer (&context.live_features[i]);
+  memcpy (queue->live_overlap_counts, context.live_overlap_counts,
+          sizeof (queue->live_overlap_counts));
+  queue->live_overlap_counts_valid = TRUE;
+  if (primary_action != GOODIX_MILAN_STUDY_NONE)
+    {
+      *updated_feature = g_steal_pointer (&final_update);
+      *action = queued_mutation ? GOODIX_MILAN_STUDY_QUEUED : primary_action;
+    }
 
 out:
   if (status != GOODIX_SIGFM_TEMPLATE_OK)
     {
       *action = GOODIX_MILAN_STUDY_NONE;
       g_clear_pointer (updated_feature, g_bytes_unref);
+      goodix_milan_study_queue_clear_gallery (queue);
     }
   g_clear_pointer (&context.current, g_bytes_unref);
   for (size_t i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
@@ -718,5 +770,6 @@ out:
   g_clear_pointer (&final_update, g_bytes_unref);
   g_clear_pointer (&primary_update, g_bytes_unref);
   g_clear_pointer (&probe_feature, g_bytes_unref);
+  g_clear_pointer (&input_identity, g_bytes_unref);
   return status;
 }
