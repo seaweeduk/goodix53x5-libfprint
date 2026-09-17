@@ -121,7 +121,7 @@ static int milan_profile9_post_render (
   const uint8_t              *selection_mask,
   int                         selected_refined,
   GoodixMilanPreprocessPurpose purpose,
-  uint32_t                     calibration_ready,
+  uint32_t                    *calibration_ready,
   const uint8_t              **first_metadata_mask,
   uint8_t                    **first_metadata_owned_mask,
   int                         *first_metadata_mode,
@@ -379,7 +379,7 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
     state, normalized_live, setup_map, contrast_mask, working,
     optional_plane0, reciprocal_plane, output, selection_mask,
     selected_refined, purpose,
-    profile_state->calibration_ready, &first_metadata_mask,
+    &profile_state->calibration_ready, &first_metadata_mask,
     &first_metadata_owned_mask,
     &first_metadata_mode, &first_metadata_apply);
   if (post_status < 0)
@@ -2889,7 +2889,7 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
                             const uint8_t              *selection_mask,
                             int                         selected_refined,
                             GoodixMilanPreprocessPurpose purpose,
-                            uint32_t                     calibration_ready,
+                            uint32_t                    *calibration_ready,
                             const uint8_t              **first_metadata_mask,
                             uint8_t                    **first_metadata_owned_mask,
                             int                         *first_metadata_mode,
@@ -2983,10 +2983,12 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
       if (!nested_gain || !nested_output)
         goto out;
       state->sample_count = 5;
+      goodix_milan_profile9_update_gain_ready (
+        auxiliary_samples, state->sample_count, calibration_ready);
       if (first_update_frame_core (
             normalized_live, setup_map, state->calibration_map,
             state->application_gain_map, state->auxiliary_gain_map,
-            auxiliary_samples, state, calibration_ready, rows, columns,
+            auxiliary_samples, state, *calibration_ready, rows, columns,
             nested_gain, nested_output, NULL) != 0)
         {
           state->sample_count = saved_sample_count;
