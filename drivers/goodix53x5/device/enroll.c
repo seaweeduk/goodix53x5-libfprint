@@ -198,6 +198,12 @@ goodix_enroll_task_done (GObject      *source_object,
   GOODIX53X5_DEBUG_ONLY (goodix_enroll_set_processed_image (self, output);
                         )
   enrollment_admitted = goodix_milan_runtime_enrollment_admitted (output);
+  /* Native non-policy merge failures break an unsaturated rollback streak,
+   * including extraction that succeeds with no records to insert. Sample
+   * quality/preprocessing rejection never enters that merge boundary. */
+  if (output->enrollment_sample_admitted && !enrollment_admitted &&
+      self->enroll_bad_continue_count < 3)
+    self->enroll_bad_continue_count = 0;
 
   if (enrollment_admitted)
     {
