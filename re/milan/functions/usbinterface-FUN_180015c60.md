@@ -382,5 +382,20 @@ See `usbinterface-FUN_1800149c4.md`.
   argument 2 at `0x18000e63d..0x18000e652`.
 - `CaptureFramedone` (`0x18001fb40`) serializes that argument as the sample's
   setup/reference plane.
-- `GoodixEngineAdapter.dll` copies that plane from payload `+0xebf0` and passes
-  it through `_InitPreProcessor_Unify` to `preprocessor_init`.
+- `GoodixEngineAdapter.dll` copies that plane from payload `+0xebf0` and, when
+  the setup gate below requests initialization, passes it through
+  `_InitPreProcessor_Unify` to `preprocessor_init`.
+
+Hardware image replacement is distinct from engine setup replacement. This
+function never sets one-shot byte `+0x236`; direct invalid-base callers therefore
+can replace `+0x248` while leaving an already-clear marker clear. For example,
+temperature-event validation rejection preserves an older image-valid reference
+but leaves FDT-base validity clear. A later non-majority up event can recover
+through `Milan_checkbase_isok -> MilanHV_update_allbase` without writing the
+marker. `EngineAdapterAcceptSampleData` (`FUN_18001f610`) then skips its setup
+bridge when engine-context `+0x7c` is already nonzero: it uses the existing
+preprocessing workspace despite the newly supplied hardware reference. The
+engine gate is `initialized == 0 || marker == 1`, not reference-byte inequality
+or hardware acquisition success. An earlier unconsumed marker of one remains
+one through this direct recovery and still requests setup using the latest
+reference at the next delivered sample.

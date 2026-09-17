@@ -2,8 +2,7 @@
 
 ## Identity
 
-- Binary: `GoodixEngineAdapter.dll` 2.0.310.900, SHA-256
-  `6673db3874fea66a58e2da29e371d797b890c767ba0491134d4a372c5b27e3b4`.
+- Binary: `GoodixEngineAdapter.dll` 2.0.310.900.
 - Export entry/body: `0x180001a50..0x180001ac2`.
 - Role: destroy an enrollment session and its nested live-template owners.
 
@@ -30,7 +29,19 @@ initialized session does not have a guarded path here.
 - Nested destructor and frees: `0x180001a81..0x180001ab0`.
 - Success return: `0x180001abb..0x180001ac2`.
 
-## Confidence And Unresolved
+## Separate Commit And Calibration Save
 
-- Confidence: high for ownership order and the missing inner-pointer guard.
-- Unresolved: exact subobject ownership performed inside `FUN_180037860`.
+Session destruction is not the calibration-persistence boundary.
+`EngineAdapterCommitEnrollment` (`FUN_180022700`) performs record storage through
+`FUN_180025930` and, only when that result is nonnegative, calls
+`FUN_180030b40(context + 0x4a)` at `0x180022af4`, then `FUN_180031120`.
+The first callee saves the already retained calibration workspace under the
+16-byte sensor identity by calling `FUN_18002aef0`. It translates save failures
+to `0x8000ffff`, but CommitEnrollment does not assign that return value to its
+own HRESULT; it retains the record-storage result. A failed record-storage
+result skips the save.
+
+The packet's pre-extraction snapshot and completed-sample refresh ownership are
+described in `FUN_180031d00.md`: a finger-up reference refresh alone cannot
+replace it before commit. Neither `enrolGetTemplate` nor this destructor refreshes
+or serializes preprocessing state.

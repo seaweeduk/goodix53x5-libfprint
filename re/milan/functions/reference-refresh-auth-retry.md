@@ -37,13 +37,20 @@ FDT-down detection. This operation-start path does not require `+0x232` or
 The ordinary `OnCaptureData` path also selects FDT-down for its first activation
 and retains the WBF request while image validity remains clear. A real down
 event cannot publish an image in that state; the down handler switches to
-FDT-up and retains the request. On the corresponding up event, a fresh zero
-anchor state reaches `MilanHV_temperature_event` through the majority-change
-predicate; other anchor states can reach the final `Milan_checkbase_isok` call.
-Both routes rerun `MilanHV_update_allbase` while `+0x232` is clear. Admission
-establishes the first valid reference, the up wrapper rearms down, and a later
-real down can complete the same retained WBF request. Only the temperature-event
-route writes one-shot byte `+0x236`.
+FDT-up and retains the request. Profile initialization `FUN_1800162ac` sets
+anchor-empty byte `+0x338` to one at `0x1800164b0`, leaving the twelve anchor
+words unchanged but inactive. Without intervening reverse-event seeding, the
+corresponding up event skips both anchor comparisons and reaches
+`Milan_checkbase_isok`. That helper directly calls `MilanHV_update_allbase` when
+`+0x232` is clear. With an active anchor, a strict majority-change predicate
+instead selects `MilanHV_temperature_event`; a non-majority path still reaches
+the validity check after any proximity-qualified anchor clearing.
+
+Admission establishes the first valid reference, the up wrapper rearms down,
+and a later real down can complete the same retained WBF request. Only the
+temperature-event route writes one-shot byte `+0x236`. Initial direct recovery
+needs no marker to initialize a fresh engine context: its initialized byte
+`+0x7c` is zero.
 
 If a later false-down event reaches `MilanHV_Down_procedure`, the handler calls
 `MilanHV_temperature_event`. That function clears `+0x232` and reruns
@@ -76,6 +83,15 @@ Capture completion passes retained image reference `+0x248`, the live image,
 and one-shot marker `+0x236` to `CaptureFramedone`. The dispatcher clears
 `+0x236` after that callback. When `MilanHV_temperature_event` writes the marker,
 it requests preprocessing reinitialization for exactly one completed sample.
+
+Engine setup uses the predicate `context[+0x7c] == 0 || marker == 1`. Thus a
+direct invalid-base recovery can replace the hardware reference while an
+initialized engine retains its existing preprocessing workspace and consumed
+setup. For example, a rejected temperature refresh can leave FDT validity clear
+and an older image valid; a later non-majority up recovery replaces the image
+without setting the marker. An earlier unconsumed marker remains unchanged by
+that direct recovery, so a marker already equal to one still requests setup
+from the latest admitted reference.
 
 Normal operation clearing does not itself reacquire the image base. In the
 absence of an admitted initial acquisition or an admitted event-driven refresh,

@@ -2,8 +2,7 @@
 
 ## Identity
 
-- Binary: `GoodixEngineAdapter.dll` 2.0.310.900, SHA-256
-  `6673db3874fea66a58e2da29e371d797b890c767ba0491134d4a372c5b27e3b4`.
+- Binary: `GoodixEngineAdapter.dll` 2.0.310.900.
 - Export/body: `preprocess_load_calidata`,
   `0x180002ed0..0x1800030c6`.
 - Sole caller: `_InitPreProcessor_E` (`FUN_18002bfa0`) at `0x18002c4f4`,
@@ -94,6 +93,22 @@ The workspace survives operation clear within one engine attachment.
 `EngineAdapterDetach` reaches `preprocessor_exit`, which clears the complete
 `0x3048c` workspace. A later attachment can repopulate it through this loader
 when the persisted sensor-ID prefix, version, and both plane checks pass.
+
+Calibration reload does not reset process-owned gain initialization at
+`DAT_1801efbf8`, readiness at `DAT_1801efbfc`, auxiliary sample count at
+`DAT_1801efbf4`, the three gain planes, or coarse-reference/stability state.
+Neither these fields nor their lifetime is supplied by the persisted workspace
+sample count. The default fallback likewise leaves them intact until live
+processing applies its own transitions.
+
+In particular, a live call with imported sample count `1..3` leaves gain
+initialization nonzero; loading a later count above three does not turn that
+state back into an uninitialized entry. A nested post-render update can clear
+readiness before restoring its temporary workspace count. A later zero-count
+reload retains that ready value even though the next live initializer resets
+the auxiliary count and gain planes. See `FUN_1800672e0.md` and
+`FUN_18006c510.md` for these distinct mutation owners, and `FUN_18001ed10.md`
+for detach's separate workspace and setup-readiness teardown.
 
 ## File Ownership And Write Semantics
 

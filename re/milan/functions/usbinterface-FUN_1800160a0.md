@@ -28,6 +28,11 @@ from the shared HAL layout.
 
 ## Findings
 
+- Entry tests HAL-enabled byte `DAT_1800617f4` at `0x1800160cb`. If zero,
+  it logs and returns zero without closing synchronization objects or freeing
+  any retained buffer. Resource teardown below is conditional on nonzero entry
+  enabled state; the function clears that byte before calling the profile close
+  helper. A repeated disable therefore does not repeat those frees.
 - Clears the HAL-enabled global byte and calls `FUN_18000445c`
   (`GxFNHV_MilanClose`).
 - Stops timers, closes event handles, and deletes the HAL critical section.

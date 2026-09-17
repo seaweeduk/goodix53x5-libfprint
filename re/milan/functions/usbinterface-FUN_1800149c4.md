@@ -56,12 +56,14 @@ Without a majority, the function calls `+0x110` with zero and then
 lost. Refresh ownership and failure effects are documented in
 `usbinterface-FUN_180013da4.md` and `usbinterface-FUN_180015c60.md`.
 
-Profile setup does not explicitly initialize `+0x338`; reverse, up, and refresh
-branches own its transitions. A fresh zero-initialized module begins with an
-active zeroed anchor, but prior events and retained DLL state can change it.
-The majority refresh path therefore requires an active anchor and the strict
-majority predicate, not proof that a reverse event has previously seeded it.
-Ordinary reverse seeding is one producer of that active state. The non-majority
+Profile setup `FUN_1800162ac` writes `+0x338 = 1` at `0x1800164b0`, before
+allocating the retained image. It leaves the twelve anchor words unchanged,
+but their bytes are inactive while the flag is one. Thus an up event following
+initialization without intervening anchor seeding bypasses both comparisons
+and reaches the final `Milan_checkbase_isok` call. It does not take a majority
+refresh merely because BSS anchor words initially contain zero. Ordinary
+reverse seeding produces active anchor state; the majority path requires that
+active state and the strict majority predicate. The non-majority
 path separately checks base validity after callback `+0x110` at
 `0x180014c55..0x180014c67`; this caller performs no additional anchor clearing
 after `Milan_checkbase_isok` returns.

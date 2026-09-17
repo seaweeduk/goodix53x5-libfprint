@@ -2,8 +2,7 @@
 
 ## Identity
 
-- Binary: `GoodixEngineAdapter.dll` 2.0.310.900, SHA-256
-  `6673db3874fea66a58e2da29e371d797b890c767ba0491134d4a372c5b27e3b4`.
+- Binary: `GoodixEngineAdapter.dll` 2.0.310.900.
 - Export entry: `0x180001450`.
 - Normal enrollment caller: adapter wrapper `FUN_18002d4b0` at
   `0x18002d62f`. Maintenance helper `FUN_1800303c0` also calls this export at
@@ -40,6 +39,32 @@ int32_t enrolAddImage(
 - `FUN_18001f610` proves the metadata values originate in the sample trailer and
   are retained independently as `tCode`, `dacHigh`, and `dacLow`.
 - Normal profile-9 enrollment supplies `0x79`, `0x7d`, and `0xc6`.
+
+## Adapter Sample Admission
+
+The ordinary adapter judges the completed sample before invoking this export.
+`EngineAdapterAcceptSampleData` (`FUN_18001f610`) calls preprocessing at
+`0x180020068`. Nonzero preprocessing status skips quality judgment and returns
+retry. For enrollment purpose 4, successful preprocessing calls
+`FUN_1800324f0`, which delegates to `FUN_18002d1a0`:
+
+1. Unsigned coverage dword `DAT_180196cb0` below zero-extended threshold byte
+   `DAT_1800f2401` produces status `0x8007`.
+2. Otherwise unsigned quality dword `DAT_180196cb4` below zero-extended threshold
+   byte `DAT_1800f2400` produces status `0x8008`.
+3. Equality to either threshold is admitted. Coverage rejection takes precedence.
+
+The wrapper maps either rejection to HRESULT `0x80098008`, selecting coverage
+detail from context `+0x15d` or quality detail from `+0x15c`. This precedes the
+separate `EngineAdapterUpdateEnrollment` callback and therefore extraction,
+anti-fake construction, insertion, and merge suppression-counter updates.
+Preprocessing mutations already completed by sample acceptance remain retained.
+
+`EngineAdapterAttach` (`FUN_18001e5b0`) copies configuration bytes
+`DAT_1800f141f/1420` into context `+0x130/+0x131`; `FUN_180030c40` passes those
+addresses to `FUN_18002b240`, which installs the two threshold bytes. The embedded
+configuration values are quality 25 and coverage 65. The pre-attach quality
+global's image value 15 is overwritten by this attach path.
 
 ## Behavior
 
@@ -110,10 +135,3 @@ int32_t enrolAddImage(
   rollback remove the last feature through `FUN_180037a30`. Exact retained
   template state is owned by `FUN_180037a30.md`; session count/progress and
   overlap-field ownership are in `enrolDeleteImage.md`.
-
-## Confidence And Unresolved
-
-- Confidence: high for the native ABI, metadata-derived offset, accepted
-  count boundary, rollback timing, and 40/41 wrapper behavior.
-- The persisted calibration generation used by the normal adapter remains
-  unresolved; it does not change enrollment count or rollback ownership.
