@@ -1221,7 +1221,6 @@ goodix_milan_matcher_late_context_derive (
 
   decode_packed_c7 (packed_feature_c7, &feature_low_class,
                     &feature_high_class);
-  state[0] = context->accumulated_high_class;
   state[1] = context->probe_primary_histogram_class;
   state[2] = context->accumulated_high_class + feature_high_class;
   if (state[2] > 5)
@@ -1230,6 +1229,7 @@ goodix_milan_matcher_late_context_derive (
     context->accumulated_high_class =
       context->accumulated_high_class > feature_high_class
         ? context->accumulated_high_class : feature_high_class;
+  state[0] = context->accumulated_high_class;
 }
 
 static int32_t
