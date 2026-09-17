@@ -823,15 +823,24 @@ milan_match_integer_sqrt_u64 (uint64_t value)
   return root;
 }
 
-static void
-milan_match_affine_average_scale (uint64_t first_squared,
-                                  uint64_t second_squared,
-                                  int32_t *average_scale)
+static uint32_t
+milan_match_affine_product_root (uint64_t value)
 {
-  uint64_t first_length = milan_match_integer_sqrt_u64 (first_squared);
-  uint64_t second_length = milan_match_integer_sqrt_u64 (second_squared);
+  uint32_t root = 0;
+  uint64_t bit = UINT64_C (0x80000000);
 
-  *average_scale = (int32_t) ((first_length + second_length) / 2);
+  /* Native doubles the root in a dword before widening the trial. */
+  for (int shift = 31; shift >= 0; shift--, bit >>= 1)
+    {
+      uint64_t trial = ((uint32_t) (root * UINT32_C (2)) + bit) << shift;
+
+      if (value >= trial)
+        {
+          root += (uint32_t) bit;
+          value -= trial;
+        }
+    }
+  return root;
 }
 
 void
@@ -840,28 +849,10 @@ goodix_milan_match_affine_penalties (const int32_t transform[6],
                                int32_t      *orthogonality_penalty,
                                int32_t      *strong_orthogonality_penalty)
 {
-  uint64_t first_squared = (uint64_t) ((int64_t) transform[0] * transform[0]) +
-                           (uint64_t) ((int64_t) transform[3] * transform[3]);
-  uint64_t second_squared =
-    (uint64_t) ((int64_t) transform[1] * transform[1]) +
-    (uint64_t) ((int64_t) transform[4] * transform[4]);
-  uint64_t product_length = milan_match_integer_sqrt_u64 (
-    first_squared * second_squared);
   int32_t average_scale;
-  int32_t orthogonality = 0;
+  int32_t orthogonality;
 
-  milan_match_affine_average_scale (
-    first_squared, second_squared, &average_scale);
-  if (product_length != 0)
-    {
-      int64_t dot = (int64_t) transform[1] * transform[0] +
-                    (int64_t) transform[4] * transform[3];
-
-      orthogonality = (int32_t) ((dot * 0x10000) /
-                                 (int64_t) product_length);
-      if (orthogonality < 0)
-        orthogonality = -orthogonality;
-    }
+  goodix_milan_match_affine_details (transform, &average_scale, &orthogonality);
   *scale_penalty = (uint32_t) (average_scale - 234) > 47;
   *orthogonality_penalty = orthogonality >= 0x147b;
   if (strong_orthogonality_penalty)
@@ -873,24 +864,28 @@ goodix_milan_match_affine_details (const int32_t transform[6],
                             int32_t      *average_scale,
                             int32_t      *absolute_dot_q16)
 {
-  uint64_t first_squared = (uint64_t) ((int64_t) transform[0] * transform[0]) +
-                           (uint64_t) ((int64_t) transform[3] * transform[3]);
-  uint64_t second_squared =
-    (uint64_t) ((int64_t) transform[1] * transform[1]) +
-    (uint64_t) ((int64_t) transform[4] * transform[4]);
-  uint64_t product_length = milan_match_integer_sqrt_u64 (
-    first_squared * second_squared);
-  int64_t dot = (int64_t) transform[1] * transform[0] +
-                (int64_t) transform[4] * transform[3];
+  uint32_t a = (uint32_t) transform[0];
+  uint32_t b = (uint32_t) transform[1];
+  uint32_t c = (uint32_t) transform[3];
+  uint32_t d = (uint32_t) transform[4];
+  uint32_t first_squared = a * a + c * c;
+  uint32_t second_squared = b * b + d * d;
+  uint32_t first_length = (uint32_t) milan_match_integer_sqrt_u64 (first_squared);
+  uint32_t second_length = (uint32_t) milan_match_integer_sqrt_u64 (second_squared);
+  int64_t product =
+    (int64_t) milan_reinterpret_uint32_as_int32 (first_squared) *
+    milan_reinterpret_uint32_as_int32 (second_squared);
+  uint32_t product_length = milan_match_affine_product_root ((uint64_t) product);
+  int64_t dot = milan_reinterpret_uint32_as_int32 (a * b + c * d);
 
-  milan_match_affine_average_scale (
-    first_squared, second_squared, average_scale);
-  *absolute_dot_q16 = product_length == 0
-                        ? 0
-                        : (int32_t) ((dot * 0x10000) /
-                                     (int64_t) product_length);
+  *average_scale = (int32_t) ((first_length + second_length) >> 1);
+  *absolute_dot_q16 = 0;
+  if (first_length != 0 && product_length != 0)
+    *absolute_dot_q16 = milan_reinterpret_uint32_as_int32 (
+      (uint32_t) ((dot * 0x10000) / product_length));
   if (*absolute_dot_q16 < 0)
-    *absolute_dot_q16 = -*absolute_dot_q16;
+    *absolute_dot_q16 = milan_reinterpret_uint32_as_int32 (
+      UINT32_C (0) - (uint32_t) *absolute_dot_q16);
 }
 
 void
