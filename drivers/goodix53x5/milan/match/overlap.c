@@ -509,6 +509,40 @@ milan_match_low_bitmap_compute (
 }
 
 int
+goodix_milan_match_queue_duplicate_score (const GoodixMilanFeatureView *newest,
+                                          const GoodixMilanFeatureView *incoming,
+                                          int32_t                      *score)
+{
+  static const int32_t identity[6] = { 0x100, 0, 0, 0, 0x100, 0 };
+  static const int32_t weights[3] = { 3, 2, 3 };
+  int32_t confidence = -1;
+
+  if (!newest || !incoming || !score)
+    return -1;
+  for (size_t pass = 0; pass < 2; pass++)
+    {
+      int32_t classes[5];
+      int32_t pass_score;
+      int32_t detail;
+
+      if (milan_match_low_bitmap_compute (
+            pass ? newest->enhanced_bitmap : newest->high_bitmap,
+            newest->inline_mask,
+            pass ? incoming->enhanced_bitmap : incoming->high_bitmap,
+            incoming->inline_mask, identity, NULL, classes, NULL, NULL) != 0 ||
+          goodix_milan_match_overlap_result (
+            classes, classes[4], 52 * 44, 0, weights, 10, &confidence,
+            &pass_score, NULL, &detail) != 0)
+        return -1;
+      if (pass == 0)
+        *score = pass_score;
+      else
+        *score = goodix_milan_match_secondary_result (*score, pass_score, detail);
+    }
+  return 0;
+}
+
+int
 goodix_milan_match_low_bitmap_metrics (
   const uint8_t enrolled_bitmap[286],
   const uint8_t enrolled_inline_mask[72],

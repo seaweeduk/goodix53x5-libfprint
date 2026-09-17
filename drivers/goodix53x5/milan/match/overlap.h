@@ -12,6 +12,10 @@
 
 #include "milan/milan.h"
 
+int goodix_milan_match_queue_duplicate_score (const GoodixMilanFeatureView *newest,
+                                              const GoodixMilanFeatureView *incoming,
+                                              int32_t                      *score);
+
 int goodix_milan_match_masked_classes (const uint8_t probe_inline_mask[72],
                                        const uint8_t classification[52 * 44],
                                        const int32_t transform[6],
