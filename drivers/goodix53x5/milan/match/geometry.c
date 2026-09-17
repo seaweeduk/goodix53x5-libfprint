@@ -257,15 +257,22 @@ milan_divide_affine_coefficient (int64_t numerator,
                                  int64_t denominator,
                                  int64_t half_denominator)
 {
+  uint64_t dividend_bits;
+  int64_t dividend;
+  int64_t quotient;
+
   if (denominator == 0)
     return 0;
-  if (numerator < 0)
-    return (int32_t) -(int64_t) (
-      ((uint64_t) half_denominator - (uint64_t) numerator) /
-      (uint64_t) denominator);
-  return (int32_t) (int64_t) (
-    ((uint64_t) numerator + (uint64_t) half_denominator) /
-    (uint64_t) denominator);
+  /* Native rounds with wrapping qword arithmetic before signed division. The
+   * rounded dividend can be negative even with a positive Gram determinant. */
+  dividend_bits = numerator < 0 ?
+                  (uint64_t) half_denominator - (uint64_t) numerator :
+                  (uint64_t) numerator + (uint64_t) half_denominator;
+  memcpy (&dividend, &dividend_bits, sizeof (dividend));
+  quotient = dividend / denominator;
+  return milan_reinterpret_uint32_as_int32 (
+    numerator < 0 ? UINT32_C (0) - (uint32_t) quotient :
+    (uint32_t) quotient);
 }
 
 static int64_t
