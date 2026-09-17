@@ -1848,12 +1848,12 @@ milan_profile9_publish_classification (GoodixMilanPreprocessState *state,
       *mode = 6;
       *apply_mask = 1;
     }
-  else if (class2_count > 600 || class1_count > 500)
+  else if (class2_count > 600 || class1_count + class3_count > 500)
     {
       *mode = 6;
     }
-  else if (class2_count > 300 || class1_count > 300 ||
-           class1_count + class2_count > 300)
+  else if (class2_count > 300 || class1_count + class3_count > 300 ||
+           class1_count + class2_count + class3_count > 300)
     {
       *mode = 5;
     }
