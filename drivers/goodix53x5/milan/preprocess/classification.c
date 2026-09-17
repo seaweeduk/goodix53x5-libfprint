@@ -1710,7 +1710,7 @@ milan_profile9_build_severe_mask (const uint16_t *scores,
   for (size_t i = 0; i < count; i++)
     selected += broken_mask[i] != 0;
   size_t severe_count = selected;
-  if (selected > 50)
+  if (selected >= 50)
     {
       milan_profile9_filter_q16 (
         blurred, rows, columns, edge_kernel, 9, edge_blurred);
