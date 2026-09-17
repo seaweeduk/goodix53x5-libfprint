@@ -435,11 +435,15 @@ milan_refine_affine_least_squares (
         (((int64_t) refined[3] * x + (int64_t) refined[4] * y +
           MILAN_AFFINE_Q8_HALF) >> MILAN_AFFINE_Q8_SHIFT) +
         refined[5];
-      int64_t dx = transformed_x -
-        (uint16_t) enrolled_records[enrolled_index].refined_x;
-      int64_t dy = transformed_y -
-        (uint16_t) enrolled_records[enrolled_index].refined_y;
-      uint64_t squared = (uint64_t) (dx * dx + dy * dy);
+      /* Refinement can publish large coefficients after orientation filtering.
+       * Native narrows the residual to a signed dword before squaring it. */
+      int64_t dx = milan_reinterpret_uint32_as_int32 (
+        (uint32_t) transformed_x -
+        (uint16_t) enrolled_records[enrolled_index].refined_x);
+      int64_t dy = milan_reinterpret_uint32_as_int32 (
+        (uint32_t) transformed_y -
+        (uint16_t) enrolled_records[enrolled_index].refined_y);
+      uint64_t squared = (uint64_t) (dx * dx) + (uint64_t) (dy * dy);
 
       if (squared < MILAN_RECOGNITION_INLIER_SQUARED_LIMIT)
         {
