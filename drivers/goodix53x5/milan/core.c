@@ -384,6 +384,9 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
     &first_metadata_mode, &first_metadata_apply);
   if (post_status < 0)
     goto out;
+  /* The quality arm republishes the selected candidate before metadata. */
+  if (state->post_render.quality_gate && selected_refined)
+    memcpy (contrast, output, count);
   milan_profile9_encode_metadata (
     output, first_metadata_mask, GOODIX_MILAN_SENSOR_ROWS,
     GOODIX_MILAN_SENSOR_COLUMNS, first_metadata_mode, first_metadata_apply);
@@ -407,7 +410,7 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   if (*coverage <= 5)
     *quality = 0;
   memcpy (state->setup_map, setup_map, count * sizeof(*setup_map));
-  memcpy (state->primary_contrast, contrast, count);
+  memcpy (state->primary_contrast, selected_refined ? contrast : output, count);
   state->primary_contrast_valid = 1;
   state->selected_refined = selected_refined;
   result = classification_status == GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION
