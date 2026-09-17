@@ -152,6 +152,7 @@ profile9_initialize_gain_state (GoodixMilanPreprocessState *state)
     {
       for (size_t i = 0; i < count; i++)
         state->application_gain_map[i] = MILAN_FIXED_ONE;
+      state->application_gain_initialized = 1;
       return;
     }
 
