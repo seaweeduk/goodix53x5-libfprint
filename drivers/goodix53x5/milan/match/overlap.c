@@ -715,14 +715,21 @@ goodix_milan_registration_gate_metrics (
   int32_t                      *registration_detail,
   int32_t                      *registration_coverage)
 {
+  GoodixMilanFeatureView primary_prior;
   int32_t score;
   int32_t coverage;
   int32_t detail;
   int32_t low_metrics[3];
 
-  if (!registration_detail || !registration_coverage ||
-      goodix_milan_match_overlap_metrics_with_context (prior, current, transform, &score,
-                                   &coverage, &detail, low_metrics, 0) != 0)
+  if (!prior || !registration_detail || !registration_coverage)
+    return -1;
+  /* Enrollment consumes primary detail: its native mode disables enhanced
+  * detail relatching, and the selected score is not used by this gate. */
+  primary_prior = *prior;
+  primary_prior.enhanced_bitmap = NULL;
+  if (goodix_milan_match_overlap_metrics_with_context (
+        &primary_prior, current, transform, &score, &coverage, &detail,
+        low_metrics, 0) != 0)
     return -1;
   *registration_detail = detail;
   *registration_coverage = coverage;
