@@ -13,6 +13,15 @@
 
 ## Behavior
 
+- Null source or result descriptors return `0x81`. An uninitialized profile or
+  setup-ready global other than 1 returns `0x80`; liveness-switch argument 6
+  equal to 1 returns `0x81`. These guards precede the selected-entry write,
+  internal preprocessing, and result quality/coverage publication. The export
+  does not validate the source/result pixel pointers or the metrics pointer.
+- A source descriptor length other than `0x4a40` only produces a diagnostic;
+  the internal routine still copies the packed profile's pixel count. The
+  result copy uses the caller's result descriptor length. Ordinary type-12
+  callers must supply 19,008 source bytes and a 9,504-byte result allocation.
 - Packs the initialized profile globals into chip flags, forwards the caller's
   purpose and runtime selection threshold to `FUN_18006d540`, and copies the
   returned image, quality, and coverage into exported descriptors.
@@ -66,12 +75,28 @@
   setup path. A rejected profile-9 setup therefore returns `0x29bb` with the
   flag still clear; success sets it to 1. The production adapter may retry this
   export once with the same setup frame.
+- `preprocessor_init` is at `0x1800027b0`. A null setup descriptor returns
+  `0x81`, and an uninitialized profile returns `0x80`, before clearing setup
+  ready. With a valid descriptor and initialized profile, a null setup pixel
+  pointer clears ready and returns `0xffffffff` without entering `FUN_18006d540`.
+  Setup descriptor dimensions only supply a diagnostic byte length: processing
+  dimensions come from the packed profile. A ready value of 1 forces the export's
+  final status to zero; otherwise it returns the internal status.
 - `preprocessor` refuses a live call unless `DAT_180249afc == 1`. Its output
   descriptor copy is independent of status: late `0xc351` and `0x7531` can
   publish complete selected processed bytes and quality/coverage. In particular,
   `0x7531` alone does not indicate that the result pixels were left untouched.
   Early raw-admission `0x29aa` returns without a result image. Publication and
   the late status ordering are owned by `FUN_18006d540`.
+- The adapter's `_PreProcessor_E` (`FUN_18002c810`) interprets that raw status
+  according to purpose. Identify clears `0x29aa`, `0x7531`, and `0xc351`, then
+  rejects if either quality or coverage is zero. Enrollment returns those
+  statuses directly. Thus a positive-quality, positive-coverage late retry can
+  leave identify's wrapper with status zero; raw-admission rejection cannot,
+  because it zeros both metrics. `FUN_180032040` forwards the resulting status
+  to `EngineAdapterAcceptSampleData` (`FUN_18001f610`), whose sample rejection
+  branch tests that status, not the original raw preprocessing status. See
+  `FUN_18002c810.md` for the purpose-specific adapter predicates.
 - `preprocessor_exit` clears `DAT_180249afc` and exactly `0x3048c` bytes at
   calibration workspace `DAT_180219670`. It does not clear gain-ready global
   `DAT_1801efbfc`; `preprocessor_init` also has no xref to that global. Setup
@@ -83,6 +108,17 @@
   `DAT_1801efbf4`, initialization global `DAT_1801efbf8`, or ready global
   `DAT_1801efbfc`. With a zero loaded sample count, the first live call reaches
   `FUN_1800672e0`, which resets the auxiliary count before the ready check.
+- `preprocess_load_calidata` (`0x180002ed0`) imports the calibration plane,
+  setup plane, workspace sample count, and saved history regions after version
+  and checksum validation. It does not replace the three process gain maps or
+  their auxiliary-count/initialization/ready globals. Successful setup then
+  overwrites the imported setup plane through `FUN_180064bb0`.
+- `preprocess_init_calidata` (`0x1800030d0`) seeds the calibration plane with
+  `0x2000`, clears the setup plane and workspace sample count, and clears the
+  saved history region at workspace `+0x26488` and its terminal scalar. It also
+  leaves the process gain globals alone. The first admitted live initializer
+  sees sample count zero and clears that seeded calibration plane before gain
+  processing; a raw-admission rejection returns before this clear.
 
 The selected-plane entry value also controls retained-reference handling. Value
 2 skips retained-reference initialization and update for that call; values 0
@@ -92,9 +128,11 @@ ordinary WBF enrollment or identify invocation.
 
 ## Instruction Ranges
 
+- Descriptor/profile/setup/liveness guards: `0x180002aec..0x180002bbf` and
+  `0x180002cc8..0x180002cda`.
 - Packed flags and argument setup: `0x180002b25..0x180002c44`.
-- Result propagation and image copy: remainder of the successful branch.
-
-## Unresolved
-
-- Liveness-switch behavior is outside this milestone.
+- Result propagation and image copy: `0x180002c57..0x180002cc1`.
+- Identify status normalization and nonzero-metric requirement:
+  `0x18002cfb2..0x18002d010`.
+- Sample-accept caller's resulting-status branch:
+  `0x180020068..0x180020076`.

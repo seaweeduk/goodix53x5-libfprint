@@ -79,16 +79,70 @@ and is a separate status boundary.
 
 ## Retained-Probe Serialization Window
 
+The probe-global address has code references only in this export and
+`templateStudy`: extraction receives its address at `0x180001c65`, anti-fake
+and matching read it at `0x180001dbd` and `0x180001e20`, and study reads or
+destroys it. This export resets the matched-gallery global, not the probe
+global. A completed no-match therefore retains the allocated probe for a later
+image extraction. It is incorrect to infer a fresh feature allocation merely
+from the start of another identify call. Normal study with a valid retained
+winner destroys the probe through `FUN_180037b10` and clears its owner; the
+following extraction then allocates a new feature.
+
+### Ordinary Probe Residual Invariant
+
+The retained image probe's `+0x128` (serialized `bb`) stays zero throughout its
+ordinary profile-9 lifetime. The first extraction allocates and clears all
+`0x168` bytes. Later extraction into the same object preserves that dword;
+`FUN_18004ae70` does not initialize it again. `FUN_1800392f0` only installs the
+separate `+0x160` owner and fills that anti-fake allocation, so it does not write
+the feature residual. Type-12 dispatch and matching keep the probe separate
+from their writable gallery, queue, candidate and evidence owners; see the
+cross-gallery ownership contract in `FUN_180055a40.md`.
+
+This gives an induction across nonpositive gallery comparisons and repeated
+no-match image calls: the retained probe enters and leaves each extraction and
+match with `bb=0`. A successful study can mutate gallery features and separate
+queued copies, then destroys this probe and clears the global; the next probe
+again starts allocation-zero. Rejection before extraction leaves the existing
+probe unchanged. An empty extracted record array still has this zero residual;
+its later matcher error does not install a gallery residual into it.
+
+No ordinary exported path imports a packed feature into the probe-global owner.
+`identifytemplate` has its own supplied feature boundary. The gallery residual
+writers (`FUN_180047120`, append `FUN_1800456b0`, and copy `FUN_180045a50`) do
+not receive this retained image probe as their destination. In particular,
+normalization's `2288` initialization belongs to gallery features, not this
+image probe. Literal serialization of the retained image probe therefore
+emits `bb=0` both after fresh extraction and after reuse. This invariant does
+not apply to a feature pointer supplied directly to internal helpers or to a
+separately unpacked/normalized template feature.
+
+`FUN_180040a70:0x180041055` serializes the residual literally; packing does not
+normalize it. A separately normalized feature used as an internal probe can
+therefore have a different serialized `bb` from this image producer. Probe
+residual is not selector policy input: `FUN_180045530` reads residuals only
+through the gallery feature array, and computes uncovered probe support from
+the probe mask through `FUN_180046780`. Queue copy clears its destination
+residual, append initializes the new gallery residual, and replacement keeps
+the target residual until action-specific normalization. These ownership rules
+prevent an arbitrary probe residual from becoming the gallery residual; see
+`FUN_180045a50.md` and `FUN_18005d330.md`.
+
+### Complete Serialization Timing
+
 The pre-anti-fake boundary at `0x180001dbd` is too early to serialize the raw
-one-feature probe template consumed by the native runtime. At this point live
-feature `+0x160` is normally null. `FUN_1800392f0` begins by allocating the
-`0x1abc` anti-fake object at that field when absent, then clears and populates
-it. The completed object is observable at `0x180001dd8`, immediately after the
-call, and remains owned by global `0x18024ebe8` after `identifyImage` returns.
+one-feature probe template consumed by the native runtime. On first allocation
+live feature `+0x160` is null; after a preceding no-match it can retain the
+previous image's anti-fake allocation. Extraction does not clear that owner.
+`FUN_1800392f0` allocates the `0x1abc` object when absent and unconditionally
+clears and populates it for the current image. The completed object is
+observable at `0x180001dd8`, immediately after the call, and remains owned by
+global `0x18024ebe8` after `identifyImage` returns.
 
 The post-return/pre-study window contains the complete retained probe.
 `templateStudy` consumes, destroys, and clears it. Serializing before anti-fake
-construction would instead encode an absent anti-fake block.
+construction would instead encode an absent or previous-image anti-fake block.
 
 ## Canonical One-Feature Probe Projection
 
