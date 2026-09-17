@@ -130,6 +130,8 @@ typedef struct _GoodixMilanRuntimeOutput
   GPtrArray                    *gallery_results;
   GError                       *error;
   GError                       *learning_error;
+  /* Sample admission precedes extraction and its possible retry. */
+  gboolean                               enrollment_sample_admitted;
 } GoodixMilanRuntimeOutput;
 
 _Static_assert (offsetof (GoodixMilanRuntimeCancellationMetadata,

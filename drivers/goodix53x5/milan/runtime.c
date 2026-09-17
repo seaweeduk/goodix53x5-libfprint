@@ -608,6 +608,8 @@ goodix_milan_runtime_run (const GoodixMilanRuntimeInput *input)
       return output;
     }
 
+  output->enrollment_sample_admitted =
+    input->purpose == GOODIX_MILAN_PURPOSE_ENROLL;
   if (!goodix_milan_runtime_build_probe (
         input, output, processed, &probe, &probe_template))
     return output;
