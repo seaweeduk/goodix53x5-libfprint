@@ -84,13 +84,13 @@ selection_type12_blocked (int32_t texture_delta,
          (texture_delta >= 27 && shape_delta > 236 && boundary_delta > 315 &&
           boundary_score >= 95 && pair_count >= 6) ||
          (texture_delta >= 15 && shape_delta >= 295 && boundary_delta >= 320 &&
-          boundary_score >= 93 && candidate_coverage > 95 &&
+          boundary_score >= 93 && candidate_coverage >= 95 &&
           support_ratio >= 3200) ||
          (texture_delta >= 27 && shape_delta >= 350 && pair_count >= 29) ||
          (texture_delta >= 25 && shape_delta >= 370 && boundary_delta >= 450 &&
           boundary_score >= 88 && pair_count >= 10 && pair_coverage <= 1900) ||
          (texture_delta >= 90 && shape_delta >= 95 && boundary_delta >= 250 &&
-          boundary_score >= 85 && pair_count >= 20 && adjusted_detail > 77) ||
+          boundary_score >= 85 && pair_count >= 20 && adjusted_detail <= 77) ||
          (texture_delta >= 88 && shape_delta >= 130 && boundary_delta >= 280 &&
           candidate_coverage >= 80 && pair_count >= 3 && adjusted_detail <= 78 &&
           pair_coverage <= 1700 && support_ratio >= 2700) ||
@@ -131,7 +131,7 @@ selection_type12_blocked (int32_t texture_delta,
           boundary_score <= 95 && candidate_coverage >= 170) ||
          (texture_delta >= 40 && boundary_delta >= 480 && pair_count <= 0) ||
          (texture_delta >= 120 && shape_delta >= 100 && boundary_delta >= 270 &&
-          boundary_score >= 87 && pair_count >= 8 && adjusted_detail > 76) ||
+          boundary_score >= 87 && pair_count >= 8 && adjusted_detail <= 76) ||
          (texture_delta >= 30 && boundary_delta >= 420 && boundary_score >= 90 &&
           pair_coverage <= 1700 && support_ratio >= 2200) ||
          (texture_delta >= 45 && shape_delta >= 170 && boundary_delta >= 290 &&

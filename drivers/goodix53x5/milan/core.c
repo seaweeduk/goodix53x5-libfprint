@@ -121,7 +121,7 @@ static int milan_profile9_post_render (
   const uint8_t              *selection_mask,
   int                         selected_refined,
   GoodixMilanPreprocessPurpose purpose,
-  uint32_t                     calibration_ready,
+  uint32_t                    *calibration_ready,
   const uint8_t              **first_metadata_mask,
   uint8_t                    **first_metadata_owned_mask,
   int                         *first_metadata_mode,
@@ -152,6 +152,7 @@ profile9_initialize_gain_state (GoodixMilanPreprocessState *state)
     {
       for (size_t i = 0; i < count; i++)
         state->application_gain_map[i] = MILAN_FIXED_ONE;
+      state->application_gain_initialized = 1;
       return;
     }
 
@@ -378,11 +379,14 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
     state, normalized_live, setup_map, contrast_mask, working,
     optional_plane0, reciprocal_plane, output, selection_mask,
     selected_refined, purpose,
-    profile_state->calibration_ready, &first_metadata_mask,
+    &profile_state->calibration_ready, &first_metadata_mask,
     &first_metadata_owned_mask,
     &first_metadata_mode, &first_metadata_apply);
   if (post_status < 0)
     goto out;
+  /* The quality arm republishes the selected candidate before metadata. */
+  if (state->post_render.quality_gate && selected_refined)
+    memcpy (contrast, output, count);
   milan_profile9_encode_metadata (
     output, first_metadata_mask, GOODIX_MILAN_SENSOR_ROWS,
     GOODIX_MILAN_SENSOR_COLUMNS, first_metadata_mode, first_metadata_apply);
@@ -406,7 +410,7 @@ goodix_milan_preprocess (GoodixMilanPreprocessState *state,
   if (*coverage <= 5)
     *quality = 0;
   memcpy (state->setup_map, setup_map, count * sizeof(*setup_map));
-  memcpy (state->primary_contrast, contrast, count);
+  memcpy (state->primary_contrast, selected_refined ? contrast : output, count);
   state->primary_contrast_valid = 1;
   state->selected_refined = selected_refined;
   result = classification_status == GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION
@@ -2888,7 +2892,7 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
                             const uint8_t              *selection_mask,
                             int                         selected_refined,
                             GoodixMilanPreprocessPurpose purpose,
-                            uint32_t                     calibration_ready,
+                            uint32_t                    *calibration_ready,
                             const uint8_t              **first_metadata_mask,
                             uint8_t                    **first_metadata_owned_mask,
                             int                         *first_metadata_mode,
@@ -2982,10 +2986,12 @@ milan_profile9_post_render (GoodixMilanPreprocessState *state,
       if (!nested_gain || !nested_output)
         goto out;
       state->sample_count = 5;
+      goodix_milan_profile9_update_gain_ready (
+        auxiliary_samples, state->sample_count, calibration_ready);
       if (first_update_frame_core (
             normalized_live, setup_map, state->calibration_map,
             state->application_gain_map, state->auxiliary_gain_map,
-            auxiliary_samples, state, calibration_ready, rows, columns,
+            auxiliary_samples, state, *calibration_ready, rows, columns,
             nested_gain, nested_output, NULL) != 0)
         {
           state->sample_count = saved_sample_count;

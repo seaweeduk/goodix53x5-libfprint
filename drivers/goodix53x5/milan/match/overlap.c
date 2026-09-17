@@ -11,10 +11,47 @@
 #include "milan/match/overlap.h"
 #include "milan/preprocess/state.h"
 #include "milan/private.h"
+#include "milan/transform-private.h"
 
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
+
+static int
+milan_warp_inverse (const int32_t transform[6], int32_t inverse[6])
+{
+  uint64_t numerator[6];
+  int32_t determinant = goodix_milan_transform_s32 (
+    (uint32_t) transform[0] * (uint32_t) transform[4] -
+    (uint32_t) transform[1] * (uint32_t) transform[3]);
+
+  if (determinant == 0)
+    {
+      static const int32_t singular[6] = { 1, 0, 0, 0, 1, 0 };
+
+      memcpy (inverse, singular, sizeof (singular));
+      return 0;
+    }
+  /* Refinement can publish large affines. Native wraps before signed division,
+   * then narrows the Q10 coefficients and every sampling accumulation. */
+  numerator[0] = (uint64_t) (int64_t) transform[4] << 18;
+  numerator[1] = (UINT64_C (0) - (uint64_t) (int64_t) transform[3]) << 18;
+  numerator[2] =
+    ((uint64_t) (int64_t) transform[5] * (uint64_t) (int64_t) transform[1] -
+     (uint64_t) (int64_t) transform[4] * (uint64_t) (int64_t) transform[2]) << 10;
+  numerator[3] = (UINT64_C (0) - (uint64_t) (int64_t) transform[1]) << 18;
+  numerator[4] = (uint64_t) (int64_t) transform[0] << 18;
+  numerator[5] =
+    ((uint64_t) (int64_t) transform[3] * (uint64_t) (int64_t) transform[2] -
+     (uint64_t) (int64_t) transform[5] * (uint64_t) (int64_t) transform[0]) << 10;
+  for (size_t i = 0; i < 6; i++)
+    {
+      if (determinant == -1 && numerator[i] == (UINT64_C (1) << 63))
+        return -1;
+      inverse[i] = goodix_milan_transform_divide (numerator[i], determinant);
+    }
+  return 0;
+}
 
 static int
 milan_packed_bitmap_bit (const uint8_t *bitmap,
@@ -166,7 +203,6 @@ goodix_milan_match_bitmap_classes (
   int32_t        classes[4],
   int32_t       *valid_count)
 {
-  int64_t determinant;
   int32_t inverse[6];
 
   if (!target_bitmap || !source_bitmap || !overlap_mask ||
@@ -177,30 +213,18 @@ goodix_milan_match_bitmap_classes (
       overlap_rows > bitmap_rows - overlap_y || bitmap_rows > INT32_MAX ||
       bitmap_columns > INT32_MAX || !transform || !classes || !valid_count)
     return -1;
-  determinant = (int64_t) transform[0] * transform[4] -
-                (int64_t) transform[1] * transform[3];
-  if (determinant == 0)
+  if (milan_warp_inverse (transform, inverse) != 0)
     return -1;
-  inverse[0] = (int32_t) (((int64_t) transform[4] * INT64_C(0x40000)) / determinant);
-  inverse[1] = (int32_t) ((int64_t) transform[3] * -0x40000 / determinant);
-  inverse[2] = (int32_t) ((((int64_t) transform[5] * transform[1] -
-                            (int64_t) transform[4] * transform[2]) * 0x400) /
-                          determinant);
-  inverse[3] = (int32_t) ((int64_t) transform[1] * -0x40000 / determinant);
-  inverse[4] = (int32_t) (((int64_t) transform[0] * INT64_C(0x40000)) / determinant);
-  inverse[5] = (int32_t) ((((int64_t) transform[3] * transform[2] -
-                            (int64_t) transform[5] * transform[0]) * 0x400) /
-                          determinant);
 
   memset (classes, 0, 4 * sizeof(*classes));
   *valid_count = 0;
   for (size_t y = 0; y < overlap_rows; y++)
     for (size_t x = 0; x < overlap_columns; x++)
       {
-        int32_t raw_x = (int32_t) x * inverse[0] +
-                        (int32_t) y * inverse[3] + inverse[2];
-        int32_t raw_y = (int32_t) x * inverse[1] +
-                        (int32_t) y * inverse[4] + inverse[5];
+        int32_t raw_x = goodix_milan_transform_affine_s32 (
+          inverse[0], x, inverse[3], y, inverse[2]);
+        int32_t raw_y = goodix_milan_transform_affine_s32 (
+          inverse[1], x, inverse[4], y, inverse[5]);
         int source = milan_warp_sample (
           source_bitmap, bitmap_rows, bitmap_columns, raw_x, raw_y);
 
@@ -266,8 +290,10 @@ goodix_milan_feature_mask_forward_overlap (
   translation_y = transform[5];
   if (half_resolution)
     {
-      translation_x = (translation_x + 1) / 2;
-      translation_y = (translation_y + 1) / 2;
+      translation_x =
+        goodix_milan_transform_s32 ((uint32_t) translation_x + 1) / 2;
+      translation_y =
+        goodix_milan_transform_s32 ((uint32_t) translation_y + 1) / 2;
     }
   for (size_t y = 0; y < rows; y++)
     for (size_t x = 0; x < columns; x++)
@@ -277,10 +303,10 @@ goodix_milan_feature_mask_forward_overlap (
 
         if (!first_mask[y * columns + x])
           continue;
-        mapped_x = (translation_x + (int32_t) x * transform[0] +
-                    (int32_t) y * transform[1] + 0x80) >> 8;
-        mapped_y = (translation_y + (int32_t) x * transform[3] +
-                    (int32_t) y * transform[4] + 0x80) >> 8;
+        mapped_x = goodix_milan_transform_affine_s32 (
+          transform[0], x, transform[1], y, (uint32_t) translation_x + 0x80) >> 8;
+        mapped_y = goodix_milan_transform_affine_s32 (
+          transform[3], x, transform[4], y, (uint32_t) translation_y + 0x80) >> 8;
         if (mapped_x >= 0 && mapped_x < (int32_t) columns &&
             mapped_y >= 0 && mapped_y < (int32_t) rows &&
             second_mask[(size_t) mapped_y * columns + (size_t) mapped_x])
@@ -290,14 +316,6 @@ goodix_milan_feature_mask_forward_overlap (
   *overlap = (count * 0x100 + (int32_t) (rows * columns / 2)) /
              (int32_t) (rows * columns);
   return 0;
-}
-
-static int32_t
-milan_transform_coordinate (int32_t first,
-                             int32_t second,
-                             int32_t translation)
-{
-  return (first + second + translation + 0x80) >> 8;
 }
 
 static int
@@ -318,17 +336,16 @@ milan_build_overlap_mask (const uint8_t source_mask[44 * 52],
   int32_t minimum_y = INT32_MAX;
   int32_t maximum_x = INT32_MIN;
   int32_t maximum_y = INT32_MIN;
-  int64_t determinant;
   int32_t inverse[6];
 
   for (size_t i = 0; i < 4; i++)
     {
-      int32_t x = milan_transform_coordinate (
-        transform[0] * corners[i][0], transform[1] * corners[i][1],
-        transform[2]);
-      int32_t y = milan_transform_coordinate (
-        transform[3] * corners[i][0], transform[4] * corners[i][1],
-        transform[5]);
+      int32_t x = goodix_milan_transform_affine_s32 (
+        transform[0], corners[i][0], transform[1], corners[i][1],
+        (uint32_t) transform[2] + 0x80) >> 8;
+      int32_t y = goodix_milan_transform_affine_s32 (
+        transform[3], corners[i][0], transform[4], corners[i][1],
+        (uint32_t) transform[5] + 0x80) >> 8;
 
       if (x < minimum_x)
         minimum_x = x;
@@ -354,37 +371,21 @@ milan_build_overlap_mask (const uint8_t source_mask[44 * 52],
   *overlap_columns = (size_t) (maximum_x - minimum_x + 1);
   *overlap_rows = (size_t) (maximum_y - minimum_y + 1);
   memcpy (adjusted_transform, transform, 6 * sizeof(*transform));
-  adjusted_transform[2] -= minimum_x * 0x100;
-  adjusted_transform[5] -= minimum_y * 0x100;
+  adjusted_transform[2] = goodix_milan_transform_s32 (
+    (uint32_t) transform[2] - (uint32_t) minimum_x * 0x100);
+  adjusted_transform[5] = goodix_milan_transform_s32 (
+    (uint32_t) transform[5] - (uint32_t) minimum_y * 0x100);
 
-  determinant = (int64_t) adjusted_transform[0] * adjusted_transform[4] -
-                (int64_t) adjusted_transform[1] * adjusted_transform[3];
-  if (determinant == 0)
+  if (milan_warp_inverse (adjusted_transform, inverse) != 0)
     return -1;
-  inverse[0] = (int32_t) (((int64_t) adjusted_transform[4] * INT64_C(0x40000)) /
-                          determinant);
-  inverse[1] = (int32_t) ((int64_t) adjusted_transform[3] * -0x40000 /
-                          determinant);
-  inverse[2] = (int32_t) ((((int64_t) adjusted_transform[5] *
-                             adjusted_transform[1] -
-                            (int64_t) adjusted_transform[4] *
-                             adjusted_transform[2]) * 0x400) / determinant);
-  inverse[3] = (int32_t) ((int64_t) adjusted_transform[1] * -0x40000 /
-                          determinant);
-  inverse[4] = (int32_t) (((int64_t) adjusted_transform[0] * INT64_C(0x40000)) /
-                          determinant);
-  inverse[5] = (int32_t) ((((int64_t) adjusted_transform[3] *
-                             adjusted_transform[2] -
-                            (int64_t) adjusted_transform[5] *
-                             adjusted_transform[0]) * 0x400) / determinant);
 
   for (size_t y = 0; y < *overlap_rows; y++)
     for (size_t x = 0; x < *overlap_columns; x++)
       {
-        int32_t raw_x = (int32_t) x * inverse[0] +
-                        (int32_t) y * inverse[3] + inverse[2];
-        int32_t raw_y = (int32_t) x * inverse[1] +
-                        (int32_t) y * inverse[4] + inverse[5];
+        int32_t raw_x = goodix_milan_transform_affine_s32 (
+          inverse[0], x, inverse[3], y, inverse[2]);
+        int32_t raw_y = goodix_milan_transform_affine_s32 (
+          inverse[1], x, inverse[4], y, inverse[5]);
         size_t target_x = x + *origin_x;
         size_t target_y = y + *origin_y;
         int source = milan_warp_sample_u8 (
@@ -413,7 +414,6 @@ milan_match_low_bitmap_compute (
   uint8_t overlap_mask[44 * 52];
   int32_t half_transform[6];
   int32_t adjusted_transform[6];
-  int64_t determinant;
   int32_t inverse[6];
   size_t origin_x;
   size_t origin_y;
@@ -428,34 +428,18 @@ milan_match_low_bitmap_compute (
   if (matrices)
     memset (matrices, 0, 4 * 2288);
   memcpy (half_transform, transform, sizeof(half_transform));
-  half_transform[2] = (half_transform[2] + 1) / 2;
-  half_transform[5] = (half_transform[5] + 1) / 2;
+  half_transform[2] =
+    goodix_milan_transform_s32 ((uint32_t) half_transform[2] + 1) / 2;
+  half_transform[5] =
+    goodix_milan_transform_s32 ((uint32_t) half_transform[5] + 1) / 2;
   goodix_milan_feature_mask_expand (probe_inline_mask, source_mask);
   goodix_milan_feature_mask_expand (enrolled_inline_mask, target_mask);
   if (milan_build_overlap_mask (
         source_mask, target_mask, half_transform, overlap_mask, &origin_x,
         &origin_y, &overlap_rows, &overlap_columns, adjusted_transform) != 0)
     return -1;
-  determinant = (int64_t) adjusted_transform[0] * adjusted_transform[4] -
-                (int64_t) adjusted_transform[1] * adjusted_transform[3];
-  if (determinant == 0)
+  if (milan_warp_inverse (adjusted_transform, inverse) != 0)
     return -1;
-  inverse[0] = (int32_t) (((int64_t) adjusted_transform[4] * INT64_C(0x40000)) /
-                          determinant);
-  inverse[1] = (int32_t) ((int64_t) adjusted_transform[3] * -0x40000 /
-                          determinant);
-  inverse[2] = (int32_t) ((((int64_t) adjusted_transform[5] *
-                             adjusted_transform[1] -
-                            (int64_t) adjusted_transform[4] *
-                             adjusted_transform[2]) * 0x400) / determinant);
-  inverse[3] = (int32_t) ((int64_t) adjusted_transform[1] * -0x40000 /
-                          determinant);
-  inverse[4] = (int32_t) (((int64_t) adjusted_transform[0] * INT64_C(0x40000)) /
-                          determinant);
-  inverse[5] = (int32_t) ((((int64_t) adjusted_transform[3] *
-                             adjusted_transform[2] -
-                            (int64_t) adjusted_transform[5] *
-                             adjusted_transform[0]) * 0x400) / determinant);
 
   if (matrices)
     for (size_t i = 0; i < 44 * 52; i++)
@@ -469,10 +453,10 @@ milan_match_low_bitmap_compute (
     for (size_t x = 0; x < overlap_columns; x++)
       {
         size_t index = y * overlap_columns + x;
-        int32_t raw_x = (int32_t) x * inverse[0] +
-                        (int32_t) y * inverse[3] + inverse[2];
-        int32_t raw_y = (int32_t) x * inverse[1] +
-                        (int32_t) y * inverse[4] + inverse[5];
+        int32_t raw_x = goodix_milan_transform_affine_s32 (
+          inverse[0], x, inverse[3], y, inverse[2]);
+        int32_t raw_y = goodix_milan_transform_affine_s32 (
+          inverse[1], x, inverse[4], y, inverse[5]);
         int source = milan_warp_sample (
           probe_bitmap, 44, 52, raw_x, raw_y);
         int source_valid = milan_warp_sample_u8 (
@@ -605,8 +589,10 @@ goodix_milan_match_masked_classes (
    * unspecified values to zero, but do not clear the earlier warped validity.
    * Both binary images and the direct validity belong to the probe. */
   memcpy (half_transform, transform, sizeof (half_transform));
-  half_transform[2] = (half_transform[2] + 1) / 2;
-  half_transform[5] = (half_transform[5] + 1) / 2;
+  half_transform[2] =
+    goodix_milan_transform_s32 ((uint32_t) half_transform[2] + 1) / 2;
+  half_transform[5] =
+    goodix_milan_transform_s32 ((uint32_t) half_transform[5] + 1) / 2;
   if (milan_build_overlap_mask (
         source_valid, direct_valid, half_transform, overlap_mask, &origin_x,
         &origin_y, &rows, &columns, adjusted_transform) != 0 ||
@@ -648,8 +634,10 @@ goodix_milan_match_overlap_metrics_with_context (const GoodixMilanFeatureView *e
       !overlap_coverage || !overlap_detail || !low_metrics)
     return -1;
   memcpy (half_transform, transform, sizeof(half_transform));
-  half_transform[2] = (half_transform[2] + 1) / 2;
-  half_transform[5] = (half_transform[5] + 1) / 2;
+  half_transform[2] =
+    goodix_milan_transform_s32 ((uint32_t) half_transform[2] + 1) / 2;
+  half_transform[5] =
+    goodix_milan_transform_s32 ((uint32_t) half_transform[5] + 1) / 2;
   goodix_milan_feature_mask_expand (probe_feature->inline_mask, source_mask);
   goodix_milan_feature_mask_expand (enrolled_feature->inline_mask, target_mask);
   if (milan_build_overlap_mask (
@@ -715,14 +703,21 @@ goodix_milan_registration_gate_metrics (
   int32_t                      *registration_detail,
   int32_t                      *registration_coverage)
 {
+  GoodixMilanFeatureView primary_prior;
   int32_t score;
   int32_t coverage;
   int32_t detail;
   int32_t low_metrics[3];
 
-  if (!registration_detail || !registration_coverage ||
-      goodix_milan_match_overlap_metrics_with_context (prior, current, transform, &score,
-                                   &coverage, &detail, low_metrics, 0) != 0)
+  if (!prior || !registration_detail || !registration_coverage)
+    return -1;
+  /* Enrollment consumes primary detail: its native mode disables enhanced
+  * detail relatching, and the selected score is not used by this gate. */
+  primary_prior = *prior;
+  primary_prior.enhanced_bitmap = NULL;
+  if (goodix_milan_match_overlap_metrics_with_context (
+        &primary_prior, current, transform, &score, &coverage, &detail,
+        low_metrics, 0) != 0)
     return -1;
   *registration_detail = detail;
   *registration_coverage = coverage;

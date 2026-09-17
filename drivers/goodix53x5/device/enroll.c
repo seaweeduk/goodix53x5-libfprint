@@ -198,6 +198,12 @@ goodix_enroll_task_done (GObject      *source_object,
   GOODIX53X5_DEBUG_ONLY (goodix_enroll_set_processed_image (self, output);
                         )
   enrollment_admitted = goodix_milan_runtime_enrollment_admitted (output);
+  /* Native non-policy merge failures break an unsaturated rollback streak,
+   * including extraction that succeeds with no records to insert. Sample
+   * quality/preprocessing rejection never enters that merge boundary. */
+  if (output->enrollment_sample_admitted && !enrollment_admitted &&
+      self->enroll_bad_continue_count < 3)
+    self->enroll_bad_continue_count = 0;
 
   if (enrollment_admitted)
     {
@@ -286,7 +292,7 @@ goodix_enroll_task_done (GObject      *source_object,
       self->pending_enroll_stage = self->enroll_stage;
       g_clear_error (&self->pending_enroll_error);
       self->pending_enroll_error = fpi_device_retry_new (
-        output->coverage <= GOODIX_MILAN_ENROLL_MIN_COVERAGE ?
+        output->coverage < GOODIX_MILAN_ENROLL_MIN_COVERAGE ?
         FP_DEVICE_RETRY_CENTER_FINGER : FP_DEVICE_RETRY_REMOVE_FINGER);
     }
   else
