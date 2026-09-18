@@ -1910,7 +1910,8 @@ milan_match_finalize (MilanMatchFinalizationContext *context)
                          decoded_high <= 2 ? decoded_high :
                          decoded_high <= 5 ? decoded_high + 1 : 0;
           transform_classifier = goodix_milan_match_transform_proximity (
-            transform, decoded_high, context->enrolled->metadata.sensor_type);
+            transform, MAX (decoded_high, context->late_context->probe_low_class),
+            context->enrolled->metadata.sensor_type);
           if (filtered_count <= 4 || transform_classifier != 0)
             continue;
           if (goodix_milan_match_overlap_metrics_with_context (
