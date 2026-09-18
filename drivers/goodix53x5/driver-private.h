@@ -135,8 +135,15 @@ struct _FpiDeviceGoodix53x5
   /* Current/history survive same-boot restarts independently of preprocessing. */
   GoodixDynamicDacState dynamic_dac;
   GoodixDacCheckpoint dac_checkpoint;
+  GoodixMilanWarmState *milan_warm;
+  guint8 warm_binding[32];
+  gboolean warm_binding_valid;
+  /* Last trusted disk observation/publication, retained across failed writes
+   * to distinguish an intervening holder from our own newer unsaved RAM. */
+  GBytes *warm_record;
+  gboolean warm_retry_required;
   /* Latest admitted hardware TX-on plane, independent of consumed setup.
-   * Owned until hardware teardown; recoverable base rejection retains it. */
+   * Quarantined across teardown; recoverable base rejection retains it. */
   guint16 *hardware_reference;
 
   /* Reassembly buffer for multi-chunk reads */

@@ -55,6 +55,11 @@ goodix_close_joined (FpDevice *dev, gpointer data)
 
   /* Successful reads mutate DAC even when the action later retries or fails. */
   goodix_milan_dac_checkpoint (dev);
+  /* Publish while the USB claim still serializes writers. A later release or
+   * core-close error does not invalidate a settled admitted optical reference. */
+  goodix_milan_warm_park (dev);
+  if (self->usb_interface_claimed && self->warm_binding_valid)
+    goodix_milan_warm_save (dev, self->milan_warm);
   self->action_epoch++;
   if (self->cancel)
     g_cancellable_cancel (self->cancel);
@@ -171,6 +176,8 @@ goodix_finalize (GObject *object)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (object);
 
   goodix_milan_generation_invalidate (&self->milan_retained_generation);
+  g_clear_pointer (&self->milan_warm, goodix_milan_warm_free);
+  g_clear_pointer (&self->warm_record, g_bytes_unref);
   g_clear_pointer (&self->hardware_reference, g_free);
   G_OBJECT_CLASS (fpi_device_goodix53x5_parent_class)->finalize (object);
 }

@@ -370,6 +370,170 @@ goodix_milan_generation_retain_process (FpDevice *dev)
 }
 
 void
+goodix_milan_warm_free (GoodixMilanWarmState *warm)
+{
+  if (!warm)
+    return;
+  goodix_milan_generation_free (warm->generation);
+  g_free (warm->hardware_reference);
+  g_free (warm);
+}
+
+void
+goodix_milan_warm_park (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixMilanWarmState *warm;
+
+  /* Call only after receiver/CPU joins, before identity or hardware teardown.
+   * A failed reconstruction leaves the older quarantined candidate untouched. */
+  if (!self->milan_generation)
+    return;
+  if (!self->warm_binding_valid || !self->hardware_reference ||
+      !self->milan_generation->admitted || !self->milan_generation->setup_tx_on ||
+      self->milan_task || self->profile9_fdt.owner ||
+      self->profile9_fdt.lifecycle != GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED ||
+      self->profile9_fdt.initial_recovery_pending)
+    {
+      goodix_milan_generation_retain_process (dev);
+      g_clear_pointer (&self->hardware_reference, g_free);
+      return;
+    }
+
+  g_clear_pointer (&self->milan_warm, goodix_milan_warm_free);
+  warm = g_new0 (GoodixMilanWarmState, 1);
+  memcpy (warm->binding, self->warm_binding, sizeof (warm->binding));
+  warm->hardware_reference = g_steal_pointer (&self->hardware_reference);
+  warm->generation = g_steal_pointer (&self->milan_generation);
+  warm->setup_refresh_pending = warm->generation->profile_state.setup_refresh_pending;
+  /* Notification lifetime ends at the existing transport join; only committed
+   * stores and anchor survive, never an event or a selected refresh. */
+  warm->fdt.base_valid = self->profile9_fdt.base_valid;
+  warm->fdt.drift_anchor_empty = self->profile9_fdt.drift_anchor_empty;
+  memcpy (warm->fdt.drift_anchor, self->profile9_fdt.drift_anchor, sizeof (warm->fdt.drift_anchor));
+  memcpy (warm->fdt.base_down, self->profile9_fdt.base_down, GOODIX_FDT_BASE_LEN);
+  memcpy (warm->fdt.base_up, self->profile9_fdt.base_up, GOODIX_FDT_BASE_LEN);
+  memcpy (warm->fdt.base_manual, self->profile9_fdt.base_manual, GOODIX_FDT_BASE_LEN);
+  self->milan_warm = warm;
+}
+
+static gboolean
+goodix_milan_warm_equal (const GoodixMilanWarmState *a,
+                         const GoodixMilanWarmState *b)
+{
+  return memcmp (a->binding, b->binding, sizeof (a->binding)) == 0 &&
+         a->setup_refresh_pending == b->setup_refresh_pending &&
+         a->fdt.base_valid == b->fdt.base_valid &&
+         a->fdt.drift_anchor_empty == b->fdt.drift_anchor_empty &&
+         memcmp (a->fdt.drift_anchor, b->fdt.drift_anchor, sizeof (a->fdt.drift_anchor)) == 0 &&
+         memcmp (a->fdt.base_down, b->fdt.base_down, GOODIX_FDT_BASE_LEN) == 0 &&
+         memcmp (a->fdt.base_up, b->fdt.base_up, GOODIX_FDT_BASE_LEN) == 0 &&
+         memcmp (a->fdt.base_manual, b->fdt.base_manual, GOODIX_FDT_BASE_LEN) == 0 &&
+         memcmp (a->hardware_reference, b->hardware_reference,
+                 GOODIX_SENSOR_PIXELS * sizeof (guint16)) == 0;
+}
+
+gboolean
+goodix_milan_warm_resume (FpDevice *dev, GError **error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixMilanWarmState *warm = self->milan_warm;
+  GoodixMilanWarmState *disk;
+  GoodixMilanGeneration *source;
+
+  g_autoptr(GBytes) record = NULL;
+
+  /* Metadata is checked locally or reconstructed from the sensor. Both routes
+   * require fresh GTLS under the claim before activating any reference. */
+  g_assert (self->milan_generation == NULL);
+  self->warm_binding_valid = goodix_milan_warm_binding (dev, self->warm_binding);
+  if (warm && (!self->warm_binding_valid ||
+               memcmp (warm->binding, self->warm_binding, 32) != 0))
+    {
+      self->milan_generation = g_steal_pointer (&warm->generation);
+      goodix_milan_generation_retain_process (dev);
+      g_clear_pointer (&self->milan_warm, goodix_milan_warm_free);
+      warm = NULL;
+    }
+  if (!self->warm_binding_valid)
+    return FALSE;
+  /* A different exclusive holder may have published while our RAM was parked.
+   * An unchanged checkpoint cannot supersede newer local RAM after failed IO.
+   * An equal projection may be our own failed post-rename write; keep its full
+   * engine too, but do not clear the independent durability/retry obligation. */
+  disk = goodix_milan_warm_load (dev, self->warm_binding, &record);
+  if (!disk)
+    self->warm_retry_required = TRUE;
+  else if (warm && ((self->warm_record && g_bytes_equal (self->warm_record, record)) ||
+                    goodix_milan_warm_equal (warm, disk)))
+    g_clear_pointer (&disk, goodix_milan_warm_free);
+  if (disk)
+    warm = disk;
+  if (!warm)
+    return FALSE;
+
+  source = self->milan_warm ? self->milan_warm->generation : self->milan_retained_generation;
+  /* Native initialized, unmarked delivery retains its consumed setup even
+   * when the shared hardware reference and FDT stores have changed. */
+  if (disk && source && self->milan_warm &&
+      source->profile_state.setup_initialized &&
+      !source->profile_state.setup_refresh_pending && !disk->setup_refresh_pending)
+    disk->generation = g_steal_pointer (&self->milan_warm->generation);
+  if (!warm->generation)
+    {
+      guint64 id;
+
+      if (!goodix_milan_generation_allocate_id (&self->last_milan_generation_id,
+                                                &id, error))
+        {
+          goodix_milan_warm_free (disk);
+          return FALSE;
+        }
+      warm->generation = g_new0 (GoodixMilanGeneration, 1);
+      warm->generation->generation_id = id;
+      warm->generation->admitted = TRUE;
+      warm->generation->setup_tx_on = g_memdup2 (
+        warm->hardware_reference, GOODIX_SENSOR_PIXELS * sizeof (guint16));
+      goodix_milan_generation_reset_preprocess (warm->generation);
+      if (source)
+        goodix_milan_generation_transfer_process_state (warm->generation, source);
+      if (!self->milan_warm)
+        warm->generation->profile_state.setup_initialized = 0;
+      warm->generation->profile_state.setup_refresh_pending =
+        warm->setup_refresh_pending ||
+        (self->milan_warm && source && source->profile_state.setup_refresh_pending);
+    }
+  if (disk)
+    {
+      g_clear_pointer (&self->milan_warm, goodix_milan_warm_free);
+      self->milan_warm = disk;
+    }
+  if (record)
+    {
+      g_clear_pointer (&self->warm_record, g_bytes_unref);
+      self->warm_record = g_steal_pointer (&record);
+    }
+  goodix_milan_generation_invalidate (&self->milan_retained_generation);
+  g_clear_pointer (&self->hardware_reference, g_free);
+  self->hardware_reference = g_steal_pointer (&warm->hardware_reference);
+  self->milan_generation = g_steal_pointer (&warm->generation);
+  /* Startup recovery may have a coordinator waiting on the reinit sub-SSM.
+   * Keep that cancellation owner visible; only its settled data is restored. */
+  self->profile9_fdt = (GoodixProfile9FdtState){
+    .owner = self->profile9_fdt.owner,
+    .lifecycle = self->profile9_fdt.lifecycle,
+  };
+  self->profile9_fdt.base_valid = warm->fdt.base_valid;
+  self->profile9_fdt.drift_anchor_empty = warm->fdt.drift_anchor_empty;
+  memcpy (self->profile9_fdt.drift_anchor, warm->fdt.drift_anchor, sizeof (warm->fdt.drift_anchor));
+  memcpy (self->profile9_fdt.base_down, warm->fdt.base_down, GOODIX_FDT_BASE_LEN);
+  memcpy (self->profile9_fdt.base_up, warm->fdt.base_up, GOODIX_FDT_BASE_LEN);
+  memcpy (self->profile9_fdt.base_manual, warm->fdt.base_manual, GOODIX_FDT_BASE_LEN);
+  g_clear_pointer (&self->milan_warm, goodix_milan_warm_free);
+  return TRUE;
+}
+
+void
 goodix_milan_generation_prepare_setup (FpDevice              *dev,
                                        GoodixMilanGeneration *generation)
 {
@@ -757,6 +921,7 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
         guint8 fdt_tx_on_after[GOODIX_FDT_BASE_LEN];
         guint64 generation_id;
         GoodixMilanGeneration *generation = NULL;
+        g_autofree guint16 *hardware_reference = NULL;
         guint16 touch_flag;
 
         if (!goodix_base_parse_fdt (dev, fdt_tx_on_after, &touch_flag, &error))
@@ -776,9 +941,8 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
 
         /* HAL+0x248 follows every admitted hardware base, even when the engine
          * keeps an older consumed setup after unmarked checkbase recovery. */
-        g_clear_pointer (&self->hardware_reference, g_free);
-        self->hardware_reference = g_memdup2 (data->attempt.tx_on,
-                                              GOODIX_SENSOR_PIXELS * sizeof (guint16));
+        hardware_reference = g_memdup2 (data->attempt.tx_on,
+                                        GOODIX_SENSOR_PIXELS * sizeof (guint16));
 
         /* Native update_allbase derives every FDT base from this first
          * TX-on sample after the complete sequence is admitted. */
@@ -823,10 +987,20 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
             else if (self->milan_retained_generation)
               goodix_milan_generation_transfer_process_state (
                 generation, self->milan_retained_generation);
+            if (data->forced_refresh)
+              generation->profile_state.setup_refresh_pending =
+                (self->milan_generation &&
+                 self->milan_generation->profile_state.setup_refresh_pending) ||
+                (self->profile9_fdt.refresh_reason != GOODIX_PROFILE9_FDT_REFRESH_INVALID_BASE &&
+                 self->profile9_fdt.refresh_reason != GOODIX_PROFILE9_FDT_REFRESH_UP_INVALID_BASE);
             goodix_milan_generation_invalidate (&self->milan_generation);
             goodix_milan_generation_invalidate (&self->milan_retained_generation);
             self->milan_generation = generation;
           }
+        /* All fallible generation preparation is complete. Publish the entire
+         * admitted hardware/setup/FDT branch without exposing a partial tuple. */
+        g_clear_pointer (&self->hardware_reference, g_free);
+        self->hardware_reference = g_steal_pointer (&hardware_reference);
         memcpy (self->profile9_fdt.base_down, data->candidate_base_down,
                 GOODIX_FDT_BASE_LEN);
         memcpy (self->profile9_fdt.base_up, data->candidate_base_up,

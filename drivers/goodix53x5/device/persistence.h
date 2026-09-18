@@ -17,6 +17,12 @@ void goodix_milan_dac_resume (FpDevice          *dev,
                               GoodixCalibParams *seeded);
 void goodix_milan_dac_checkpoint (FpDevice *dev);
 
+gboolean goodix_milan_warm_binding (FpDevice *dev, guint8 binding[32]);
+GoodixMilanWarmState *goodix_milan_warm_load (FpDevice *dev,
+                                            const guint8 binding[32],
+                                            GBytes **record);
+void goodix_milan_warm_save (FpDevice *dev, const GoodixMilanWarmState *warm);
+
 void goodix_milan_persistence_prepare (FpDevice *dev);
 void goodix_milan_persistence_clear (FpDevice *dev);
 void goodix_milan_persistence_restore (FpDevice              *dev,

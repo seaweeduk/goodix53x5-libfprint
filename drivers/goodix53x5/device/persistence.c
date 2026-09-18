@@ -13,6 +13,7 @@
 #include "drivers_api.h"
 #include "driver-private.h"
 #include "device/persistence.h"
+#include "device/calibration.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -622,6 +623,257 @@ goodix_milan_dac_checkpoint (FpDevice *dev)
   checkpoint->retry_required = FALSE;
 }
 
+/* A coherent admitted checkpoint, not a clean-session certificate. Native ESD
+ * may load an older complete saved image after a failed save. Keep this record
+ * reusable on failed opens/crashes; do not consume it or couple it to high DAC.
+ * The interface claim serializes read/install/close publication. */
+#define GOODIX_MILAN_WARM_PREFIX "goodix53x5-warm-"
+#define GOODIX_MILAN_WARM_DOWN 304u
+#define GOODIX_MILAN_WARM_UP 328u
+#define GOODIX_MILAN_WARM_MANUAL 352u
+#define GOODIX_MILAN_WARM_ANCHOR 376u
+#define GOODIX_MILAN_WARM_IMAGE 400u
+#define GOODIX_MILAN_WARM_DIGEST \
+  (GOODIX_MILAN_WARM_IMAGE + GOODIX_MILAN_SENSOR_PIXELS * 2u)
+#define GOODIX_MILAN_WARM_SIZE (GOODIX_MILAN_WARM_DIGEST + 32u)
+static const guint8 goodix_milan_warm_magic[8] = { 'G', '5', '3', 'P', '9', 'W', 'R', 'M' };
+
+static void
+goodix_milan_identity (guint32 chip, guint16 subtype, const guint8 *otp,
+                       gsize otp_len, guint8 identity[32])
+{
+  g_autoptr(GChecksum) checksum = g_checksum_new (G_CHECKSUM_SHA256);
+  guint8 encoded[10];
+  gsize size = 32;
+
+  goodix_milan_write_u32 (encoded, chip);
+  goodix_milan_write_u16 (encoded + 4, subtype);
+  goodix_milan_write_u32 (encoded + 6, otp_len);
+  g_checksum_update (checksum, (const guint8 *) goodix_milan_identity_domain,
+                     sizeof (goodix_milan_identity_domain) - 1);
+  g_checksum_update (checksum, encoded, sizeof (encoded));
+  g_checksum_update (checksum, otp, otp_len);
+  g_checksum_get_digest (checksum, identity, &size);
+}
+
+static gboolean
+goodix_milan_warm_location (FpDevice *dev, guint8 location[32])
+{
+  GUsbDevice *usb_dev = fpi_device_get_usb_device (dev);
+  const gchar *platform = g_usb_device_get_platform_id (usb_dev);
+
+  g_autoptr(GChecksum) checksum = g_checksum_new (G_CHECKSUM_SHA256);
+  guint8 encoded[6];
+  gsize size = 32;
+
+  if (!platform || !platform[0] || strlen (platform) > G_MAXUINT32)
+    return FALSE;
+  g_checksum_update (checksum, (const guint8 *) "profile9-warm-location-v1", 25);
+  goodix_milan_write_u32 (encoded, strlen (platform));
+  g_checksum_update (checksum, encoded, 4);
+  g_checksum_update (checksum, (const guint8 *) platform, strlen (platform));
+  goodix_milan_write_u16 (encoded, g_usb_device_get_vid (usb_dev));
+  goodix_milan_write_u16 (encoded + 2, g_usb_device_get_pid (usb_dev));
+  goodix_milan_write_u16 (encoded + 4, GOODIX_USB_INTERFACE);
+  g_checksum_update (checksum, encoded, sizeof (encoded));
+  g_checksum_get_digest (checksum, location, &size);
+  return TRUE;
+}
+
+/* The complete metadata header is also the local compatibility projection.
+ * Descriptor identity locates it; only the checked chip/OTP selects profile 9.
+ * Same-boot reuse assumes the same internal sensor has not been reflashed. */
+static gboolean
+goodix_milan_warm_header (FpDevice *dev, guint32 chip, const guint8 *otp,
+                          gsize otp_len, const gchar *firmware,
+                          const GoodixCalibParams *calib, guint8 header[300])
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  g_autoptr(GChecksum) checksum = g_checksum_new (G_CHECKSUM_SHA256);
+  g_autofree guint8 *config = NULL;
+  const guint16 words[] = {
+    calib->tcode, calib->dac_l, calib->dac_from_otp,
+    calib->delta_fdt, calib->delta_down, calib->delta_up
+  };
+  guint8 encoded[sizeof (words)];
+  gsize config_len, size = 32;
+  const guint8 *defaults;
+  guint16 subtype, firmware_len = firmware ? strlen (firmware) : G_MAXUINT16;
+
+  goodix_milan_dac_read_boot_id (&self->dac_checkpoint);
+  if (!otp || otp_len != 32 || !goodix_device_verify_otp (otp, otp_len) ||
+      !goodix_milan_runtime_subtype_for_chip (chip, &subtype) ||
+      subtype != GOODIX_MILAN_VALIDATED_SUBTYPE ||
+      !self->dac_checkpoint.boot_id[0] || (firmware && strlen (firmware) > 64))
+    return FALSE;
+  memset (header, 0, 300);
+  if (!goodix_milan_warm_location (dev, header + 68))
+    return FALSE;
+  memcpy (header, goodix_milan_warm_magic, 8);
+  goodix_milan_write_u32 (header + 8, 2);
+  goodix_milan_write_u32 (header + 12, GOODIX_MILAN_WARM_IMAGE);
+  goodix_milan_write_u32 (header + 16, GOODIX_MILAN_WARM_SIZE);
+  goodix_milan_write_u16 (header + 20, 9);
+  goodix_milan_write_u16 (header + 22, subtype);
+  goodix_milan_write_u16 (header + 24, GOODIX_MILAN_SENSOR_ROWS);
+  goodix_milan_write_u16 (header + 26, GOODIX_MILAN_SENSOR_COLUMNS);
+  goodix_milan_write_u16 (header + 28, 2);
+  memcpy (header + 32, self->dac_checkpoint.boot_id, 36);
+  goodix_milan_identity (chip, subtype, otp, otp_len, header + 100);
+  goodix_milan_write_u32 (header + 132, chip);
+  goodix_milan_write_u16 (header + 136, otp_len);
+  goodix_milan_write_u16 (header + 138, firmware_len);
+  memcpy (header + 140, otp, 32);
+  if (firmware)
+    memcpy (header + 172, firmware, firmware_len);
+  defaults = goodix_device_get_default_config (&config_len);
+  config = g_memdup2 (defaults, config_len);
+  goodix_device_patch_config (config, config_len, calib);
+  goodix_milan_sha256 (config, config_len, header + 236);
+  for (gsize i = 0; i < G_N_ELEMENTS (words); i++)
+    goodix_milan_write_u16 (encoded + 2 * i, words[i]);
+
+  /* Version this domain if the hardware/FDT interpretation changes. The patched
+   * config depends on low DAC/OTP, not the independent evolving high/history. */
+  g_checksum_update (checksum, (const guint8 *) "profile9-warm-v2", 16);
+  g_checksum_update (checksum, header + 100, 32);
+  g_checksum_update (checksum, header + 32, 36);
+  g_checksum_update (checksum, encoded, sizeof (encoded));
+  g_checksum_update (checksum, config, config_len);
+  g_checksum_update (checksum, header + 138, 2);
+  if (firmware)
+    g_checksum_update (checksum, header + 172, firmware_len);
+  g_checksum_get_digest (checksum, header + 268, &size);
+  return TRUE;
+}
+
+gboolean
+goodix_milan_warm_binding (FpDevice *dev, guint8 binding[32])
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  guint8 header[300];
+
+  if (!self->milan_persistence_identity_valid ||
+      self->milan_sensor_subtype != GOODIX_MILAN_VALIDATED_SUBTYPE ||
+      !goodix_milan_warm_header (dev, self->chip_id, self->otp_data, self->otp_len,
+                                 self->fw_version, &self->calib, header) ||
+      memcmp (self->milan_persistence_identity, header + 100, 32) != 0)
+    return FALSE;
+  memcpy (binding, header + 268, 32);
+  return TRUE;
+}
+
+static guint8 *
+goodix_milan_warm_read (FpDevice *dev)
+{
+  g_autofree gchar *path = NULL;
+  g_autofree guint8 *contents = NULL;
+
+  g_autoptr(GError) error = NULL;
+  guint8 location[32], digest[32];
+
+  if (!goodix_milan_warm_location (dev, location))
+    return NULL;
+  path = goodix_milan_state_path (GOODIX_MILAN_WARM_PREFIX, location);
+  if (!goodix_milan_state_directory_secure (&error) ||
+      !goodix_milan_state_read (path, GOODIX_MILAN_WARM_SIZE, &contents, &error))
+    {
+      if (!g_error_matches (error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
+        fp_warn ("Cannot read Milan warm checkpoint: %s", error->message);
+      return NULL;
+    }
+  goodix_milan_sha256 (contents, GOODIX_MILAN_WARM_DIGEST, digest);
+  if (memcmp (contents, goodix_milan_warm_magic, 8) != 0 ||
+      goodix_milan_read_u32 (contents + 8) != 2 ||
+      contents[300] != 1 || contents[301] > 1 || contents[302] > 1 || contents[303] > 1 ||
+      memcmp (contents + GOODIX_MILAN_WARM_DIGEST, digest, 32) != 0)
+    return NULL;
+  for (gsize i = 0; i < GOODIX_MILAN_SENSOR_PIXELS; i++)
+    if (goodix_milan_read_u16 (contents + GOODIX_MILAN_WARM_IMAGE + 2 * i) > 4095)
+      return NULL;
+
+  return g_steal_pointer (&contents);
+}
+
+GoodixMilanWarmState *
+goodix_milan_warm_load (FpDevice *dev, const guint8 binding[32], GBytes **record)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  g_autofree guint8 *contents = goodix_milan_warm_read (dev);
+  GoodixMilanWarmState *warm;
+  guint8 header[300];
+
+  *record = NULL;
+  if (!contents ||
+      !goodix_milan_warm_header (dev, self->chip_id, self->otp_data, self->otp_len,
+                                 self->fw_version, &self->calib, header) ||
+      memcmp (contents, header, sizeof (header)) != 0 ||
+      memcmp (contents + 268, binding, 32) != 0)
+    return NULL;
+  warm = g_new0 (GoodixMilanWarmState, 1);
+  memcpy (warm->binding, binding, 32);
+  warm->fdt.base_valid = contents[301];
+  warm->setup_refresh_pending = contents[302];
+  warm->fdt.drift_anchor_empty = contents[303];
+  memcpy (warm->fdt.base_down, contents + GOODIX_MILAN_WARM_DOWN, 24);
+  memcpy (warm->fdt.base_up, contents + GOODIX_MILAN_WARM_UP, 24);
+  memcpy (warm->fdt.base_manual, contents + GOODIX_MILAN_WARM_MANUAL, 24);
+  for (gsize i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+    warm->fdt.drift_anchor[i] = goodix_milan_read_u16 (contents + GOODIX_MILAN_WARM_ANCHOR + 2 * i);
+  warm->hardware_reference = g_new (guint16, GOODIX_MILAN_SENSOR_PIXELS);
+  for (gsize i = 0; i < GOODIX_MILAN_SENSOR_PIXELS; i++)
+    warm->hardware_reference[i] = goodix_milan_read_u16 (contents + GOODIX_MILAN_WARM_IMAGE + 2 * i);
+  *record = g_bytes_new_take (g_steal_pointer (&contents), GOODIX_MILAN_WARM_SIZE);
+  return warm;
+}
+
+void
+goodix_milan_warm_save (FpDevice *dev, const GoodixMilanWarmState *warm)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  g_autofree guint8 *contents = NULL;
+  g_autofree gchar *path = NULL;
+
+  g_autoptr(GError) error = NULL;
+
+  if (!warm || !warm->hardware_reference || !warm->generation ||
+      !warm->generation->admitted || !self->warm_binding_valid ||
+      memcmp (warm->binding, self->warm_binding, 32) != 0)
+    return;
+  contents = g_malloc0 (GOODIX_MILAN_WARM_SIZE);
+  if (!goodix_milan_warm_header (dev, self->chip_id, self->otp_data, self->otp_len,
+                                 self->fw_version, &self->calib, contents) ||
+      memcmp (contents + 268, warm->binding, 32) != 0)
+    return;
+  contents[300] = 1; /* Admitted image, independently of FDT validity. */
+  contents[301] = !!warm->fdt.base_valid;
+  contents[302] = !!warm->setup_refresh_pending;
+  contents[303] = !!warm->fdt.drift_anchor_empty;
+  memcpy (contents + GOODIX_MILAN_WARM_DOWN, warm->fdt.base_down, 24);
+  memcpy (contents + GOODIX_MILAN_WARM_UP, warm->fdt.base_up, 24);
+  memcpy (contents + GOODIX_MILAN_WARM_MANUAL, warm->fdt.base_manual, 24);
+  for (gsize i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+    goodix_milan_write_u16 (contents + GOODIX_MILAN_WARM_ANCHOR + 2 * i, warm->fdt.drift_anchor[i]);
+  for (gsize i = 0; i < GOODIX_MILAN_SENSOR_PIXELS; i++)
+    goodix_milan_write_u16 (contents + GOODIX_MILAN_WARM_IMAGE + 2 * i, warm->hardware_reference[i]);
+  goodix_milan_sha256 (contents, GOODIX_MILAN_WARM_DIGEST, contents + GOODIX_MILAN_WARM_DIGEST);
+  if (!self->warm_retry_required && self->warm_record &&
+      g_bytes_get_size (self->warm_record) == GOODIX_MILAN_WARM_SIZE &&
+      memcmp (contents, g_bytes_get_data (self->warm_record, NULL), GOODIX_MILAN_WARM_SIZE) == 0)
+    return;
+  path = goodix_milan_state_path (GOODIX_MILAN_WARM_PREFIX, contents + 68);
+  if (!goodix_milan_state_write (path, contents, GOODIX_MILAN_WARM_SIZE, &error))
+    {
+      self->warm_retry_required = TRUE;
+      fp_warn ("Cannot save Milan warm checkpoint: %s", error->message);
+      return;
+    }
+  self->warm_retry_required = FALSE;
+  g_clear_pointer (&self->warm_record, g_bytes_unref);
+  self->warm_record = g_bytes_new_take (g_steal_pointer (&contents), GOODIX_MILAN_WARM_SIZE);
+}
+
 static gboolean
 goodix_milan_state_valid (
   const guint8 *contents,
@@ -681,10 +933,6 @@ goodix_milan_persistence_prepare (FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
-  g_autoptr(GChecksum) checksum = NULL;
-  guint8 encoded[10];
-  gsize digest_size = sizeof (self->milan_persistence_identity);
-
   goodix_milan_persistence_clear (dev);
   if (!self->otp_data || self->otp_len == 0 || self->otp_len > G_MAXUINT32)
     {
@@ -692,16 +940,8 @@ goodix_milan_persistence_prepare (FpDevice *dev)
       return;
     }
 
-  goodix_milan_write_u32 (encoded, self->chip_id);
-  goodix_milan_write_u16 (encoded + 4, self->milan_sensor_subtype);
-  goodix_milan_write_u32 (encoded + 6, (guint32) self->otp_len);
-  checksum = g_checksum_new (G_CHECKSUM_SHA256);
-  g_checksum_update (checksum, (const guint8 *) goodix_milan_identity_domain,
-                     sizeof (goodix_milan_identity_domain) - 1);
-  g_checksum_update (checksum, encoded, sizeof (encoded));
-  g_checksum_update (checksum, self->otp_data, self->otp_len);
-  g_checksum_get_digest (checksum, self->milan_persistence_identity,
-                         &digest_size);
+  goodix_milan_identity (self->chip_id, self->milan_sensor_subtype,
+                         self->otp_data, self->otp_len, self->milan_persistence_identity);
   self->milan_persistence_identity_valid = TRUE;
 }
 

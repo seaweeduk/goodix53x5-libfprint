@@ -126,6 +126,29 @@ typedef struct
   gboolean                   process_state_retained;
 } GoodixMilanGeneration;
 
+/* Only settled values survive; command/event owners never enter a checkpoint. */
+typedef struct
+{
+  gboolean base_valid;
+  gboolean drift_anchor_empty;
+  guint16  drift_anchor[GOODIX_PROFILE9_FDT_AREA_COUNT];
+  guint8   base_down[GOODIX_FDT_BASE_LEN];
+  guint8   base_up[GOODIX_FDT_BASE_LEN];
+  guint8   base_manual[GOODIX_FDT_BASE_LEN];
+} GoodixMilanRetainedFdt;
+
+/* Inactive until a fresh verified session reconstructs the same interpretation.
+ * RAM retains the entire engine generation, including its distinct setup image.
+ * Disk contains only hardware/FDT state; its engine is constructed on restore. */
+typedef struct
+{
+  guint8                  binding[32];
+  guint16                *hardware_reference;
+  GoodixMilanGeneration   *generation;
+  GoodixMilanRetainedFdt   fdt;
+  gboolean                setup_refresh_pending;
+} GoodixMilanWarmState;
+
 typedef enum
 {
   GOODIX_MILAN_BASE_ERROR_INVALID_FRAME,
@@ -170,6 +193,9 @@ void goodix_milan_generation_prepare_setup (FpDevice              *dev,
 void goodix_milan_generation_free (GoodixMilanGeneration *generation);
 void goodix_milan_generation_invalidate (GoodixMilanGeneration **generation);
 void goodix_milan_generation_retain_process (FpDevice *dev);
+void goodix_milan_warm_free (GoodixMilanWarmState *warm);
+void goodix_milan_warm_park (FpDevice *dev);
+gboolean goodix_milan_warm_resume (FpDevice *dev, GError **error);
 guint64 goodix_milan_generation_note_use (GoodixMilanGeneration *generation);
 void goodix_milan_generation_note_identify_prelude (GoodixMilanGeneration *generation);
 

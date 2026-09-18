@@ -878,7 +878,16 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_OPEN_CAPTURE_REF:
-      goodix_milan_base_start_ensure_subsm (ssm, dev, FALSE);
+      {
+        g_autoptr(GError) error = NULL;
+
+        if (goodix_milan_warm_resume (dev, &error))
+          fpi_ssm_next_state (ssm);
+        else if (error)
+          fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+        else
+          goodix_milan_base_start_ensure_subsm (ssm, dev, FALSE);
+      }
       break;
 
     case GOODIX_OPEN_CAPTURE_REF_DONE:
@@ -960,6 +969,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
        * A completion winning idle cancellation may have just appended it. */
       goodix_transport_invalidate (dev);
       self->open_ref_powered = FALSE;
+      goodix_milan_warm_park (dev);
       goodix_milan_generation_retain_process (dev);
       g_clear_pointer (&self->hardware_reference, g_free);
       goodix_milan_persistence_clear (dev);
@@ -973,6 +983,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
           !fpi_device_action_is_cancelled (dev) &&
           !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
           !g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_NO_DEVICE) &&
+          error->domain != GOODIX_MILAN_BASE_ERROR &&
           error->domain != FP_DEVICE_RETRY)
         {
           self->open_recovery_attempted = TRUE;
@@ -1025,6 +1036,7 @@ goodix_start_open_ssm (FpDevice *dev)
   g_clear_object (&self->cancel);
   self->cancel = g_cancellable_new ();
   self->open_gtls_failed = FALSE;
+  self->warm_binding_valid = FALSE;
   ssm = fpi_ssm_new_full (dev, goodix_open_ssm_handler,
                           GOODIX_OPEN_NUM_STATES,
                           GOODIX_OPEN_SLEEP,
@@ -1048,8 +1060,10 @@ goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
 
   fp_info ("Reinitializing device after system sleep");
   self->action_epoch++;
+  goodix_milan_warm_park (dev);
   goodix_milan_generation_retain_process (dev);
   g_clear_pointer (&self->hardware_reference, g_free);
+  self->warm_binding_valid = FALSE;
   self->open_recovery_attempted = FALSE;
   self->open_gtls_failed = FALSE;
   self->open_usb_reset_required = TRUE;
