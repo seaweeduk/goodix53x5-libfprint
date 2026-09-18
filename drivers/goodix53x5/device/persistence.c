@@ -796,6 +796,54 @@ goodix_milan_warm_read (FpDevice *dev)
   return g_steal_pointer (&contents);
 }
 
+gboolean
+goodix_milan_warm_bootstrap (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  g_autofree guint8 *contents = goodix_milan_warm_read (dev);
+  g_autofree gchar *firmware = NULL;
+  GoodixCalibParams seeded;
+  guint8 header[300];
+  guint16 firmware_len, subtype;
+  guint32 chip;
+
+  if (!contents)
+    return FALSE;
+  firmware_len = goodix_milan_read_u16 (contents + 138);
+  if (firmware_len != G_MAXUINT16)
+    {
+      if (firmware_len > 64 || memchr (contents + 172, 0, firmware_len))
+        return FALSE;
+      firmware = g_strndup ((const gchar *) contents + 172, firmware_len);
+    }
+  chip = goodix_milan_read_u32 (contents + 132);
+  if (!goodix_milan_runtime_subtype_for_chip (chip, &subtype) ||
+      subtype != GOODIX_MILAN_VALIDATED_SUBTYPE ||
+      goodix_milan_read_u16 (contents + 20) != 9 ||
+      goodix_milan_read_u16 (contents + 22) != subtype ||
+      goodix_milan_read_u16 (contents + 136) != 32 ||
+      !goodix_device_verify_otp (contents + 140, 32))
+    return FALSE;
+  goodix_device_parse_otp (contents + 140, 32, &seeded);
+  if (!goodix_milan_warm_header (dev, chip, contents + 140, 32, firmware, &seeded, header) ||
+      memcmp (header, contents, sizeof (header)) != 0)
+    return FALSE;
+
+  /* Metadata authorizes an attempt, never a ready session or active reference.
+   * The post-GTLS loader reconciles the disk projection with retained RAM. */
+  self->chip_id = chip;
+  self->milan_sensor_subtype = goodix_milan_read_u16 (header + 22);
+  g_free (self->otp_data);
+  self->otp_data = g_memdup2 (contents + 140, 32);
+  self->otp_len = 32;
+  g_free (self->fw_version);
+  self->fw_version = g_steal_pointer (&firmware);
+  goodix_milan_persistence_prepare (dev);
+  goodix_milan_dac_resume (dev, &seeded);
+  self->calib = seeded;
+  return TRUE;
+}
+
 GoodixMilanWarmState *
 goodix_milan_warm_load (FpDevice *dev, const guint8 binding[32], GBytes **record)
 {

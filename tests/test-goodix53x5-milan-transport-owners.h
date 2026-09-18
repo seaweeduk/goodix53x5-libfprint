@@ -29,6 +29,20 @@ static FpiSsm *idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handle
 static void startup_delay (FpiSsm *ssm, int state, int delay);
 static GString *startup_trace;
 static guint startup_delays;
+/* Startup now selects its local key before choosing cold or warm initialization.
+ * Keep these existing USB cases independent of the host's private PSK file. */
+static gboolean
+test_missing_psk (const gchar *filename, gchar **contents, gsize *length,
+                  GError **error)
+{
+  g_assert_cmpstr (filename, ==, "/var/lib/fprint/goodix53x5.psk");
+  *contents = NULL;
+  *length = 0;
+  g_set_error_literal (error, G_FILE_ERROR, G_FILE_ERROR_NOENT,
+                       "No imported key in the transport fixture");
+  return FALSE;
+}
+
 /* Exercise the real driver close, replacing only USB release and the outer
  * action completion (this transport fixture has no libfprint current GTask). */
 #define g_usb_device_release_interface(device, interface, flags, error) idle_test_release ()
@@ -43,8 +57,15 @@ static guint startup_delays;
 #define fpi_device_open_complete idle_test_open_complete
 #define fpi_device_action_is_cancelled(device) g_cancellable_is_cancelled (action_cancel_token)
 #define fpi_device_get_usb_device(device) ((GUsbDevice *) NULL)
+/* No physical USB location in this fixture: run the real checkpoint admission
+ * against that platform boundary, which selects the existing cold cases. */
+#define g_usb_device_get_platform_id(device) ((const gchar *) NULL)
+#include "drivers/goodix53x5/device/persistence.c"
+#undef g_usb_device_get_platform_id
 #define fpi_ssm_jump_to_state_delayed startup_delay
+#define g_file_get_contents test_missing_psk
 #include "drivers/goodix53x5/device/session.c"
+#undef g_file_get_contents
 #undef fpi_ssm_jump_to_state_delayed
 #undef fpi_device_get_usb_device
 #undef fpi_device_action_is_cancelled

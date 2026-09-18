@@ -39,6 +39,7 @@
 typedef enum {
   GOODIX_OPEN_USB_RESET = 0,
   GOODIX_OPEN_CLAIM_INTERFACE,
+  GOODIX_OPEN_STARTUP,
   GOODIX_OPEN_PING,
   GOODIX_OPEN_RESET,
   GOODIX_OPEN_READ_OTP,
@@ -68,6 +69,8 @@ goodix_open_state_name (GoodixOpenState state)
       return "usb_reset";
     case GOODIX_OPEN_CLAIM_INTERFACE:
       return "claim_interface";
+    case GOODIX_OPEN_STARTUP:
+      return "startup";
     case GOODIX_OPEN_PING:
       return "ping";
     case GOODIX_OPEN_RESET:
@@ -440,8 +443,10 @@ goodix_gtls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
     case GOODIX_GTLS_HELLO:
       goodix_transport_reset_mcu (dev);
       goodix_crypto_gtls_init (&self->gtls, self->psk);
+      self->open_local_failure = FALSE;
       if (RAND_bytes (self->gtls.client_random, 32) != 1)
         {
+          self->open_local_failure = TRUE;
           fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
                                  FP_DEVICE_ERROR_PROTO, "GTLS client random generation failed"));
           return;
@@ -617,6 +622,9 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
   goodix_debug_timing_open_state (self, dev, goodix_open_state_name (state),
                                   g_get_monotonic_time ());
 
+  if (state < GOODIX_OPEN_SLEEP && goodix_probe_cancelled (ssm, dev))
+    return;
+
   switch (state)
     {
     case GOODIX_OPEN_USB_RESET:
@@ -649,12 +657,42 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
                 fpi_device_get_usb_device (dev), GOODIX_USB_INTERFACE,
                 G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER, &error))
           {
+            self->open_local_failure = TRUE;
             fpi_ssm_mark_failed (ssm, error);
             return;
           }
 
         self->usb_interface_claimed = TRUE;
         fpi_ssm_next_state (ssm);
+      }
+      break;
+
+    case GOODIX_OPEN_STARTUP:
+      {
+        g_autoptr(GError) error = NULL;
+
+        goodix_transport_invalidate (dev);
+        self->command_response_ready = 0;
+        self->reply_payload = NULL;
+        self->reply_payload_len = 0;
+        self->psk_write_verify_pending = FALSE;
+        if (!goodix_load_psk (self, &error))
+          {
+            self->open_local_failure = TRUE;
+            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+            return;
+          }
+        if (!self->needs_reinit && !self->open_recovery_attempted &&
+            goodix_milan_warm_bootstrap (dev))
+          self->startup_mode = GOODIX_STARTUP_CACHED;
+        if (self->startup_mode == GOODIX_STARTUP_CACHED)
+          fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_GTLS_CLIENT_HELLO);
+        else
+          {
+            /* Native failed version getters leave the previous output intact;
+             * only a successful probe replaces it. */
+            fpi_ssm_next_state (ssm);
+          }
       }
       break;
 
@@ -681,7 +719,6 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_OPEN_PARSE_OTP:
       {
-        g_autoptr(GError) error = NULL;
         GoodixCalibParams seeded;
         const guint8 *pl;
         gsize pl_len;
@@ -710,11 +747,6 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         goodix_device_parse_otp (pl, pl_len, &seeded);
         goodix_milan_dac_resume (dev, &seeded);
         self->calib = seeded;
-        if (!goodix_load_psk (self, &error))
-          {
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
         fpi_ssm_next_state (ssm);
       }
       break;
@@ -852,6 +884,15 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
         fp_info ("GTLS handshake completed");
 
+        if (self->startup_mode == GOODIX_STARTUP_CACHED)
+          {
+            /* Discard incidental old image/rekey/notification state, but only
+             * after the complete new handshake has consumed its MCU replies. */
+            goodix_transport_invalidate (dev);
+            fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_CAPTURE_REF);
+            return;
+          }
+
         /* Build and upload config */
         gsize cfg_len;
         const guint8 *def_cfg = goodix_device_get_default_config (&cfg_len);
@@ -885,12 +926,20 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
           fpi_ssm_next_state (ssm);
         else if (error)
           fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+        else if (self->startup_mode == GOODIX_STARTUP_CACHED)
+          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                                FP_DEVICE_ERROR_PROTO, "Warm checkpoint became unavailable"));
         else
           goodix_milan_base_start_ensure_subsm (ssm, dev, FALSE);
       }
       break;
 
     case GOODIX_OPEN_CAPTURE_REF_DONE:
+      if (self->startup_mode == GOODIX_STARTUP_CACHED)
+        {
+          fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_NUM_STATES);
+          return;
+        }
       /* A recoverable contaminated pair performs its own bounded shutdown and
        * leaves a typed pending event for the first action. */
       self->open_ref_powered = self->milan_generation != NULL;
@@ -957,6 +1006,26 @@ goodix_cleanup_failed_open (FpDevice *dev)
              cleanup_error->message);
 }
 
+gboolean
+goodix_warm_error_can_recover (FpDevice *dev, const GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  gboolean removed = FALSE;
+
+  g_object_get (dev, "removed", &removed, NULL);
+  if (removed || self->open_local_failure || fpi_device_action_is_cancelled (dev) ||
+      (self->cancel && g_cancellable_is_cancelled (self->cancel)))
+    return FALSE;
+  return g_error_matches (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO) ||
+         g_error_matches (error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT) ||
+         g_error_matches (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA) ||
+         g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO) ||
+         g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_FAILED) ||
+         g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_NOT_SUPPORTED) ||
+         g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_INTERNAL) ||
+         g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT);
+}
+
 static void
 goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
 {
@@ -979,14 +1048,19 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
       goodix_debug_timing_open_done (self, dev, error->message);
       fpi_device_report_finger_status (dev, FP_FINGER_STATUS_NONE);
 
-      if (!self->open_recovery_attempted && !self->open_gtls_failed &&
+      if (!self->open_recovery_attempted && !self->open_local_failure &&
+          (!self->open_gtls_failed || self->startup_mode == GOODIX_STARTUP_CACHED) &&
+          (self->startup_mode != GOODIX_STARTUP_CACHED || goodix_warm_error_can_recover (dev, error)) &&
           !fpi_device_action_is_cancelled (dev) &&
           !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
+          !g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_CANCELLED) &&
           !g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_NO_DEVICE) &&
           error->domain != GOODIX_MILAN_BASE_ERROR &&
           error->domain != FP_DEVICE_RETRY)
         {
           self->open_recovery_attempted = TRUE;
+          if (self->startup_mode == GOODIX_STARTUP_CACHED)
+            self->startup_mode = GOODIX_STARTUP_RECONSTRUCTED;
           if (self->usb_interface_claimed)
             {
               g_usb_device_release_interface (fpi_device_get_usb_device (dev),
@@ -1036,6 +1110,7 @@ goodix_start_open_ssm (FpDevice *dev)
   g_clear_object (&self->cancel);
   self->cancel = g_cancellable_new ();
   self->open_gtls_failed = FALSE;
+  self->open_local_failure = FALSE;
   self->warm_binding_valid = FALSE;
   ssm = fpi_ssm_new_full (dev, goodix_open_ssm_handler,
                           GOODIX_OPEN_NUM_STATES,
@@ -1066,6 +1141,9 @@ goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
   self->warm_binding_valid = FALSE;
   self->open_recovery_attempted = FALSE;
   self->open_gtls_failed = FALSE;
+  self->open_local_failure = FALSE;
+  if (self->startup_mode != GOODIX_STARTUP_RECONSTRUCTED)
+    self->startup_mode = GOODIX_STARTUP_COLD;
   self->open_usb_reset_required = TRUE;
 
   if (self->usb_interface_claimed)

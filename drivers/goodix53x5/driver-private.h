@@ -118,6 +118,13 @@ typedef enum
 } GoodixResponseSlot;
 
 /* --- Device struct --- */
+typedef enum
+{
+  GOODIX_STARTUP_COLD,
+  GOODIX_STARTUP_CACHED,
+  GOODIX_STARTUP_RECONSTRUCTED,
+} GoodixStartupMode;
+
 struct _FpiDeviceGoodix53x5
 {
   FpDevice      parent;
@@ -189,6 +196,9 @@ struct _FpiDeviceGoodix53x5
   gboolean               open_usb_reset_required;
   gboolean               open_recovery_attempted;
   gboolean               open_gtls_failed;
+  /* Cached metadata is tentative through fresh GTLS and the first active arm. */
+  GoodixStartupMode      startup_mode;
+  gboolean               open_local_failure;
 
   /* OTP raw data */
   guint8 *otp_data;

@@ -21,6 +21,8 @@
 
 #include "driver-private.h"
 
+gboolean goodix_warm_error_can_recover (FpDevice *dev, const GError *error);
+
 /**
  * Start the full open/initialization SSM as the top-level task SSM and
  * complete the libfprint open action when it finishes.

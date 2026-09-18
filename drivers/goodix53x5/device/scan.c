@@ -35,6 +35,8 @@ typedef enum
 {
   GOODIX_SCAN_COORD_ENSURE_REFERENCE = 0,
   GOODIX_SCAN_COORD_ENSURE_REFERENCE_DONE,
+  GOODIX_SCAN_COORD_STARTUP_RECOVER,
+  GOODIX_SCAN_COORD_STARTUP_RECOVER_DONE,
   GOODIX_SCAN_COORD_POWER_ON,
   GOODIX_SCAN_COORD_ARM_DOWN,
   GOODIX_SCAN_COORD_WAIT_EVENT,
@@ -342,6 +344,40 @@ goodix_scan_prepare_refresh (FpiSsm                        *ssm,
 }
 
 static void
+goodix_scan_startup_arm_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  goodix_cmd_fdt_down_setup (ssm, dev, FPI_DEVICE_GOODIX53X5 (dev)->profile9_fdt.base_down);
+}
+
+static void
+goodix_scan_startup_arm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixScanCoordinatorData *data = fpi_ssm_get_data (ssm);
+
+  /* The native wrapper deliberately swallows ordinary exhausted arms. Its
+   * needs_reinit outcome, unlike its return alone, distinguishes that case.
+   * Status 3 already performed exactly one config/arm repair inside it. */
+  if (!error && self->needs_reinit)
+    error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO, "Warm startup FDT arm failed");
+  if (error && self->startup_mode == GOODIX_STARTUP_CACHED && !self->open_recovery_attempted &&
+      !data->stop_requested && goodix_warm_error_can_recover (dev, error))
+    {
+      g_clear_error (&error);
+      self->startup_mode = GOODIX_STARTUP_RECONSTRUCTED;
+      self->open_recovery_attempted = TRUE;
+      fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_STARTUP_RECOVER);
+      return;
+    }
+  self->startup_mode = GOODIX_STARTUP_COLD;
+  data->dispatching = FALSE;
+  if (error)
+    fpi_ssm_mark_failed (data->ssm, error);
+  else
+    fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+}
+
+static void
 goodix_scan_coordinator_handler (FpiSsm   *ssm,
                                  FpDevice *dev)
 {
@@ -369,7 +405,7 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
     case GOODIX_SCAN_COORD_ENSURE_REFERENCE_DONE:
       if (self->milan_generation)
         {
-          fpi_ssm_next_state (ssm);
+          fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_POWER_ON);
           break;
         }
       if (!fdt->initial_recovery_pending)
@@ -391,7 +427,29 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
             fpi_device_report_finger_status_changes (
               dev, FP_FINGER_STATUS_NEEDED, FP_FINGER_STATUS_PRESENT);
         }
-      fpi_ssm_next_state (ssm);
+      fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_POWER_ON);
+      break;
+
+    case GOODIX_SCAN_COORD_STARTUP_RECOVER:
+      /* No capture/CPU/event wait has started and the failed arm is joined.
+       * Park synchronously, then keep the cancellation owner visible throughout
+       * asynchronous reconstruction (including a concurrent suspend request). */
+      g_assert (!data->cpu_outstanding && !data->waiting_event);
+      fdt->owner = NULL;
+      fdt->lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED;
+      goodix_milan_warm_park (dev);
+      fdt->owner = ssm;
+      fdt->lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_ACTIVE;
+      self->needs_reinit = TRUE;
+      goodix_maybe_start_reinit_subsm (ssm, dev);
+      break;
+
+    case GOODIX_SCAN_COORD_STARTUP_RECOVER_DONE:
+      self->open_recovery_attempted = TRUE;
+      if (!data->stop_requested)
+        self->needs_reinit = FALSE;
+      data->dispatching = FALSE;
+      fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_ENSURE_REFERENCE);
       break;
 
     case GOODIX_SCAN_COORD_POWER_ON:
@@ -402,7 +460,16 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
 
     case GOODIX_SCAN_COORD_ARM_DOWN:
       fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
-      goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
+      if (self->startup_mode != GOODIX_STARTUP_COLD)
+        {
+          FpiSsm *sub = fpi_ssm_new (dev, goodix_scan_startup_arm_handler, 1);
+
+          data->dispatching = TRUE;
+          fpi_ssm_set_data (sub, data, NULL);
+          fpi_ssm_start (sub, goodix_scan_startup_arm_done);
+        }
+      else
+        goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
       break;
 
     case GOODIX_SCAN_COORD_WAIT_EVENT:
