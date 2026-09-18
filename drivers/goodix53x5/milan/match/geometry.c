@@ -721,12 +721,12 @@ goodix_milan_match_record_metrics_internal (
         (int64_t) transform[3] * (uint16_t) probe_records[probe_index].refined_x +
         (int64_t) transform[4] * (uint16_t) probe_records[probe_index].refined_y +
         (int64_t) transform[5] * 0x100;
-      int32_t transformed_x = raw_x < 1
-                                ? -(int32_t) ((0x80 - raw_x) >> 8)
-                                : (int32_t) ((raw_x + 0x80) >> 8);
-      int32_t transformed_y = raw_y < 1
-                                ? -(int32_t) ((0x80 - raw_y) >> 8)
-                                : (int32_t) ((raw_y + 0x80) >> 8);
+      int32_t transformed_x = milan_reinterpret_uint32_as_int32 (
+        raw_x < 1 ? UINT32_C (0) - (uint32_t) ((0x80 - raw_x) >> 8) :
+                    (uint32_t) ((raw_x + 0x80) >> 8));
+      int32_t transformed_y = milan_reinterpret_uint32_as_int32 (
+        raw_y < 1 ? UINT32_C (0) - (uint32_t) ((0x80 - raw_y) >> 8) :
+                    (uint32_t) ((raw_y + 0x80) >> 8));
 
       if (transformed_x < 0x600 ||
           transformed_x >=
@@ -1114,14 +1114,17 @@ goodix_milan_refine_record_similarity (
         {
           int32_t x = (uint16_t) enrolled_records[index].refined_x;
           int32_t y = (uint16_t) enrolled_records[index].refined_y;
-          int32_t mapped_x =
+          int64_t mapped_x =
             (((int64_t) inverse[0] * x + (int64_t) inverse[1] * y + 0x80) >> 8) +
             inverse[2];
-          int32_t mapped_y =
+          int64_t mapped_y =
             (((int64_t) inverse[3] * x + (int64_t) inverse[4] * y + 0x80) >> 8) +
             inverse[5];
-          int32_t pixel_x = (mapped_x + 0x80) >> 8;
-          int32_t pixel_y = (mapped_y + 0x80) >> 8;
+          /* Native rounds the translated coordinate as a wrapping dword. */
+          int32_t pixel_x = milan_reinterpret_uint32_as_int32 (
+            (uint32_t) mapped_x + UINT32_C (0x80)) >> 8;
+          int32_t pixel_y = milan_reinterpret_uint32_as_int32 (
+            (uint32_t) mapped_y + UINT32_C (0x80)) >> 8;
 
           if (pixel_x < 0 ||
               pixel_x >= GOODIX_MILAN_EXTRACTION_CLASSIFICATION_COLUMNS ||
@@ -1178,22 +1181,34 @@ goodix_milan_refine_record_similarity (
     return -1;
   int64_t reciprocal = ((denominator >> 1) + INT64_C (0x800000000)) /
                        denominator;
-  int64_t center =
-    (reciprocal * (source_x * source_x + source_y * source_y) +
-     INT64_C (0x800000000)) /
-    count;
-  refined[0] = (int32_t) (((count * dot - target_y * source_y -
-                            target_x * source_x) * reciprocal) >> 27);
+  /* At most 150 unsigned-word pairs bound the sums and denominator, and
+   * reciprocal * source_x/y fit signed64. Later fit products wrap natively. */
+  int64_t center = milan_wrapped_add (
+    milan_wrapped_multiply (reciprocal,
+                           source_x * source_x + source_y * source_y),
+    INT64_C (0x800000000)) / count;
+  int64_t negative_source_x = -(reciprocal * source_x);
+  int64_t negative_source_y = -(reciprocal * source_y);
+
+  refined[0] = milan_reinterpret_uint32_as_int32 ((uint32_t) (
+    milan_wrapped_multiply (count * dot - target_y * source_y -
+                           target_x * source_x, reciprocal) >> 27));
   refined[4] = refined[0];
-  refined[3] = (int32_t) (((count * cross - target_y * source_x +
-                            target_x * source_y) * reciprocal) >> 27);
-  refined[1] = -refined[3];
-  refined[5] = (int32_t) ((-(reciprocal * source_x) * cross -
-                            (reciprocal * source_y) * dot +
-                            center * target_y) >> 27);
-  refined[2] = (int32_t) ((-(reciprocal * source_x) * dot +
-                            (reciprocal * source_y) * cross +
-                            center * target_x) >> 27);
+  refined[3] = milan_reinterpret_uint32_as_int32 ((uint32_t) (
+    milan_wrapped_multiply (count * cross - target_y * source_x +
+                           target_x * source_y, reciprocal) >> 27));
+  refined[1] = milan_reinterpret_uint32_as_int32 (
+    UINT32_C (0) - (uint32_t) refined[3]);
+  refined[5] = milan_reinterpret_uint32_as_int32 ((uint32_t) (
+    milan_wrapped_add (
+      milan_wrapped_add (milan_wrapped_multiply (negative_source_x, cross),
+                        milan_wrapped_multiply (negative_source_y, dot)),
+      milan_wrapped_multiply (center, target_y)) >> 27));
+  refined[2] = milan_reinterpret_uint32_as_int32 ((uint32_t) (
+    milan_wrapped_add (
+      milan_wrapped_subtract (milan_wrapped_multiply (negative_source_x, dot),
+                             milan_wrapped_multiply (negative_source_y, cross)),
+      milan_wrapped_multiply (center, target_x)) >> 27));
   return 0;
 }
 
