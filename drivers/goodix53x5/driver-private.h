@@ -72,18 +72,6 @@ typedef struct
   guint16 low;
 } GoodixDynamicDacState;
 
-typedef struct
-{
-  /* Retained across session teardown; the tuple begins with verified seeds. */
-  guint8 identity[32];
-  guint8 tuple[16];
-  gchar boot_id[37];
-  gboolean boot_id_read;
-  gboolean bound;
-  /* A failed write may already have replaced the on-disk tuple. */
-  gboolean retry_required;
-} GoodixDacCheckpoint;
-
 typedef enum
 {
   GOODIX_FDT_EVENT_DOWN = 0,
@@ -132,9 +120,8 @@ struct _FpiDeviceGoodix53x5
 
   /* Calibration seeded from OTP; live reads update the current high DAC. */
   GoodixCalibParams calib;
-  /* Current/history survive same-boot restarts independently of preprocessing. */
+  /* Current/history persist within an initialized session; cold OTP resets them. */
   GoodixDynamicDacState dynamic_dac;
-  GoodixDacCheckpoint dac_checkpoint;
   /* Latest admitted hardware TX-on plane, independent of consumed setup.
    * Owned until hardware teardown; recoverable base rejection retains it. */
   guint16 *hardware_reference;
