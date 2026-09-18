@@ -922,6 +922,16 @@ goodix_cleanup_failed_open (FpDevice *dev)
   GUsbDevice *usb_dev = fpi_device_get_usb_device (dev);
   g_autoptr(GError) cleanup_error = NULL;
 
+  /* Transport is joined and this open will not retry. A failed open
+   * will not receive the ordinary close callback. */
+  g_clear_object (&self->cancel);
+  g_clear_pointer (&self->otp_data, g_free);
+  self->otp_len = 0;
+  g_clear_pointer (&self->fw_version, g_free);
+  g_clear_pointer (&self->rx.buf, g_free);
+  self->reply_payload = NULL;
+  self->reply_payload_len = 0;
+
   if (self->usb_interface_claimed)
     {
       if (!g_usb_device_release_interface (usb_dev, GOODIX_USB_INTERFACE, 0,
