@@ -53,8 +53,6 @@ goodix_close_joined (FpDevice *dev, gpointer data)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   GError *error = NULL;
 
-  /* Successful reads mutate DAC even when the action later retries or fails. */
-  goodix_milan_dac_checkpoint (dev);
   self->action_epoch++;
   if (self->cancel)
     g_cancellable_cancel (self->cancel);
