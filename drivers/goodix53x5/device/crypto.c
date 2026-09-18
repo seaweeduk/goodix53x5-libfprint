@@ -151,22 +151,34 @@ goodix_crypto_hmac_sha256 (const guint8 *key,
  *
  * AES-128-CBC decryption using OpenSSL EVP.
  * No padding (input must be a multiple of 16 bytes).
+ * Returns TRUE only if the complete input was decrypted; discard out on failure.
  */
-void
+gboolean
 goodix_crypto_aes_cbc_decrypt (const guint8 *key,
                                const guint8 *iv,
                                const guint8 *in,
                                gsize         in_len,
                                guint8       *out)
 {
-  EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new ();
+  EVP_CIPHER_CTX *ctx;
   int out_len = 0, final_len = 0;
+  gboolean success;
 
-  EVP_DecryptInit_ex (ctx, EVP_aes_128_cbc (), NULL, key, iv);
-  EVP_CIPHER_CTX_set_padding (ctx, 0);
-  EVP_DecryptUpdate (ctx, out, &out_len, in, (int) in_len);
-  EVP_DecryptFinal_ex (ctx, out + out_len, &final_len);
+  if (in_len > G_MAXINT || in_len % 16 != 0)
+    return FALSE;
+
+  ctx = EVP_CIPHER_CTX_new ();
+  if (!ctx)
+    return FALSE;
+
+  success = EVP_DecryptInit_ex (ctx, EVP_aes_128_cbc (), NULL, key, iv) == 1 &&
+            EVP_CIPHER_CTX_set_padding (ctx, 0) == 1 &&
+            EVP_DecryptUpdate (ctx, out, &out_len, in, (int) in_len) == 1 &&
+            out_len >= 0 && (gsize) out_len <= in_len &&
+            EVP_DecryptFinal_ex (ctx, out + out_len, &final_len) == 1 &&
+            final_len >= 0 && (gsize) final_len == in_len - (gsize) out_len;
   EVP_CIPHER_CTX_free (ctx);
+  return success;
 }
 
 /**
@@ -441,10 +453,15 @@ goodix_crypto_gtls_decrypt_sensor_data (GoodixGtlsCtx *ctx,
           /* AES-CBC decrypt block */
           block_size = MIN (0x3F0, ep_remaining);
 
-          goodix_crypto_aes_cbc_decrypt (ctx->symmetric_key,
-                                         ctx->symmetric_iv,
-                                         ep, block_size,
-                                         gea_encrypted + gea_len);
+          if (!goodix_crypto_aes_cbc_decrypt (ctx->symmetric_key,
+                                              ctx->symmetric_iv,
+                                              ep, block_size,
+                                              gea_encrypted + gea_len))
+            {
+              fp_warn ("AES-CBC sensor block decryption failed");
+              g_free (gea_encrypted);
+              return NULL;
+            }
           gea_len += block_size;
           ep += block_size;
           ep_remaining -= block_size;
