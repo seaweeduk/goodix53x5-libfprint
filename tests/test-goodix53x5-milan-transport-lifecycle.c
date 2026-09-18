@@ -95,6 +95,11 @@ static FpiSsm *
 idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handler,
                       int states, int cleanup, const char *name)
 {
+  /* The startup fixture retains its claim/probe/reset boundary now that reset
+   * belongs to the chip child. Run the real reset and its delay, but no read. */
+  if (startup_trace && handler == goodix_chip_ssm_handler)
+    return fpi_ssm_new_full (dev, handler, GOODIX_CHIP_READ,
+                             GOODIX_CHIP_READ, name);
   if (handler != goodix_open_ssm_handler)
     return fpi_ssm_new_full (dev, handler, states, cleanup, name);
   g_assert_true (idle_reinit_testing || idle_open_testing);
@@ -597,9 +602,9 @@ test_startup_probe (gconstpointer data)
   if (test->schedule != PROBE_FULL)
     memcpy (version, test->schedule == PROBE_NUL ? "\0bc" : "abc", 4);
 
-  /* Execute real claim/probe/sensor-reset states. Stop before chip/OTP/TLS. */
+  /* Execute real claim/probe and the reset-only prefix of the chip child. */
   fpi_ssm_start (fpi_ssm_new_full (dev, goodix_open_ssm_handler,
-                                  GOODIX_OPEN_READ_CHIP_ID, GOODIX_OPEN_READ_CHIP_ID,
+                                  GOODIX_OPEN_READ_OTP, GOODIX_OPEN_READ_OTP,
                                   "startup-boundary"), startup_done);
   for (guint step = 0; !io.completions && step < 150; step++)
     {

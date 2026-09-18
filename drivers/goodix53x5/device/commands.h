@@ -44,11 +44,14 @@ void goodix_cmd_read_fw_version (FpiSsm *ssm, FpDevice *dev);
 void goodix_cmd_probe (FpiSsm *ssm, FpDevice *dev, gboolean firmware,
                        GoodixCmdResultCallback callback);
 
-/* Reset the sensor (reset type 0, no IRQ status). ACK only. */
-void goodix_cmd_reset_sensor (FpiSsm *ssm, FpDevice *dev);
+/* Reset type 0. With @request_irq, wait for the shared reset/version response
+ * event as well as ACK; startup recovery discards the returned IRQ bytes. */
+void goodix_cmd_reset_sensor (FpiSsm *ssm, FpDevice *dev, gboolean request_irq,
+                              GoodixCmdResultCallback callback);
 
 /* Read 4 bytes of chip ID from register address 0. Expects data. */
-void goodix_cmd_read_chip_id (FpiSsm *ssm, FpDevice *dev);
+void goodix_cmd_read_chip_id (FpiSsm *ssm, FpDevice *dev,
+                              GoodixCmdResultCallback callback);
 
 /* Read the OTP calibration block. Expects data. */
 void goodix_cmd_read_otp (FpiSsm *ssm, FpDevice *dev);
