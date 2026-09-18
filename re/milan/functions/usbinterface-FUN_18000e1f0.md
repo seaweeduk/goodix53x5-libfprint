@@ -109,3 +109,31 @@ that callback's result. In contrast, `MilanHV_update_allbase` checks mode 4's
 return before its first acquisition; see `usbinterface-FUN_180015c60.md`.
 The initialized `deviceInit` resume route invokes neither mode; its event
 completion does not certify that configuration has been downloaded.
+
+## Request-Independent Event And Display Dispatch
+
+Except for the separately handled actions 6 and `0x0d`, dispatch requires the
+global HAL pointer and enabled byte `+0x204 != 0`, then holds the HAL action
+critical section. Actions 0, 1 and 4 select down, up and reverse handlers without
+testing capture callback `+0x240`, sleep mode `+0x1e0`, wait state `+0x1fc`,
+or the device request's cancellation bytes. Individual handlers own any
+additional gates. Up/reverse refresh and rearm therefore do not require an
+outstanding capture; the ordinary down live-image path separately does.
+
+Action 7 (`0x18000e35f..0x18000e3d7`) requires a nonnull argument, stops and
+clears a nonnull timer at `+0x238`, then invokes arm callback `+0xb0` with the
+argument byte. It does not test mode, image/base validity or capture ownership.
+For profile 9, byte one arms down and zero arms up through `0x180005a60`.
+
+Action `0x16` (`0x18000e47f..0x18000e5ad`) requires mode `+0x1e0 == 0`.
+It sends EC control with byte zero 0, byte one 1 only when device context
+`+0x151 == 1`, and timeout 200. Regardless of the EC result, a nonnull arm
+callback receives zero when retained wait state is `0xf1`, otherwise one.
+Mode 2 skips the whole branch. It neither acquires bases nor installs a capture
+callback. [Display notifications](usbinterface-FUN_1800174a0.md) select between
+this mode-gated route and the capability-one action-7 route.
+
+The current counterparts for actions 0/1/4 are the active coordinator in
+`drivers/goodix53x5/device/scan.c`; idle reception in `device/transport.c`
+applies FDT parser mutations without dispatching those handlers. There is no
+current request-independent display action-7/action-`0x16` owner.

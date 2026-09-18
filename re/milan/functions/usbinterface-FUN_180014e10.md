@@ -21,6 +21,20 @@ by a periodic temperature task.
 
 ## Down-Event Decision
 
+The first capture-route selector tests screen-active global `0x18005f398 == 0`
+and device-context byte `+0x151 == 1`. That branch calls
+`MilanHV_ReadImg_ForWOF` (`0x18001545c`), sets the screen-active global to one,
+and dispatches action `0x15` for any eligible retained-image delivery. It
+bypasses the ordinary manual-FDT comparison and pending-capture gate below.
+
+Device construction `0x1800232a8` copies configuration byte `+0x434` into
+device `+0x151`; Modern-Standby capability `0x1800e2120 == 1` together with
+configuration byte `+0x442 == 1` forces that device byte to one. These are
+configuration/capability predicates, not a pending capture pointer. Display
+arming is owned by [the power callback](usbinterface-FUN_1800174a0.md).
+The stored configuration defaults are `+0x434 = 0` at `0x18005e774` and
+`+0x442 = 1` at `0x18005e782`; configuration loading can replace them.
+
 In the normal image-mode branch the function:
 
 1. Reads the FDT interrupt sample through callback `+0x70`.
@@ -64,9 +78,38 @@ registered completion callback.
 
 The exact ordinary capture gate is sensor-mode dword `+0x1e0 == 0`, retained
 image-valid byte `+0x237 == 1`, callback pointer `+0x240 != NULL`, and global
-image-initialized byte `0x18005f398 != 0`. FDT-base-valid byte `+0x232` is not the
+screen-active byte `0x18005f398 != 0`. FDT-base-valid byte `+0x232` is not the
 image-valid operand of this gate. The separate MS image branch is outside the
 standard request path.
+
+The manual-FDT comparison and false-down refresh precede this live-image gate:
+a null capture callback or mode 2 does not suppress those earlier operations.
+
+### Wake-On-Finger Read And DAC Side Effect
+
+`MilanHV_ReadImg_ForWOF` allocates one `uint16(rows*columns*2)`-byte frame and
+calls profile read callback `+0x158` at `0x1800155a4` with TX one, HV one,
+DAC pointer `&HAL[0x312]`, adjustment one, finger-image one and mode four.
+Neither the helper nor its caller's screen-off selector tests capture callback
+`+0x240`, sensor mode or image-valid byte before this read. A null HAL or failed
+temporary allocation returns `-1`; a read returning `-1` frees the temporary
+without starting the later retained-frame handling.
+
+After a non-`-1` read, the owner stops an existing timer at `+0x360`, calls
+`0x180013e60`, then takes the retained-frame lock at `+0x368`. A zero read result
+allocates the `+0x340` frame when absent, writes its byte size at `+0x34c`, and
+copies the temporary into that retained frame. It frees the temporary and
+returns the read status. The caller's action-`0x15` delivery still requires a
+registered capture callback and retained frame; it is separate from acquisition.
+
+Because the read enables `Milan_DynamicAdjustDac`, a successful wake-on-finger
+read can update current high DAC/history even without an engine capture
+callback. This is event-triggered acquisition, not periodic idle adjustment.
+It does not replace the hardware reference. The current Linux driver has no
+screen-off wake-on-finger capture owner; its adjustment-enabled reads are owned
+by the active `device/scan.c:goodix_capture_ssm_handler`.
+
+### Ordinary Request Read And Publication
 
 `FUN_1800150e0` (`MilanHV_ReadImg`) derives one frame length as the low 16 bits
 of `rows_u8_1f0 * columns_u8_1f1 * 2`; profile 9 uses `88 * 108 * 2 ==
@@ -214,10 +257,10 @@ and its retained unread-count state have no corresponding loop in that child.
 The successful-read `FUN_1800074bc -> FUN_180007c84 -> FUN_1800115a4` DAC/history
 mutation maps to `goodix_capture_ssm_handler` calling
 `device/calibration.c:goodix_device_adjust_dac` after command success and raw
-decode. `goodix_device_parse_otp` supplies the seeds, and
-`device/persistence.c:goodix_milan_dac_resume` reconciles current DAC/history
-before calibration publication. `goodix_cmd_request_image` consumes the current
-full DAC word for the next wire request; auth/enrollment runtime-input
-constructors consume the post-read word for live metadata. The same-boot
-checkpoint and independent hardware-reference lifetime are mapped in
+decode. `device/session.c:GOODIX_OPEN_PARSE_OTP` calls `goodix_device_parse_otp`
+to seed calibration and initializes the default DAC with zero adjustment history.
+`goodix_cmd_request_image` consumes the current full DAC word for the next wire
+request; auth/enrollment runtime-input constructors consume the post-read word
+for live metadata. The session-scoped history and independent hardware-reference
+lifetime are mapped in
 `usbinterface-FUN_180007c84.md`.

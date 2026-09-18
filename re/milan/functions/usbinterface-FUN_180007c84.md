@@ -210,6 +210,15 @@ differs from the value used to acquire the image. See
 `usbinterface-FUN_180014e10.md` and `usbinterface-FUN_18001fb40.md` for the
 count-two, discarded-first-frame, callback and trailer joins.
 
+The same adjustment-enabled read callback is used by
+`MilanHV_ReadImg_ForWOF` (`0x18001545c:0x18001557e..0x1800155a4`). Its down
+caller selects this path on screen-active zero and device byte `+0x151 == 1`,
+without requiring a capture callback. Thus a successful wake-on-finger image
+can change DAC/history before an engine request owns delivery; an idle FDT event
+or background-reference read alone cannot. This screen-off owner and its
+current-source absence are described in
+[the down handler](usbinterface-FUN_180014e10.md#wake-on-finger-read-and-dac-side-effect).
+
 ## Reference and state lifetime
 
 The mask reference is the **latest admitted hardware TX-on base**, not the
@@ -240,21 +249,23 @@ fresh module initialization starts their static zero images. There is no
 serialized adjustment-history restore at these boundaries. Module unload
 scheduling is outside these routines.
 
-The current seed mapping is `device/session.c:GOODIX_OPEN_PARSE_OTP`, which
-parses verified OTP into local calibration before
-`device/persistence.c:goodix_milan_dac_resume` reconciles current/history.
-`calib.dac_h` owns current DAC; `GoodixDynamicDacState.default_dac` retains the
-original OTP default. Matching verified identity and seeds preserve newer
-same-object RAM. A fresh object can restore current and all four history words
-from an identity/seed-bound same-boot sidecar; otherwise it starts at OTP current
-and zero history. `goodix53x5.c:goodix_close_joined` calls
-`goodix_milan_dac_checkpoint` after transport join to save a changed tuple,
-independently of preprocessing/template publication. This Linux lifetime bridge
-retains current DAC across its full reinitialization; native full sensor checking
-instead reseeds current while native retained D0 preserves it.
-The hardware-reference allocation instead ends at joined close, failed open,
-full-reinitialization entry, or finalization. It is independent of the generic
-`goodix_milan_generation_retain_process` path also used by recoverable rejection.
+The session-scoped current seed mapping is
+`device/session.c:GOODIX_OPEN_PARSE_OTP`: verified OTP populates `self->calib`,
+then a fresh `GoodixDynamicDacState` retains only `default_dac = calib.dac_h`.
+All four history words start at zero. `calib.dac_h` owns current DAC while
+`default_dac` remains the original OTP seed during live adaptation.
+Operations and admitted reference refreshes within that initialized session do
+not reseed history. Every cold initialization, including reopen and post-sleep
+reinitialization, repeats the OTP/history initialization; no DAC sidecar or
+prior-open RAM reconciliation participates. This is a conservative Linux
+session boundary, distinct from native sensor checking with DLL-static history.
+
+The session-scoped hardware reference ends at joined close, failed-open cleanup,
+full reinitialization or finalization. It remains independent of retained
+preprocessing state. Native retained D0's longer hardware/reference/history
+lifetime is owned by `usbinterface-FUN_180020970.md`; preserving bytes across
+unserviced intervals is not equivalent to the event handling documented in
+`usbinterface-profile9-fdt-event-loop.md`.
 The current mask uses `A=0` for the native unwritten upper word, retaining `Q=R`.
 
 ### Reseeded DAC with retained history

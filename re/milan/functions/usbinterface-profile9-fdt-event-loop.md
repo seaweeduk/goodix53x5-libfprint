@@ -474,6 +474,40 @@ event is eventually dispatched. An outstanding `ChangeMode` retry still
 uses its already-constructed local payload; parser mutation of a retained
 base does not rewrite that local command snapshot.
 
+### Inactive Refresh And Lost-Notification Consequence
+
+The enabled-HAL dispatcher does not require a pending capture for actions
+0/1/4. `Reverse_Occure` and `UP_Occure` inspect validity/anchor/area changes
+without a sleep-mode or capture-callback predicate, then their wrappers arm
+down. A dispatched up can also run the optional sensor-health image pair when
+`+0x2e1 != 0` and image-valid `+0x237 == 1`. These operations are event-driven;
+none requires a new fingerprint request or changes live DAC merely by receiving
+an FDT event. The health and reference pairs disable dynamic DAC adjustment.
+
+For the ordinary screen-on down route, the event/manual-FDT comparison and
+false-down refresh precede the mode/image-valid/capture-callback gate for live
+capture. Mode 2 or a null capture callback therefore suppresses a genuine-down
+live image, not the preceding manual measurement or false-down refresh. The
+separate screen-off/power-button capture route is owned by the down handler.
+
+Parser replacement alone is not equivalent to this worker continuation. On a
+reverse event, the parser preserves the prior down base only in its separate
+snapshot, installs the new down base and signals the worker. The worker's
+prior-base majority check can request a refresh before seeding an empty anchor.
+If that notification is not dispatched and a later reverse event supplies the
+same readings, the parser snapshots the already-replaced base: the original
+change is no longer an operand. With a valid base and empty anchor, the later
+worker instead seeds the new readings and does not refresh. Neither an arm
+command nor the up path reconstructs the lost prior-base comparison.
+
+Native's one-slot event publication also allows notification coalescing; the
+contract above applies when the worker selects the triggering event before a
+later publication replaces it. Current Linux idle reception in
+`device/transport.c:goodix_rx_cb` applies the parser mutation but suppresses
+worker notification for every idle packet. Active dispatch in `device/scan.c`
+implements the majority/anchor continuation when a notification is selected;
+it does not reconstruct a prior comparison already lost during idle reception.
+
 ## Request Cancellation And Deactivation
 
 `gfOnCancel` (`0x180020ef0`) only cancels the WDF capture request: it sets
@@ -592,11 +626,10 @@ read-target lifetime is instead owned by D0 entry/exit.
 power transition. Suspend marks reinit and stops the scan, completing suspend
 with `FP_DEVICE_ERROR_NOT_SUPPORTED`; resume only completes its callback.
 The next enrollment/authentication action invokes the full open SSM after the
-idle join, transport invalidation and stale-claim release. Before release,
-`device/base.c:goodix_milan_warm_park` retains eligible engine and hardware/FDT
-state; after reconstruction, `goodix_milan_warm_resume` can restore it without
-another reference pair. Ordinary cached open instead selects
-`device/persistence.c:goodix_milan_warm_bootstrap` before the firmware/reset/OTP
-states. The native initialized `deviceInit` route retains HAL buffers and
-optionally reestablishes GTLS; see `usbinterface-FUN_180020970.md`. These source
-owners map the retained inputs across different power-transition schedulers.
+idle join, transport invalidation and stale-claim release. This initialization
+reacquires the hardware reference and initializes calibration/history from OTP;
+ordinary open uses the same cold path. There is no hardware/FDT checkpoint or
+cached-startup owner in the current driver. The native initialized `deviceInit`
+route instead retains HAL buffers and optionally reestablishes GTLS; see
+`usbinterface-FUN_180020970.md`. These are different ownership boundaries;
+the Windows scheduling of the native callbacks is not specified by this mapping.
