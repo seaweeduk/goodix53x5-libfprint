@@ -1,5 +1,5 @@
 /*
- * Goodix 53x5 driver for libfprint - Milan preprocessing and DAC persistence
+ * Goodix 53x5 driver for libfprint - Milan preprocessing persistence
  * Copyright (C) 2026 goodix-fp-linux-dev contributors
  *
  * This library is free software; you can redistribute it and/or
@@ -63,18 +63,6 @@
 #define GOODIX_MILAN_STATE_FILE_SIZE \
   (GOODIX_MILAN_STATE_DIGEST_OFFSET + GOODIX_MILAN_STATE_DIGEST_SIZE)
 #define GOODIX_MILAN_STATE_MAX_SAMPLE_COUNT 400u
-
-#define GOODIX_MILAN_DAC_PREFIX "goodix53x5-dac-"
-#define GOODIX_MILAN_DAC_VERSION 1u
-#define GOODIX_MILAN_DAC_IDENTITY_OFFSET 12u
-#define GOODIX_MILAN_DAC_BOOT_OFFSET 44u
-#define GOODIX_MILAN_DAC_TUPLE_OFFSET 80u
-#define GOODIX_MILAN_DAC_DIGEST_OFFSET 96u
-#define GOODIX_MILAN_DAC_FILE_SIZE 128u
-
-static const guint8 goodix_milan_dac_magic[8] = {
-  'G', '5', '3', 'P', '9', 'D', 'A', 'C'
-};
 
 enum {
   GOODIX_MILAN_STATE_MAGIC_OFFSET = 0,
@@ -401,163 +389,6 @@ goodix_milan_state_write (const gchar  *path,
         0600, error))
     return FALSE;
   return goodix_milan_state_make_private (path, size, error);
-}
-
-/* Seeds stay separate from the adjusted setting. The tuple records the last
- * successful checkpoint; retry_required also covers a failed replacement when
- * live state returns to that tuple. */
-static void
-goodix_milan_dac_pack (const GoodixDynamicDacState *state,
-                       const GoodixCalibParams     *params,
-                       guint8                       tuple[16])
-{
-  const guint16 words[] = {
-    state->default_dac, params->tcode, params->dac_l, params->dac_h,
-    state->active, state->adjustments, state->high, state->low
-  };
-
-  for (gsize i = 0; i < G_N_ELEMENTS (words); i++)
-    goodix_milan_write_u16 (tuple + 2 * i, words[i]);
-}
-
-static gboolean
-goodix_milan_dac_tuple_valid (const guint8 tuple[16],
-                              const guint8 seeds[6])
-{
-  /* OTP starts within nine bits; 007c84/0115a4 preserves only that field in
-   * this producer domain. Wrapped caps/floors are NOT a default +/- interval.
-   * The count wraps freely; the latch and saturated streaks have these bounds. */
-  return memcmp (tuple, seeds, 6) == 0 &&
-         goodix_milan_read_u16 (tuple + 6) <= 0x1ff &&
-         goodix_milan_read_u16 (tuple + 8) <= 1 &&
-         goodix_milan_read_u16 (tuple + 12) <= 3 &&
-         goodix_milan_read_u16 (tuple + 14) <= 3;
-}
-
-static void
-goodix_milan_dac_read_boot_id (GoodixDacCheckpoint *checkpoint)
-{
-  g_autofree gchar *contents = NULL;
-  gsize size = 0;
-
-  if (checkpoint->boot_id_read)
-    return;
-  checkpoint->boot_id_read = TRUE;
-  if (g_file_get_contents ("/proc/sys/kernel/random/boot_id", &contents,
-                           &size, NULL) && size == 37 && contents[36] == '\n')
-    {
-      contents[36] = '\0';
-      if (g_uuid_string_is_valid (contents))
-        {
-          memcpy (checkpoint->boot_id, contents, 37);
-          return;
-        }
-    }
-  fp_warn ("Cannot read kernel boot UUID; DAC persistence disabled for this device");
-}
-
-void
-goodix_milan_dac_resume (FpDevice          *dev,
-                         GoodixCalibParams *seeded)
-{
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  GoodixDacCheckpoint *checkpoint = &self->dac_checkpoint;
-  g_autofree gchar *path = NULL;
-  g_autofree guint8 *contents = NULL;
-
-  g_autoptr(GError) error = NULL;
-  guint8 seeds[6], digest[GOODIX_MILAN_STATE_DIGEST_SIZE];
-  const guint8 *tuple;
-
-  g_return_if_fail (self->milan_persistence_identity_valid);
-  goodix_milan_dac_read_boot_id (checkpoint);
-  goodix_milan_write_u16 (seeds, seeded->dac_h);
-  goodix_milan_write_u16 (seeds + 2, seeded->tcode);
-  goodix_milan_write_u16 (seeds + 4, seeded->dac_l);
-  if (checkpoint->bound &&
-      memcmp (checkpoint->identity, self->milan_persistence_identity, 32) == 0 &&
-      memcmp (checkpoint->tuple, seeds, sizeof (seeds)) == 0)
-    {
-      /* OTP was parsed into a local value: newer live RAM still owns current. */
-      seeded->dac_h = self->calib.dac_h;
-      return;
-    }
-
-  self->dynamic_dac = (GoodixDynamicDacState){ .default_dac = seeded->dac_h };
-  memcpy (checkpoint->identity, self->milan_persistence_identity, 32);
-  goodix_milan_dac_pack (&self->dynamic_dac, seeded, checkpoint->tuple);
-  checkpoint->bound = TRUE;
-  checkpoint->retry_required = FALSE;
-  if (!checkpoint->boot_id[0])
-    return;
-
-  path = goodix_milan_state_path (GOODIX_MILAN_DAC_PREFIX, checkpoint->identity);
-  if (!goodix_milan_state_directory_secure (&error) ||
-      !goodix_milan_state_read (path, GOODIX_MILAN_DAC_FILE_SIZE, &contents, &error))
-    {
-      if (!g_error_matches (error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
-        fp_warn ("Cannot read Milan DAC checkpoint %s: %s", path, error->message);
-      return;
-    }
-  tuple = contents + GOODIX_MILAN_DAC_TUPLE_OFFSET;
-  goodix_milan_sha256 (contents, GOODIX_MILAN_DAC_DIGEST_OFFSET, digest);
-  if (memcmp (contents, goodix_milan_dac_magic, 8) != 0 ||
-      goodix_milan_read_u32 (contents + 8) != GOODIX_MILAN_DAC_VERSION ||
-      memcmp (contents + GOODIX_MILAN_DAC_IDENTITY_OFFSET, checkpoint->identity, 32) != 0 ||
-      memcmp (contents + GOODIX_MILAN_DAC_BOOT_OFFSET, checkpoint->boot_id, 36) != 0 ||
-      memcmp (contents + GOODIX_MILAN_DAC_DIGEST_OFFSET, digest, sizeof (digest)) != 0 ||
-      !goodix_milan_dac_tuple_valid (tuple, seeds))
-    {
-      fp_warn ("Ignoring incompatible Milan DAC checkpoint %s", path);
-      return;
-    }
-
-  seeded->dac_h = goodix_milan_read_u16 (tuple + 6);
-  self->dynamic_dac.active = goodix_milan_read_u16 (tuple + 8);
-  self->dynamic_dac.adjustments = goodix_milan_read_u16 (tuple + 10);
-  self->dynamic_dac.high = goodix_milan_read_u16 (tuple + 12);
-  self->dynamic_dac.low = goodix_milan_read_u16 (tuple + 14);
-  memcpy (checkpoint->tuple, tuple, sizeof (checkpoint->tuple));
-}
-
-void
-goodix_milan_dac_checkpoint (FpDevice *dev)
-{
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  GoodixDacCheckpoint *checkpoint = &self->dac_checkpoint;
-  guint8 contents[GOODIX_MILAN_DAC_FILE_SIZE];
-  guint8 *tuple = contents + GOODIX_MILAN_DAC_TUPLE_OFFSET;
-  g_autofree gchar *path = NULL;
-
-  g_autoptr(GError) error = NULL;
-
-  if (!checkpoint->bound || !checkpoint->boot_id[0])
-    return;
-  goodix_milan_dac_pack (&self->dynamic_dac, &self->calib, tuple);
-  if (!checkpoint->retry_required &&
-      memcmp (tuple, checkpoint->tuple, sizeof (checkpoint->tuple)) == 0)
-    return;
-  if (!goodix_milan_dac_tuple_valid (tuple, checkpoint->tuple))
-    {
-      fp_warn ("Refusing to save invalid Milan DAC state");
-      return;
-    }
-
-  memcpy (contents, goodix_milan_dac_magic, 8);
-  goodix_milan_write_u32 (contents + 8, GOODIX_MILAN_DAC_VERSION);
-  memcpy (contents + GOODIX_MILAN_DAC_IDENTITY_OFFSET, checkpoint->identity, 32);
-  memcpy (contents + GOODIX_MILAN_DAC_BOOT_OFFSET, checkpoint->boot_id, 36);
-  goodix_milan_sha256 (contents, GOODIX_MILAN_DAC_DIGEST_OFFSET,
-                       contents + GOODIX_MILAN_DAC_DIGEST_OFFSET);
-  path = goodix_milan_state_path (GOODIX_MILAN_DAC_PREFIX, checkpoint->identity);
-  if (!goodix_milan_state_write (path, contents, sizeof (contents), &error))
-    {
-      checkpoint->retry_required = TRUE;
-      fp_warn ("Failed to save Milan DAC checkpoint %s: %s", path, error->message);
-      return;
-    }
-  memcpy (checkpoint->tuple, tuple, sizeof (checkpoint->tuple));
-  checkpoint->retry_required = FALSE;
 }
 
 static gboolean
