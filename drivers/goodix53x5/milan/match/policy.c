@@ -167,6 +167,9 @@ fallback_classifier (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
   static const int32_t detail_thresholds[10] = {
     0xfffffff, 195, 195, 195, 185, 175, 170, 170, 160, 160,
   };
+  static const int32_t low_primary_detail_thresholds[10] = {
+    0xfffffff, 205, 205, 205, 204, 204, 203, 200, 192, 180,
+  };
   static const int32_t combined_thresholds[10] = {
     0xfffffff, 207, 205, 200, 199, 193, 185, 185, 185, 185,
   };
@@ -197,7 +200,8 @@ fallback_classifier (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
   output[1] = combined - config[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET] >=
                 combined_thresholds[index] &&
               detail - config[GOODIX_MILAN_POLICY_CONFIG_METRIC_OFFSET] >=
-                detail_thresholds[index] &&
+                ((config[GOODIX_MILAN_POLICY_CONFIG_ALTERNATE_PENALTY] == 0 && primary < 5) ?
+                 low_primary_detail_thresholds[index] : detail_thresholds[index]) &&
               coverage >= coverage_thresholds[index];
 
   index = clamp (filtered - 4, 0, 9);
