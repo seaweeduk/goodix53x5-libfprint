@@ -328,55 +328,65 @@ goodix_milan_state_read (const gchar *path,
   return TRUE;
 }
 
-static gboolean
-goodix_milan_state_make_private (const gchar *path,
-                                 gsize        size,
-                                 GError     **error)
+static int
+goodix_milan_state_open_directory (GError **error)
 {
   GStatBuf stat_buffer;
-  int descriptor;
+  int descriptor = -1;
+  int parent = -1;
+  int saved_errno;
+  int result;
+  gboolean created = FALSE;
 
-  descriptor = g_open (path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0);
-  if (descriptor < 0)
+  descriptor = g_open (GOODIX_MILAN_STATE_DIR,
+                       O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW, 0);
+  if (descriptor < 0 && errno == ENOENT)
     {
-      int saved_errno = errno;
+      /* /var/lib must already be provisioned durably. Own only the leaf's
+       * creation, including its link in that parent, not an ancestor tree. */
+      parent = g_open ("/var/lib",
+                       O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW, 0);
+      if (parent < 0 || mkdirat (parent, "fprint", 0700) != 0)
+        goto fail;
+      created = TRUE;
+      descriptor = openat (parent, "fprint",
+                           O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    }
+  if (descriptor < 0 || fstat (descriptor, &stat_buffer) != 0)
+    goto fail;
+  if (!S_ISDIR (stat_buffer.st_mode) || stat_buffer.st_uid != geteuid () ||
+      (stat_buffer.st_mode & 0777) != 0700)
+    {
+      errno = EACCES;
+      goto fail;
+    }
+  if (created)
+    {
+      if (fsync (parent) != 0)
+        goto fail;
+      created = FALSE;
+      /* Linux releases the descriptor even when close reports an error. */
+      result = close (parent);
+      parent = -1;
+      if (result != 0)
+        goto fail;
+    }
+  return descriptor;
 
-      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
-                   "Failed to secure %s: %s", path,
-                   g_strerror (saved_errno));
-      return FALSE;
-    }
-  if (fstat (descriptor, &stat_buffer) != 0 ||
-      !S_ISREG (stat_buffer.st_mode) || stat_buffer.st_uid != geteuid () ||
-      stat_buffer.st_size != (goffset) size)
-    {
-      g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_INVAL,
-                   "Milan state %s has invalid size or ownership",
-                   path);
-      close (descriptor);
-      return FALSE;
-    }
-  if (fchmod (descriptor, 0600) != 0 || fsync (descriptor) != 0)
-    {
-      int saved_errno = errno;
-
-      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
-                   "Failed to secure %s: %s", path,
-                   g_strerror (saved_errno));
-      close (descriptor);
-      return FALSE;
-    }
-  if (fstat (descriptor, &stat_buffer) != 0 ||
-      (stat_buffer.st_mode & 0777) != 0600)
-    {
-      g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_ACCES,
-                   "Milan state %s did not retain private permissions",
-                   path);
-      close (descriptor);
-      return FALSE;
-    }
-  close (descriptor);
-  return TRUE;
+fail:
+  saved_errno = errno;
+  if (descriptor >= 0)
+    close (descriptor);
+  /* Remove an uncommitted, still-empty leaf so a retry repeats parent sync.
+   * As with temp cleanup, removal can itself fail under a filesystem fault. */
+  if (created)
+    unlinkat (parent, "fprint", AT_REMOVEDIR);
+  if (parent >= 0)
+    close (parent);
+  g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+               "Failed to prepare %s: %s", GOODIX_MILAN_STATE_DIR,
+               g_strerror (saved_errno));
+  return -1;
 }
 
 static gboolean
@@ -385,22 +395,74 @@ goodix_milan_state_write (const gchar  *path,
                           gsize         size,
                           GError      **error)
 {
-  if (g_mkdir_with_parents (GOODIX_MILAN_STATE_DIR, 0700) != 0)
-    {
-      int saved_errno = errno;
+  g_autofree gchar *uuid = NULL;
+  g_autofree gchar *temporary = NULL;
+  GStatBuf stat_buffer;
+  gsize offset = 0;
+  int directory;
+  int descriptor = -1;
+  int saved_errno;
+  int result;
+  gboolean temporary_exists = FALSE;
 
-      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
-                   "Failed to create %s: %s", GOODIX_MILAN_STATE_DIR,
-                   g_strerror (saved_errno));
-      return FALSE;
-    }
-  if (!goodix_milan_state_directory_secure (error) ||
-      !g_file_set_contents_full (
-        path, (const gchar *) contents, size,
-        G_FILE_SET_CONTENTS_CONSISTENT | G_FILE_SET_CONTENTS_DURABLE,
-        0600, error))
+  directory = goodix_milan_state_open_directory (error);
+  if (directory < 0)
     return FALSE;
-  return goodix_milan_state_make_private (path, size, error);
+  uuid = g_uuid_string_random ();
+  temporary = g_strdup_printf (".goodix53x5-%s.tmp", uuid);
+  descriptor = openat (directory, temporary,
+                       O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (descriptor < 0)
+    goto fail;
+  temporary_exists = TRUE;
+  /* Never copy permissions from the previous destination. A restrictive umask
+   * may remove owner bits; fix those on our own inode before syncing it. */
+  if (fstat (descriptor, &stat_buffer) != 0 ||
+      ((stat_buffer.st_mode & 0777) != 0600 && fchmod (descriptor, 0600) != 0))
+    goto fail;
+  while (offset < size)
+    {
+      ssize_t written = write (descriptor, contents + offset, size - offset);
+
+      if (written < 0 && errno == EINTR)
+        continue;
+      if (written <= 0)
+        {
+          if (written == 0)
+            errno = EIO;
+          goto fail;
+        }
+      offset += (gsize) written;
+    }
+  if (fsync (descriptor) != 0)
+    goto fail;
+  result = close (descriptor);
+  descriptor = -1;
+  if (result != 0)
+    goto fail;
+  if (renameat (directory, temporary, directory, strrchr (path, '/') + 1) != 0)
+    goto fail;
+  temporary_exists = FALSE;
+  /* After rename the complete new file is visible. A directory sync failure
+   * means uncertain durability, not rollback; DAC must retain its retry flag. */
+  if (fsync (directory) != 0)
+    goto fail;
+  result = close (directory);
+  directory = -1;
+  if (result == 0)
+    return TRUE;
+
+fail:
+  saved_errno = errno;
+  if (descriptor >= 0)
+    close (descriptor);
+  if (temporary_exists)
+    unlinkat (directory, temporary, 0);
+  if (directory >= 0)
+    close (directory);
+  g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+               "Failed to save %s: %s", path, g_strerror (saved_errno));
+  return FALSE;
 }
 
 /* Seeds stay separate from the adjusted setting. The tuple records the last
