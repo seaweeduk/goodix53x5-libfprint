@@ -439,9 +439,13 @@ goodix_gtls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
     {
     case GOODIX_GTLS_HELLO:
       goodix_transport_reset_mcu (dev);
-      RAND_bytes (self->gtls.client_random, 32);
       goodix_crypto_gtls_init (&self->gtls, self->psk);
-      RAND_bytes (self->gtls.client_random, 32);
+      if (RAND_bytes (self->gtls.client_random, 32) != 1)
+        {
+          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                                 FP_DEVICE_ERROR_PROTO, "GTLS client random generation failed"));
+          return;
+        }
       goodix_cmd_mcu_send (ssm, dev, 0xFF01, self->gtls.client_random, 32);
       break;
 
