@@ -66,7 +66,7 @@ The exact ordinary capture gate is sensor-mode dword `+0x1e0 == 0`, retained
 image-valid byte `+0x237 == 1`, callback pointer `+0x240 != NULL`, and global
 image-initialized byte `0x18005f398 != 0`. FDT-base-valid byte `+0x232` is not the
 image-valid operand of this gate. The separate MS image branch is outside the
-standard single-frame request path.
+standard request path.
 
 `FUN_1800150e0` (`MilanHV_ReadImg`) derives one frame length as the low 16 bits
 of `rows_u8_1f0 * columns_u8_1f1 * 2`; profile 9 uses `88 * 108 * 2 ==
@@ -81,6 +81,44 @@ by `FUN_1800074bc`. The latter sends category two, command zero through
 status global `0x180060cc0 == -1` writes status `-1`, logged as
 `read image timeout || read rawdata error`. This is the ordinary read-error
 return consumed by `MilanHV_ReadImg`, not a completed-frame callback result.
+
+Successful reads have a calibration side effect before loop continuation.
+`FUN_1800074bc` copies the decoded frame to the caller and then calls
+`FUN_180007c84` (`Milan_DynamicAdjustDac`) with the adjustment flag and the same
+DAC pointer. Standard live capture passes adjustment one and `&HAL[0x312]`;
+base acquisition passes adjustment zero. The enabled helper forms a register
+word `(dac_h << 4) | 8`, calls `FUN_1800115a4` with the decoded live frame,
+retained reference `+0x248`, profile dimensions, temperature scale and default
+DAC, then writes `adjusted_word >> 4` back through the pointer. A zero
+temperature word at `0x180060cb8` selects `0x80` before the left shift by four;
+the default DAC is the word at `0x180060cbc`.
+
+Consequently the second enrollment read uses the DAC produced by the first
+successful read, and `CaptureFramedone` copies the DAC after the last successful
+read into the sample trailer. A later read failure does not undo the earlier
+DAC write or the adjustment helper's retained history. Discarding the first
+live buffer therefore does not discard all effects of that first read. The
+second live frame is not an algorithm image input, but its successful read can
+change the metadata accompanying the first image and the next wire request.
+
+The complete mask, mean, high/low/middle correction and retained-state contract
+is owned by `usbinterface-FUN_180007c84.md`. It includes the native partial
+stack-write dependency in the mask, the asymmetric downward correction limit,
+and four module-static unsigned-16 history words. Sensor checking reseeds
+temperature/default without clearing that history. The reference is the latest
+admitted hardware base, including unmarked checkbase replacement, rather than
+the older reference an initialized engine may retain for preprocessing.
+
+This successful-read side effect maps to
+`device/scan.c:goodix_capture_ssm_handler -> goodix_device_adjust_dac` in
+`device/calibration.c`. Its reference is `FpiDeviceGoodix53x5.hardware_reference`,
+and the next image command consumes the updated full `calib.dac_h` word.
+
+From fresh zero history, temperature `0x80`, default/current DAC `0x97`, three
+successful uniform `3201` live reads retain DAC `0x97`, `0x97`, then write
+`0x98`. Uniform `3200` remains `0x97`. All such pixels unconditionally enter
+the interior mean, so this result is independent of the mask's ambient stack
+word. Algorithm sample-quality acceptance is not required for adjustment.
 
 On each callback success, `FUN_1800150e0` increments the completed-frame count
 and decrements `+0x280`. After all requested frames succeed, it calls the
@@ -106,6 +144,27 @@ frame callback. It does not clear the one-shot marker, retained image/reference
 validity, retained image base, or the remaining capture count. A first-frame
 failure therefore leaves the original count; a later-frame failure leaves the
 unread remainder.
+
+For an enrollment request starting at count two, first-read success followed by
+second-read `-1` leaves count one. The successful first frame is freed with the
+attempt buffer: no live frame is retained for concatenation with a later attempt.
+On the next real-down invocation, `MilanHV_ReadImg` reads the remaining count at
+`0x1800151d0`, allocates only `count * 0x4a40` bytes, and starts its local output
+index at zero again. A successful retry therefore publishes the new single frame
+with length `0x4a40`, the still-pending callback and marker, and the reference
+current at that later invocation. With no intervening refresh the reference is
+unchanged; an intervening admitted refresh can replace it and set the marker.
+Repeated read failures retain count one. A first-read failure from count two
+instead leaves two for the next invocation. A newly admitted capture request
+sets its own count through `FUN_18000ebcc`; this remainder belongs to the pending
+request, not to the next request.
+
+The loop decrements on any return other than `-1`, while its publication gate
+requires the final return to be exactly zero (`0x18001535a`). The installed
+profile-9 read wrapper's ordinary results are zero and `-1`. All-two-success
+publishes `0x9480` live bytes once; neither read individually completes a sample.
+The sample consumer uses its first live frame for ordinary preprocessing; see
+`FUN_18001f610.md` and `usbinterface-FUN_18001fb40.md`.
 
 If all reads succeed but the callback is null or global image-initialized byte
 `0x18005f398` is zero at the final publication gate, `FUN_1800150e0` restores
@@ -143,3 +202,22 @@ cleared callback. Request cancellation has a separate owner; see
 The blocking controller worker `FUN_18000df20` treats handler return `-1` as a
 logged event error only. It does not terminate the request or worker; after the
 handler rearms down, the worker returns to its indefinite event wait.
+
+## Current Source Mapping
+
+`drivers/goodix53x5/device/scan.c:goodix_scan_coordinator_handler` owns the
+down/manual-validation, capture-ready-before-up-arm and read-error down-rearm
+boundaries. `goodix_capture_ssm_handler` and `goodix_capture_ssm_done` implement
+one live read per capture child. `device/enroll.c:goodix_enroll_capture_ready`
+copies that frame into the enrollment worker input; the native count-two loop
+and its retained unread-count state have no corresponding loop in that child.
+The successful-read `FUN_1800074bc -> FUN_180007c84 -> FUN_1800115a4` DAC/history
+mutation maps to `goodix_capture_ssm_handler` calling
+`device/calibration.c:goodix_device_adjust_dac` after command success and raw
+decode. `goodix_device_parse_otp` supplies the seeds, and
+`device/persistence.c:goodix_milan_dac_resume` reconciles current DAC/history
+before calibration publication. `goodix_cmd_request_image` consumes the current
+full DAC word for the next wire request; auth/enrollment runtime-input
+constructors consume the post-read word for live metadata. The same-boot
+checkpoint and independent hardware-reference lifetime are mapped in
+`usbinterface-FUN_180007c84.md`.

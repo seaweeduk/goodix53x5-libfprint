@@ -9,7 +9,8 @@
   `usbinterface-FUN_180014e10.md`.
 - Current counterpart: the capture-ready boundary in
   `drivers/goodix53x5/device/scan.c`; `goodix_auth_capture_ready` in `auth.c`
-  submits the retained reference and live frame to the runtime worker.
+  and `goodix_enroll_capture_ready` in `enroll.c` submit the retained reference
+  and live frame to their runtime workers.
 - Effective callback arguments are device handle, retained image base, live
   frame, live-frame byte length, and a one-byte base-refresh marker.
 - Device-context lookup uses WDF table slot `+0x3d8`. A null handle, context,
@@ -20,7 +21,24 @@
 
 - `CaptureFramedone` copies calibration words `+0x31e`, `+0x312`, and `+0x310`
   directly into the sample trailer as `tcode_use`, `dac_h`, and `dac_l`.
-- There is no per-capture arithmetic at this boundary.
+- There is no per-capture arithmetic at this boundary. The high-DAC word has
+  already been updated by each successful live read's dynamic-adjustment call,
+  including the second enrollment read. It is the post-read value, not an
+  immutable OTP value or necessarily the DAC used to acquire the first frame.
+  See `usbinterface-FUN_180014e10.md` for acquisition ordering and
+  `usbinterface-FUN_180007c84.md` for the complete arithmetic/state producer.
+- The USB trailer retains the full 16-bit adjusted DAC. Engine
+  `01f610:01fd8d..01fda4` copies it at context `+0x1b5`, overlapping the
+  following DAC-low word copy; `032040:0321d9..0321e0` forwards only its low
+  byte as `dacHigh` to `02c810`. The next image request instead consumes the
+  full HAL DAC word. Thus the wire and algorithm metadata projections differ
+  in width as well as command-versus-postcapture timing.
+- The post-read DAC producer maps to
+  `device/calibration.c:goodix_device_adjust_dac`, called by
+  `device/scan.c:goodix_capture_ssm_handler` before the capture-ready boundary.
+  Runtime input construction retains the updated `calib.dac_h` word;
+  `milan/runtime.c:goodix_milan_runtime_build_probe` projects the three low
+  calibration bytes at extraction while retaining full-word output metadata.
 - At `0x18001fcbc..0x18001fcd9`, the second argument is copied as one
   `rows * columns * 2` frame into staging address `0x180093508`. In the engine's
   image-payload view this is offset `+0xebf0`, the frame passed to
@@ -40,6 +58,16 @@
   byte length, also `0x4a40` for one-frame identify/verify.
 - Only the specified live/reference spans and metadata are rewritten here;
   the routine does not clear the remainder of the fixed-size staging sample.
+
+Enrollment's ordinary two-success callback supplies `0x9480` live bytes, so this
+routine copies both contiguous frames starting at payload `+3`. A pending
+enrollment retry after first-success/second-failure instead supplies `0x4a40`
+bytes: only the replacement first-frame span is rewritten. The former first
+frame was freed without calling this routine, and the second staging span is
+left from an earlier sample (or initial storage); this callback neither pads it
+nor declares a reduced frame count in the fixed output header. Ordinary engine
+preprocessing consumes only the first span, despite the sample adapter copying
+both; see `FUN_18001f610.md`.
 
 ## Publication And Ownership
 

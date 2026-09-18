@@ -152,6 +152,13 @@ The two image calls use:
 - `FUN_180014ce8` receives rows, columns, first/TX-on image, second/TX-off
   image, and threshold in that order. It is read-only and computes the interior
   mean absolute difference.
+- The image validator excludes two rows/columns on each border: rows
+  `2..rows-3`, columns `2..columns-3`. It sums absolute differences of
+  unsigned 16-bit samples in a 64-bit accumulator, divides by
+  `(rows-4)*(columns-4)` with integer truncation, and admits only when that
+  quotient is **strictly less** than the threshold. For profile 9 this is
+  `floor(sum / 8736) < 200`; a quotient of 200 rejects. The FDT validator's
+  per-area comparison separately admits equality to `+0x31c`.
 - The TX-off image is validation input only. It is never averaged into or
   retained as the image reference.
 
@@ -339,6 +346,28 @@ If it succeeds, the transformed sample replaces `+0x268`, callback `+0x68`
 programs the FDT stores, and that callback's result becomes the function result;
 the earlier image or FDT read error is not preserved as the return value.
 
+For the installed profile-9 callbacks, both postlude calls receive the address
+of the owner's non-null 24-byte stack sample. `FUN_1800048d0` and
+`FUN_180005950` return `-1` only for a null pointer; their non-null paths perform
+the transform and four-store copy and return zero. Consequently, after the
+first TX-on FDT succeeds, an ordinary acquisition failure or validation rejection
+returns zero through this concrete profile's postlude. A transform/setter error
+is not an additional ordinary transport-failure stage. The only acquisition
+callback failures preserved as `-1` are mode 4 and the first TX-on FDT read.
+
+The retained flags are independent: the admitted block writes both
+`+0x232/+0x233` with the single word store `0x0101` and sets `+0x237 = 1`.
+All acquisition-failure exits preserve `+0x233`, `+0x236`, and `+0x237`, as well
+as `+0x232`'s entry value; temperature/event callers separately clear `+0x232`
+before entry. No rejected or failed candidate image replaces `+0x248`.
+Decoded reception storage `DAT_180060708` is a separate owner: already completed
+image callbacks may have replaced it even when the base attempt later fails.
+
+Persistence runs after image/validity publication and after `+0x268` replacement.
+`FUN_18000da18` returns void; allocation failure exits that helper, and its file
+write result is unused. Neither outcome rolls back the admitted image or flags
+or prevents the subsequent `+0x68` FDT-store publication.
+
 The profile-9 initial, temperature, reverse-invalid, and up-invalid callers enter
 these paths with `+0x232` clear. A failed attempt therefore leaves reacquisition
 to a later qualifying down/up/reverse event; ordinary operation start does not
@@ -375,6 +404,11 @@ See `usbinterface-FUN_1800149c4.md`.
   is not one.
 - Normal probes reuse `+0x248`; this function is not called per probe.
 - D0 exit/entry does not free `+0x248`. Full HAL shutdown frees it.
+- The enabled-HAL saved-base repair route can copy a file image to `+0x248`
+  without invoking this owner or changing its validity/marker bytes. Cold
+  saved-base loading instead precedes this owner's fresh acquisition with
+  validity still clear. Both contexts of `FUN_18000d24c` are described in
+  [the initialization owner](usbinterface-FUN_180020970.md).
 
 ## Handoff
 
@@ -399,3 +433,29 @@ engine gate is `initialized == 0 || marker == 1`, not reference-byte inequality
 or hardware acquisition success. An earlier unconsumed marker of one remains
 one through this direct recovery and still requests setup using the latest
 reference at the next delivered sample.
+
+## Current Source Map
+
+- `usbinterface.dll:0x180015c60` maps to
+  `drivers/goodix53x5/device/base.c:goodix_base_ssm_handler`, the
+  `goodix_milan_base_attempt_*` helpers, and `goodix_base_complete_recovery`.
+  Initial configuration is split into
+  `device/session.c:goodix_open_ssm_handler`; forced configuration is in the
+  base state machine.
+- `0x180014c98` and `0x180014ce8` map to
+  `device/calibration.c:goodix_device_is_fdt_base_valid` and
+  `device/base.c:goodix_milan_base_pair_mad`/`goodix_milan_base_attempt_admit`.
+- HAL image reference `+0x248` maps to the separately owned
+  `FpiDeviceGoodix53x5.hardware_reference`, copied by `goodix_base_ssm_handler`
+  after both FDT checks and image-pair admission, including unmarked recovery.
+  `device/calibration.c:goodix_device_adjust_dac` consumes this latest plane;
+  rejected attempts retain it. See `usbinterface-FUN_180007c84.md`.
+- The hardware reference also supplies the engine's setup input. Its consumed
+  setup/workspace lifetime maps to `GoodixMilanGeneration`,
+  `goodix_milan_generation_prepare_setup`,
+  `goodix_milan_generation_transfer_process_state`, and the unmarked direct
+  recovery branch in `goodix_base_ssm_handler`.
+- The independent decoded-image cache maps to the receive owner in
+  `device/transport.c` and `device/commands.c:goodix_cmd_dup_image_reply`.
+  Down/up/manual FDT stores map to `GoodixProfile9FdtState.base_*`; caller-owned
+  post-refresh down restoration is described in `usbinterface-FUN_180014480.md`.

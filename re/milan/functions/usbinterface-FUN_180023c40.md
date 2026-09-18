@@ -56,3 +56,29 @@ but no file-object cleanup or close callback. The driver-context cleanup callbac
 and does not call `device_disable`. Client-file closure therefore has no direct
 image-base mutation in this DLL; framework scheduling of request stop,
 deactivation, device release, and driver cleanup is a separate boundary.
+
+## Current Source Mapping
+
+`drivers/goodix53x5/goodix53x5.c:goodix_close` joins idle reception before
+`goodix_close_joined` invalidates transport and releases the USB claim.
+It also frees `hardware_reference`, the Linux owner corresponding to HAL
+`+0x248` for dynamic DAC. `device/session.c:goodix_open_complete_after_idle`
+does the same on failed open, and `goodix_reinit_idle_joined` does so before
+full post-suspend reinitialization. A normal Linux close consequently ends
+this raw-reference lifetime earlier than native client deactivation does.
+`device/base.c:goodix_milan_generation_retain_process` frees the old raw setup
+frame but retains algorithm state in the same `FpDevice`'s
+`milan_retained_generation`. A later admitted base publication transfers the
+process-owned gain/classifier subset to a fresh generation before setup reload.
+`goodix_finalize` destroys that retained owner: a replacement object has no
+in-memory transfer from it, even in the same Linux process. Its first setup uses
+the independently validated persisted subset or defaults via
+`goodix_milan_generation_prepare_setup` and `goodix_milan_persistence_restore`.
+
+Native USB hardware release and engine detach are distinct callbacks. The
+former frees the hardware reference through `FUN_1800160a0`; the latter clears
+the engine workspace but leaves its DLL process globals alive, as documented in
+`FUN_18001ed10.md`. Neither callback schedules module unload. A fresh native
+module lifetime and an engine reattachment within the old module consequently
+have different algorithm-state sources; client request completion alone selects
+neither boundary.

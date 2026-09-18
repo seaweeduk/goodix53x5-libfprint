@@ -9,6 +9,12 @@
   `FUN_1800048a0 -> FUN_180007968 -> FUN_180024940`.
 - Profile-9 selection in `FUN_1800162ac` calls `FUN_18000450c`, which installs
   `FUN_1800048a0` at device operations offset `+0x140`.
+- Current mapping: `usbinterface.dll!0x180024940` maps to
+  `drivers/goodix53x5/device/crypto.c:goodix_crypto_gtls_decrypt_sensor_data`;
+  the `0x180007968` caller's CRC/decoded-cache/status publication is split across
+  that helper, `device/image.c:goodix_device_decode_image`, and
+  `device/transport.c:goodix_rx_cb`. Reader error history and restart are owned
+  by [the handshake note](usbinterface-FUN_180025400.md).
 
 ## Inputs And Reconstruction
 
@@ -48,6 +54,13 @@
   require context state `5` (`0x180024fdd..0x180025025`). State failure returns
   `0xff8ffffc`, retaining that first output and the advanced counter but leaving
   the second output and length unchanged.
+- The check is the literal `CMP [context+4],5` / equality branch at
+  `0x180024fdd..0x180024fe5`; all other states reject. It remains applicable
+  after direct-restart exhaustion leaves state four with derived keys. A valid
+  HMAC at that boundary still increments the receive counter, but does not
+  produce post-GEA bytes. `FUN_180007968` returns `-1` before CRC/conversion,
+  leaving retained raw status, decoded cache and image event unchanged; the
+  reader records that `-1` in its error-pair history.
 - In state 5 it copies the same bytes to the post-GEA output, publishes its
   length, and GEA-decrypts the data in place, excluding the last four CRC bytes.
   Success returns zero. Both published lengths include the unchanged CRC.
@@ -69,3 +82,39 @@
   Failure sets caller status to `0xffffffff` and does not call the downstream
   image conversion `FUN_180009a64`. The authenticated counter remains advanced;
   both temporary buffers are freed. GTLS failure likewise prevents conversion.
+
+## Raw callback and retained image state
+
+`FUN_1800048a0` initializes a local status to zero, calls `FUN_180007968`,
+and returns that status. Neither function tests whether a capture request is
+active. With a nonnull message, `FUN_180007968` requires decoded storage
+`0x180060708`; missing storage returns `-1` without authentication. With storage
+and successful temporary allocation, it invokes GTLS regardless of action owner,
+remaining frame count or HAL reference validity.
+The category-2 branch of `FUN_18001a7ec` requires only the nonnull HAL pointer
+`0x180063838` and its nonnull `+0x140` callback after complete protocol admission;
+it does not restrict the category-2 command subcode or test capture ownership.
+
+GTLS rejection sets the callback return to `-1` but does not write retained raw
+status `0x180060cc0`, decoded storage, or the image event. CRC rejection writes
+raw status `-1` and returns it, retaining the decoded storage and image event.
+Success converts into the existing decoded storage, calls
+`FUN_18000dd84` with selector `8` to signal image availability, and sets raw
+status zero. For profile 9, the signal helper selects HAL `0x1800606d0` and
+event `HAL+0x288+8*8 == HAL+0x2c8`. Thus an earlier image signal can survive
+either failure, whereas CRC failure changes the status read alongside it.
+Temporary allocation failure
+also returns `-1` without publishing an image. The higher reader counts callback
+`-1`, rather than distinguishing authentication, CRC and storage failures.
+
+The next image transaction reaches `FUN_180018dd8` with response selector 8.
+That owner resets `HAL+0x2c8` before sending; GTLS sends use selector `0xff`
+and do not reset it. `FUN_1800074bc` accepts the completed read only when the
+send/wait result is nonzero and retained raw status is not `-1`, then copies
+the decoded plane. Consequently retaining an old decoded plane/signal through
+an idle rekey does not itself satisfy the next image request: it needs a new
+signal after that request's reset. A new valid image replaces the plane and
+raw status before its ordinary consumer. The corresponding current reset is
+`device/transport.c:goodix_transport_send` clearing response bit 8, and the
+status check is in `goodix_transport_complete`; neither reset clears the
+retained decoded plane itself.

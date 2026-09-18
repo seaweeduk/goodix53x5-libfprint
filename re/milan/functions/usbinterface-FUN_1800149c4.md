@@ -84,3 +84,26 @@ with `+0x237` still set. `MilanHV_Down_procedure` (`FUN_180014e10`) does not cal
 gates live-image acquisition on image validity and capture ownership/enabling,
 not FDT-base validity. The older image-valid state therefore does not imply
 that the next up event enters with `+0x232` set.
+
+The same anchor consumer is reached after a successful false-down refresh:
+`FUN_180014e10` → `FUN_180013da4` replaces admitted bases and sets the marker
+without clearing the software anchor. Therefore restored base validity does
+not imply an empty anchor on the next up event. A retained strict-majority
+vector selects another temperature refresh before the validity check; an empty
+anchor skips both comparisons and merely checks the already-valid base.
+
+For a non-null context this handler returns zero regardless of the refresh or
+`Milan_checkbase_isok` return. On the majority path it tests only `+0x232 == 1`
+to decide whether to clear the anchor; on the non-majority path it does not
+inspect the checkbase return at all. Configuration/first-FDT failure therefore
+retains the anchor on the majority route and still reaches the wrapper's rearm.
+
+## Current Source Map
+
+`usbinterface.dll:0x1800149c4` maps to
+`drivers/goodix53x5/device/scan.c:goodix_scan_coordinator_handler`'s up-event
+dispatch and `goodix_scan_apply_anchor`. Its invalid-base continuation maps to
+`GOODIX_PROFILE9_FDT_REFRESH_UP_INVALID_BASE` in `device/base.c`; its majority
+continuation maps to `GOODIX_PROFILE9_FDT_REFRESH_UP`. Acquisition and generation
+publication are split into `goodix_base_ssm_handler`; the later down rearm is
+`GOODIX_SCAN_COORD_REARM_DOWN`.

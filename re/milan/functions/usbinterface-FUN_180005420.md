@@ -8,6 +8,11 @@
   response.
 - Installation: `FUN_18000450c` installs it at hardware callback slot `+0x160`
   at `0x180004586..0x18000458d`.
+- Current mapping: `drivers/goodix53x5/device/commands.c` manual-FDT command
+  and `goodix_cmd_parse_fdt_manual_reply`, `device/transport.c`
+  `GOODIX_RESPONSE_MANUAL` (readiness bit 1) publication/retry, and manual-sample
+  consumers in `device/base.c` and `device/scan.c`. The native 24-byte output maps to bytes `4..27` of the
+  retained current 28-byte manual response.
 
 ## Command Contract
 
@@ -38,6 +43,12 @@ same command once; only failure of both attempts reaches this callback's
 for it in `WaitForSingleObject` calls with 50 ms timeouts, up to the supplied
 response timeout. A result other than `WAIT_TIMEOUT` ends that loop immediately;
 50 ms is not an unconditional delay between FDT commands.
+
+The send/ACK counter begins after the final write; the response counter begins
+only after a nonzero ACK result. The ACK poll accepts odd status, while the
+signalled manual response normalizes the transaction result to one. See
+`usbinterface-FUN_180018dd8.md` for the shared sender, response-budget arithmetic
+and generic reset/register/OTP/production event ownership.
 
 The manual event handle is HAL `+0x2d8`. Reset occurs before each attempt's
 send and before acquiring the inner send critical section. It does not clear

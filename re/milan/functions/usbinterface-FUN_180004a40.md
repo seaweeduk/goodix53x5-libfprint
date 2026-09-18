@@ -39,6 +39,22 @@ The parser calculations read the private block without modifying its bytes.
 Before return, `FUN_180007c74` receives global tcode and high DAC. The
 successful function result is zero.
 
+The file helper resolves `Goodix\goodix.dat` through `FUN_18000d0f0` and
+requests 32 bytes through `FUN_1800173b4` in `rb` mode. The owner initializes
+both 32-byte stack blocks to zero before reading. On helper success, two
+64-bit equality comparisons cover hardware/file bytes 0..15; equality
+substitutes the entire file block before integrity verification, including
+its checksum and calibration bytes. A missing file or unequal prefix retains
+the hardware block. A selected but invalid file block is rejected; this owner
+does not retry verification with the original hardware block. These paths
+are at `0x180004b56..0x180004c37`.
+
+Current source mapping: `drivers/goodix53x5/device/session.c` states
+`GOODIX_OPEN_READ_OTP` / `GOODIX_OPEN_PARSE_OTP` supply hardware OTP directly
+to `goodix_device_verify_otp` and `goodix_device_parse_otp` in
+`device/calibration.c`. The file-selection step has no current counterpart;
+the calibration/configuration map starts at the selected, verified block.
+
 ## OTP Integrity And Admission
 
 The profile selector passed to `FUN_180017a84` at `0x180004c37` is the

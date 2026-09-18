@@ -48,12 +48,16 @@ target through slot `+0x358` with action 1. The initialized-entry path does not
 repeat the category-0/version loop; the remembered system-power state instead
 selects the existing handshake path.
 
-`usbEvtDeviceD0Exit` (`0x180022ff0`) first sends stop action `0x13` with state
-`0xf2`. Its power-state branch then requests sleep mode 2 with budget 200 or
-conditionally EC control with budget 200. Only after those actions does it mark
-the protocol power-stop byte and stop the read target through WDF slot `+0x358`,
-action 1. `OnActivate` (`0x1800214d0`) deactivation performs worker stop and
-sleep, but does not stop that read target. Thus deactivation completion is not
+`usbEvtDeviceD0Exit` (`0x180022ff0`) clears `0x1800a2109`, obtains and stores
+the system-power state at device context `+0x168`, and enters its action block
+only when global byte `0x1800e2120 != 1`. That block first sends stop action
+`0x13` with state `0xf2`. It requests sleep mode 2 with budget 200 when context
+`+0x151 != 1` and signed power state is at least two. Otherwise EC control with
+budget 200 occurs only when context `+0x152 == 1`, clearing that byte first.
+The block then sets protocol power-stop byte `+0x68e0`. The nonnull read target
+is stopped through WDF slot `+0x358`, action 1, **outside** the global-byte gate,
+after any selected actions. `OnActivate` (`0x1800214d0`) deactivation performs
+worker stop and sleep, but does not stop that read target. Thus deactivation completion is not
 the USB-reader lifetime boundary. Neither `EcControl` (`0x18001afec`) nor that
 deactivation handler adds an EC data-response wait, post-ACK sleep, or explicit
 tail-drain barrier.
@@ -566,3 +570,26 @@ sleep/power-control action returns **before** WDF table slot `+0x358` stops
 the read-pipe target. Request cancellation and `OnActivate` deactivation do
 not call that reader-stop operation. D0 entry (`0x180022d70`) starts the
 read-pipe target through slot `+0x350` before creating/resuming `deviceInit`.
+
+## Current Source Mapping
+
+The native continuous-reader/parser and worker are split across
+`drivers/goodix53x5/device/transport.c:goodix_rx_cb`,
+`goodix_recv_apply_fdt_event`, and
+`device/scan.c:goodix_scan_coordinator_handler`. Command/event waits own their
+receive operations. `device/commands.c:goodix_run_cmd_ec_off` additionally
+requests idle reception after successful EC-off ACK; `goodix_transport_complete`
+starts that receiver before notifying command completion. In the idle route,
+parsed FDT updates its retained bases without installing a worker notification.
+`goodix_transport_quiesce` joins that receiver before close or reset; the native
+read-target lifetime is instead owned by D0 entry/exit.
+
+`device/session.c:goodix_session_suspend`, `goodix_session_resume`,
+`goodix_maybe_start_reinit_subsm`, and `goodix_reinit_idle_joined` own the Linux
+power transition. Suspend marks reinit and stops the scan, completing suspend
+with `FP_DEVICE_ERROR_NOT_SUPPORTED`; resume only completes its callback.
+The next enrollment/authentication action invokes the full open SSM after the
+idle join, transport invalidation and stale-claim release. The native initialized
+`deviceInit` route retains HAL buffers and optionally reestablishes GTLS instead;
+see `usbinterface-FUN_180020970.md`. The two lifetimes share command and retained
+state contracts without sharing a power-transition scheduler.

@@ -28,6 +28,15 @@ through the common postlude even though the image reference remains invalid;
 it does not arm detection, and `deviceInit` does not branch on that action
 return.
 
+The full initialization worker `FUN_180020970` checks the device-active global
+`DAT_1800600a4 != 0` and device-context stop byte `+0x68e0 != 1` around actions
+`0x0a` and `0x0c`. With those gates retained, it does not branch on action
+`0x0c`'s return: even mode-4/first-manual failure continues to the final firmware
+query, mode-2 sleep with argument word 200, initialized-byte publication at
+outer context `+0x110`, and initialization-event signalling. A later image/FDT
+read failure already returned zero through the concrete acquisition postlude.
+These paths do not request EC control or synchronously repeat acquisition.
+
 ## Operation Start And Retry
 
 Device action `3` invokes `FUN_180015710`, which requests mode `4` and arms
@@ -65,12 +74,33 @@ unconsumed marker value is unchanged. The down handler still rearms detection.
 A later qualifying FDT event can reach another base-validity check and retry
 acquisition.
 
+False-down refresh preserves the software anchor even on complete admission.
+The ordinary branch at `014e10:0x180014ff6..0x180015007` calls `013da4` and
+jumps directly to down rearm at `0x18001509f`, with no `+0x320..+0x338`
+mutation. `013da4` clears only base validity, calls `015c60`, and conditionally
+sets the marker; `015c60` does not own the anchor either. The down parser
+`005b80` updates the current event and up-arm base without clearing the anchor.
+An active vector previously seeded by a reverse event therefore survives a
+subsequent false-down acquisition and remains input to the next up/reverse
+majority decision. Reverse- and up-majority callers explicitly clear that vector
+after admission; they have different caller-owned postludes.
+
 ## Lift And Reverse Events
 
 The up and reverse paths maintain a software drift anchor distinct from the
 FDT base programmed into the sensor. Their documented predicates can call
 `MilanHV_temperature_event` or `MilanHV_update_allbase` when refresh is needed.
 Each owning event wrapper performs the subsequent down rearm.
+
+Up/reverse post-refresh anchor decisions consume the resulting validity byte
+rather than the acquisition return. `UP_Occure` and
+`Reverse_Occure` return zero for a non-null context, including a configuration
+failure. Their wrappers call the down-arm slot afterward. On reverse **drift**
+failure, the handler additionally restores only the down base from its saved
+triggering event after any common acquisition postlude. Direct reverse-invalid
+recovery and up handlers do not perform that restoration. Thus a rejected drift
+refresh can leave down based on the event while up/manual/retained FDT storage
+hold the first manual TX-on sample; see `usbinterface-FUN_180014480.md`.
 
 Any admitted update replaces the retained image after all pair and FDT
 predicates pass. Only routes through `MilanHV_temperature_event` set the
@@ -110,3 +140,27 @@ there is no valid retained image reference to hand off.
 - Reverse-event decision: `usbinterface-FUN_180014480.md`
 - One-shot engine decision: `FUN_18001f610.md`
 - Engine operation clear: `FUN_18001f090.md`
+
+## Current Source Map
+
+`usbinterface.dll:0x180020970` initial acquisition maps to
+`drivers/goodix53x5/device/session.c:goodix_open_ssm_handler` and the nonforced
+`device/base.c` state machine. Event acquisition maps to
+`device/scan.c:goodix_scan_coordinator_handler` plus the forced base child.
+The six current reason values correspond to:
+
+| Current reason | Native entry/decision | Admitted marker and anchor |
+| --- | --- | --- |
+| `NONE` | Initial action `0x0c` → `015c60` | No marker write; initial anchor is inactive. |
+| `FALSE_DOWN` | `014e10` → `013da4` → `015c60` | Set marker; caller does not clear the software anchor. |
+| `REVERSE` | Either majority in `014480` → `013da4` | Set marker and clear anchor when validity is restored. |
+| `UP` | Active-anchor majority in `0149c4` → `013da4` | Set marker and clear anchor when validity is restored. |
+| `INVALID_BASE` | Reverse invalid entry in `014480` → `015c60` | No marker write; clear anchor only after admission. |
+| `UP_INVALID_BASE` | Non-majority `0149c4` → `0141f0` → `015c60` | No marker write; retain the anchor after any earlier proximity clear. |
+
+Generation/process/setup-marker handling maps to
+`device/base.c:goodix_milan_generation_retain_process`,
+`goodix_milan_generation_prepare_setup`, and `goodix_base_ssm_handler`, with
+sample-time setup admission in `milan/runtime.h:goodix_milan_runtime_initialize_setup`.
+Sleep/error/reinit continuations are owned by `device/session.c` and
+`device/scan.c`; this acquisition owner never clears algorithm process state.

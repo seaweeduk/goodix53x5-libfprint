@@ -68,6 +68,62 @@ not a USB bus-reset command or an early thread return. The optional firmware
 update check is entered only after a non-`-1` getter result when device-context
 byte `+0x153 == 1`.
 
+That byte is copied from configuration `+0x431` by device-object initializer
+`FUN_1800232a8:0x1800234ac..0x1800234b2`; its compiled configuration byte
+at `0x18005e771` is one and configuration loading can replace it. The call
+at `0x180020abf` is wrapper `FUN_1800180c4`, forwarding to
+`FUN_18001b7f8` (`UpdateFirmware`). This occurs before chip/profile discovery.
+The updater parses the firmware platform, selects an embedded HT/ST image,
+and calls `FUN_1800194ac`. Its APP/version-equality path can return without
+wire work; other admitted paths request firmware-mode transition or download.
+The initialization worker ignores the updater return. Neither the profile-9
+algorithm selection nor the final version-query return is its enable gate.
+This firmware-maintenance dispatch has no counterpart in the Linux open SSM.
+
+## Startup Reset And Chip Recovery
+
+`device_enable` (`0x18000e9b0`) calls `Reset(0,NULL)` at `0x18000ea38`
+without testing its result, then unconditionally sleeps 10 ms. The reset
+wrapper `0x18001b6c8` sends `a2` with payload `01 14`, one ACK-500 transaction
+and no response wait. The next call is chip getter `0x180017ef8`.
+
+The getter reads register zero, size four, response budget 200 through
+`0x18001a604`; that wrapper owns up to two transactions per getter cycle.
+Only successful reads decode `(b2<<24) | (b3<<16) | (b0<<8) | b1` and store
+the chip at context `+0x24`. The unsigned `chip>>8` comparisons at
+`0x180017f61..0x180017f7f` accept exactly `0x2202`, `0x2207`, `0x2208`,
+and `0x220c`; the last selects profile 9/type 12. A recognized different
+family is a successful native identification, distinct from an unknown chip
+or failed read. Linux's profile-9 support gate follows identification and does
+not send the other recognized families through chip-getter recovery. Identification mapping is
+owned by [the chip/profile map](../CHIP-ID-PROFILE-MAPPING.md).
+
+Each failed read or unknown family calls `Reset(0,&irq)` at `0x180017f88`,
+ignores its result and IRQ value, then sleeps 100 ms. This form sends `a2`
+payload `05 14`, one ACK-500/response-1000 transaction using shared event 3.
+Successful reset copies the low three shared-cache bytes to a 24-bit
+little-endian IRQ integer; failed reset leaves the destination untouched.
+The getter increments its byte counter after the sleep and compares the old
+value against five (`0x180017f98..0x180017fa0`), allowing six read cycles.
+The sixth failed cycle still performs reset and sleep before returning -1.
+Successful identification returns immediately without the recovery reset/delay.
+The getter does not clear chip/profile storage on failed reads; a successful
+unknown-chip read still replaces the chip field. The enclosing enable failure
+publishes profile sentinel 13 instead of initializing a profile.
+
+The transport/event contracts belong to
+[the synchronous transaction owner](usbinterface-FUN_180018dd8.md).
+The corresponding Linux owners are
+`device/commands.c:goodix_cmd_reset_sensor` (both type-zero payloads) and
+`goodix_cmd_read_chip_id` (register request), with
+`device/session.c:goodix_chip_ssm_handler` / `goodix_chip_result` owning the
+initial reset/delay, six-cycle recovery, chip publication and support gate.
+`goodix_cmd_parse_chip_id_reply` consumes the transport's selected shared-cache
+view, with the register slot's received length supplying Linux's four-byte check.
+The recovery consumer waits for the reset response event but discards IRQ
+bytes, matching the native getter's unused local output. Ordinary transaction
+failure is distinct from Linux cancellation/removal and malformed-input errors.
+
 ## Cold GTLS PSK Acquisition
 
 After action 9 completes sensor checking, the full-initialization route calls
@@ -81,10 +137,28 @@ A successful first check reads production item `0xb001` through
 `FUN_18001b9c4` (`production_read`). An empty process-global item cache causes
 a category-`0x0e`, command-2 transaction carrying the little-endian item type,
 with ACK budget 500, response budget 1000 and response selector 6. A zero sender
-result causes one identical retry. The check requires a type-`0xb001` sealed-PSK
-record and a type-`0xb003`, 32-byte hash record, unseals the 32-byte PSK, hashes
-it and compares all 32 hash bytes. Success stores the PSK in process-global
-storage and sets `0x1800607bc` to one.
+result causes one identical retry. The check requires a type-`0xb001` record
+and a type-`0xb003`, 32-byte hash record. `FUN_180008b54` copies 32 bytes from
+the first record's value at `+8` directly into its temporary key, calls
+`FUN_180027600` to hash that key, and compares all 32 hash bytes. This DLL
+does not invoke a host unsealing transformation between that copy and hashing.
+Success stores the PSK in process-global storage and sets `0x1800607bc` to one.
+
+`FUN_180008560` clears the PSK-valid byte and all 32 retained key bytes on
+entry. It permits three `production_psk_check` calls, then, only if all fail,
+three `FUN_180009054` generation/write/check attempts. The latter generates
+a 32-byte key, white-box encodes it for item `0xb002`, writes that item, writes
+the raw-key type-`0xb001` record, checks through `FUN_180008b54`, and compares
+the checked key against the generated key. Either successful route publishes
+the retained key and validity byte; final failure leaves validity clear.
+
+The selected-key counterpart is `goodix_load_psk` and the
+`GOODIX_OPEN_READ_PSK_HASH` through `GOODIX_OPEN_GTLS_CLIENT_HELLO` states in
+`drivers/goodix53x5/device/session.c`. Linux loads an imported key or selects
+the all-zero key, reads `0xb003`, refuses an imported-key mismatch, and otherwise
+writes its default `0xb002` white box and verifies the hash. This maps the
+selected-key/hash handoff; it is not the native key-generation or item-cache
+implementation.
 
 When `0x1800607bc` is already one, `production_get_psk` copies the retained
 32-byte process-global PSK without calling `production_initialize_PSK` or
@@ -92,6 +166,13 @@ issuing either production read. `FUN_18001b94c` clears the separate `0xb001`
 and `0xb003` item caches after the selected handshake error, but does not clear
 the PSK-valid byte. Thus the production reads belong to cold PSK initialization,
 not every later handshake in the same DLL lifetime.
+
+The item-cache bytes never pass to GTLS initialization directly:
+`FUN_180008398` receives the selected 32-byte key from `FUN_18000979c` and
+passes it to `FUN_180025930`. The valid-key fast path at
+`0x1800097ab..0x1800097b8` bypasses all item reads even after item-cache clear.
+Linux's retry group likewise reuses its selected `self->psk`; a new full open
+instead reloads the selected key and validates `0xb003` again.
 
 The successful client handshake sends type `0xff01`, receives type `0xff02`,
 sends type `0xff03`, and receives type `0xff04`. Both sends use
@@ -154,6 +235,19 @@ initialization-predicate boundary below. The direct restart entry
   by `+0x248`, but sets only persisted-base byte `+0x231`. It does not set
   base-valid `+0x232` or image-valid `+0x237`; those remain clear from
   `FUN_1800162ac` until action `0x0c` admits a fresh hardware acquisition.
+- The loader is `GFCheckbase_isexist` (`0x18000d24c`), not the DAC-register
+  helper `0x180005200`. Its file size is `0x24 + image_size(+0x250) +
+  auxiliary_size(+0x260) + FDT_size(+0x270)`. It checks the trailing
+  little-endian CRC against the preceding bytes, requires selected-OTP-valid
+  dword `+0x1e8 != 0`, and compares the first 16 file bytes with selected OTP
+  at `+0x205`. Admission copies FDT from file offset `0x20` into `+0x268`,
+  then auxiliary data into `+0x258`, then actual image data into `+0x248`.
+  It sets only `+0x231 = 1` and calls FDT setter `+0x68`; it restores neither
+  current DAC/history nor validity/marker bytes `+0x232/+0x233/+0x236/+0x237`.
+  A read failure clears `+0x231`; CRC or OTP-valid failure also removes the
+  file. OTP identity mismatch removes the file but does not explicitly clear
+  an already-set `+0x231`, so its retained-flag branch can still invoke the
+  setter. Fresh HAL initialization has already cleared that byte.
 - The worker does not inspect the action-`0x0c` return before continuing. This
   applies both to a zero-status validation rejection and to `-1` from the
   profile callback after a configuration or acquisition failure. Provided the
@@ -161,7 +255,8 @@ initialization-predicate boundary below. The direct restart entry
   externally reported action-`0x0c` error and may continue without a valid image
   reference.
 - After action `0x0c`, the active, non-stopping route calls
-  `thunk_FUN_18001b15c` at `0x180020d32` with the 64-byte version destination
+  `FUN_180017fe8` at `0x180020d32` (forwarding to `FUN_18001b15c`)
+  with the 64-byte version destination
   at device context `+0x111` and timeout 2000. This is a category-`0x0a`,
   command-4 version query, not a manual FDT read. The worker then dispatches
   action `0x0e` at `0x180020dad` with mode 2 and timeout 200. That dispatch
@@ -179,6 +274,87 @@ initialization-predicate boundary below. The direct restart entry
   configuration or acquisition failure when the inter-operation gates remain
   open. There is no failure-specific sleep or EC-control postlude around the
   action: the common mode-2 command is the only power-mode transition.
+
+Both the final version result and mode-2 result are ignored. The active/stop
+tests after the final query, rather than its status, select the sleep tail;
+the instructions after the sleep call publish initialized state without a
+result test. A query failure retains the earlier 64-byte version snapshot.
+Successful final query replaces it and the shared response-cache prefix.
+Version snapshot consumers include `FirmwareVersionFunc` (`0x18001ca70`),
+`GetDumpDataFunc` (`0x18001ce10`), and the version response at
+`FUN_18001e1e8:0x18001e807..0x18001e836`. These are diagnostic/control
+outputs; the image-base callback and engine image payload do not receive that
+snapshot. The optional updater consumes the earlier probe snapshot only.
+
+### Saved-Base Restore In An Already-Enabled HAL
+
+Action `0x0a` during cold initialization is not the loader's only context.
+`GFESD_procedure` (`0x18000d660`), dispatched by action 2, requires enabled
+HAL byte `+0x204 != 0`. In profile 9 its reset/IRQ mask is `0x410`. Once its
+bounded reset/chip-ID sequence finds the retained chip ID, the join at
+`0x18000d817` requests mode 4, calls `0x18000d24c` at `0x18000d82f`, then arms
+FDT-down through `+0xb0(1)`. It does not call all-base acquisition, re-read OTP,
+reseed DAC, or change `+0x232/+0x233/+0x236/+0x237`. Thus an already-valid
+image remains flagged valid when this loader replaces its bytes; a missing
+file preserves the old image/validity while clearing the persisted-file flag.
+The three repair-call statuses are ignored. Exhausted recovery instead sends
+type-one reset; it does not run this restore join. Both paths store `+0x200 =
+0x10`. The reset retries/status details are owned by
+[the transaction note](usbinterface-FUN_180018dd8.md).
+
+This conditional repair route differs from cold initialization, whose HAL
+constructor has cleared validity before the same loader runs. It also differs
+from initialized D0 entry, which invokes neither reset nor the loader. The
+event worker maps event `0x12` to action 2, but the installed profile-9 FDT
+parser publishes down/up/reverse and unknown-event codes, not `0x12`; the
+repair dispatch is not a per-capture acquisition rule.
+
+The optional two-image startup health acquisition and its later enrollment
+consumer are owned by [the sensor-health contract](usbinterface-FUN_180011b9c.md).
+
+## Full-Initialization Source Map
+
+`drivers/goodix53x5/device/session.c:goodix_open_ssm_handler` combines this
+worker with the selected profile's reset/chip/OTP/configuration handoffs.
+`goodix_probe_ssm_handler` implements the early ping/version loop;
+`goodix_gtls_retry_handler` implements selected-key handshake retries;
+`device/base.c:goodix_base_ssm_handler` owns the primary base acquisitions.
+`goodix_chip_ssm_handler` implements the initial reset/10-ms delay and chip
+recovery described above. The firmware update, final version refresh,
+and the two `send_mcu` post-send 2-ms delays have no corresponding states.
+The 100-ms failed-probe delay and 10-ms failed-handshake delay are represented.
+
+`goodix53x5.c:goodix_open` starts this full sequence on each Linux open and
+initially leaves `open_usb_reset_required` false. Ordinary open therefore
+skips the USB bus reset but still sends the sensor reset, selects chip/OTP,
+re-establishes GTLS and uploads configuration. Bus reset is selected by the
+whole-open recovery and post-suspend reinitialization owners. Linux close
+discards the raw setup and hardware reference; its next open cannot take the
+nonforced base helper's existing-generation shortcut. The native initialized
+D0 branch and enabled-HAL saved-base repair have no corresponding Linux open
+branches. `device/persistence.c:goodix_milan_persistence_restore` restores
+engine preprocessing state, not `GFCheckbase_isexist`'s hardware image/FDT set.
+
+The native postlude's result classes are:
+
+| Boundary | Native continuation with live entry gates |
+| --- | --- |
+| Enable or sensor-check failure | Request mode 2, disable HAL, signal context event; do not set initialized byte. |
+| Two failed GTLS wrapper groups | Request mode 2 and publish initialized byte/events; skip persisted load, base acquisition, and final version query. |
+| Base action success, rejection, or hard failure | Ignore action status, query final version, request mode 2, publish initialized byte/events. |
+| Final version or mode-2 failure | No status-specific failure branch; preserve the preceding row's continuation. |
+
+The Linux completion counterparts are `goodix_open_ssm_done`,
+`goodix_open_complete_after_idle`, and `goodix_cleanup_failed_open`.
+They join reception on failure, retain process state, clear persistence/key
+ownership, and either perform one full USB-reset retry or report failed open.
+GTLS exhaustion sets `open_gtls_failed` and suppresses that full-reset retry.
+An initial base error runs the base SSM's sleep/EC-off cleanup before propagating;
+a configuration error occurs before `open_ref_powered` is set and the open
+cleanup skips its sleep. Successful initial base acquisition instead reaches
+the open SSM's mode-2 sleep; its successful path performs no EC-off command.
+These source owners map platform completion and recovery, not the native
+initialized-byte publication or retained HAL lifetime on failure.
 
 ## Resume Branch
 

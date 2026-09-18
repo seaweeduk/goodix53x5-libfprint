@@ -45,6 +45,44 @@ The remaining initialization contract is:
 - Allocates the auxiliary buffer at `+0x258` and retained FDT-calibration
   storage at `+0x268` after setting their recorded sizes.
 
+## Calibration And Reference Lifetimes
+
+The constructor is reached through `device_enable`, not ordinary capture
+requests. Full initialization subsequently dispatches action 9 to
+`Milan_CheckSensor` (`0x180004a40`), which selects current live DAC `+0x312`
+and reference DAC `+0x310` from verified OTP or their fallback rules and seeds
+the dynamic helper through `0x180007c74`. That seed helper writes temperature
+and default DAC only; it does not clear the four adjustment-history words.
+The constructor/profile-open sequence likewise does not clear those words.
+See [the calibration owner](usbinterface-FUN_180004a40.md) and
+[the dynamic-DAC owner](usbinterface-FUN_180007c84.md).
+
+An initialized D0-entry worker bypasses this constructor and action 9, retaining
+current DAC, its seed, history, image/FDT allocations, validity bytes and marker.
+A full enable instead creates new allocations and clears the bytes below even
+when the DLL's adjustment history survives:
+
+| HAL field | Constructor | Saved-base loader | Admitted all-base acquisition |
+| --- | --- | --- | --- |
+| `+0x231` persisted-file flag | Zero | One on admitted file; zero on missing file | No write |
+| `+0x232/+0x233` base-valid pair | Zero | No write | Both one |
+| `+0x236` one-shot setup marker | Zero | No write | No write; temperature-event caller sets it on admission |
+| `+0x237` image-valid | Zero | No write | One |
+| `+0x248` image allocation | Allocated, unspecified bytes | Copy file image | Copy admitted TX-on image |
+| `+0x338` drift-anchor-empty | One; anchor bytes retained inactive | No write | No write; selected event callers own clearing |
+
+The saved file and fresh acquisition contracts are owned by
+[deviceInit](usbinterface-FUN_180020970.md) and
+[MilanHV_update_allbase](usbinterface-FUN_180015c60.md). File presence is
+not a replacement for image-valid state.
+
+Current source mapping: `device/session.c:goodix_open_ssm_handler` and
+`device/calibration.c:goodix_device_parse_otp` own Linux calibration selection;
+`GoodixDynamicDacState` and `calib.dac_h` split history/default from current DAC.
+`device/base.c:goodix_base_ssm_handler` owns fresh reference admission and
+`GoodixProfile9FdtState` owns the FDT validity/anchor state. These are separate
+owners rather than a retained native HAL allocation.
+
 ## Initial-Failure Consequence
 
 Failures after the enabled publication are not transactional. In particular,
@@ -58,5 +96,7 @@ establish a valid image/reference. Enabled teardown remains owned by
 The first action-`0x0c` acquisition therefore starts with `+0x232 == 0` and
 `+0x237 == 0`. If image-pair or final TX-on FDT validation rejects,
 `MilanHV_update_allbase` does not write `+0x248`; its contents remain unspecified
-and are not a valid retained reference. The common postlude still replaces
-`+0x268` and programs the profile-9 FDT bases.
+unless the preceding saved-base loader copied a file image. In either case
+image-valid remains clear: restored bytes alone are not a valid admitted
+reference. The common postlude still replaces `+0x268` and programs the
+profile-9 FDT bases.

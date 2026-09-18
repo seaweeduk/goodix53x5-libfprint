@@ -8,6 +8,21 @@
 - `FUN_180025ac0` selects this owner for context role dword at `+0` equal to one.
   Context state is the dword at `+4`; read/write callbacks are at `+0xf8/+0x100`.
 
+### Current source mapping
+
+- `usbinterface.dll!0x180025400` and identity helper `0x180026490` map to
+  `drivers/goodix53x5/device/session.c:goodix_gtls_ssm_handler`; key derivation
+  and identity calculation map to `device/crypto.c:goodix_crypto_gtls_derive_keys`
+  and `goodix_crypto_gtls_verify_identity`.
+- `usbinterface.dll!0x180007ee0` maps to `device/session.c:goodix_gtls_retry_handler`
+  and `goodix_gtls_attempt_done`; restart entry `0x1800210c0` maps to
+  `goodix_start_gtls_restart` and `goodix_gtls_restart_done`.
+- `usbinterface.dll!0x180021200`'s image-error history maps to
+  `device/transport.c:goodix_rx_cb`. The Linux pending restart is consumed by
+  `goodix_transport_wait_event` / `goodix_transport_complete` and
+  `device/scan.c:goodix_scan_event_done`, with continuation through
+  `goodix_scan_gtls_restarted`.
+
 ## Client steps and completion admission
 
 States zero and one allocate a 40-byte message, generate 32 random bytes at
@@ -94,7 +109,8 @@ event. A successful wait consumes one signal even if ring bytes remain; repeated
 
 `restart_gtls_handshake` (`FUN_1800210c0`) invokes the same three-attempt wrapper
 directly. These attempts do not perform a sensor/USB reset, rediscover the chip,
-reload calibration or reselect/provision the PSK. `deviceInit` may invoke the
+or reload calibration. With selected-PSK validity already set, they do not
+reselect/provision the PSK. `deviceInit` may invoke the
 wrapper again after its three attempts fail; only identity error `0x700003`
 causes the intervening production-item cache clear, without clearing the retained
 selected-PSK validity byte.
@@ -109,11 +125,32 @@ For the reader's nonnull packet pointer, `FUN_180017ed8` forwards the return
 from `DataFromDevice`. Its `-1` return comes from an admitted category-2 image
 payload whose HAL callback at `+0x140` (`ReadRawData`) returns `-1`. Incomplete
 cells and rejected checksums return zero, as do category-D ring publications;
-they do not themselves trigger this restart. The history byte is changed only
-on `-1`, so an intervening successful parser call does not clear the first
+they do not themselves trigger this restart. Within read completion, the history
+byte is changed only on `-1`, so a successful parser call does not clear the first
 failure. This image-consumer-error restart route is separate from the
 initialization and D0-resume worker. See
 [reader and FDT ownership](usbinterface-profile9-fdt-event-loop.md).
+
+Restart admission in `FUN_180021200` has no active-action, capture-request,
+frame-count, HAL-validity or FDT-wait predicate. With a nonnull receive context
+and delivered buffer, a second parser `-1` considers thread creation even when
+there is no active scan. The restart entry likewise invokes the handshake
+wrapper without testing an action owner. The native thread can therefore
+replace keys before any subsequent application action; it does not wait for a
+new action to consume a pending flag.
+
+Device construction `FUN_1800232a8` clears history at `0x1800235be` after
+successful port construction. The reader's `0x1800213b6/0x1800213bf` stores
+then implement the error-pair lifetime. A completed restart does not reset
+history accumulated during that restart; success alone is not a history reset.
+
+Capture cancellation `FUN_180020ef0` writes device bytes `+0x154/+0x152`,
+completes and clears the request at `+0xf8`, and leaves the image-error history,
+restart-thread handle, MCU ring/event and GTLS context untouched. Neither
+`FUN_180021200` nor `FUN_1800210c0` tests those request fields. Cancellation
+therefore does not suppress an already admitted or later reader-driven restart.
+Request cancellation and hardware/reader teardown are separate boundaries;
+see [request and power lifetime](usbinterface-profile9-fdt-event-loop.md).
 
 The second-error history clear at `0x1800213b6` is unconditional after the
 admission branch: it also occurs when the existing thread wait returns
@@ -178,6 +215,17 @@ the MCU callbacks `FUN_18001c2f0/FUN_18001c5a0`. The initializer clears context
 bytes `+4..+0x107`, copies at most 32 PSK bytes to `+0xd4`, and stores PSK length
 at `+0xf4` and the callbacks at `+0xf8/+0x100`.
 
+The PSK getter `FUN_18000979c` checks selected-valid byte `0x1800607bc`.
+When nonzero it copies the retained 32 bytes at `0x180060c98` and returns
+length 32, without a production read or write. When zero it first calls
+`FUN_180008560` and propagates initialization failure. `FUN_180008398` requests
+the PSK into a 1024-byte local buffer before clearing the GTLS context. Thus
+the established-session restart boundary retains the selected PSK and its
+validity independently of every attempt's session-key/context reset. The
+current counterpart at this boundary is `device/session.c:goodix_gtls_ssm_handler`
+passing retained `self->psk` to `goodix_crypto_gtls_init`; initial selection is
+owned by `goodix_load_psk`.
+
 `FUN_180007ee0` holds the GTLS critical section across at most three complete
 initialization/handshake attempts. Each clears the caller's completion dword
 and ring bytes `+0x0c..+0x13` before reinitialization. It publishes completion
@@ -202,6 +250,18 @@ A failed first HMAC leaves it at its initialized value. A successful HMAC
 followed by the caller's CRC failure retains the increment. Re-establishment
 clears these live counters and installs those derived from the new random pair,
 rather than carrying forward the prior reply counter.
+
+After ordinary three-attempt exhaustion, the final failed attempt's context
+remains installed. In particular, a successful verification send followed by
+completion-read timeout leaves state four, both derived initial 16-bit counters,
+the new randoms/identities/keys, and live counters zero in the absence of
+interleaved authenticated images. The wrapper and restart entry neither restore
+the old session nor promote state four to five. Initial counter zero is a valid
+derivation result; neither derivation nor completion admission excludes it.
+Thus a correctly authenticated image can reach the state-four rejection in
+`FUN_180024940`; HMAC validity does not prove that completion was admitted.
+The raw consumer's state check and surviving counter/cache/event effects are
+owned by [authenticated sensor replies](usbinterface-FUN_180024940.md).
 
 See [device initialization and resume](usbinterface-FUN_180020970.md) for the
 outer retry and device-context publication, and
