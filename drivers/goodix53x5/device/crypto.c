@@ -357,10 +357,11 @@ goodix_crypto_gtls_verify_identity (GoodixGtlsCtx *ctx)
  * Block sizes: block 0 = 0x3A7, blocks 1-13 = 0x3F0, block 14 = remainder
  *
  * After reassembly:
- *   1. Verify HMAC over last 0x400 bytes
- *   2. Strip first 5 bytes
- *   3. Verify CRC32-MPEG2 over data (excl. last 4 bytes)
- *   4. GEA decrypt using first 4 bytes of symmetric_key
+ *   1. Verify HMAC over last 0x400 bytes and advance receive counter
+ *   2. Require an established session (state 5)
+ *   3. Strip first 5 bytes
+ *   4. Verify CRC32-MPEG2 over data (excl. last 4 bytes)
+ *   5. GEA decrypt using first 4 bytes of symmetric_key
  *
  * Returns newly allocated decrypted data, or NULL on error.
  */
@@ -480,6 +481,15 @@ goodix_crypto_gtls_decrypt_sensor_data (GoodixGtlsCtx *ctx,
 
   fp_dbg ("Encrypted payload HMAC verified");
   ctx->hmac_server_counter = (ctx->hmac_server_counter + 1) & 0xFFFFFFFF;
+
+  /* Native 0x180024940 consumes the authenticated counter even when the
+   * handshake has not completed. Derived keys alone do not admit an image. */
+  if (ctx->state != 5)
+    {
+      fp_warn ("Sensor data received in incomplete GTLS state: %d", ctx->state);
+      g_free (gea_encrypted);
+      return NULL;
+    }
 
   /* Strip first 5 bytes */
   if (gea_len < 5 + 4)

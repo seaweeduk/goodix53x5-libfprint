@@ -623,8 +623,11 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                   self->image_response_failed = FALSE;
                   self->command_response_ready |= 8;
                 }
-              else if (self->gtls.hmac_server_counter != counter)
+              else if (self->gtls.hmac_server_counter != counter &&
+                       self->gtls.state == 5)
                 {
+                  /* Incomplete-session rejection consumes the counter but
+                   * preserves raw status; only established raw failure sets it. */
                   self->image_response_failed = TRUE;
                 }
               if (!frame)
