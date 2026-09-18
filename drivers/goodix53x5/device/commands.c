@@ -251,17 +251,19 @@ goodix_cmd_probe (FpiSsm *ssm, FpDevice *dev, gboolean firmware,
 }
 
 void
-goodix_cmd_reset_sensor (FpiSsm *ssm, FpDevice *dev)
+goodix_cmd_reset_sensor (FpiSsm *ssm, FpDevice *dev, gboolean request_irq,
+                         GoodixCmdResultCallback callback)
 {
-  /* reset type 0, irq_status=false: msg = 0b001 | (20<<8) = 0x1401 */
-  guint16 msg = 0x01 | (20 << 8);
-  guint8 payload[2] = { msg & 0xFF, (msg >> 8) & 0xFF };
+  /* usbinterface!18001b6c8: type zero, with optional IRQ response. */
+  guint8 payload[2] = { request_irq ? 0x05 : 0x01, 0x14 };
 
-  goodix_run_cmd (ssm, dev, 0xA, 0x1, payload, 2, FALSE);
+  goodix_run_cmd_result (ssm, dev, 0xA, 0x1, payload, sizeof (payload),
+                         request_irq, callback);
 }
 
 void
-goodix_cmd_read_chip_id (FpiSsm *ssm, FpDevice *dev)
+goodix_cmd_read_chip_id (FpiSsm *ssm, FpDevice *dev,
+                         GoodixCmdResultCallback callback)
 {
   /* read_data(addr=0, size=4): category=0x8, command=0x1 */
   guint8 payload[5] = {
@@ -270,7 +272,7 @@ goodix_cmd_read_chip_id (FpiSsm *ssm, FpDevice *dev)
     0x04, 0x00, /* size LE */
   };
 
-  goodix_run_cmd (ssm, dev, 0x8, 0x1, payload, 5, TRUE);
+  goodix_run_cmd_result (ssm, dev, 0x8, 0x1, payload, sizeof (payload), TRUE, callback);
 }
 
 void

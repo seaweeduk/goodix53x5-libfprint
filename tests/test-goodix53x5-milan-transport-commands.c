@@ -516,7 +516,7 @@ data_handler (FpiSsm *ssm, FpDevice *dev)
    * Image responses instead have a fixed deadline and receiver-side decoding. */
   if (fpi_ssm_get_cur_state (ssm) == 0)
     {
-      goodix_cmd_read_chip_id (ssm, dev);
+      goodix_cmd_read_chip_id (ssm, dev, NULL);
     }
   else
     {
