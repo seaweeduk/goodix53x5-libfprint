@@ -350,9 +350,11 @@ goodix_milan_runtime_build_probe (const GoodixMilanRuntimeInput *input,
   GoodixMilanPrintTemplateInfo probe_info;
 
   goodix_milan_debug_runtime_extraction_started (output);
+  /* The native sample adapter retains only these low bytes for anti-fake.
+   * Keep full words in the acquisition metadata and next sensor command. */
   *probe = goodix_milan_match_extract_native (
-    processed, &output->preprocess_state, input->live_raw, input->tcode,
-    input->dac_high, input->dac_low, input->sensor_subtype);
+    processed, &output->preprocess_state, input->live_raw, (guint8) input->tcode,
+    (guint8) input->dac_high, (guint8) input->dac_low, input->sensor_subtype);
   *probe_template = *probe ? goodix_milan_match_serialize_template (*probe) : NULL;
   if (!*probe || !*probe_template ||
       !goodix_milan_runtime_inspect_probe (*probe_template, &probe_info))

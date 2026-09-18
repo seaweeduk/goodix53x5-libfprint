@@ -75,8 +75,8 @@ struct _GoodixTransport
   gboolean                  expect_data;
   gboolean                  idle_after_ack;
   GoodixProfile9FdtWaitMode cancelled_fdt_mode;
-  gboolean                  retry_mode;
-  guint8                    response_bit;
+  gboolean                  retry;
+  GoodixResponseSlot        response_slot;
   guint8                    ack_status;
   guint                     attempt;
   guint                     ack_timeout_ms;
@@ -96,82 +96,75 @@ goodix_transport_is_idle (GoodixTransport *operation)
          operation->phase == GOODIX_TRANSPORT_STOPPING;
 }
 
-/* Native budgets count Sleep(1) ACK polls and 50-ms response waits. GUsb uses
- * elapsed milliseconds instead: retain the caller's nominal budget across
- * complete packet reception, beginning after write/ACK completion respectively.
- * Other commands retain their unaudited existing timing policy. */
-static void
-goodix_cmd_set_budgets (GoodixTransport *operation)
+/* Native 018dd8 and its command wrappers. Budgets are nominal milliseconds;
+ * GUsb measures elapsed time, rather than Sleep(1)/Wait(50) poll counts.
+ * Register 82 here is the sized/chip adapter (200), not the factory two-byte
+ * adapter (500). Unknown commands retain their existing fallback policy. */
+typedef struct
 {
-  guint8 command = GOODIX_PROTO_CMD_BYTE (operation->cmd.category,
-                                          operation->cmd.command);
+  guint8 command;
+  guint ack_ms;
+  guint response_ms;
+  GoodixResponseSlot response_slot;
+  gboolean retry;
+} GoodixCommandPolicy;
 
-  operation->ack_timeout_ms = GOODIX_ACK_TIMEOUT;
-  operation->response_timeout_ms = GOODIX_DATA_TIMEOUT;
-  switch (command)
-    {
-    case 0xa8: /* Firmware version */
-      operation->response_timeout_ms = 2000;
-      G_GNUC_FALLTHROUGH;
+static const GoodixCommandPolicy command_policies[] = {
+  { 0x32, 500, 0, GOODIX_RESPONSE_NONE, TRUE },
+  { 0x34, 500, 0, GOODIX_RESPONSE_NONE, TRUE },
+  { 0x60, 200, 0, GOODIX_RESPONSE_NONE, TRUE },
+  { 0x36, 500, 500, GOODIX_RESPONSE_MANUAL, TRUE },
+  { 0x90, 500, 500, GOODIX_RESPONSE_CONFIG, TRUE },
+  { 0x00, 500, 0, GOODIX_RESPONSE_NONE, TRUE },
+  { 0xa8, 500, 2000, GOODIX_RESPONSE_SYSTEM, TRUE },
+  { 0x20, 500, 500, GOODIX_RESPONSE_IMAGE, FALSE },
+  { 0xa2, 500, 1000, GOODIX_RESPONSE_SYSTEM, FALSE },
+  { 0x82, 500, 200, GOODIX_RESPONSE_REGISTER, TRUE },
+  { 0xa6, 500, 200, GOODIX_RESPONSE_OTP, TRUE },
+  { 0xe4, 500, 1000, GOODIX_RESPONSE_PRODUCTION, TRUE },
+  { 0xe2, 500, 1000, GOODIX_RESPONSE_PRODUCTION, TRUE },
+  { 0xae, 200, 0, GOODIX_RESPONSE_NONE, FALSE },
+  { 0xd2, 500, 0, GOODIX_RESPONSE_NONE, FALSE },
+};
 
-    case 0x00: /* Startup mode */
-    case 0xd2: /* GTLS MCU send */
-      operation->ack_timeout_ms = 500;
-      break;
+G_STATIC_ASSERT (G_N_ELEMENTS (command_policies) <= 16);
+G_STATIC_ASSERT (GOODIX_RESPONSE_COUNT <= 8);
 
-    case 0x20: /* Image */
-    case 0x36: /* Manual FDT */
-    case 0x90: /* Configuration */
-      operation->response_timeout_ms = 500;
-      G_GNUC_FALLTHROUGH;
+static const GoodixCommandPolicy *
+goodix_cmd_policy (guint8 command)
+{
+  for (guint i = 0; i < G_N_ELEMENTS (command_policies); i++)
+    if (command_policies[i].command == command)
+      return &command_policies[i];
+  return NULL;
+}
 
-    case 0x32: /* FDT down */
-    case 0x34: /* FDT up */
-      operation->ack_timeout_ms = 500;
-      break;
-
-    case 0x60: /* Sleep */
-    case 0xae: /* EC */
-      operation->ack_timeout_ms = 200;
-      break;
-
-    default:
-      break;
-    }
+static guint16
+goodix_cmd_ack_bit (guint8 command)
+{
+  const GoodixCommandPolicy *policy = goodix_cmd_policy (command);
+  return policy ? 1u << (policy - command_policies) : 0;
 }
 
 static guint8
-goodix_mode_ack_bit (guint8 cmd_byte)
+goodix_response_bit (GoodixResponseSlot slot)
 {
-  switch (cmd_byte)
-    {
-    case 0x32:
-      return 1;
+  return slot == GOODIX_RESPONSE_NONE ? 0 : 1u << slot;
+}
 
-    case 0x34:
-      return 2;
+static void
+goodix_cmd_set_policy (GoodixTransport *operation)
+{
+  const GoodixCommandPolicy *policy = goodix_cmd_policy (
+    GOODIX_PROTO_CMD_BYTE (operation->cmd.category, operation->cmd.command));
 
-    case 0x60:
-      return 4;
-
-    case 0x36:
-      return 8;
-
-    case 0x90:
-      return 16;
-
-    case 0x00:
-      return 32;
-
-    case 0xa8:
-      return 64;
-
-    case 0x20:
-      return 128;
-
-    default:
-      return 0;
-    }
+  operation->ack_timeout_ms = policy ? policy->ack_ms : GOODIX_ACK_TIMEOUT;
+  operation->response_timeout_ms = policy && policy->response_ms ?
+                                   policy->response_ms : GOODIX_DATA_TIMEOUT;
+  operation->response_slot = policy && operation->expect_data ?
+                             policy->response_slot : GOODIX_RESPONSE_NONE;
+  operation->retry = policy && policy->retry &&
+                     (operation->expect_data == (policy->response_slot != GOODIX_RESPONSE_NONE));
 }
 
 static const char *
@@ -211,16 +204,16 @@ goodix_cmd_retry (GoodixTransport *operation, GError *error)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (operation->dev);
   GoodixTransportPhase phase = operation->phase;
 
-  if (!operation->retry_mode || operation->attempt != 1 ||
+  if (!operation->retry || operation->attempt != 1 ||
       (phase != GOODIX_TRANSPORT_SEND && phase != GOODIX_TRANSPORT_ACK &&
-       !(operation->response_bit && phase == GOODIX_TRANSPORT_RESPONSE)) ||
+       !(operation->response_slot != GOODIX_RESPONSE_NONE && phase == GOODIX_TRANSPORT_RESPONSE)) ||
       !goodix_cmd_native_zero (phase, error))
     return FALSE;
 
   fp_dbg ("Retrying command cat=0x%02x cmd=0x%02x phase=%s attempt=1: %s",
           operation->cmd.category, operation->cmd.command,
            goodix_cmd_phase_name (phase), error->message);
-  self->retried_mode_acks |= goodix_mode_ack_bit (
+  self->routed_command_acks |= goodix_cmd_ack_bit (
     GOODIX_PROTO_CMD_BYTE (operation->cmd.category, operation->cmd.command));
   g_error_free (error);
   goodix_transport_send (operation);
@@ -348,9 +341,14 @@ goodix_transport_send (GoodixTransport *operation)
   operation->phase = GOODIX_TRANSPORT_SEND;
   operation->attempt++;
   g_clear_object (&operation->cancellable);
-  self->command_response_ready &= ~operation->response_bit;
-  if (operation->response_bit)
-    self->retried_mode_acks |= goodix_mode_ack_bit (
+  self->command_response_ready &= ~goodix_response_bit (operation->response_slot);
+  /* Response families (including ACK-only reset) may deliver another ACK
+   * while a later command owns reception. Repeated mode slots remain tracked
+   * at retry, preserving the closed mode/EC/MCU routing policy. */
+  const GoodixCommandPolicy *policy = goodix_cmd_policy (
+    GOODIX_PROTO_CMD_BYTE (cmd->category, cmd->command));
+  if (policy && policy->response_slot != GOODIX_RESPONSE_NONE)
+    self->routed_command_acks |= goodix_cmd_ack_bit (
       GOODIX_PROTO_CMD_BYTE (cmd->category, cmd->command));
   msg = goodix_proto_build_message (cmd->category, cmd->command,
                                     cmd->payload, cmd->payload_len,
@@ -416,6 +414,7 @@ goodix_transport_new (FpDevice             *dev,
   g_assert (!self->transport);
   operation->dev = g_object_ref (dev);
   operation->phase = phase;
+  operation->response_slot = GOODIX_RESPONSE_NONE;
   operation->done = done;
   operation->data = data;
   self->transport = operation;
@@ -470,6 +469,45 @@ goodix_transport_receive (GoodixTransport *operation, guint timeout)
                            goodix_rx_cb, operation);
 }
 
+/* A generic response is a view of the shared cache at consumption time, not
+ * the last RX packet (which may be the ACK). Event families can alias command
+ * selectors; expose the awaited selector to existing named reply parsers.
+ * Keep short-packet lengths for Linux validation, and the native production
+ * length prefix, while bounding every view by the owned cache. */
+static GError *
+goodix_transport_select_response (GoodixTransport *operation)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (operation->dev);
+  GoodixResponseSlot slot = operation->response_slot;
+  gsize offset = 0, length;
+
+  if (slot != GOODIX_RESPONSE_SYSTEM && slot != GOODIX_RESPONSE_REGISTER &&
+      slot != GOODIX_RESPONSE_OTP && slot != GOODIX_RESPONSE_PRODUCTION)
+    return NULL;
+  if (!(self->command_response_ready & goodix_response_bit (slot)))
+    return fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                     "Command response event is unavailable");
+
+  length = self->shared_response_lengths[slot];
+  if (slot == GOODIX_RESPONSE_PRODUCTION)
+    {
+      guint32 wire_length;
+      memcpy (&wire_length, self->shared_response_storage, sizeof (wire_length));
+      length = GUINT32_FROM_LE (wire_length);
+      offset = sizeof (wire_length);
+    }
+  if (length > sizeof (self->shared_response_storage) - offset)
+    return fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                     "Shared response length exceeds cache capacity");
+
+  self->reply_valid = TRUE;
+  self->reply_category = operation->cmd.category;
+  self->reply_command = operation->cmd.command;
+  self->reply_payload = self->shared_response_storage + offset;
+  self->reply_payload_len = length;
+  return NULL;
+}
+
 static void
 goodix_transport_complete (GoodixTransport *operation, GError *error)
 {
@@ -481,11 +519,14 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
   gpointer joined_data = operation->joined_data;
   gboolean idle_after_ack = !error && operation->idle_after_ack;
 
-  if (!error && operation->response_bit == 8 && self->image_response_failed &&
+  if (!error && operation->response_slot == GOODIX_RESPONSE_IMAGE && self->image_response_failed &&
       (operation->phase == GOODIX_TRANSPORT_ACK ||
        operation->phase == GOODIX_TRANSPORT_RESPONSE))
     error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO,
                                  "Image receiver rejected the frame");
+  if (!error && operation->expect_data &&
+      (operation->phase == GOODIX_TRANSPORT_ACK || operation->phase == GOODIX_TRANSPORT_RESPONSE))
+    error = goodix_transport_select_response (operation);
   GoodixTransportResult result = {
     .ack_status = operation->ack_status,
     .restart_gtls = operation->phase == GOODIX_TRANSPORT_EVENT && self->gtls_restart_pending,
@@ -541,7 +582,7 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
   GoodixTransport *operation = user_data;
   FpiUsbTransfer *next;
   gboolean fixed_deadline = operation->phase == GOODIX_TRANSPORT_ACK ||
-    (operation->phase == GOODIX_TRANSPORT_RESPONSE && operation->response_bit) ||
+    (operation->phase == GOODIX_TRANSPORT_RESPONSE && operation->response_slot != GOODIX_RESPONSE_NONE) ||
     (operation->phase == GOODIX_TRANSPORT_REPLY && operation->mcu_length);
 
   g_assert (self->transport == operation);
@@ -621,10 +662,13 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                   g_free (self->image_response);
                   self->image_response = frame;
                   self->image_response_failed = FALSE;
-                  self->command_response_ready |= 8;
+                  self->command_response_ready |= goodix_response_bit (GOODIX_RESPONSE_IMAGE);
                 }
-              else if (self->gtls.hmac_server_counter != counter)
+              else if (self->gtls.hmac_server_counter != counter &&
+                       self->gtls.state == 5)
                 {
+                  /* Incomplete-session rejection consumes the counter but
+                   * preserves raw status; only established raw failure sets it. */
                   self->image_response_failed = TRUE;
                 }
               if (!frame)
@@ -650,7 +694,8 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                   return;
                 }
               if (current && operation->phase == GOODIX_TRANSPORT_RESPONSE &&
-                  current->response_bit == 8 && (self->command_response_ready & 8))
+                  current->response_slot == GOODIX_RESPONSE_IMAGE &&
+                  (self->command_response_ready & goodix_response_bit (GOODIX_RESPONSE_IMAGE)))
                 goodix_transport_complete (operation, NULL);
               else
                 goto receive_more;
@@ -670,41 +715,41 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                 return;
               goto receive_more;
             }
-          guint8 bit = category == 3 && command == 3 ? 1 :
-                       category == 9 && command == 0 ? 2 :
-                       category == 0x0a && (command == 0 || command == 1 || command == 4) ? 4 : 0;
-          gboolean shared = bit == 4 || (category == 0x0a && command == 3) ||
-                            category == 8 || category == 0x0e || category == 0x0f;
+          GoodixResponseSlot slot =
+            category == 3 && command == 3 ? GOODIX_RESPONSE_MANUAL :
+            category == 9 && command == 0 ? GOODIX_RESPONSE_CONFIG :
+            category == 0x0a && (command == 0 || command == 1 || command == 4) ? GOODIX_RESPONSE_SYSTEM :
+            category == 8 ? GOODIX_RESPONSE_REGISTER :
+            category == 0x0a && command == 3 ? GOODIX_RESPONSE_OTP :
+            category == 0x0e ? GOODIX_RESPONSE_PRODUCTION : GOODIX_RESPONSE_NONE;
+          gboolean shared = slot == GOODIX_RESPONSE_SYSTEM || slot == GOODIX_RESPONSE_REGISTER ||
+                            slot == GOODIX_RESPONSE_OTP || slot == GOODIX_RESPONSE_PRODUCTION ||
+                            category == 0x0f;
           gboolean current_data = current && operation->phase == GOODIX_TRANSPORT_RESPONSE &&
                                   current->cmd.category == category && current->cmd.command == command;
 
           /* DataFromDevice publishes these shared stores without a matching
            * command. Only A/0, A/1 and A/4 signal the version getter's event.
-           * Project the first 64 bytes, retaining every unwritten suffix. */
+           * Retain every unwritten suffix, including beyond the firmware view. */
           if (shared)
             {
               gsize offset = category == 0x0e ? 4 : 0;
               gsize count = category == 0x0f ? MIN (payload_len, 1) :
-                            MIN (payload_len, sizeof (self->shared_response) - offset);
+                            MIN (payload_len, sizeof (self->shared_response_storage) - offset);
 
               if (category == 0x0e)
                 {
                   guint32 length = GUINT32_TO_LE ((guint32) payload_len);
-                  memcpy (self->shared_response, &length, sizeof (length));
+                  memcpy (self->shared_response_storage, &length, sizeof (length));
                 }
-              memcpy (self->shared_response + offset, payload, count);
-              /* Preserve ordinary current response consumption (e.g. register
-               * and PSK reads); unrelated stores do not finish that waiter. */
-              if (!bit && current && !current_data)
-                {
-                  goodix_proto_rx_reset (&self->rx);
-                  goto receive_more;
-                }
+              memcpy (self->shared_response_storage + offset, payload, count);
+              if (slot != GOODIX_RESPONSE_NONE)
+                self->shared_response_lengths[slot] = payload_len;
             }
 
-          if (bit)
+          if (slot != GOODIX_RESPONSE_NONE)
             {
-              if (bit == 1)
+              if (slot == GOODIX_RESPONSE_MANUAL)
                 {
                   if (payload_len < sizeof (self->manual_response))
                     {
@@ -716,9 +761,9 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                 }
               /* Configuration publishes only an event, never a success byte.
                * Response slots are independent of ACK reception. */
-              self->command_response_ready |= bit;
+              self->command_response_ready |= goodix_response_bit (slot);
               if (!current || operation->phase != GOODIX_TRANSPORT_RESPONSE ||
-                  (current->response_bit != bit && !current_data))
+                  (current->response_slot != slot && !current_data))
                 {
                   goodix_proto_rx_reset (&self->rx);
                   goto receive_more;
@@ -726,8 +771,8 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
             }
           else if (category == 3 && (command == 1 || command == 2) &&
                    (idle_packet || self->gtls_restart_active ||
-                    (current && (current->response_bit ||
-                                                (current->cmd.category == 3 && current->cmd.command <= 2)))))
+                    (current && (current->response_slot != GOODIX_RESPONSE_NONE ||
+                                 (current->cmd.category == 3 && current->cmd.command <= 2)))))
             {
               GoodixFdtEventType type;
               GoodixProfile9FdtEvent event;
@@ -753,6 +798,12 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                   memcpy (self->pending_fdt.prior_down, self->fdt_prior_down,
                           sizeof (self->pending_fdt.prior_down));
                 }
+              goodix_proto_rx_reset (&self->rx);
+              goto receive_more;
+            }
+          else if (shared && current && !current_data)
+            {
+              /* Category F overwrites one byte but has no command consumer. */
               goodix_proto_rx_reset (&self->rx);
               goto receive_more;
             }
@@ -782,10 +833,10 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
         }
 
       /* Native updates the acknowledged command's independent slot. A late
-       * ACK from a repeated mode command cannot satisfy a different command
+       * ACK from an issued response/repeated mode command cannot satisfy another command
        * or an event/data wait. Validate the envelope before routing it. */
       if (ack_packet && !expected_ack &&
-          (self->retried_mode_acks & goodix_mode_ack_bit (payload[0])))
+          (self->routed_command_acks & goodix_cmd_ack_bit (payload[0])))
         {
           goodix_proto_rx_reset (&self->rx);
           goto receive_more;
@@ -807,7 +858,7 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
             {
               current->ack_status = status;
               if (!current->expect_data ||
-                  (current->response_bit & self->command_response_ready))
+                  (goodix_response_bit (current->response_slot) & self->command_response_ready))
                 goodix_transport_complete (operation, NULL);
               else
                 {
@@ -815,7 +866,7 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
                   operation->deadline_us = g_get_monotonic_time () +
                                            operation->response_timeout_ms * 1000LL;
                   g_clear_object (&operation->cancellable);
-                  if (operation->response_bit == 4)
+                  if (operation->cmd.category == 0x0a && operation->cmd.command == 4)
                     operation->cancellable = g_object_ref (fpi_device_get_cancellable (dev));
                   goodix_transport_receive (operation, operation->response_timeout_ms);
                 }
@@ -909,7 +960,7 @@ goodix_transport_invalidate (FpDevice *dev)
   self->image_response_failed = FALSE;
   self->image_error_history = FALSE;
   self->gtls_restart_pending = FALSE;
-  self->command_response_ready &= ~8;
+  self->command_response_ready &= ~goodix_response_bit (GOODIX_RESPONSE_IMAGE);
   if (self->rx.buf)
     goodix_proto_rx_reset (&self->rx);
   self->reply_valid = FALSE;
@@ -974,7 +1025,6 @@ goodix_transport_command (FpDevice                     *dev,
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   GoodixTransport *operation = self->transport;
-  guint8 category = request->cmd.category, command = request->cmd.command;
 
   if (operation && operation->phase != GOODIX_TRANSPORT_IDLE)
     {
@@ -994,17 +1044,7 @@ goodix_transport_command (FpDevice                     *dev,
   operation->expect_data = request->expect_data;
   operation->idle_after_ack = request->idle_after_ack;
   operation->cancelled_fdt_mode = request->cancelled_mode;
-  operation->response_bit = request->expect_data ?
-                            (category == 3 && command == 3 ? 1 :
-                             category == 9 && command == 0 ? 2 :
-                             category == 0x0a && command == 4 ? 4 :
-                             category == 2 && command == 0 ? 8 : 0) : 0;
-  operation->retry_mode = (operation->response_bit && operation->response_bit != 8) ||
-                          (!request->expect_data &&
-                           ((category == GOODIX_PROTO_CATEGORY_FDT &&
-                             (command == GOODIX_PROTO_CMD_FDT_DOWN || command == GOODIX_PROTO_CMD_FDT_UP)) ||
-                            ((category == 0x06 || category == 0) && command == 0)));
-  goodix_cmd_set_budgets (operation);
+  goodix_cmd_set_policy (operation);
 
   if (operation->phase == GOODIX_TRANSPORT_IDLE)
     {

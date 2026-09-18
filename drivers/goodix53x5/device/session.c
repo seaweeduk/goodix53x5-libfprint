@@ -41,7 +41,6 @@ typedef enum {
   GOODIX_OPEN_CLAIM_INTERFACE,
   GOODIX_OPEN_PING,
   GOODIX_OPEN_RESET,
-  GOODIX_OPEN_READ_CHIP_ID,
   GOODIX_OPEN_READ_OTP,
   GOODIX_OPEN_PARSE_OTP,
   GOODIX_OPEN_READ_PSK_HASH,
@@ -73,8 +72,6 @@ goodix_open_state_name (GoodixOpenState state)
       return "ping";
     case GOODIX_OPEN_RESET:
       return "reset";
-    case GOODIX_OPEN_READ_CHIP_ID:
-      return "read_chip_id";
     case GOODIX_OPEN_READ_OTP:
       return "read_otp";
     case GOODIX_OPEN_PARSE_OTP:
@@ -286,6 +283,122 @@ goodix_probe_ssm_handler (FpiSsm *ssm, FpDevice *dev)
 }
 
 typedef enum {
+  GOODIX_CHIP_INITIAL_RESET,
+  GOODIX_CHIP_READ,
+  GOODIX_CHIP_RECOVERY_RESET,
+  GOODIX_CHIP_AFTER_DELAY,
+  GOODIX_CHIP_NUM_STATES,
+} GoodixChipState;
+
+static void
+goodix_chip_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
+                    gboolean native_zero, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  guint *failures = fpi_ssm_get_data (ssm);
+
+  if (goodix_probe_cancelled (ssm, dev))
+    {
+      g_clear_error (&error);
+      return;
+    }
+  if (error && !native_zero)
+    {
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+
+  if (fpi_ssm_get_cur_state (ssm) == GOODIX_CHIP_READ)
+    {
+      if (!error)
+        {
+          const guint8 *payload;
+          gsize length;
+
+          if (!goodix_cmd_parse_chip_id_reply (dev, &payload, &length, &error))
+            {
+              fpi_ssm_mark_failed (ssm, error);
+              return;
+            }
+          if (length != 4)
+            {
+              fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                                    FP_DEVICE_ERROR_PROTO,
+                                    "Unexpected chip ID reply length: %zu", length));
+              return;
+            }
+
+          self->chip_id = goodix_crypto_decode_u32 (payload);
+          fp_dbg ("Chip ID: 0x%08x", self->chip_id);
+          /* usbinterface!180017ef8 recognizes these four families. A valid
+           * other family is unsupported by Linux, not failed identification. */
+          switch (self->chip_id >> 8)
+            {
+            case 0x2202:
+            case 0x2207:
+            case 0x2208:
+            case 0x220c:
+              if (!goodix_milan_runtime_subtype_for_chip (
+                    self->chip_id, &self->milan_sensor_subtype))
+                fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                                      FP_DEVICE_ERROR_NOT_SUPPORTED,
+                                      "Native Milan runtime is unsupported for product 0x%04x chip 0x%08x",
+                                      g_usb_device_get_pid (fpi_device_get_usb_device (dev)),
+                                      self->chip_id));
+              else
+                fpi_ssm_mark_completed (ssm);
+              return;
+
+            default:
+              break;
+            }
+        }
+      g_clear_error (&error);
+      (*failures)++;
+      fpi_ssm_next_state (ssm);
+      return;
+    }
+
+  /* device_enable ignores the first ordinary reset failure. The chip getter
+   * also ignores recovery reset failure and its IRQ value. Both delays occur
+   * after completion; the last failed read still resets and sleeps. */
+  g_clear_error (&error);
+  fpi_ssm_next_state_delayed (ssm,
+                             fpi_ssm_get_cur_state (ssm) == GOODIX_CHIP_INITIAL_RESET ? 10 : 100);
+}
+
+static void
+goodix_chip_ssm_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  guint *failures = fpi_ssm_get_data (ssm);
+
+  if (goodix_probe_cancelled (ssm, dev))
+    return;
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case GOODIX_CHIP_INITIAL_RESET:
+    case GOODIX_CHIP_RECOVERY_RESET:
+      goodix_cmd_reset_sensor (ssm, dev,
+                                fpi_ssm_get_cur_state (ssm) == GOODIX_CHIP_RECOVERY_RESET,
+                                goodix_chip_result);
+      break;
+
+    case GOODIX_CHIP_READ:
+      goodix_cmd_read_chip_id (ssm, dev, goodix_chip_result);
+      break;
+
+    case GOODIX_CHIP_AFTER_DELAY:
+      if (*failures == 6)
+        fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                              FP_DEVICE_ERROR_PROTO,
+                              "Chip identification failed after six read cycles"));
+      else
+        fpi_ssm_jump_to_state (ssm, GOODIX_CHIP_READ);
+      break;
+    }
+}
+
+typedef enum {
   GOODIX_GTLS_HELLO,
   GOODIX_GTLS_IDENTITY,
   GOODIX_GTLS_VERIFY,
@@ -326,9 +439,13 @@ goodix_gtls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
     {
     case GOODIX_GTLS_HELLO:
       goodix_transport_reset_mcu (dev);
-      RAND_bytes (self->gtls.client_random, 32);
       goodix_crypto_gtls_init (&self->gtls, self->psk);
-      RAND_bytes (self->gtls.client_random, 32);
+      if (RAND_bytes (self->gtls.client_random, 32) != 1)
+        {
+          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
+                                 FP_DEVICE_ERROR_PROTO, "GTLS client random generation failed"));
+          return;
+        }
       goodix_cmd_mcu_send (ssm, dev, 0xFF01, self->gtls.client_random, 32);
       break;
 
@@ -551,55 +668,15 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_OPEN_RESET:
       {
-        goodix_cmd_reset_sensor (ssm, dev);
-      }
-      break;
+        FpiSsm *chip = fpi_ssm_new (dev, goodix_chip_ssm_handler, GOODIX_CHIP_NUM_STATES);
 
-    case GOODIX_OPEN_READ_CHIP_ID:
-      goodix_cmd_read_chip_id (ssm, dev);
+        fpi_ssm_set_data (chip, g_new0 (guint, 1), g_free);
+        fpi_ssm_start_subsm (ssm, chip);
+      }
       break;
 
     case GOODIX_OPEN_READ_OTP:
-      {
-        /* Parse the chip ID reply before reading the OTP */
-        g_autoptr(GError) error = NULL;
-        const guint8 *pl;
-        gsize pl_len;
-        guint32 chip_id;
-        guint16 product_id;
-
-        if (!goodix_cmd_parse_chip_id_reply (dev, &pl, &pl_len, &error))
-          {
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
-
-        if (pl_len != 4)
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Unexpected chip ID reply length: %zu",
-                                                           pl_len));
-            return;
-          }
-
-        chip_id = goodix_crypto_decode_u32 (pl);
-        self->chip_id = chip_id;
-        product_id = g_usb_device_get_pid (fpi_device_get_usb_device (dev));
-        if (!goodix_milan_runtime_subtype_for_chip (
-              self->chip_id, &self->milan_sensor_subtype))
-          {
-            fpi_ssm_mark_failed (
-              ssm,
-              fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
-                                        "Native Milan runtime is unsupported for product 0x%04x chip 0x%08x",
-                                        product_id, self->chip_id));
-            return;
-          }
-        fp_dbg ("Chip ID: 0x%08x", chip_id);
-
-        goodix_cmd_read_otp (ssm, dev);
-      }
+      goodix_cmd_read_otp (ssm, dev);
       break;
 
     case GOODIX_OPEN_PARSE_OTP:
@@ -630,6 +707,10 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
         goodix_milan_persistence_prepare (dev);
         goodix_device_parse_otp (pl, pl_len, &self->calib);
+        /* Conservative Linux session policy: every cold initialization,
+         * including reinit, starts DAC/history from OTP. This does not model
+         * the full native lifetime. */
+        self->dynamic_dac = (GoodixDynamicDacState){ .default_dac = self->calib.dac_h };
         if (!goodix_load_psk (self, &error))
           {
             fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
@@ -842,6 +923,16 @@ goodix_cleanup_failed_open (FpDevice *dev)
   GUsbDevice *usb_dev = fpi_device_get_usb_device (dev);
   g_autoptr(GError) cleanup_error = NULL;
 
+  /* Transport is joined and this open will not retry. A failed open
+   * will not receive the ordinary close callback. */
+  g_clear_object (&self->cancel);
+  g_clear_pointer (&self->otp_data, g_free);
+  self->otp_len = 0;
+  g_clear_pointer (&self->fw_version, g_free);
+  g_clear_pointer (&self->rx.buf, g_free);
+  self->reply_payload = NULL;
+  self->reply_payload_len = 0;
+
   if (self->usb_interface_claimed)
     {
       if (!g_usb_device_release_interface (usb_dev, GOODIX_USB_INTERFACE, 0,
@@ -871,6 +962,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
       goodix_transport_invalidate (dev);
       self->open_ref_powered = FALSE;
       goodix_milan_generation_retain_process (dev);
+      g_clear_pointer (&self->hardware_reference, g_free);
       goodix_milan_persistence_clear (dev);
       OPENSSL_cleanse (self->psk, sizeof (self->psk));
       OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
@@ -881,6 +973,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
       if (!self->open_recovery_attempted && !self->open_gtls_failed &&
           !fpi_device_action_is_cancelled (dev) &&
           !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
+          !g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_NO_DEVICE) &&
           error->domain != FP_DEVICE_RETRY)
         {
           self->open_recovery_attempted = TRUE;
@@ -957,6 +1050,7 @@ goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
   fp_info ("Reinitializing device after system sleep");
   self->action_epoch++;
   goodix_milan_generation_retain_process (dev);
+  g_clear_pointer (&self->hardware_reference, g_free);
   self->open_recovery_attempted = FALSE;
   self->open_gtls_failed = FALSE;
   self->open_usb_reset_required = TRUE;

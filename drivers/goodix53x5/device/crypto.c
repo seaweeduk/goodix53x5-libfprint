@@ -151,22 +151,34 @@ goodix_crypto_hmac_sha256 (const guint8 *key,
  *
  * AES-128-CBC decryption using OpenSSL EVP.
  * No padding (input must be a multiple of 16 bytes).
+ * Returns TRUE only if the complete input was decrypted; discard out on failure.
  */
-void
+gboolean
 goodix_crypto_aes_cbc_decrypt (const guint8 *key,
                                const guint8 *iv,
                                const guint8 *in,
                                gsize         in_len,
                                guint8       *out)
 {
-  EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new ();
+  EVP_CIPHER_CTX *ctx;
   int out_len = 0, final_len = 0;
+  gboolean success;
 
-  EVP_DecryptInit_ex (ctx, EVP_aes_128_cbc (), NULL, key, iv);
-  EVP_CIPHER_CTX_set_padding (ctx, 0);
-  EVP_DecryptUpdate (ctx, out, &out_len, in, (int) in_len);
-  EVP_DecryptFinal_ex (ctx, out + out_len, &final_len);
+  if (in_len > G_MAXINT || in_len % 16 != 0)
+    return FALSE;
+
+  ctx = EVP_CIPHER_CTX_new ();
+  if (!ctx)
+    return FALSE;
+
+  success = EVP_DecryptInit_ex (ctx, EVP_aes_128_cbc (), NULL, key, iv) == 1 &&
+            EVP_CIPHER_CTX_set_padding (ctx, 0) == 1 &&
+            EVP_DecryptUpdate (ctx, out, &out_len, in, (int) in_len) == 1 &&
+            out_len >= 0 && (gsize) out_len <= in_len &&
+            EVP_DecryptFinal_ex (ctx, out + out_len, &final_len) == 1 &&
+            final_len >= 0 && (gsize) final_len == in_len - (gsize) out_len;
   EVP_CIPHER_CTX_free (ctx);
+  return success;
 }
 
 /**
@@ -357,10 +369,11 @@ goodix_crypto_gtls_verify_identity (GoodixGtlsCtx *ctx)
  * Block sizes: block 0 = 0x3A7, blocks 1-13 = 0x3F0, block 14 = remainder
  *
  * After reassembly:
- *   1. Verify HMAC over last 0x400 bytes
- *   2. Strip first 5 bytes
- *   3. Verify CRC32-MPEG2 over data (excl. last 4 bytes)
- *   4. GEA decrypt using first 4 bytes of symmetric_key
+ *   1. Verify HMAC over last 0x400 bytes and advance receive counter
+ *   2. Require an established session (state 5)
+ *   3. Strip first 5 bytes
+ *   4. Verify CRC32-MPEG2 over data (excl. last 4 bytes)
+ *   5. GEA decrypt using first 4 bytes of symmetric_key
  *
  * Returns newly allocated decrypted data, or NULL on error.
  */
@@ -440,10 +453,15 @@ goodix_crypto_gtls_decrypt_sensor_data (GoodixGtlsCtx *ctx,
           /* AES-CBC decrypt block */
           block_size = MIN (0x3F0, ep_remaining);
 
-          goodix_crypto_aes_cbc_decrypt (ctx->symmetric_key,
-                                         ctx->symmetric_iv,
-                                         ep, block_size,
-                                         gea_encrypted + gea_len);
+          if (!goodix_crypto_aes_cbc_decrypt (ctx->symmetric_key,
+                                              ctx->symmetric_iv,
+                                              ep, block_size,
+                                              gea_encrypted + gea_len))
+            {
+              fp_warn ("AES-CBC sensor block decryption failed");
+              g_free (gea_encrypted);
+              return NULL;
+            }
           gea_len += block_size;
           ep += block_size;
           ep_remaining -= block_size;
@@ -480,6 +498,15 @@ goodix_crypto_gtls_decrypt_sensor_data (GoodixGtlsCtx *ctx,
 
   fp_dbg ("Encrypted payload HMAC verified");
   ctx->hmac_server_counter = (ctx->hmac_server_counter + 1) & 0xFFFFFFFF;
+
+  /* Native 0x180024940 consumes the authenticated counter even when the
+   * handshake has not completed. Derived keys alone do not admit an image. */
+  if (ctx->state != 5)
+    {
+      fp_warn ("Sensor data received in incomplete GTLS state: %d", ctx->state);
+      g_free (gea_encrypted);
+      return NULL;
+    }
 
   /* Strip first 5 bytes */
   if (gea_len < 5 + 4)

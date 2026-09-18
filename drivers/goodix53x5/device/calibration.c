@@ -26,6 +26,178 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* usbinterface.dll 007c84/0115a4: the first pass includes the border; only the
+ * second pass selects interior pixels. Keep signed differences/group means
+ * separate from the unsigned selected sum and mean. */
+static gboolean
+goodix_dynamic_dac_mean (const guint16 *live,
+                         const guint16 *reference,
+                         guint16        reg,
+                         guint32       *mean)
+{
+  guint32 high_sum = 0, low_sum = 0;
+  gint32 high_count = 0, low_count = 0;
+  guint32 selected_sum = 0, selected_count = 0, nonzero = 0;
+  const guint32 interior = (GOODIX_SENSOR_HEIGHT - 2) * (GOODIX_SENSOR_WIDTH - 2);
+  /* Native writes only the low word of a later dword mask input. Use zero for
+   * its unwritten upper word, retaining the defined register bias in both the
+   * positive counter and the no-high-group threshold. */
+  guint32 positive = reg;
+  gint32 threshold = reg;
+
+  for (guint i = 0; i < GOODIX_SENSOR_PIXELS; i++)
+    {
+      gint32 sample = (gint16) live[i];
+      gint32 base = (gint16) reference[i];
+      gint32 difference = base - sample;
+
+      if (difference > 3800)
+        {
+          high_sum += (guint32) difference;
+          high_count++;
+        }
+      else
+        {
+          low_sum += (guint32) difference;
+          low_count++;
+        }
+      positive += sample > base;
+    }
+
+  if (high_count)
+    {
+      gint32 high_mean = (gint32) high_sum / high_count;
+      gint32 low_mean = low_count ? (gint32) low_sum / low_count : 0;
+
+      threshold = 3800 - (high_mean - low_mean) / 4;
+    }
+
+  for (guint row = 1; row < GOODIX_SENSOR_HEIGHT - 1; row++)
+    for (guint column = 1; column < GOODIX_SENSOR_WIDTH - 1; column++)
+      {
+        guint i = row * GOODIX_SENSOR_WIDTH + column;
+        gint32 sample = (gint16) live[i];
+        gint32 base = (gint16) reference[i];
+
+        nonzero += sample != 0;
+        if (sample <= 3800 ||
+            (base - sample >= threshold && threshold != 0 &&
+             ((gint32) (positive * 10u) <= GOODIX_SENSOR_PIXELS || sample <= base)))
+          {
+            selected_sum += (guint32) sample;
+            selected_count++;
+          }
+      }
+
+  /* Native rounds the divisions to binary32 before the binary64 comparisons. */
+  if ((double) ((float) nonzero / (float) interior) > 0.95 &&
+      (double) ((float) selected_count / (float) interior) <= 0.4)
+    return FALSE;
+
+  *mean = selected_count ? selected_sum / selected_count : 0;
+  return TRUE;
+}
+
+static guint16
+goodix_dynamic_dac_step (guint16  reg,
+                         guint16  default_dac,
+                         guint16  tcode,
+                         guint32  mean,
+                         gboolean correction)
+{
+  gboolean upward = mean > 2000;
+  guint32 delta = upward ? mean - 2000u : 2000u - mean;
+  guint16 temperature = (guint16) ((tcode ? tcode : 128) << 4);
+  double scaled = ((double) (guint64) delta * 0.25) / ((double) temperature * 0.283);
+  /* CVTTSD2SI returns INT_MIN for an invalid conversion; its low word is zero.
+   * The verified OTP domain always supplies a nonzero denominator. */
+  guint16 step = scaled >= 0.0 && scaled < 2147483648.0 ? (guint16) (gint32) scaled : 0;
+  guint32 field = reg & 0x1ff0;
+  guint16 candidate;
+
+  if (step == 0)
+    step = 1;
+
+  if (upward)
+    {
+      guint32 ceiling = 16u * ((guint32) default_dac + 30u);
+
+      candidate = field + 16u * step > ceiling ? ceiling : reg + 16u * step;
+    }
+  else
+    {
+      /* Middle correction compares D-5+step, but still caps at D-4. This
+       * asymmetry can alternate around the floor; it is not a common clamp. */
+      gint32 floor_test = (gint32) (16u * ((guint32) default_dac -
+                                           (correction ? 5u : 4u) + step));
+
+      candidate = (gint32) field < floor_test ?
+                  16u * default_dac - 64u : reg - 16u * step;
+    }
+
+  return reg ^ ((candidate ^ reg) & 0x1ff0);
+}
+
+void
+goodix_device_adjust_dac (GoodixDynamicDacState *state,
+                          GoodixCalibParams     *params,
+                          const guint16         *live,
+                          const guint16         *reference)
+{
+  guint16 reg = (guint16) (params->dac_h << 4) | 8;
+  guint32 mean;
+  gboolean correction = FALSE;
+
+  if (!goodix_dynamic_dac_mean (live, reference, reg, &mean))
+    goto out;
+
+  if (mean > 3200 || mean < 1500)
+    {
+      guint16 *streak = mean > 3200 ? &state->high : &state->low;
+      guint16 *opposite = mean > 3200 ? &state->low : &state->high;
+      guint16 was_active = state->active;
+
+      if (*opposite < 3)
+        *opposite = 0;
+      else
+        was_active = state->active = 0;
+      if (*streak < 3)
+        (*streak)++;
+      if (*streak < 3)
+        goto out;
+      *opposite = 0;
+      if (was_active == 0)
+        {
+          state->active = 1;
+          state->adjustments = 0;
+        }
+    }
+  else if (state->active == 1)
+    {
+      if (mean >= 1900 && mean <= 2100)
+        {
+          state->active = state->high = state->low = 0;
+          goto out;
+        }
+      correction = TRUE;
+    }
+  else
+    {
+      if (state->high < 3)
+        state->high = 0;
+      if (state->low < 3)
+        state->low = 0;
+      goto out;
+    }
+
+  reg = goodix_dynamic_dac_step (reg, state->default_dac, params->tcode,
+                                 mean, correction);
+  state->adjustments = (guint16) (state->adjustments + 1);
+out:
+  /* Retain the native word here; algorithm consumers project its low byte. */
+  params->dac_h = reg >> 4;
+}
+
 /* OTP hash lookup table (from driver_53x5.py) */
 static const guint8 otp_hash_table[256] = {
   0x00, 0x07, 0x0e, 0x09, 0x1c, 0x1b, 0x12, 0x15,

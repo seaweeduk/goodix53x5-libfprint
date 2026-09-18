@@ -31,6 +31,13 @@ void     goodix_device_parse_otp (const guint8      *otp,
                                   gsize              otp_len,
                                   GoodixCalibParams *params);
 
+/* Both planes contain GOODIX_SENSOR_PIXELS decoded values. Call only after a
+ * successful live read, before publishing calibration metadata. */
+void     goodix_device_adjust_dac (GoodixDynamicDacState *state,
+                                   GoodixCalibParams     *params,
+                                   const guint16         *live,
+                                   const guint16         *reference);
+
 void     goodix_device_patch_config (guint8              *config,
                                      gsize                config_len,
                                      const GoodixCalibParams *params);

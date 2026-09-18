@@ -136,6 +136,10 @@ def main():
         raise SystemExit(f"case {args.case} must use profile 9")
     if policy.get("subtype") != 12:
         raise SystemExit(f"case {args.case} must use sensor subtype 12")
+    for field in ("tcode", "dac_high", "dac_low"):
+        value = replay.get(field)
+        if type(value) is not int or not 0 <= value <= 0xFFFF:
+            raise SystemExit(f"replay {field} must be a uint16")
     purpose = replay_purpose(replay.get("purpose"), "replay purpose")
     prelude = replay.get("prelude", [])
     if not isinstance(prelude, list) or any(not isinstance(name, str) for name in prelude):

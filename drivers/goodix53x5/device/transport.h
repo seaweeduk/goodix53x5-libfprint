@@ -34,6 +34,10 @@ typedef struct
 typedef struct
 {
   GoodixCmd cmd;
+  /* A2 reset with data uses the shared A/0,A/1,A/4 event, ACK 500 ms,
+   * response 1000 ms, one attempt. Type-zero IRQ payload is {5,20}; its
+   * completed reply view contains the little-endian three-byte IRQ value.
+   * Without data the type-zero payload is {1,20}, ACK-only. */
   gboolean expect_data;
   gboolean idle_after_ack;
   GoodixProfile9FdtWaitMode cancelled_mode;
@@ -90,8 +94,10 @@ gboolean goodix_recv_select_fdt (FpDevice *dev, GoodixFdtEventType *type,
 /* Invalidate transport-local reception only after its owners have joined. */
 void goodix_transport_invalidate (FpDevice *dev);
 
-/* Access the transport's once-validated packet view. Payloads borrow the current
- * RX buffer until the next receive reset; this does not reparse the bytes. */
+/* Access the transport's validated response view. Generic command completion
+ * selects the retained shared cache (and awaited selector), including data
+ * received before ACK. Other packets borrow RX storage. Consume either view
+ * before starting another receive; this does not reparse the wire bytes. */
 gboolean goodix_parse_reply (FpDevice      *dev,
                              guint8        *out_category,
                              guint8        *out_command,

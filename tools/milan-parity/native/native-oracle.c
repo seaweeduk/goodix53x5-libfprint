@@ -26,9 +26,6 @@
 
 #define PROFILE 9
 #define SUBTYPE 12
-#define T_CODE 0x79
-#define DAC_HIGH 0x7d
-#define DAC_LOW 0xc6
 #define ANTIFAKE_MODE 1
 #define PURPOSE_IDENTIFY 0
 #define PURPOSE_ENROLL 1
@@ -730,6 +727,7 @@ static int
 run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
                const wchar_t *base_path, const wchar_t *live_path,
                const wchar_t *template_path,
+               uint16_t t_code, uint16_t dac_high, uint16_t dac_low,
                const wchar_t *const *prelude_arguments,
                int prelude_count)
 {
@@ -896,9 +894,13 @@ run_boundary (const wchar_t *dll_path, const wchar_t *output_directory,
   if (queue_before_match < 0)
     goto out;
   extraction_attempted = 1;
+  /* The sample adapter (032040 -> 02c810) retains only the low byte of
+   * each captured word before 02e360 calls identifyImage. The export itself
+   * takes words, so reproduce that adapter boundary here, not in the input. */
   identify_status = api.identify_image (
     &processed, api.auxiliary, candidates, 1, &matched_index, &score,
-    identify_quality, 0, 1, api.calibration, live, T_CODE, DAC_HIGH, DAC_LOW,
+    identify_quality, 0, 1, api.calibration, live,
+    (uint8_t) t_code, (uint8_t) dac_high, (uint8_t) dac_low,
     ANTIFAKE_MODE);
   if (boundary_rearm_site ||
       !write_code_byte (boundary_site, boundary_saved_byte))
@@ -1145,7 +1147,7 @@ run_batch (const wchar_t *dll_path, const wchar_t *manifest_path)
               goto line_out;
             fields[field_count++] = cursor + 1;
           }
-      if (field_count < 4)
+      if (field_count < 7 || field_count > 7 + 255)
         goto line_out;
       for (int i = 0; i < field_count; i++)
         {
@@ -1182,9 +1184,30 @@ line_out:
   return ok;
 }
 
+static int
+parse_calibration_argument (const wchar_t *argument, uint16_t *value)
+{
+  uint32_t parsed = 0;
+
+  if (!*argument)
+    return 0;
+  for (const wchar_t *cursor = argument; *cursor; cursor++)
+    {
+      if (*cursor < L'0' || *cursor > L'9')
+        return 0;
+      parsed = parsed * 10 + (uint32_t) (*cursor - L'0');
+      if (parsed > UINT16_MAX)
+        return 0;
+    }
+  *value = (uint16_t) parsed;
+  return 1;
+}
+
 int
 wmain (int argc, wchar_t **argv)
 {
+  uint16_t t_code, dac_high, dac_low;
+
   setvbuf (stdout, NULL, _IONBF, 0);
   if (argc == 4 && wcscmp (argv[1], L"batch") == 0)
     {
@@ -1192,16 +1215,23 @@ wmain (int argc, wchar_t **argv)
         return 1;
       return 0;
     }
-  if (argc < 7 || wcscmp (argv[1], L"natural") != 0)
+  if (argc < 10 || argc > 10 + 255 || wcscmp (argv[1], L"natural") != 0)
     {
       fwprintf (stderr,
-                 L"usage: %ls natural DLL OUTPUT BASE LIVE TEMPLATE [PURPOSE:PRELUDE...]\n"
+                 L"usage: %ls natural DLL OUTPUT BASE LIVE TEMPLATE TCODE DAC_HIGH DAC_LOW [PURPOSE:PRELUDE...]\n"
                  L"       %ls batch DLL MANIFEST\n",
                 argv[0],
                 argv[0]);
       return 2;
     }
-  for (int i = 7; i < argc; i++)
+  if (!parse_calibration_argument (argv[7], &t_code) ||
+      !parse_calibration_argument (argv[8], &dac_high) ||
+      !parse_calibration_argument (argv[9], &dac_low))
+    {
+      fwprintf (stderr, L"calibration arguments must be decimal uint16 values\n");
+      return 2;
+    }
+  for (int i = 10; i < argc; i++)
     {
       int32_t purpose;
       const wchar_t *path;
@@ -1213,7 +1243,8 @@ wmain (int argc, wchar_t **argv)
         }
     }
   if (!run_boundary (argv[2], argv[3], argv[4], argv[5], argv[6],
-                      (const wchar_t *const *) &argv[7], argc - 7))
+                      t_code, dac_high, dac_low,
+                      (const wchar_t *const *) &argv[10], argc - 10))
     {
       fwprintf (stderr, L"native oracle failed\n");
       return 1;
