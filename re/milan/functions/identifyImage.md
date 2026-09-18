@@ -42,6 +42,49 @@ enrolled-feature counts therefore do not themselves change the first
 candidate's extraction configuration. See `FUN_180037c80.md` and
 `FUN_18004ae70.md`.
 
+## Processed Metadata Provenance
+
+For subtype 12, `FUN_18006c510` calls `FUN_180070fc0` at
+`0x18006caff` with its final metadata mode. The mode starts at zero. Taking
+the renderer's rejection branch initially selects mode four; the raw and
+type-12 normalized residual thresholds can change it to mode two or three
+and set return status `0x7531`. Thus a **zero return** supplies mode zero or
+four, whereas modes two and three belong to the `0x7531` return. Mode zero
+leaves existing pixels untouched; mode four explicitly clears the encoded low
+field. Modes two and three write the column100/101 low-bit pairs `(1,1)`
+and `(0,1)`, respectively.
+Merely reaching the encoder does not establish which return/mode pair occurred.
+
+The renderer's metadata is not necessarily final. Its caller `FUN_18006d540`
+can call `FUN_180070fc0` again at `0x18006dd34` with the classifier-produced
+mode and mask state. Once the alternating header marker is valid, encoder
+modes five through nine update only the high-class bits at columns103..105;
+they preserve the low bits at columns100..101. The switch's default branch
+clears both fields, but it is not the mode-five-through-nine path. Initial
+marker construction clears the eight metadata bits only when the marker is
+absent. Consequently a classifier high-mode write can preserve a renderer's
+nonzero low field all the way to extraction.
+
+Its late retry path calls the encoder at `0x18006ddc0`
+with mode **one** and mask-enable zero: the successful `FUN_180069e00` return
+in `EAX` is stored as argument five at `0x18006ddbc`, while zero `R15D` is
+stored as argument six at `0x18006ddb7`. This encodes raw low one, which
+`FUN_180070d90` decodes as low class two, and sets return status `0x7531`.
+The late encoder is guarded by packed chip-information bit two. Ordinary
+profile-nine initialization makes that bit zero, so this late mode-one call
+is not a profile-nine producer. `ppp_param_init(9)` reads its row at
+`0x1800e46b4`: the three low-flag words are `[1,0,0]`, the threshold is 800,
+dimensions are 88/108, and sensor type is 12. The corresponding globals
+`0x180218e58`, `0x180218e60`, and `0x180218e64` have their only writes in
+`ppp_param_init`; `preprocessor` combines them into the chip-information word
+without setting bit two. This exclusion depends on that initialized export
+path, not on arbitrary arguments supplied directly to `FUN_18006d540`.
+
+Extraction and matching consume the metadata left after this ordered sequence.
+A low-class predicate at the matcher boundary must
+therefore use the final processed image rather than the renderer's intermediate
+mode alone.
+
 ## Array ABI And Retained Owners
 
 - Live extraction call and retained probe object: `0x180001c8a` calls

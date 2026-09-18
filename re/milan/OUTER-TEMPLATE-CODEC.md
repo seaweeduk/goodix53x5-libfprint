@@ -158,9 +158,8 @@ The trailing dwords have active type-12 owners:
 - `a7`, live `+0x8cfc`: append counter; incremented by append;
 - `a8`, live `+0x8d00`: derived aggregate footprint/residual scalar.
 
-`FUN_180038810` is the recovered `a8` writer, but Ghidra resolves no direct code
-caller. The normal type-12 identify/study path exercised here leaves `a8`
-unchanged.
+`FUN_180038810` writes `a8`, but has no resolved direct code caller. The normal
+type-12 identify/study path leaves `a8` unchanged.
 
 ## Size And CRC
 
@@ -184,6 +183,19 @@ are complete, and writes it at offsets `1..4`. The payload-length dword and both
 envelope tags are outside the CRC domain. The decoder builds the same table and
 checks the same declared payload domain before allocation.
 
+The native decoder is more permissive than this writer layout. Its format
+helper `FUN_180040330` repeatedly divides the signed format dword by ten and
+accepts a leading decimal digit of three, rather than requiring the writer's
+exact `0x11f248ea`. It returns `0xffff0007` for a rejected format; framing/CRC
+errors return `0xffff0006`. The declared CRC span is read before proving that it
+fits the supplied input length. Fixed-header tags are dispatched rather than
+checked against writer order, and `fa/fb` are optional on decode. Relation and
+tail decoders likewise dispatch tags; their checks do not constitute full
+structural validation. The anti-fake child decoder `FUN_1800410f0` allocates and
+copies its declared length for any nonzero presence byte, with no separate
+allocation-status return. These permissive or unsafe forms are not guarantees
+of canonical type-12 producer validity.
+
 ## Public Ownership And Return Values
 
 `templateUnPack(packed, length, context, out)` accepts a null context. Null
@@ -196,6 +208,12 @@ public handle whose first field owns the decoded `0x8e08` live object. Null
 input, output, or zero length returns `0x81`; public-handle allocation failure
 returns `0x82`; internal decode statuses are otherwise propagated. The output
 handle is assigned only on success.
+
+The three native adapter callers pass a null context. `FUN_180011530` checks the
+returned status before retaining the handle. `FUN_18002dde0` and
+`FUN_18002e360` do not inspect the status returned by their two-template and
+gallery-slot decode calls, respectively; subsequent use therefore supplies the
+only adapter-level disposition for those failures.
 
 `templateGetPackedSize(handle)` returns zero for a null handle or null internal
 pointer. Otherwise it returns the exact signed 32-bit size above.
@@ -211,9 +229,18 @@ handle or a handle whose first field is null is ignored; in the latter case the
 wrapper itself is not freed. A successful delete does not clear the caller's
 handle variable.
 
-Decoder failure after live-object allocation invokes `FUN_180037860` before the
-public wrapper is freed, so partially allocated feature and queue owners remain
-under one cleanup owner.
+Cleanup depends on the failure stage. An unknown fixed-header tag sets
+`0xffff0006` at `0x18003e6c8` and branches from `0x18003e71f` to
+`0x18003e876`, bypassing destruction of the already allocated live object.
+Feature-storage allocation failures and reported child-parse failures instead
+reach `FUN_180037860` at `0x18003e871`, which destroys the partial owners.
+The caller would also bypass cleanup for a nonzero `FUN_18003fef0` return,
+but that callee returns nonzero only for a null object, already excluded here.
+On each failed decode the public wrapper frees only its own eight-byte
+allocation and leaves the caller's output untouched. `FUN_180047550` returns
+success for a nonnull object and does not propagate a status from its type-12
+normalization callee; it is not a propagated normalization-failure path. See
+`functions/FUN_18003e3a0.md`.
 
 ## Round-Trip And Mutation Boundary
 
@@ -232,18 +259,115 @@ pack projects only the new reference's nonnegative cells. Null-context callers
 do not invoke this clipping behavior.
 
 Whole-template first-pack identity is not guaranteed merely by valid outer
-framing. `FUN_18003e3a0` runs post-decode feature normalization before returning,
-and that normalization can change feature-owned scalar bytes. A subsequent pack
-therefore changes those feature bytes and the dependent outer CRC while leaving
-the other outer fields intact under the null/canonical-limit preconditions above.
-Once this normalization is represented, a second
-unpack/pack is byte-identical. This is feature-state canonicalization, not an
-alternate outer layout.
+framing. `FUN_18003d6c0` clamps a nonempty feature's `b7 == record_count` to
+`record_count-1`; `FUN_18003e3a0` then runs feature normalization, recomputing
+`bb` and live `+0x148`. Packing reflects the changed feature scalars and outer
+CRC. For producer-emitted records with aligned coordinates and nonnegative
+quantized orientations, canonical optional-field encoding and an ascending
+reference star, a second unpack/pack is stable after those changes. This does
+not extend to arbitrary framed bytes: complete decode adjusts negative record
+orientations, the writer omits an explicitly encoded zero `c7`, and reference-
+star projection restores ascending relation order. See `functions/FUN_18003d6c0.md`
+for the positive type-12 record-producer invariant.
 
-Normal identify can change feature-owned state and transient queue occupancy,
-but not the serialized header, relation, graph, or tail owners. Its packed
-after-match CRC still changes whenever a feature byte changes. Positive study
-can change the following outer owners before the single final pack:
+The current mapping is deliberately split. `goodix_milan_template_unpack` in
+`drivers/goodix53x5/milan/template/codec.c` borrows feature slices and copies
+outer fields; it does not implement native live-object construction by itself.
+`goodix_milan_print_validate_template` in `print.c` checks the persisted envelope,
+counts, order permutation, partition bounds and relation matrix, then repacks the
+borrowed feature bytes verbatim. Its successful return does not certify that all
+feature fields could have been emitted together by extraction or study. For
+example, it accepts reordered unique star records and does not inspect packed
+orientation signs or reject an explicit zero `c7`.
+
+Reordered unique star records reconstruct the same absolute matrix slots;
+neither order in that wire list nor omission versus explicit zero `c7` changes
+the decoded feature traversal order or classification value. Their retained
+wire representations are safe import aliases, although a native pack chooses
+ascending relations and omits zero `c7`. Exact native re-emission of these
+aliases is distinct from equality of their decoded matching state.
+
+Negative record orientations are different. `FUN_18003fef0` adds `0x3244` once
+to each negative decoded signed word before matching, independently of the
+optional capacity context. `FUN_18003d6c0` decodes byte `b` as `b*256` for
+`b<0x80`, otherwise `(0x80-b)*256`; byte `0x80` therefore decodes to zero.
+Only bytes greater than `0x80` produce a negative word. The signed-word test
+and single addition are at `0x180040280..0x18004028c`; an adjusted word can
+remain negative and is not adjusted again on a retained handle.
+`FUN_180077e20` consumes signed angle
+differences with one conditional period adjustment, then a separate half-period
+retry; it is not an arbitrary-integer modulo operation. For differences
+`[0,0,-25600]`, the first adjustment gives `[0,0,-12732]` and the retry gives
+`[6434,6434,-6298]`, which fails the `0x400` mean-deviation bound. Applying the
+decode-time addition to the negative gallery word first instead gives
+`[0,0,136]` after the first adjustment, which passes. This can arise from packed
+gallery orientation byte `0xb2` (decoded `-12800`) paired with probe orientation
+`12800`, with two other paired differences zero. Both angle magnitudes are
+within the signed half-turn encoding; the difference is not an out-of-range
+integer artifact. This gate controls whether a triangle reaches affine fitting.
+`FUN_18005b900` supplies gallery-minus-probe signed angle arrays to this gate,
+then removes pairs from its returned mask and calls `FUN_180057140`. With two
+zero differences and two of the negative differences above, every triangle is
+mixed: unadjusted differences reject all four triangles, while adjusted differences
+all pass. Identity-corresponding noncollinear points inside the sensor domain
+give the native identity model and four inliers with zero residual; the final
+`0x506` orientation gate preserves them. Without decode-time adjustment there
+is no model or inliers.
+The optional refinement requires residual greater than `0x4000`, so it cannot
+erase this identity-case distinction.
+
+The adjusted live angle must survive until the live owner is replaced or
+destroyed. Packing quantizes it to its high byte: `-12800 + 0x3244 = 68` packs
+as zero. Re-decoding those packed bytes during retained matching would therefore
+lose 68 units. Fresh reload intentionally performs the decoder again, whereas
+retained matching must use the original adjusted live word. The current mapping
+is `milan_match_decode_imported_angles` in `match/lifecycle.c`, which keeps both
+the serialized record projection and independent live records. The ordinary
+record codec remains the signed-byte reconstruction owner; the lifecycle helper
+adds the full-template adjustment only on fresh entry.
+
+Fresh matching in `match/lifecycle.c` normalizes a writable gallery copy and
+repairs the partition endpoint before record reconstruction. Its graphless
+normalization boundary additionally requires `f2=-1`, no relations and every
+feature's `b5=0`. Established normalization consumes the active flags, masks and
+reference transforms together. Independently admissible scalar values do not
+establish a valid joint state for that consumer. Retained matching resolves the
+queue-owned byte identity before admission, skips fresh normalization, and uses
+independent installed live-record/count/partition owners. Packed `fa/fb` alone
+cannot identify or reconstruct those retained owners.
+
+Normal identify can change feature-owned state, transient queue occupancy and
+tail order. The type-12 entry in `FUN_18005edb0` clears each feature's `ba` from
+five to zero at `0x18005ee60..0x18005ee7d` before calling `FUN_180055a40`.
+This is a dispatcher mutation, separate from decoding and mask normalization.
+Enrollment initializes gallery `ba` to zero in `FUN_180042610` and
+`FUN_180042c30`; append writes one in `FUN_1800456b0`; replacement through
+`FUN_1800452e0` preserves zero and changes any nonzero target state to two.
+The independent queue copy in `FUN_180045a50` writes minus one. None of those
+writes supplies state five. They do not restrict imported gallery state:
+`FUN_18003d6c0` copies tag `ba` directly to `+0x124`, and neither reconciliation
+nor mask normalization derives another field from it before dispatch. The
+adapter's `FUN_18002e360` checks the device identity and wrapper CRC, then passes
+the packed body to null-context `templateUnPack` and the resulting handle to
+`identifyImage`. `FUN_18002fe70` is a CRC comparison, not feature provenance or
+scalar validation. For an otherwise valid type-12 gallery and successful policy
+initialization, imported state five is therefore an explicit input of this
+reset. The reset visits every gallery feature before traversal and survives a
+nonpositive score. Subsequent packing writes zero; subsequent replacement
+preserves zero rather than promoting five to two, and study footprint selection
+no longer excludes that feature on its state-five predicate. Current
+`goodix_milan_match_serialized_feature_result_internal` in `match/lifecycle.c`
+maps this dispatcher mutation to the writable gallery before matcher traversal,
+on both fresh and retained calls. The queued trigger matcher enters below this
+ordinary dispatch boundary.
+
+Compact-positive finalization in that matcher increments contributing `be`
+fields and calls `FUN_1800607b0` at `0x180057084`, changing the serialized `a1`
+order vector without incrementing the study generation. The serializer preserves
+that reordered tail. See `functions/FUN_1800607b0.md`. Matching does not thereby
+change relation, graph or fixed-header fields. Its packed after-match CRC changes
+when either feature bytes or order bytes change. Positive study can change the
+following outer owners before the single final pack:
 
 - append: tags `91/92`, the feature sequence, possible reference-star relation
   and `f2/f5` state, one `a1` entry, `a7`, and possibly `fa` at capacity;

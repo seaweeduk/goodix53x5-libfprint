@@ -3,9 +3,9 @@
 ## Scope And Identity
 
 This contract covers relation reconstruction and reference-star serialization in
-`GoodixEngineAdapter.dll` 2.0.310.900, SHA-256
-`6673db3874fea66a58e2da29e371d797b890c767ba0491134d4a372c5b27e3b4`, and
-the corresponding production implementation at `c182b140`.
+`GoodixEngineAdapter.dll` 2.0.310.900. The corresponding matrix and projection
+owners are in `milan/relations.c`; study orchestration is in
+`milan/study/study.c`.
 
 The relevant DLL owners are:
 
@@ -223,11 +223,8 @@ e8 <a11,  little-endian signed dword>
 e9 <ty,   little-endian signed dword>
 ```
 
-Enrollment 1 sequence 3 after study is a natural sparse-star witness with ten
-features, reference 0, registration count 46, and six projected records. Its
-relation stream SHA-256 is
-`471967d347ee000f8a2ed3745414961abdab591103f95f2d73c56a450f7597b0`.
-The reconstructed records and exact wire bytes are:
+For example, a sparse star with ten features, reference zero, and registration
+count 46 can encode these six records without emitting its missing slots:
 
 | Slot | Seven signed dwords | Exact 45-byte record |
 | ---: | --- | --- |
@@ -254,42 +251,59 @@ The packed metadata graph reference and graph-established flag are the matrix's
 feature order, queue state, and recognition-evidence relation count do not
 participate in slot reconstruction or projection.
 
-## Natural Validation Boundary
+## Established-Star Study Invariant
 
-The maintained natural enrollment stages exercise graphless and established
-states without synthetic relation input:
+A canonical freshly decoded established type-12 gallery starts with every
+nonreference pair unset. Recognition and study preserve that property:
 
-| Witness | Features / registration | Graph | Projected slots |
-| --- | --- | --- | --- |
-| enrollment 1 stage 1, SHA-256 `3a313458317850dc382af95a419ac80df5122d58abcf1e9133ec374df45c028f` | `1 / 1` | `f2=-1`, `f5=0` | none |
-| enrollment 1 stage 5, SHA-256 `f1ef9a22abecca5eba3adb5a4fb7e815c12bd74a863cc620f73e119db3d46196` | `5 / 11` | `f2=0`, `f5=1` | `[7]` |
-| enrollment 2 stage 3, SHA-256 `accbce6791399ed1e72dcb7cb0c841de52da7637147421104f4e9405d3ceb64c` | `3 / 4` | `f2=1`, `f5=1` | `[1,3]` |
+- Append initializes its new row to unset. `FUN_180045d40` then writes only
+  the new feature/reference slot.
+- Nonreference replacement clears all target incidents. Actions 3/4 reinstall
+  only the target/reference slot; action 2 leaves them unset. Nonreference
+  retained refresh clears the incidents and writes only the reference slot.
+  Reference replacement or refresh either preserves its incidents or composes
+  only already-defined reference incidents, retaining their leading words.
+- `FUN_180047120` reads feature/reference slots in both directions, composes
+  them into temporary directed footprints, and writes residuals and live
+  overlap counts. It does not store pairwise footprint transforms in the matrix.
+- The primary dispatcher and queued selector do not run enrollment graph closure.
 
-Natural loaded/studied projection witnesses span both observed references and
-sparse/full production stars:
+Consequently reference-star projection followed by matrix reconstruction loses
+no defined relation of an established-star gallery during these operations.
+This statement is independent of affine magnitude: it is about slot ownership,
+not the numerical equivalence of inversion, composition, or rasterization.
+It does not apply to a live enrollment matrix containing non-star edges, or to
+a graph-unestablished object with a stale reference and retained refresh before
+first anchoring; those require their own producer contracts.
 
-| Witness | Features / registration / reference | Relation slots | Relation-stream SHA-256 |
-| --- | --- | --- | --- |
-| enrollment 1 sequence 2 loaded | `8 / 29 / 0` | `[7]` | `279d334a4865887f2682a8b21649ef6fd8960c9725491c71e8cb9eb1f25c13f1` |
-| enrollment 1 sequence 2 after study | `9 / 37 / 0` | `[7]` | `279d334a4865887f2682a8b21649ef6fd8960c9725491c71e8cb9eb1f25c13f1` |
-| enrollment 1 sequence 3 after study | `10 / 46 / 0` | `[1,2,7,22,29,37]` | `471967d347ee000f8a2ed3745414961abdab591103f95f2d73c56a450f7597b0` |
-| enrollment 1 sequence 35 after study | `40 / 781 / 0` | all 39 reference-0 slots | `500b1cc7e40b9581c58b5dfec5ed2ee4595fbc5ae2476d3dfe1abf590d5e62d6` |
-| enrollment 2 sequence 35 after study | `40 / 781 / 1` | 38 defined reference-1 slots | `6aefad8be96a166a9b949af7e1c305b1b5bfbe34f70aa71bc6565d1607f3b26c` |
+Reconstruction of relations is also distinct from reconstructing the entire live
+gallery. Packed records omit live fields; fresh decode repairs partition endpoints
+and normalizes residuals and the nonserialized `+0x148` counts. Deferred queue
+bodies/ranks are absent from the wire. A reference-star equality therefore does
+not authorize replacing retained feature, count, or queue owners by fresh decode.
+See `functions/FUN_180044fc0.md`, `functions/FUN_1800469f0.md`, and
+`functions/FUN_18005d330.md` for their independent lifetimes.
 
-The natural parity comparison stream used for this audit has SHA-256
-`b0f27148aa0da69536a5a385bf61a9de022c6fc2c1b1c850444d91cf161a847f`.
-Its sealed source inventory predates the current source split, so it supplies
-the natural DLL/output corpus rather than build provenance for `c182b140`.
-Across both 399-operation enrollment chronologies:
+### Translation-Only Normalization Domain
 
-- all 798 loaded raw-gallery templates are byte-identical to the DLL outputs;
-- all 798 after-study templates are byte-identical to the DLL outputs;
-- all 1,596 templates have canonical row bases and exact triangular registration
-  counts, references 0 or 1, unique strictly ascending relation indices, and
-  byte-exact reconstruct/project/pack relation streams;
-- feature counts span 8 through 40 and relation counts span 1 through 39;
-- observed relation ranks span 0 through 27 and affine dwords span -47,838
-  through 39,744.
+If every defined star affine and incoming study affine has linear part
+`[256,0;0,256]`, inversion and composition preserve that linear part. Translation
+negation and addition retain their low dwords. This includes repeated reference
+replacement and retained refresh; no bound on the number of such operations is
+needed to preserve the linear part.
 
-Current-source review at `c182b140` against this complete natural boundary found
-no production-reachable relation reconstruction or projection difference.
+`FUN_180047120` composes the directed pair before arithmetic-shifting its two
+translations by one. Each resulting translation is therefore in
+`[-1073741824,1073741823]`. On the `52x44` footprint domain, adding `256*x` or
+`256*y`, and subtracting either source endpoint, cannot overflow a signed dword.
+The two `FUN_180073090` calls made by `FUN_180071370` reduce to a slope-256
+horizontal interval and a slope-zero vertical admission test. Accepted rows are
+contiguous and all consumed row intervals have been written. The cleared cell
+set is exactly the translated rectangle intersected with the destination domain,
+independent of the original binary mask or earlier removals.
+
+This bounds the half-resolution normalization and composed selector footprints.
+It does not bound the selector's separate unhalved primary-affine footprint or
+arbitrary affine normalization: `FUN_1800687c0` wraps its square sum and biased
+numerators, so its name alone is not a guarantee that every output coefficient
+has magnitude at most 256.
