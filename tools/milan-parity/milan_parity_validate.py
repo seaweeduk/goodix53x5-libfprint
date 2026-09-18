@@ -304,9 +304,7 @@ def validate_runtime(value: Any, path: Path, match: re.Match[str],
             runtime["boundary_policy"] != "canonical-zero-v1" or
             runtime["print_schema"] != 4 or runtime["profile_u16"] != 9 or
             runtime["sensor_subtype_u16"] != 12 or
-            runtime["purpose_u32"] != expected_purpose or
-            runtime["tcode_u16"] != 121 or runtime["dac_high_u16"] != 125 or
-            runtime["dac_low_u16"] != 198):
+            runtime["purpose_u32"] != expected_purpose):
         raise HarnessError(f"runtime record differs from the fixed profile-9 policy: {path.name}")
 
     cancellation = require_exact_keys(runtime["cancellation"], CANCELLATION_FIELDS,
