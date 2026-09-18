@@ -69,6 +69,7 @@ goodix_close_joined (FpDevice *dev, gpointer data)
   g_clear_pointer (&self->captured_raw_image, g_free);
   g_clear_pointer (&self->pending_persistence_state, g_free);
   goodix_milan_generation_retain_process (dev);
+  g_clear_pointer (&self->hardware_reference, g_free);
   g_clear_pointer (&self->enroll_transaction,
                    goodix_milan_enrollment_transaction_free);
   goodix_milan_persistence_clear (dev);
@@ -168,6 +169,7 @@ goodix_finalize (GObject *object)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (object);
 
   goodix_milan_generation_invalidate (&self->milan_retained_generation);
+  g_clear_pointer (&self->hardware_reference, g_free);
   G_OBJECT_CLASS (fpi_device_goodix53x5_parent_class)->finalize (object);
 }
 

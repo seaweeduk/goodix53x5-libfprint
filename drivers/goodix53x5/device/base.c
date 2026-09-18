@@ -774,6 +774,12 @@ goodix_base_ssm_handler (FpiSsm   *ssm,
             return;
           }
 
+        /* HAL+0x248 follows every admitted hardware base, even when the engine
+         * keeps an older consumed setup after unmarked checkbase recovery. */
+        g_clear_pointer (&self->hardware_reference, g_free);
+        self->hardware_reference = g_memdup2 (data->attempt.tx_on,
+                                              GOODIX_SENSOR_PIXELS * sizeof (guint16));
+
         /* Native update_allbase derives every FDT base from this first
          * TX-on sample after the complete sequence is admitted. */
         goodix_device_generate_fdt_base (data->fdt_tx_on_before,

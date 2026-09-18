@@ -973,6 +973,12 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
             }
         }
 
+        /* Command success and raw decode precede adjustment. Receiver arrivals
+         * and base captures do not adjust; metadata sees the post-read DAC. */
+        goodix_device_adjust_dac (&self->dynamic_dac, &self->calib,
+                                  self->captured_raw_image,
+                                  self->hardware_reference);
+
         GOODIX53X5_DEBUG_ONLY (
         if (goodix_debug_timing_enabled ())
           {

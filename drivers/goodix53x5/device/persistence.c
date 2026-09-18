@@ -218,7 +218,8 @@ goodix_milan_sha256 (const guint8 *data,
 }
 
 static gchar *
-goodix_milan_state_path (const guint8 identity[GOODIX_MILAN_STATE_DIGEST_SIZE])
+goodix_milan_state_path (const gchar *prefix,
+                         const guint8 identity[GOODIX_MILAN_STATE_DIGEST_SIZE])
 {
   static const gchar hex[] = "0123456789abcdef";
   gchar encoded[GOODIX_MILAN_STATE_DIGEST_SIZE * 2 + 1];
@@ -229,8 +230,7 @@ goodix_milan_state_path (const guint8 identity[GOODIX_MILAN_STATE_DIGEST_SIZE])
       encoded[i * 2 + 1] = hex[identity[i] & 0x0f];
     }
   encoded[sizeof (encoded) - 1] = '\0';
-  return g_strdup_printf (GOODIX_MILAN_STATE_DIR "/" GOODIX_MILAN_STATE_PREFIX
-                          "%s.bin", encoded);
+  return g_strdup_printf (GOODIX_MILAN_STATE_DIR "/%s%s.bin", prefix, encoded);
 }
 
 static gboolean
@@ -260,6 +260,7 @@ goodix_milan_state_directory_secure (GError **error)
 
 static gboolean
 goodix_milan_state_read (const gchar *path,
+                         gsize        size,
                          guint8     **contents,
                          GError     **error)
 {
@@ -268,7 +269,7 @@ goodix_milan_state_read (const gchar *path,
   gsize offset = 0;
   int descriptor;
 
-  descriptor = g_open (path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW, 0);
+  descriptor = g_open (path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0);
   if (descriptor < 0)
     {
       int saved_errno = errno;
@@ -280,20 +281,20 @@ goodix_milan_state_read (const gchar *path,
   if (fstat (descriptor, &stat_buffer) != 0 ||
       !S_ISREG (stat_buffer.st_mode) || stat_buffer.st_uid != geteuid () ||
       (stat_buffer.st_mode & 0777) != 0600 ||
-      stat_buffer.st_size != GOODIX_MILAN_STATE_FILE_SIZE)
+      stat_buffer.st_size != (goffset) size)
     {
       g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_INVAL,
-                   "Milan preprocessing state %s has invalid size, ownership, or permissions",
+                   "Milan state %s has invalid size, ownership, or permissions",
                    path);
       close (descriptor);
       return FALSE;
     }
 
-  buffer = g_malloc (GOODIX_MILAN_STATE_FILE_SIZE);
-  while (offset < GOODIX_MILAN_STATE_FILE_SIZE)
+  buffer = g_malloc (size);
+  while (offset < size)
     {
       ssize_t bytes_read = read (descriptor, buffer + offset,
-                                 GOODIX_MILAN_STATE_FILE_SIZE - offset);
+                                 size - offset);
 
       if (bytes_read < 0 && errno == EINTR)
         continue;
@@ -317,12 +318,13 @@ goodix_milan_state_read (const gchar *path,
 
 static gboolean
 goodix_milan_state_make_private (const gchar *path,
+                                 gsize        size,
                                  GError     **error)
 {
   GStatBuf stat_buffer;
   int descriptor;
 
-  descriptor = g_open (path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW, 0);
+  descriptor = g_open (path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0);
   if (descriptor < 0)
     {
       int saved_errno = errno;
@@ -334,10 +336,10 @@ goodix_milan_state_make_private (const gchar *path,
     }
   if (fstat (descriptor, &stat_buffer) != 0 ||
       !S_ISREG (stat_buffer.st_mode) || stat_buffer.st_uid != geteuid () ||
-      stat_buffer.st_size != GOODIX_MILAN_STATE_FILE_SIZE)
+      stat_buffer.st_size != (goffset) size)
     {
       g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_INVAL,
-                   "Milan preprocessing state %s has invalid size or ownership",
+                   "Milan state %s has invalid size or ownership",
                    path);
       close (descriptor);
       return FALSE;
@@ -356,13 +358,37 @@ goodix_milan_state_make_private (const gchar *path,
       (stat_buffer.st_mode & 0777) != 0600)
     {
       g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_ACCES,
-                   "Milan preprocessing state %s did not retain private permissions",
+                   "Milan state %s did not retain private permissions",
                    path);
       close (descriptor);
       return FALSE;
     }
   close (descriptor);
   return TRUE;
+}
+
+static gboolean
+goodix_milan_state_write (const gchar  *path,
+                          const guint8 *contents,
+                          gsize         size,
+                          GError      **error)
+{
+  if (g_mkdir_with_parents (GOODIX_MILAN_STATE_DIR, 0700) != 0)
+    {
+      int saved_errno = errno;
+
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (saved_errno),
+                   "Failed to create %s: %s", GOODIX_MILAN_STATE_DIR,
+                   g_strerror (saved_errno));
+      return FALSE;
+    }
+  if (!goodix_milan_state_directory_secure (error) ||
+      !g_file_set_contents_full (
+        path, (const gchar *) contents, size,
+        G_FILE_SET_CONTENTS_CONSISTENT | G_FILE_SET_CONTENTS_DURABLE,
+        0600, error))
+    return FALSE;
+  return goodix_milan_state_make_private (path, size, error);
 }
 
 static gboolean
@@ -480,8 +506,9 @@ goodix_milan_persistence_restore (FpDevice              *dev,
                  error->message);
       return;
     }
-  path = goodix_milan_state_path (self->milan_persistence_identity);
-  if (!goodix_milan_state_read (path, &contents, &error))
+  path = goodix_milan_state_path (GOODIX_MILAN_STATE_PREFIX,
+                                  self->milan_persistence_identity);
+  if (!goodix_milan_state_read (path, GOODIX_MILAN_STATE_FILE_SIZE, &contents, &error))
     {
       if (!g_error_matches (error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
         fp_warn ("Failed to read Milan preprocessing state %s: %s",
@@ -625,32 +652,11 @@ goodix_milan_persistence_save (FpDevice                         *dev,
   goodix_milan_sha256 (contents, GOODIX_MILAN_STATE_DIGEST_OFFSET,
                        contents + GOODIX_MILAN_STATE_DIGEST_OFFSET);
 
-  if (g_mkdir_with_parents (GOODIX_MILAN_STATE_DIR, 0700) != 0)
-    {
-      fp_warn ("Failed to create Milan state directory %s: %s",
-               GOODIX_MILAN_STATE_DIR, g_strerror (errno));
-      return;
-    }
-  if (!goodix_milan_state_directory_secure (&error))
-    {
-      fp_warn ("Cannot use Milan preprocessing state directory: %s",
-               error->message);
-      return;
-    }
-  path = goodix_milan_state_path (self->milan_persistence_identity);
-  if (!g_file_set_contents_full (
-        path, (const gchar *) contents, GOODIX_MILAN_STATE_FILE_SIZE,
-        G_FILE_SET_CONTENTS_CONSISTENT | G_FILE_SET_CONTENTS_DURABLE,
-        0600, &error))
+  path = goodix_milan_state_path (GOODIX_MILAN_STATE_PREFIX,
+                                  self->milan_persistence_identity);
+  if (!goodix_milan_state_write (path, contents, GOODIX_MILAN_STATE_FILE_SIZE, &error))
     {
       fp_warn ("Failed to save Milan preprocessing state %s: %s",
-               path, error->message);
-      return;
-    }
-  g_clear_error (&error);
-  if (!goodix_milan_state_make_private (path, &error))
-    {
-      fp_warn ("Failed to secure Milan preprocessing state %s: %s",
                path, error->message);
       return;
     }
