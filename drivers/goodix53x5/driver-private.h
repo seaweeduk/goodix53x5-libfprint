@@ -62,6 +62,28 @@ typedef struct
   gboolean dac_from_otp;
 } GoodixCalibParams;
 
+/* Original OTP default and live adjustment history; current DAC is calib.dac_h. */
+typedef struct
+{
+  guint16 default_dac;
+  guint16 active;
+  guint16 adjustments;
+  guint16 high;
+  guint16 low;
+} GoodixDynamicDacState;
+
+typedef struct
+{
+  /* Retained across session teardown; the tuple begins with verified seeds. */
+  guint8 identity[32];
+  guint8 tuple[16];
+  gchar boot_id[37];
+  gboolean boot_id_read;
+  gboolean bound;
+  /* A failed write may already have replaced the on-disk tuple. */
+  gboolean retry_required;
+} GoodixDacCheckpoint;
+
 typedef enum
 {
   GOODIX_FDT_EVENT_DOWN = 0,
@@ -108,8 +130,14 @@ struct _FpiDeviceGoodix53x5
   gboolean      gtls_restart_pending;
   gboolean      gtls_restart_active;
 
-  /* Calibration (from OTP, persists across captures) */
+  /* Calibration seeded from OTP; live reads update the current high DAC. */
   GoodixCalibParams calib;
+  /* Current/history survive same-boot restarts independently of preprocessing. */
+  GoodixDynamicDacState dynamic_dac;
+  GoodixDacCheckpoint dac_checkpoint;
+  /* Latest admitted hardware TX-on plane, independent of consumed setup.
+   * Owned until hardware teardown; recoverable base rejection retains it. */
+  guint16 *hardware_reference;
 
   /* Reassembly buffer for multi-chunk reads */
   GoodixReassembly rx;

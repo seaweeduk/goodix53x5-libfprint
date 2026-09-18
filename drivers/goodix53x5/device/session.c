@@ -678,6 +678,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
     case GOODIX_OPEN_PARSE_OTP:
       {
         g_autoptr(GError) error = NULL;
+        GoodixCalibParams seeded;
         const guint8 *pl;
         gsize pl_len;
 
@@ -702,7 +703,9 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
           }
 
         goodix_milan_persistence_prepare (dev);
-        goodix_device_parse_otp (pl, pl_len, &self->calib);
+        goodix_device_parse_otp (pl, pl_len, &seeded);
+        goodix_milan_dac_resume (dev, &seeded);
+        self->calib = seeded;
         if (!goodix_load_psk (self, &error))
           {
             fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
@@ -944,6 +947,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
       goodix_transport_invalidate (dev);
       self->open_ref_powered = FALSE;
       goodix_milan_generation_retain_process (dev);
+      g_clear_pointer (&self->hardware_reference, g_free);
       goodix_milan_persistence_clear (dev);
       OPENSSL_cleanse (self->psk, sizeof (self->psk));
       OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
@@ -1031,6 +1035,7 @@ goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
   fp_info ("Reinitializing device after system sleep");
   self->action_epoch++;
   goodix_milan_generation_retain_process (dev);
+  g_clear_pointer (&self->hardware_reference, g_free);
   self->open_recovery_attempted = FALSE;
   self->open_gtls_failed = FALSE;
   self->open_usb_reset_required = TRUE;
