@@ -976,6 +976,10 @@ milan_match_build_feature_candidate (
             context->match_selection->acceptance_evidence == 0;
           return 1;
         }
+      if (goodix_milan_match_transform_proximity (
+            feature_result->candidate.transform,
+            late_policy_context->probe_low_class, sensor_type) != 0)
+        return 1;
       memcpy (feature_result->metrics, feature_result->candidate.words,
               sizeof (feature_result->metrics));
       memcpy (feature_result->transform, feature_result->candidate.transform,
