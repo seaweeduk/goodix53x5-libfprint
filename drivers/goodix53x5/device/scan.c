@@ -593,8 +593,12 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_REFRESH_DONE:
-      /* Validation failure is recoverable: base_valid remains false and the
-       * event-derived down base is still the next arm input. */
+      /* Rejected reverse drift restores only the down base from the selected
+       * event. Newer notifications remain separately owned by pending_fdt. */
+      if (data->refresh_reason == GOODIX_PROFILE9_FDT_REFRESH_REVERSE &&
+          !fdt->base_valid)
+        goodix_device_generate_fdt_base (fdt->event.raw, GOODIX_FDT_BASE_LEN,
+                                         fdt->base_down);
       data->refresh_reason = GOODIX_PROFILE9_FDT_REFRESH_NONE;
       if (self->milan_generation)
         data->recovering_generation = FALSE;
