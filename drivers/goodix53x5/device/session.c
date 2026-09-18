@@ -678,7 +678,6 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
     case GOODIX_OPEN_PARSE_OTP:
       {
         g_autoptr(GError) error = NULL;
-        GoodixCalibParams seeded;
         const guint8 *pl;
         gsize pl_len;
 
@@ -703,9 +702,11 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
           }
 
         goodix_milan_persistence_prepare (dev);
-        goodix_device_parse_otp (pl, pl_len, &seeded);
-        goodix_milan_dac_resume (dev, &seeded);
-        self->calib = seeded;
+        goodix_device_parse_otp (pl, pl_len, &self->calib);
+        /* Conservative Linux session policy: every cold initialization,
+         * including reinit, starts DAC/history from OTP. This does not model
+         * the full native lifetime. */
+        self->dynamic_dac = (GoodixDynamicDacState){ .default_dac = self->calib.dac_h };
         if (!goodix_load_psk (self, &error))
           {
             fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
