@@ -291,7 +291,7 @@ first_veto_type12 (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORD
     case 8:
       reject =
         (detail < 200 && overlap < 228 && filtered < 23 && combined < 393) ||
-        (detail < 204 && overlap < 227 && filtered < 19 && combined < 397) ||
+        (detail < 204 && filtered < 19 && combined < 407) ||
         (detail < 218 && filtered < 16 && coverage < 86) ||
         (detail < 222 && filtered < 12 && coverage < 103) ||
         (detail < 216 && filtered < 9 && coverage < 129) ||
@@ -321,7 +321,7 @@ first_veto_type12 (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORD
         (detail < 214 && overlap < 223 && filtered < 13 && coverage < 75) ||
         (detail < 202 && overlap < 228 && filtered < 22 && combined < 398) ||
         (detail < 208 && overlap < 236 && filtered < 11 && combined < 393) ||
-        (detail < 202 && overlap < 235 && filtered < 21 && combined < 381);
+        (detail < 202 && overlap <= 235 && filtered < 21 && combined < 381);
       break;
     case 11:
       reject =
@@ -394,7 +394,7 @@ first_veto_type12 (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORD
     (primary > 12 || ((filtered > 17 || combined > 405 || geometry > 22) &&
                       (filtered > 22 || combined > 370 || geometry > 30 || overlap > 215))) &&
     (primary > 7 || filtered > 14 || detail > 208 || low_detail > 202 || geometry > 18) &&
-    (primary > 17 || filtered > 19 || overlap > 226 || detail > 199 ||
+    (primary > 17 || filtered > 19 || overlap > 226 || detail > 198 ||
                       low_detail > 193 || geometry > 25);
 
   return strong && (primary > 7 || filtered > 20 || overlap > 215 ||
@@ -454,7 +454,7 @@ first_veto (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                    (detail < 215 && filtered < 6 && topology < 39 && geometry < 21) ||
                    (detail < 212 && filtered < 15 && coverage < 181));
       survives = survives &&
-                 (detail > 205 || filtered > 16 || topology > 60 || combined >= 408);
+                 (detail > 205 || filtered > 16 || topology > 60 || combined > 408);
       break;
     case 6:
       survives = !((detail < 195 && overlap < 226 && filtered < 21 && combined < 386) ||
@@ -465,7 +465,7 @@ first_veto (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                    (detail < 206 && filtered < 18 && combined < 405) ||
                    (detail < 217 && filtered < 9 && topology < 56));
       survives = survives &&
-                 (detail > 205 || filtered > 16 || topology > 60 || combined >= 410);
+                 (detail > 205 || filtered > 16 || topology > 60 || combined > 410);
       break;
     case 7:
       survives = !((detail < 196 && overlap < 226 && filtered < 22 && combined < 389) ||
@@ -477,7 +477,7 @@ first_veto (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                    (detail < 201 && filtered < 15 && combined < 399 && topology < 56) ||
                    (detail < 213 && filtered < 16 && geometry < 22 && topology < 51));
       survives = survives &&
-                 (detail > 205 || filtered > 13 || geometry > 28 || topology >= 55);
+                 (detail > 205 || filtered > 13 || geometry > 28 || topology > 55);
       break;
     case 8:
       survives = !((detail < 197 && overlap < 225 && filtered < 22 && combined < 390) ||
@@ -488,7 +488,7 @@ first_veto (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                    (detail < 216 && overlap < 229 && filtered < 11 && coverage < 141) ||
                    (detail < 212 && topology < 61 && filtered < 20 && coverage < 201));
       survives = survives &&
-                 (detail > 205 || topology > 60 || filtered > 14 || combined >= 405);
+                 (detail > 205 || topology > 60 || filtered > 14 || combined > 405);
       break;
     case 9:
       survives = !((detail < 196 && overlap < 221 && filtered < 23 && combined < 386) ||
@@ -497,7 +497,7 @@ first_veto (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                    (detail < 217 && overlap < 226 && filtered < 10 && coverage < 129) ||
                    (detail < 209 && overlap < 230 && filtered < 10 && topology < 66));
       survives = survives &&
-                 (detail > 204 || overlap > 220 || filtered > 15 || topology >= 50);
+                 (detail > 204 || overlap > 220 || filtered > 15 || topology > 50);
       break;
     case 10:
       survives = !((detail < 196 && overlap < 223 && filtered < 23 && combined < 379) ||
@@ -506,7 +506,7 @@ first_veto (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                    (detail < 205 && overlap < 226 && filtered < 19 && combined < 400) ||
                    (detail < 213 && overlap < 220 && filtered < 11 && coverage < 111));
       survives = survives &&
-                 (detail > 205 || overlap > 228 || filtered > 15 || combined >= 407);
+                 (detail > 205 || overlap > 228 || filtered > 15 || combined > 407);
       break;
     case 11:
       survives = !((detail < 198 && topology < 51 && filtered < 22 && combined < 387) ||
@@ -514,7 +514,7 @@ first_veto (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                    (detail < 207 && overlap < 221 && filtered < 16 && coverage < 129) ||
                    (detail < 205 && overlap < 228 && filtered < 12 && topology < 46));
       survives = survives &&
-                 (detail > 201 || overlap > 225 || filtered > 17 || combined >= 400);
+                 (detail > 201 || overlap > 225 || filtered > 17 || combined > 400);
       break;
     case 12:
       survives = !((detail < 191 && overlap < 220 && filtered < 22 && combined < 374) ||
@@ -522,14 +522,14 @@ first_veto (const int32_t             metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                    (detail < 207 && overlap < 221 && filtered < 13 && coverage < 101) ||
                    (detail < 205 && overlap < 226 && filtered < 20 && topology < 51));
       survives = survives &&
-                 (detail > 195 || overlap > 225 || filtered > 15 || combined >= 385);
+                 (detail > 195 || overlap > 225 || filtered > 15 || combined > 385);
       break;
     case 13:
       survives = !((detail < 191 && overlap < 221 && filtered < 22 && combined < 375) ||
                    (detail < 199 && overlap < 225 && filtered < 18 && combined < 391));
       survives = survives &&
                  (detail > 203 || overlap > 226 || filtered > 13 ||
-                  topology > 36 || combined >= 396);
+                  topology > 36 || combined > 396);
       break;
     case 14:
       survives = !((detail < 192 && filtered < 25 && topology < 46 && combined < 373) ||
