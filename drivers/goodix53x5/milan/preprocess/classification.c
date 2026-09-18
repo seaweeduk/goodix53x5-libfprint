@@ -1376,7 +1376,7 @@ milan_profile9_secondary_count_state (const uint16_t *source,
         threshold = 400;
     }
   for (size_t i = 0; i < count; i++)
-    selected += scores[i] > threshold;
+    selected += (int16_t) scores[i] > threshold;
   if (selected > 600)
     result = 2;
   else if (selected > 300)
