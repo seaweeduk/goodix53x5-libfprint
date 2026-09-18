@@ -14,6 +14,7 @@
 static void
 assert_match_update_semantics (const GoodixMilanUnpackedTemplate *before,
                                const GoodixMilanUnpackedTemplate *after,
+                               const GoodixStudyQueue            *queue,
                                gsize                               matched_index)
 {
   g_assert_cmpmem (&after->metadata, sizeof(after->metadata),
@@ -31,6 +32,9 @@ assert_match_update_semantics (const GoodixMilanUnpackedTemplate *before,
     {
       GoodixMilanFeatureView before_view;
       GoodixMilanFeatureView after_view;
+      GoodixMilanFeatureRecord expected_live[150];
+      g_autofree guint8 *expected_packed = NULL;
+      gsize adjusted_angles = 0;
 
       g_assert_cmpint (goodix_milan_template_parse_feature_element (
                          before->feature_elements[i],
@@ -38,7 +42,48 @@ assert_match_update_semantics (const GoodixMilanUnpackedTemplate *before,
       g_assert_cmpint (goodix_milan_template_parse_feature_element (
                          after->feature_elements[i],
                          after->feature_element_sizes[i], &after_view), ==, 0);
-      assert_feature_material_equal (&after_view, &before_view);
+      expected_packed = g_memdup2 (before_view.packed_records,
+                                   before_view.record_count * 32);
+      g_assert_cmpint (goodix_milan_feature_unpack_template_records (
+                         before_view.packed_records, before_view.record_count,
+                         before_view.fields.tagged_values[2], expected_live,
+                         G_N_ELEMENTS (expected_live)), ==, 0);
+      for (gsize record = 0; record < before_view.record_count; record++)
+        {
+          guint8 angle = before_view.packed_records[record * 32];
+
+          if (angle <= 0x80)
+            continue;
+          /* This fixture imports -0x800..-0x100. Native full decode adds
+           * 0x3244 once: live words retain 0x44, which packing discards. */
+          g_assert_cmpuint (angle, >=, 0x81);
+          g_assert_cmpuint (angle, <=, 0x88);
+          expected_packed[record * 32] = 0xb2 - angle;
+          expected_live[record].orientation =
+            (gint16) ((0xb2 - angle) * 0x100 + 0x44);
+          adjusted_angles++;
+        }
+      GoodixMilanFeatureView expected_view = before_view;
+
+      expected_view.packed_records = expected_packed;
+      assert_feature_material_equal (&after_view, &expected_view);
+      g_assert_cmpuint (adjusted_angles, ==, i == matched_index ? 78 : 0);
+      if (adjusted_angles != 0)
+        {
+          g_assert_nonnull (queue->live_features[i]);
+          g_assert_cmpint (queue->live_features[i]->record_count, ==,
+                           before_view.record_count);
+          g_assert_cmpint (queue->live_features[i]->partition_count, ==,
+                           before_view.fields.tagged_values[2]);
+          g_assert_cmpmem (queue->live_features[i]->records,
+                           before_view.record_count * sizeof (expected_live[0]),
+                           expected_live,
+                           before_view.record_count * sizeof (expected_live[0]));
+        }
+      else
+        {
+          g_assert_null (queue->live_features[i]);
+        }
       for (gsize field = 0; field < G_N_ELEMENTS (before_view.fields.tagged_values);
            field++)
         {
@@ -114,7 +159,7 @@ run_production_match_study_handoff (void)
   g_assert_no_error (error);
   g_assert_cmpuint (match_info.queue_state, ==, 0);
   unpack_study_template (after_match, &matched);
-  assert_match_update_semantics (&before, &matched, 1);
+  assert_match_update_semantics (&before, &matched, queue, 1);
 
   data = g_bytes_get_data (after_match, &size);
   g_assert_cmpint (goodix_milan_match_study_feature_queued (
@@ -132,6 +177,17 @@ run_production_match_study_handoff (void)
   assert_replacement_semantics (
     &before, &studied, &probe_unpacked, GOODIX_MILAN_STUDY_REPLACE,
     1, 1, 1, TRUE);
+  /* Replacement installs the independent live probe, not the imported angles
+   * or a fresh decode of their lossy packed projection. */
+  g_assert_nonnull (queue->live_features[1]);
+  g_assert_true (queue->live_features[1]->records != probe->records);
+  g_assert_cmpint (queue->live_features[1]->record_count, ==, probe->record_count);
+  g_assert_cmpint (queue->live_features[1]->partition_count, ==,
+                   probe->partition_count);
+  g_assert_cmpmem (queue->live_features[1]->records,
+                   probe->record_count * sizeof (probe->records[0]),
+                   probe->records,
+                   probe->record_count * sizeof (probe->records[0]));
 
   g_bytes_unref (after_match);
   goodix_milan_study_queue_free (queue);

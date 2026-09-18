@@ -30,6 +30,61 @@
 
 #include <string.h>
 
+static int
+milan_match_decode_imported_angles (
+  const guint8                *source,
+  gsize                        source_size,
+  GoodixMilanUnpackedTemplate *unpacked,
+  GoodixMatchInfo             *decoded[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY])
+{
+  g_autoptr(GBytes) identity = NULL;
+  int changed = 0;
+
+  for (size_t i = 0; i < unpacked->feature_count; i++)
+    {
+      GoodixMilanFeatureView view;
+      gboolean has_negative = FALSE;
+
+      if (goodix_milan_template_parse_feature_element (
+            unpacked->feature_elements[i], unpacked->feature_element_sizes[i],
+            &view) != 0 || view.record_count == 0 || view.record_count > 150 ||
+          view.fields.tagged_values[2] < 0 ||
+          (size_t) view.fields.tagged_values[2] > view.record_count)
+        continue;
+      /* The sign-magnitude byte 0x80 decodes to zero, not a negative word. */
+      for (size_t j = 0; j < view.record_count; j++)
+        has_negative |= view.packed_records[j * 32] > 0x80;
+      if (!has_negative)
+        continue;
+
+      if (!identity)
+        identity = g_bytes_new (source, source_size);
+      decoded[i] = goodix_milan_match_info_new_empty ();
+      /* Keep an immutable identity; gallery overrides consume only records/counts. */
+      decoded[i]->template = g_bytes_ref (identity);
+      decoded[i]->record_count = (int) view.record_count;
+      decoded[i]->partition_count = view.fields.tagged_values[2];
+      decoded[i]->records = g_new (GoodixMilanFeatureRecord, view.record_count);
+      if (goodix_milan_feature_unpack_template_records (
+            view.packed_records, view.record_count,
+            (size_t) view.fields.tagged_values[2], decoded[i]->records,
+            view.record_count) != 0)
+        return -1;
+      for (size_t j = 0; j < view.record_count; j++)
+        if (decoded[i]->records[j].orientation < 0)
+          decoded[i]->records[j].orientation =
+            (int16_t) (decoded[i]->records[j].orientation + 0x3244);
+      /* Native pack quantizes the adjusted angle; retained matching must still
+       * use the exact live word rather than decode that lossy projection. */
+      if (goodix_milan_feature_pack_template_records (
+            decoded[i]->records, view.record_count,
+            (guint8 *) view.packed_records, view.record_count * 32) != 0)
+        return -1;
+      changed++;
+    }
+  return changed;
+}
+
 gboolean
 goodix_milan_match_queue_matches_template (const GoodixStudyQueue *queue,
                                      const guint8           *feature,
@@ -77,6 +132,7 @@ goodix_milan_match_serialized_feature_result_internal (
   const GoodixMilanFeatureRecord *live_records[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
   size_t live_record_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
   size_t live_partition_counts[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
+  GoodixMatchInfo *decoded_features[GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY] = { 0 };
   GBytes *private_update = NULL;
   GBytes *input_identity = NULL;
   const guint8 *requested_feature = feature;
@@ -184,6 +240,28 @@ goodix_milan_match_serialized_feature_result_internal (
                 updated_milan = g_malloc (normalized_milan_len);
             }
         }
+      if (!retained_gallery)
+        {
+          int changed = milan_match_decode_imported_angles (
+            enrolled_milan, enrolled_milan_len, unpacked, decoded_features);
+
+          if (changed < 0)
+            {
+              g_free (unpacked);
+              g_free (updated_milan);
+              g_free (normalized_milan);
+              goto invalid;
+            }
+          if (changed && !updated_milan)
+            updated_milan = g_malloc (normalized_milan_len);
+          for (size_t i = 0; i < unpacked->feature_count; i++)
+            if (decoded_features[i])
+              {
+                live_records[i] = decoded_features[i]->records;
+                live_record_counts[i] = decoded_features[i]->record_count;
+                live_partition_counts[i] = decoded_features[i]->partition_count;
+              }
+        }
     }
   if (updated_milan)
     {
@@ -267,7 +345,11 @@ goodix_milan_match_serialized_feature_result_internal (
   if (queue)
     {
       if (!retained_gallery)
-        goodix_milan_study_queue_clear_gallery (queue);
+        {
+          goodix_milan_study_queue_clear_gallery (queue);
+          for (size_t i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
+            queue->live_features[i] = g_steal_pointer (&decoded_features[i]);
+        }
       g_clear_pointer (&queue->live_gallery, g_bytes_unref);
       g_clear_pointer (&queue->live_input, g_bytes_unref);
       queue->live_input = g_steal_pointer (&input_identity);
@@ -275,10 +357,14 @@ goodix_milan_match_serialized_feature_result_internal (
         queue->live_gallery = g_bytes_ref (*updated_feature);
     }
 
+  for (size_t i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
+    goodix_milan_match_free_info (decoded_features[i]);
   g_clear_pointer (&private_update, g_bytes_unref);
   return GOODIX_SIGFM_TEMPLATE_OK;
 
 invalid:
+  for (size_t i = 0; i < GOODIX_MILAN_TEMPLATE_FEATURE_CAPACITY; i++)
+    goodix_milan_match_free_info (decoded_features[i]);
   g_clear_pointer (&input_identity, g_bytes_unref);
   g_clear_pointer (&private_update, g_bytes_unref);
   goodix_milan_study_queue_clear_gallery (queue);
