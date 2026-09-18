@@ -647,11 +647,13 @@ post_veto_type12 (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
         (filtered > 15 || detail > 208 || geometry > 20) &&
         (filtered > 11 || detail > 209 || combined > 410) &&
         (filtered > 9 || detail > 218 || coverage > 70) &&
-        (filtered > 7 || coverage > 7 || geometry > 26);
+        (filtered > 7);
       break;
     case 5:
       survives =
-        (filtered > 9 || detail > 216 || geometry > 18 || coverage > 133) &&
+        (filtered > 9 || detail > 216 ||
+         ((geometry > 18 || coverage > 133) &&
+          (geometry > 15 || coverage > 145))) &&
         (filtered > 16 || detail > 197 || geometry > 36 || coverage > 109) &&
         (filtered > 19 || combined > 393 || geometry > 28) &&
         (filtered > 14 || combined > 414 || geometry > 16) &&
@@ -677,7 +679,9 @@ post_veto_type12 (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
         (filtered > 13 || combined > 411 || geometry > 27) &&
         (filtered > 8 || coverage > 88) &&
         (filtered > 9 || coverage > 45) &&
-        (filtered > 7 || coverage > 101 || detail > 209 || coverage > 114);
+        (filtered > 7 ||
+         ((coverage > 101 || detail > 209) &&
+          (coverage > 114 || detail > 203)));
       break;
     case 8:
       survives =
@@ -710,7 +714,7 @@ post_veto_type12 (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
         (filtered > 19 || detail > 200 || combined > 394 || geometry > 21) &&
         (filtered > 21 || detail > 190 || combined > 375 || geometry > 45) &&
         (filtered > 16 || overlap > 226 || detail > 207 || coverage > 129) &&
-        (filtered > 11 || detail > 202 || combined > 396);
+        (filtered > 11 || detail > 202 || combined > 396 || geometry > 25);
       break;
     }
   if (!survives)
@@ -739,7 +743,9 @@ post_veto_type12 (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
     (primary < 13 && filtered < 23 && combined < 371 && geometry < 31 && overlap < 216) ||
     (primary < 8 && filtered < 15 && detail < 209 && low_detail < 203 && geometry < 19) ||
     (primary < 18 && filtered < 20 && overlap < 227 && detail < 199 &&
-     low_detail < 194 && geometry < 26));
+     low_detail < 194 && geometry < 26) ||
+    (primary < 8 && filtered < 21 && overlap < 216 && detail < 203 &&
+     low_detail < 196 && geometry < 46));
 }
 
 static void
