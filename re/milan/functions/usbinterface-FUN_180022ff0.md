@@ -35,3 +35,29 @@ retained base. D0 entry can normalize the recorded power state before the
 worker's handshake decision; see `usbinterface-FUN_180022d70.md` and
 `usbinterface-FUN_180020970.md`. The mode callback's return and configuration
 effects are documented in `usbinterface-FUN_18000e1f0.md`.
+
+## Power-State And Command-Result Predicates
+
+The callback's device-power target argument is not a reference-validity
+predicate. The system-power value obtained through framework slot `+0x148`
+is stored at `0x180023111`; its signed comparison at `0x180023168..0x18002316f`
+selects sleep versus optional EC control. Neither branch changes image/FDT
+validity, anchor or setup marker. Sleep dispatch at `0x18002318a` and EC
+dispatch at `0x1800231df` have no return-status branch before reader stop;
+failure does not invalidate the reference. The comparison at
+`0x18002324b..0x180023257` clears handshake completion, not reference state.
+
+On entry, `0x180022d70` saves the previous device-power argument in `EBP`
+at `0x180022d8f` and uses it only in the diagnostic argument at
+`0x180022f62`. Its reference/init route does not distinguish previous D1,
+D2 or D3. The separate recorded system-power value is normalized at
+`0x180022e68..0x180022e81` and subsequently controls only the initialized
+worker's handshake choice. There is no sleep-generation, elapsed-sleep or
+successful-power-down certificate consumed by the retained-reference path.
+
+These predicates describe host state, not whether a particular device-power
+transition physically removed sensor power. If hardware release also occurs,
+its allocation teardown is separate; the saved-base file is not marked
+optically invalid by this callback. See
+[hardware release](usbinterface-FUN_180023c40.md) and the reset/configuration
+composition in [deviceInit](usbinterface-FUN_180020970.md).

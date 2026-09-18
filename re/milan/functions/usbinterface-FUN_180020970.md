@@ -6,12 +6,10 @@
 - Logged name: `deviceInit`
 - Role: asynchronous initialization worker launched from UMDF D0 entry.
 
-This worker's reset/session ordering is shared by profile 0 and profile 9.
-Family selection occurs inside `FUN_18000e9b0`; action 9 and action 12 then
-dispatch different sensor-check and all-base callbacks. Both full-init and
-resume session routes call the same `FUN_180007ee0` wrapper and common
-GTLS client owners. See [Profile 0 USB Contract](../PROFILE0-USB-CONTRACT.md)
-for the family boundary, profile-0 validity producer, and cancellation scope.
+For sensor type 12, `FUN_18000e9b0` selects profile 9; action 9 and action 12
+dispatch its sensor-check and all-base callbacks. Both full-init and resume
+session routes call the same `FUN_180007ee0` wrapper and common GTLS client
+owners.
 
 ## Full-Initialization Firmware Probe
 
@@ -171,8 +169,8 @@ The item-cache bytes never pass to GTLS initialization directly:
 `FUN_180008398` receives the selected 32-byte key from `FUN_18000979c` and
 passes it to `FUN_180025930`. The valid-key fast path at
 `0x1800097ab..0x1800097b8` bypasses all item reads even after item-cache clear.
-Linux's retry group likewise reuses its selected `self->psk`; a new full open
-instead reloads the selected key and validates `0xb003` again.
+Linux's retry group likewise reuses its selected `self->psk`. Every new open
+reloads the local selected key; only its cold route validates `0xb003` again.
 
 The successful client handshake sends type `0xff01`, receives type `0xff02`,
 sends type `0xff03`, and receives type `0xff04`. Both sends use
@@ -302,6 +300,27 @@ type-one reset; it does not run this restore join. Both paths store `+0x200 =
 0x10`. The reset retries/status details are owned by
 [the transaction note](usbinterface-FUN_180018dd8.md).
 
+The saved image is not a clean-session certificate or a consumed token.
+`GFSaveCaliPara` (`0x18000da18`) packs selected OTP bytes `+0x205..+0x224`,
+FDT `+0x268`, auxiliary `+0x258`, image `+0x248`, and a trailing CRC. At
+`0x18000dc0c` it calls the file writer `0x180017428` with mode `wb`, then
+frees scratch at `0x18000dc14` without testing the writer result. Its caller
+`0x180015c60` has already admitted the image and validity before invoking this
+void save owner. The later `0x18000d24c` loader checks the file's CRC/OTP, not
+the result of the latest save. Consequently an older complete file surviving
+a failed save can be loaded by enabled-HAL ESD repair; a truncated file instead
+fails the CRC/read boundary. Neither owner consumes or deletes a valid file
+merely because it has been loaded. This permits retained coherent checkpoints,
+but does not promise the latest unsaved state after failure or process loss.
+
+Neither the saved layout nor its loader compares current high DAC or adjustment
+history. All-base acquisition passes the low-DAC field at HAL `+0x310` to
+`+0x158` for both reference images (`0x180015c60`); `0x1800074bc` encodes
+the supplied DAC word in the image request and calls `0x180007c84` only after
+successful image delivery. Live high-DAC/history is a separate evolving owner.
+The retained reference must keep its low-DAC/OTP/configuration interpretation,
+not equality with the high-DAC/history at its last file publication.
+
 This conditional repair route differs from cold initialization, whose HAL
 constructor has cleared validity before the same loader runs. It also differs
 from initialized D0 entry, which invokes neither reset nor the loader. The
@@ -311,6 +330,78 @@ repair dispatch is not a per-capture acquisition rule.
 
 The optional two-image startup health acquisition and its later enrollment
 consumer are owned by [the sensor-health contract](usbinterface-FUN_180011b9c.md).
+
+### Retained Reference Consumer Boundary
+
+The retained host reference is not an implicit firmware calibration handle.
+The profile-9 saved-base setter `0x180005950:0x180005959..0x1800059af`
+copies its 24-byte argument into software stores `0x180060718`,
+`0x180060730`, `0x180060748`, and `0x180060778`, then returns without a
+device command. At the ESD repair join `0x18000d817..0x18000d83d`, mode 4
+uploads configuration, the loader installs these stores and image bytes, and
+the down-arm callback consumes `0x180060730`. No image acquisition, FDT
+measurement, or upload of the retained image occurs between reset and arm.
+The arm request explicitly supplies all 24 base bytes; the later live-image
+request supplies TX/HV and current DAC rather than a reference handle.
+
+This repair join retains validity, drift anchor and pending setup marker.
+The initialized D0-entry GTLS path independently reconstructs the client
+session without touching those fields. Configuration and session establishment
+therefore have no host-side requirement to produce another reference pair.
+Command completion does not read back analog calibration or prove firmware
+response behavior; that physical boundary is distinct from the explicit host
+inputs to the next arm and image request.
+
+The state consumed after ordinary retained operation is more detailed than the
+saved-base file. A rejected temperature refresh preserves image `+0x248` and
+image-valid `+0x237`, can leave base-valid `+0x232` zero, and can replace the
+FDT calibration and four software stores. Event parsing subsequently evolves
+the down/up/manual stores independently; the software drift anchor and marker
+have separate owners. Thus the last admitted image and current FDT/validity/
+anchor/marker tuple need not describe one successful acquisition. Restoring
+every FDT store from the last admitted acquisition would not reproduce this
+consumer state. See [the acquisition owner](usbinterface-FUN_180015c60.md)
+and [the event loop](usbinterface-profile9-fdt-event-loop.md).
+
+The hardware tuple also does not encode engine readiness. A newly attached
+engine with context byte `+0x7c == 0` initializes from the next delivered
+hardware reference even when marker `+0x236` is zero; an initialized engine
+repeats setup only for marker one. The instructions at
+`GoodixEngineAdapter.dll:0x18001fec0..0x18001fef2` implement these independent
+predicates. Neither a file-presence flag nor a consumed marker can substitute
+for engine initialization. [The sample adapter](FUN_18001f610.md) owns that
+boundary.
+
+### Composition With Power Loss And Resource Teardown
+
+At the retained-reference consumer boundary, power exit/entry changes reader,
+stop, request-mode and handshake state, not the admitted image/FDT tuple.
+The previous D-state argument is diagnostic-only in `0x180022d70`; the
+recorded system-power state selects handshake handling, not reference expiry.
+The reset/configuration repair at `0x18000d817..0x18000d83d` independently
+reinstalls configuration and explicit FDT command bases without acquiring a
+reference. `0x180007ee0` replaces GTLS state without consuming that tuple.
+Their retained image consumers have no additional sleep epoch or prior
+USB-close-result input.
+
+The host composition is consequently defined by the state at the next arm:
+the same selected sensor/OTP/configuration interpretation, an admitted image
+and correlated FDT/validity/anchor/marker tuple, reconstructed protocol/GTLS
+resources, fresh command readiness and a newly supplied arm base. A successful
+reset/configuration/session reconstruction does not depend on preserving the
+old reader, firmware arm, cryptographic counters or USB handle. Sleep or a
+failed resource close alone does not supply an image-invalidating predicate.
+The reset transport (`0x18001b6c8`) changes neither the host image nor its
+validity; cold constructor clearing is an allocation-initialization action,
+not a measurement that the prior optical reference has ceased to be usable.
+
+This is a composition of explicit host contracts. There is no recovered
+additional firmware field that a reference capture must restore after power
+loss, but the DLL does not expose firmware-internal power-on state or prove
+the analog response to the composed sequence. Power loss followed by full
+successful reconstruction is therefore covered at the host-input boundary,
+not asserted to have measured firmware equivalence. Failed reconstruction
+does not establish this boundary and cannot authorize live reuse.
 
 ## Full-Initialization Source Map
 
@@ -324,16 +415,30 @@ recovery described above. The firmware update, final version refresh,
 and the two `send_mcu` post-send 2-ms delays have no corresponding states.
 The 100-ms failed-probe delay and 10-ms failed-handshake delay are represented.
 
-`goodix53x5.c:goodix_open` starts this full sequence on each Linux open and
-initially leaves `open_usb_reset_required` false. Ordinary open therefore
-skips the USB bus reset but still sends the sensor reset, selects chip/OTP,
-re-establishes GTLS and uploads configuration. Bus reset is selected by the
-whole-open recovery and post-suspend reinitialization owners. Linux close
-discards the raw setup and hardware reference; its next open cannot take the
-nonforced base helper's existing-generation shortcut. The native initialized
-D0 branch and enabled-HAL saved-base repair have no corresponding Linux open
-branches. `device/persistence.c:goodix_milan_persistence_restore` restores
-engine preprocessing state, not `GFCheckbase_isexist`'s hardware image/FDT set.
+`goodix53x5.c:goodix_open` starts the session state machine with
+`open_usb_reset_required` false. After exclusive claim, its `GOODIX_OPEN_STARTUP`
+state selects cached startup or the full reset/chip/OTP/configuration route.
+`device/persistence.c:goodix_milan_warm_bootstrap` reconstructs metadata from
+one same-boot, location-keyed record, checking the complete 32-byte OTP, derived
+type/profile, firmware snapshot encoding and current configuration projection.
+USB platform/descriptor identity locates the record; chip family selects the
+profile. The supported continuity scope is the same internal sensor without
+reprogramming during this boot. Cached metadata does not establish a session.
+Both routes read the current local PSK and complete fresh GTLS. Cached startup
+then skips the configuration/acquisition/sleep tail; activation owns EC and arm.
+Bus reset belongs to whole-open recovery and explicit reinitialization.
+`device/base.c:goodix_milan_warm_park` quarantines the complete generation,
+distinct consumed setup image and hardware/FDT tuple after joins.
+`goodix_milan_warm_resume` installs that tuple only after fresh GTLS;
+`device/persistence.c:goodix_milan_warm_load` rereads and reconciles the trusted
+disk projection even when a complete engine is parked in RAM. Unchanged disk
+preserves newer uncheckpointed RAM; an intervening publication supplies the
+hardware/FDT tuple with the native marked/unmarked setup rules.
+`goodix_milan_warm_save` publishes metadata and the settled hardware projection
+in one record at joined close while the interface claim is held. These owners
+map retained native inputs across Linux resource teardown.
+`goodix_milan_persistence_restore` remains the independent
+engine-preprocessing import, not `GFCheckbase_isexist`'s hardware image/FDT set.
 
 The native postlude's result classes are:
 
@@ -348,7 +453,15 @@ The Linux completion counterparts are `goodix_open_ssm_done`,
 `goodix_open_complete_after_idle`, and `goodix_cleanup_failed_open`.
 They join reception on failure, retain process state, clear persistence/key
 ownership, and either perform one full USB-reset retry or report failed open.
-GTLS exhaustion sets `open_gtls_failed` and suppresses that full-reset retry.
+Cold GTLS exhaustion sets `open_gtls_failed` and suppresses that full-reset
+retry. A failed cached startup can instead select one cold reconstruction;
+`GoodixStartupMode` carries this consumed recovery budget through the first
+active arm. `device/scan.c:goodix_scan_startup_arm_done` observes exhausted arms
+before indefinite FDT wait, preserving status-three repair inside the ordinary
+arm owner. Cancellation, removal and local/preparation failures remain terminal.
+This bounded cold fallback is Linux recovery policy, not the native initialized
+worker's failure branch. Compatible retained reference state survives successful cold
+reconstruction without an unconditional new reference pair.
 An initial base error runs the base SSM's sleep/EC-off cleanup before propagating;
 a configuration error occurs before `open_ref_powered` is set and the open
 cleanup skips its sleep. Successful initial base acquisition instead reaches
@@ -388,11 +501,38 @@ initialized-byte publication or retained HAL lifetime on failure.
 - HAL allocation, callback table, calibration, retained image/FDT buffers,
   and base-valid bytes remain as they were. In particular, resume does not
   establish that an already-clear image-valid byte became valid. Hardware
-  configuration continuity is not measured by a readback here. A later
-  operation-start callback separately requests mode 4, rebuilding and uploading
-  configuration from retained calibration before arming FDT-down; that is not
-  part of resume completion and does not refresh the bases. See the direct-mode
-  contract in `usbinterface-FUN_18000e1f0.md`.
+  configuration continuity is not measured by a readback here. Explicit action
+  3 invokes `FUN_180015710`, rebuilding/uploading mode-4 configuration before
+  arming FDT-down, without refreshing bases. Ordinary `OnCaptureData`
+  (`0x180021978`) instead calls `device_get_data` (`0x18000ebcc`), which sends
+  EC control and directly invokes the down/up arm callback. That path does not
+  dispatch action 3 or unconditionally request mode 4. Its arm wrapper can
+  download configuration when the first arm status satisfies `(status & 3) ==
+  3`. The explicit action-3 contract is in `usbinterface-FUN_18000e1f0.md`;
+  neither route is part of resume-worker completion.
+
+## Retained Startup Metadata And Session Boundary
+
+Full initialization copies the selected 32-byte HAL OTP at `+0x205` into
+device context `+0x36` before its first handshake. The version snapshot is
+the separate 64-byte destination at device `+0x111`. The initialized branch
+does not compare either snapshot against a new device read. For example,
+`FirmwareVersionFunc` (`0x18001ca70`) answers from `device+0x111`, without
+calling the wire-version getter. These retained values are distinct from
+the evolving live DAC and from per-handshake keys and counters.
+
+The resume route's below-two system-power case depends on retained session
+ownership; it is not a protocol for reconstructing missing keys in a new
+process. The at-least-two route instead calls the complete GTLS initializer,
+which clears the previous client state before sending a fresh hello, while
+preserving the HAL and its configuration interpretation. With a retained valid
+selected PSK, no chip, OTP, PSK hash, version or configuration readback is
+interposed before this handshake. Selected-PSK validity independently determines
+whether the key getter needs production reads. See
+[the client owner](usbinterface-FUN_180025400.md) for the unconditional context
+reset and [configuration](usbinterface-FUN_180005094.md)
+for ordinary first-arm repair. Neither route includes a device-queue drain
+command or establishes that the MCU has no pending old packet.
 
 ## Scheduling
 

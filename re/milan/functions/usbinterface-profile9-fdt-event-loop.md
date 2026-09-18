@@ -488,9 +488,12 @@ timeout 200 at device context `+0x15c`, derives the two power-control bytes at
 `+0x158/+0x159` from global screen byte `0x18005f398`, dispatches action
 `0x11`, and then writes request-state byte `+0x154 = 1`. This branch does not
 request mode 4, arm FDT, validate or reacquire the retained base, start the
-continuous reader, or change initialized byte `+0x110`. Capture operation
-startup is the separate action-3 owner that requests mode 4 and then arms
-FDT-down; see `usbinterface-FUN_18000e1f0.md`.
+continuous reader, or change initialized byte `+0x110`. Ordinary capture
+startup is `OnCaptureData -> device_get_data` (`0x180021978 -> 0x18000ebcc`):
+it sends EC control and directly selects down/up arm. It does not dispatch
+action 3. Explicit action 3 separately requests mode 4 and then arms FDT-down;
+see `usbinterface-FUN_18000e1f0.md` and the retained-entry distinction in
+`usbinterface-FUN_180020970.md`.
 
 `OnActivate` (`0x1800214d0`) owns a separate activation request. On input
 byte 0 other than one, its deactivation branch performs this order:
@@ -589,7 +592,11 @@ read-target lifetime is instead owned by D0 entry/exit.
 power transition. Suspend marks reinit and stops the scan, completing suspend
 with `FP_DEVICE_ERROR_NOT_SUPPORTED`; resume only completes its callback.
 The next enrollment/authentication action invokes the full open SSM after the
-idle join, transport invalidation and stale-claim release. The native initialized
-`deviceInit` route retains HAL buffers and optionally reestablishes GTLS instead;
-see `usbinterface-FUN_180020970.md`. The two lifetimes share command and retained
-state contracts without sharing a power-transition scheduler.
+idle join, transport invalidation and stale-claim release. Before release,
+`device/base.c:goodix_milan_warm_park` retains eligible engine and hardware/FDT
+state; after reconstruction, `goodix_milan_warm_resume` can restore it without
+another reference pair. Ordinary cached open instead selects
+`device/persistence.c:goodix_milan_warm_bootstrap` before the firmware/reset/OTP
+states. The native initialized `deviceInit` route retains HAL buffers and
+optionally reestablishes GTLS; see `usbinterface-FUN_180020970.md`. These source
+owners map the retained inputs across different power-transition schedulers.

@@ -17,6 +17,9 @@
 - `usbinterface.dll!0x180007ee0` maps to `device/session.c:goodix_gtls_retry_handler`
   and `goodix_gtls_attempt_done`; restart entry `0x1800210c0` maps to
   `goodix_start_gtls_restart` and `goodix_gtls_restart_done`.
+- `usbinterface.dll!0x180025930` maps to
+  `device/crypto.c:goodix_crypto_gtls_init`, called from
+  `device/session.c:goodix_gtls_ssm_handler` before each client hello.
 - `usbinterface.dll!0x180021200`'s image-error history maps to
   `device/transport.c:goodix_rx_cb`. The Linux pending restart is consumed by
   `goodix_transport_wait_event` / `goodix_transport_complete` and
@@ -30,6 +33,19 @@ context `+8` through `FUN_180027aa0`, and send `[u32 0xff01, u32 40, random]`.
 Only a complete 40-byte write advances state to two. State two delegates to
 `FUN_180026490`. Successful intermediate steps return `-0x400401`; the outer
 `FUN_180025230` loops while the absolute return equals that value.
+
+The hello random producer `FUN_180027aa0` clears its returned length, acquires
+a Windows crypto provider with `CryptAcquireContextW(PROV_RSA_FULL,
+CRYPT_VERIFYCONTEXT)`, and calls `CryptGenRandom` for 32 bytes. Provider or random
+failure returns `-60`; an acquired provider is released on either random outcome.
+Only success publishes the requested length and returns zero. At
+`0x18002579a..0x1800257a3` the hello owner tests that return before copying or
+sending any random bytes. Failure frees the 40-byte message, propagates the error,
+and leaves the entry state unchanged. Successful random generation followed by
+short/failed send likewise does not advance state. Hello-message allocation
+failure returns `-0x100005` before random generation or send. The corresponding
+Linux producer/caller boundary is `device/session.c:goodix_gtls_ssm_handler`
+(`GOODIX_GTLS_HELLO`) and `RAND_bytes`.
 
 State four allocates and zeroes twelve bytes, then requests exactly twelve bytes
 from the read callback. Zero return is `-0x60000c`, a negative return propagates,
@@ -198,6 +214,22 @@ server_random`, without a string terminator. Starting with `A(1)=HMAC(PSK,seed)`
 it concatenates `HMAC(PSK,A(i)||seed)` and advances `A(i+1)=HMAC(PSK,A(i))`,
 copying the first 68 bytes. The call is at `0x180026747`.
 
+The caller tests both derivation and identity-HMAC returns before comparison or
+verification send. `026930` rejects missing SHA256 metadata (`-0x400304`), seed
+workspace overflow (`digest_size + 13 + random_length > 128`), and failed HMAC
+context setup `028100` (`0x180026a1a..0x180026a21`). After successful setup it
+does **not** test the returns from HMAC start `027ec0`, update `0280a0`, finish
+`027db0`, or reset `027e60`: the sequence at `0x180026a32..0x180026ac1` continues
+through output copies, cleanup and a zero return. Thus caller-level failure
+propagation is not a claim that every primitive failure is detected.
+
+Identity HMAC `027430 -> 027c30` checks the digest-context allocation and the
+two-block HMAC-pad allocation; either failure returns `-0x5180`, releasing an
+already allocated digest context when pad allocation fails. Once allocated,
+`027c30` does not test the digest callback results before its zero return. The
+Linux HMAC/P_hash counterpart uses fixed SHA256 GLib `GHmac`, while its AES and
+entropy operations use OpenSSL; these have different allocation/error APIs.
+
 `FUN_180027430` computes the 32-byte HMAC identity at `+0x48`, using the derived
 HMAC key and the same random concatenation. All 32 bytes must equal the received
 identity; mismatch returns `-0x700003` before sending. The successful message is
@@ -215,6 +247,17 @@ the MCU callbacks `FUN_18001c2f0/FUN_18001c5a0`. The initializer clears context
 bytes `+4..+0x107`, copies at most 32 PSK bytes to `+0xd4`, and stores PSK length
 at `+0xf4` and the callbacks at `+0xf8/+0x100`.
 
+There is no prior-state admission test in this initializer. The stores at
+`0x1800259f2..0x180025a25` clear the old state, randoms, identities, derived
+keys and counters before installing the role, PSK and callbacks. Consequently
+the complete `007ee0 -> 008398 -> 025930` wrapper starts `025400` in state zero
+even if the previous client was in state five or stopped partway through a
+handshake. Calling the step alone in state five instead returns `-0x700002`;
+it is not the re-establishment entry. The wrapper sends a new `0xff01` without
+a preceding sensor reset, firmware query or configuration upload. This is a
+host-side sequence contract; the MCU firmware's handling of that new hello is
+not implemented in this DLL.
+
 The PSK getter `FUN_18000979c` checks selected-valid byte `0x1800607bc`.
 When nonzero it copies the retained 32 bytes at `0x180060c98` and returns
 length 32, without a production read or write. When zero it first calls
@@ -224,7 +267,11 @@ the established-session restart boundary retains the selected PSK and its
 validity independently of every attempt's session-key/context reset. The
 current counterpart at this boundary is `device/session.c:goodix_gtls_ssm_handler`
 passing retained `self->psk` to `goodix_crypto_gtls_init`; initial selection is
-owned by `goodix_load_psk`.
+owned by `goodix_load_psk`. `GOODIX_OPEN_STARTUP` reads that local selection on
+every open, including cached startup; no key, random, counter or session-ready
+state enters the warm checkpoint. Cached startup reaches the same initializer
+without sensor reset. Its final failure can select one Linux cold reconstruction;
+the native initialized worker instead returns through its own failure postlude.
 
 `FUN_180007ee0` holds the GTLS critical section across at most three complete
 initialization/handshake attempts. Each clears the caller's completion dword

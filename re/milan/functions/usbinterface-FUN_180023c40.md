@@ -57,23 +57,49 @@ and does not call `device_disable`. Client-file closure therefore has no direct
 image-base mutation in this DLL; framework scheduling of request stop,
 deactivation, device release, and driver cleanup is a separate boundary.
 
+The profile-close chain `0x1800160a0 -> 0x18000445c` releases its allocations;
+it does not mark the persisted reference invalid or delete its saved file.
+Neither the saved-base loader `0x18000d24c` nor the next ordinary live consumer
+`0x180014e10` reads a USB-handle-close result. The loader checks file integrity
+and selected OTP; the live consumer checks image-valid `+0x237`, active mode,
+screen and callback ownership. A close-result bit is not one of these inputs.
+D0 exit likewise retains reference validity after its unchecked sleep/EC
+results; see [D0 exit](usbinterface-FUN_180022ff0.md).
+
+Allocation destruction is therefore distinct from optical-reference rejection.
+A copied, admitted reference with its settled FDT/validity/anchor/marker tuple
+does not become an invalid image because a later resource-close operation
+fails. Capturing a settled tuple still requires that command, event and image
+owners can no longer mutate it. That ownership condition is separate from the
+result of releasing a USB interface or handle. A subsequent active consumer
+requires newly valid transport/session/configuration ownership regardless of
+the previous close result.
+
 ## Current Source Mapping
 
 `drivers/goodix53x5/goodix53x5.c:goodix_close` joins idle reception before
 `goodix_close_joined` invalidates transport and releases the USB claim.
-It also frees `hardware_reference`, the Linux owner corresponding to HAL
-`+0x248` for dynamic DAC. `device/session.c:goodix_open_complete_after_idle`
-does the same on failed open, and `goodix_reinit_idle_joined` does so before
-full post-suspend reinitialization. A normal Linux close consequently ends
-this raw-reference lifetime earlier than native client deactivation does.
-`device/base.c:goodix_milan_generation_retain_process` frees the old raw setup
-frame but retains algorithm state in the same `FpDevice`'s
-`milan_retained_generation`. A later admitted base publication transfers the
-process-owned gain/classifier subset to a fresh generation before setup reload.
-`goodix_finalize` destroys that retained owner: a replacement object has no
-in-memory transfer from it, even in the same Linux process. Its first setup uses
-the independently validated persisted subset or defaults via
-`goodix_milan_generation_prepare_setup` and `goodix_milan_persistence_restore`.
+Before teardown, `device/base.c:goodix_milan_warm_park` can move the admitted
+`hardware_reference` (HAL `+0x248` counterpart), complete engine generation,
+distinct consumed setup image and settled FDT tuple into inactive ownership.
+`device/session.c:goodix_open_complete_after_idle` and
+`goodix_reinit_idle_joined` use the same park boundary on failed open and before
+post-suspend reconstruction. `goodix_milan_warm_resume` reinstalls compatible
+state only after checked metadata and fresh GTLS under exclusive claim; metadata
+comes from the sensor on cold reconstruction or the same-boot startup record.
+Joined close publishes the metadata and hardware/FDT projection together
+through `device/persistence.c:goodix_milan_warm_save` before interface release;
+a disk restore creates fresh engine setup ownership. See
+[deviceInit's retained consumer map](usbinterface-FUN_180020970.md).
+
+When warm parking is ineligible, `goodix_milan_generation_retain_process`
+frees the old setup frame but retains the process gain/classifier source in
+`milan_retained_generation`; hardware teardown then frees the raw reference.
+`goodix_finalize` destroys both inactive owners. A replacement object has no
+in-memory process transfer even in the same Linux process. Its first setup uses
+the independently validated preprocessing subset or defaults through
+`goodix_milan_generation_prepare_setup` and `goodix_milan_persistence_restore`,
+separately from warm hardware-reference restoration.
 
 Native USB hardware release and engine detach are distinct callbacks. The
 former frees the hardware reference through `FUN_1800160a0`; the latter clears

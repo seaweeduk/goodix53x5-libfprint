@@ -180,5 +180,35 @@ non-timeout response-event wait return as success without decoding the cached
 response payload here. The FDT arm wrapper `0x180005a60` ignores the final
 mode-4 result and issues its post-configuration arm even after download failure.
 
+### Retained-Configuration Arm Repair
+
+The profile-9 arm owner `0x180005a60` first sends the requested down or up
+command using the retained 24-byte store. At `0x180005a8f..0x180005a93` (down)
+and `0x180005af9..0x180005afd` (up), it masks the returned byte by three and
+compares with three. Only that result calls mode four and sends the same arm
+once more. The second result is ignored: there is no recursive configuration
+loop. Both branches then store wait mode `0xf0` or `0xf1` and return zero,
+including after a failed repair. A zero first result does not select mode four.
+
+Ordinary `device_get_data` (`0x18000ebcc`) reaches this callback after its
+EC-control and request/wait-mode selection. It does not first invoke mode four;
+the initialized `deviceInit` branch likewise uploads no configuration. The
+configuration retained across native warm entry therefore has no per-entry
+readback predicate. Explicit action three and reset/ESD repair are separate
+configuration callers. The Linux command counterparts are
+`device/commands.c:goodix_cmd_fdt_down_setup` / `goodix_cmd_fdt_up_setup`;
+`goodix_arm_result` selects the status-dependent repair and
+`goodix_arm_handler` downloads/rearms. The repeated arm reads the then-current
+down/up store, which can include parser mutations during configuration.
+
+`device/scan.c:goodix_scan_startup_arm_done` is the Linux cached-start consumer
+of this wrapper's outcome. Ordinary exhaustion sets `needs_reinit` even though
+the wrapper completes; this consumer checks it before entering indefinite event
+wait. It can select one cold reconstruction through the existing session owner,
+then observes the reconstructed first arm without granting another retry.
+Configuration failure alone still does not invalidate a successful repeated arm.
+This is a bounded Linux recovery policy around the native-compatible wrapper,
+not an additional native configuration predicate or another reference capture.
+
 See `usbinterface-FUN_18000e1f0.md` for mode dispatch and
 `usbinterface-FUN_180015c60.md` for the base-acquisition caller.

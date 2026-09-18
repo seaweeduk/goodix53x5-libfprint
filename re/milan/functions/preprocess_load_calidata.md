@@ -8,6 +8,12 @@
 - Sole caller: `_InitPreProcessor_E` (`FUN_18002bfa0`) at `0x18002c4f4`,
   after its separate 16-byte sensor-ID comparison succeeds and before
   `preprocessor_init`.
+- Paired serializer: [`preprocess_save_calidata`](preprocess_save_calidata.md),
+  `0x180002d00`.
+- Semantic Linux counterpart: `device/persistence.c:goodix_milan_persistence_restore`,
+  selected by `device/base.c:goodix_milan_generation_prepare_setup`. These paths
+  are relative to `drivers/goodix53x5/`; the Linux encoding stores the consumed
+  calibration/history subset rather than the native payload verbatim.
 
 ## Input And Validation
 
@@ -70,12 +76,12 @@ initializer body always returns zero.
 
 After either a successful load or successful fallback, `preprocessor_init`
 processes the current setup frame. For profile-9 type 12,
-  `FUN_180064bb0` replaces the retained setup plane with each normalized setup
-  sample plus `0x1bb7`; it does not replace the loaded sample count or calibration
-  plane. The successfully initialized payload is saved again by `FUN_18002aef0`
-  before the setup call returns. Later successful enrollment commit and
-  identify-template update paths call `FUN_180030b40`, which reaches the same
-  serializer after live preprocessing has been able to evolve the workspace.
+`FUN_180064bb0` replaces the retained setup plane with each normalized setup
+sample plus `0x1bb7`; it does not replace the loaded sample count or calibration
+plane. The successfully initialized payload is saved again by `FUN_18002aef0`
+before the setup call returns. Later successful enrollment commit and
+identify-template update paths call `FUN_180030b40`, which reaches the same
+serializer after live preprocessing has been able to evolve the workspace.
 
 At the profile-9 live preprocessing boundary, the loaded sample count,
 calibration plane, and the prefix of the `0xa000` workspace block survive as
@@ -110,6 +116,62 @@ the auxiliary count and gain planes. See `FUN_1800672e0.md` and
 `FUN_18006c510.md` for these distinct mutation owners, and `FUN_18001ed10.md`
 for detach's separate workspace and setup-readiness teardown.
 
+## First-Live Semantic Reconstruction
+
+The loader restores workspace bytes, not a running process snapshot. On a fresh
+DLL, the first live gain initializer `FUN_1800672e0` consumes the loaded sample
+count and calibration plane: count zero clears calibration and auxiliary count
+and fills all three gain planes with `0x2000`; counts one through three select
+unity application gain; counts above three normalize the retained calibration
+plane by its rounded mean when initialization is still zero. A zero rounded
+mean instead resets sample count to zero. All returns leave gain initialization
+nonzero. Linux maps this stage to
+`milan/core.c:profile9_initialize_gain_state`, independently of packet import.
+
+The first entered classifier `FUN_1800508a0` calls `FUN_1800501d0` only while
+`DAT_1801dc9a8` is zero. Packet reconstruction imports the three physical ring
+planes, component/support ages and counts, and signed downsampled reference.
+Adaptive threshold/average remain the fresh initialized-data values 60/60;
+extraction hysteresis remains its fresh zero. The completed classifier writes
+the next packet and sets the latch before extraction can append a new plane.
+Linux reconstructs these semantic fields during restore and takes the next
+pre-append snapshot in
+`milan/preprocess/classification.c:goodix_milan_profile9_build_broken_mask`;
+`milan/match/info.c:goodix_milan_match_update_extraction_classification`
+consumes the restored ring afterward.
+
+The native payload also transports fields absent from that Linux encoding:
+the old setup plane (replaced by admitted setup), the two auxiliary blocks at
+`DAT_180218e70`/`DAT_180249b00`, scalar `DAT_180249af8`, and unused packet tail.
+The auxiliary blocks' copy-in/copy-out routines `FUN_180003190` and
+`FUN_1800031d0` have no static code callers; their global cross-references are
+those helpers plus load/save. The scalar is read only by save and written by
+load/default initialization. Packet import ends at `+0x5ce8`, as detailed in
+`FUN_1800501d0.md`. The three transported 9,504-byte ring prefixes exceed the
+ordinary extraction consumer's 9,152-byte prefix; see that note for geometry.
+These transported fields are distinct from omitted *live* process state:
+gain maps/readiness/count/stability, classifier adaptive values/import latch,
+and extraction hysteresis are not reconstructed from the file.
+
+Two additional extraction globals are not represented in the Linux state:
+prior coverage `DAT_1801dc994` and previous merged high class `DAT_1801dc99c`.
+They are not calibration-file fields. On the ordinary auxiliary-selector-zero
+route, `FUN_180048260` overwrites prior coverage from the current input before
+its append decision, and reads previous high only in the excluded selector-two
+branch. It then writes the current merged high. Their fresh zero values and
+warm retained values therefore do not supply an additional ordinary-path
+persistence input; `FUN_180048260.md` owns the selector and consumer contract.
+
+Ordinary exported calibration sample counts saturate at 400 in
+`FUN_180067050`; packet producers cap ring count at three, component count/ages
+at five, support count/ages at 50, and append only class values zero through two.
+These producer bounds differ from loader validation: the native loader trusts
+sample count and packet scalar/packed fields after its version/plane checks.
+Linux `goodix_milan_state_valid` and `goodix_milan_persistence_save` enforce the
+listed producer bounds in their own format. Those independent range checks do
+not establish a particular raw-frame chronology for an arbitrarily assembled
+combination of fields.
+
 ## File Ownership And Write Semantics
 
 The local file path is constructed by `FUN_180005ec0` as
@@ -133,7 +195,7 @@ open or short-write failure does not change the adapter result after successful
 serialization; a later read treats a missing, short, or invalid file as default
 state.
 
-## Evidence
+## Instruction Locations
 
 - Parameter and version checks: `0x180002f19..0x180002f42`.
 - Plane checks: `0x180002f6f..0x180002fa4`.

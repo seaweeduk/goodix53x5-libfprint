@@ -5,10 +5,6 @@
 - Address: `0x1800162ac`
 - Role: initialize the Milan HV HAL context and profile-9 callback table.
 
-The corresponding profile-0 initializer is `FUN_1800112ac`; its separate
-callback layout, geometry, and calibration/acquisition contract are owned by
-[Profile 0 USB Contract](../PROFILE0-USB-CONTRACT.md).
-
 ## Profile-9 Initialization
 
 Entry requires a non-null device wrapper, non-null wrapper field `+0x68`,
@@ -79,9 +75,48 @@ not a replacement for image-valid state.
 Current source mapping: `device/session.c:goodix_open_ssm_handler` and
 `device/calibration.c:goodix_device_parse_otp` own Linux calibration selection;
 `GoodixDynamicDacState` and `calib.dac_h` split history/default from current DAC.
+Cached startup uses `device/persistence.c:goodix_milan_warm_bootstrap` to verify
+the complete retained OTP and chip/type mapping locally, then calls the same
+calibration parser and independent DAC-resume owner. The hardware checkpoint's
+compatibility projection excludes adjusted high DAC and history.
 `device/base.c:goodix_base_ssm_handler` owns fresh reference admission and
 `GoodixProfile9FdtState` owns the FDT validity/anchor state. These are separate
 owners rather than a retained native HAL allocation.
+
+### FDT Stores At The Next Command Boundary
+
+The profile-open callback installs setter `0x180005950` at `+0x68`, arm
+`0x180005a60` at `+0xb0`, raw-event getter `0x1800053f0` at `+0x70`,
+and manual-FDT getter `0x180005420` at `+0x160`. These stores have different
+producer/consumer lifetimes:
+
+| Address / bytes | Producer | Next consumer |
+| --- | --- | --- |
+| `0x180060718`, 24 | Setter and selector-3 manual response | Successful manual getter output; not an arm parameter |
+| `0x180060730`, 24 | Setter, up/reverse parser transform, reverse rejection restoration | Down-arm command's complete base argument |
+| `0x180060748`, 24 | Setter and down parser's touch-dependent transform | Up-arm command's complete base argument |
+| `0x180060778`, 24 | Setter and reverse parser's pre-update down-base copy | Manual-FDT command argument; reverse getter returns each word's high byte |
+| `0x180060760`, 24 | Each accepted down/up/reverse packet | Selected event handler's raw input |
+| `0x180060790`, 2 | Down/reverse packet touch word | Down parser's up-base transform; up does not consume the retained touch word |
+
+The setter performs only four software copies, not sensor programming. Down
+and up arm requests carry `[0x0c,1,down[24]]` and `[0x0e,1,up[24]]` through
+`0x180019ec8:0x18001a272..0x18001a36a`. Manual requests carry TX selector
+`0x0d`/`0x8d`, byte one, and all 24 bytes from `0x180060778`. They reset
+response readiness before sending; only a completed manual response permits
+`0x180005420:0x180005497..0x1800054c8` to copy the manual result. The event
+parser replaces the complete raw vector before signalling its worker.
+
+At a boundary with no pending worker notification or response, the previous
+manual-result and raw-event bytes are not inputs to a new arm. A newly
+received event or successful manual reply supplies them before use. The
+down/up/manual command stores and active drift anchor are retained inputs,
+however, and cannot all be reconstructed from the last admitted FDT sample:
+events and rejected refresh postludes can have changed them independently.
+Pending event data is a different owner from the one-shot image-setup marker.
+See [the event loop](usbinterface-profile9-fdt-event-loop.md) for parser order
+and coalescing, and [deviceInit](usbinterface-FUN_180020970.md) for retained
+image/configuration/session boundaries.
 
 ## Initial-Failure Consequence
 

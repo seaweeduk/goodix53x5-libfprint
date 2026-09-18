@@ -122,6 +122,17 @@ These are later health-state consumers, not boot-time OPEN rejection:
 `FUN_180012c1c` itself does not write those two status bytes or gate OPEN
 completion on the measured count.
 
+Health preparation is not an additional reference-admission predicate. Its
+return is retained separately in `R12D`; the image copy and validity stores
+at `0x180015f45..0x180015f82` precede the health-result test at
+`0x180015faf..0x180015fb2`. A nonzero preparation result suppresses only
+boot-health initialization, not the FDT/image validation or admitted reference.
+Initialized D0 entry and enabled-HAL ESD repair do not call this all-base owner,
+so they skip its health pair as well as its reference pair, even when the
+configured health switch is enabled. Neither route tests health status as a
+condition for retaining the reference. The later up-event health acquisition
+and enrollment/study status consumption remain independent contracts.
+
 ## Capture ABI And Settings
 
 Profile 9 installs `FUN_1800055d0` at callback slot `+0x158`. Its effective
@@ -455,6 +466,19 @@ reference at the next delivered sample.
   `goodix_milan_generation_prepare_setup`,
   `goodix_milan_generation_transfer_process_state`, and the unmarked direct
   recovery branch in `goodix_base_ssm_handler`.
+  Its publication branch preserves an existing pending marker across direct
+  recovery, but does not manufacture one for an uninitialized engine. The
+  separate first-setup gate handles that engine's latest hardware image.
+  Same-object retained generations and fresh-engine hardware restoration map
+  to `device/base.c:goodix_milan_warm_park` / `goodix_milan_warm_resume`; the
+  latter reconciles a changed trusted hardware/FDT checkpoint with the retained
+  engine. Initialized, unmarked engines keep their consumed setup; uninitialized
+  engines or an outstanding local/published marker use the latest hardware
+  setup input. Settled FDT values use `GoodixMilanRetainedFdt`, independently
+  of command/event ownership. Base publication prepares the replacement
+  generation before committing the correlated hardware and FDT stores.
+  The retained-consumer composition and saved-file failure contract are described
+  in [the initialization owner](usbinterface-FUN_180020970.md).
 - The independent decoded-image cache maps to the receive owner in
   `device/transport.c` and `device/commands.c:goodix_cmd_dup_image_reply`.
   Down/up/manual FDT stores map to `GoodixProfile9FdtState.base_*`; caller-owned

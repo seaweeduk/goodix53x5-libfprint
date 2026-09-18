@@ -40,13 +40,33 @@
 
 ## Authentication And Publication
 
+The AES wrapper `FUN_180026b50` uses a stack cipher descriptor and propagates
+nonzero returns from cipher setup (`028620`), padding selection (`028570`), key
+setup (`0285c0`), IV setup (`0284f0`), reset (`0284d0`), update (`0286c0`) and
+finish (`0282b0`); its common exit destroys the descriptor through `028430`.
+Cipher lookup `028480(5)` failure returns `-0x400103`. Output length includes the
+finish length only after successful finish. The current AES-wrapper counterpart
+is `device/crypto.c:goodix_crypto_aes_cbc_decrypt`. HMAC wrapper `027430` selects
+SHA256 with `0280d0(6)`, returns `-0x400304` on missing digest metadata, and
+propagates the return from `027c30`. These wrapper-level return checks do not
+establish that every lower-level primitive checks every internal failure.
+Cipher setup `028620` zeroes the descriptor and calls the selected cipher's
+allocator. A null result returns `-0x6180`, propagated by the wrapper and sensor
+reply owner before authentication/counter publication. The descriptor metadata
+is installed only after allocation succeeds. HMAC allocation and unchecked
+inner digest-call behavior are described in the
+[handshake owner](usbinterface-FUN_180025400.md#server-identity-and-key-publication).
+
 - Let `P = message_length - 0x28`. HMAC-SHA256 (`FUN_180027430`) covers the
   little-endian four-byte counter followed by the final `min(P, 0x400)` bytes
   of the reconstructed payload. The digest is compared against its following
   32 bytes at `0x180024e62..0x180024e89`.
 - HMAC mismatch returns `0xffbffcfe` without changing the counter, either output
-  buffer, or either length. AES/HMAC primitive failure also returns before
-  counter advancement or output publication.
+  buffer, or either length. A nonzero AES-wrapper return or a successful return
+  with length other than `0x3f0` is rejected at `0x180024d3f..0x180024d55`.
+  A nonzero HMAC-wrapper return is rejected at `0x180024e11..0x180024e18`.
+  These failures return before counter advancement or output publication; an
+  inner primitive error ignored by its wrapper is not detected by these tests.
 - `INC dword ptr [R12 + 0xd0]` at `0x180024ed8` advances the counter modulo
   `2^32` immediately after authentication. No later failure rolls it back.
 - After checking `P > 5`, the function copies `P - 5` bytes from reconstructed
