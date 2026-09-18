@@ -51,6 +51,20 @@ and live images use the fixed 108x88 raw encodings. Every binary artifact uses a
 containers are rejected. Descriptors pin exact encodings, byte sizes, and
 SHA-256 identities, and gallery and probe record counts are checked exactly.
 
+The selected operation's `tcode_u16`, `dac_high_u16`, and `dac_low_u16` are
+required integers in `0..65535`. The transient case retains those exact words
+as `tcode`, `dac_high`, and `dac_low`; neither runner substitutes defaults.
+The native batch passes their decimal values after the template path, before
+any prelude arguments. Its internal invocation is
+`natural DLL OUTPUT BASE LIVE TEMPLATE TCODE DAC_HIGH DAC_LOW [PURPOSE:PRELUDE...]`.
+The oracle validates all three words before loading inputs, then passes each
+low byte, zero-extended to a word, to the `identifyImage` export. This models
+the sample adapter's `032040 -> 02c810 -> 02e360` calibration projection;
+calling the word-typed export with unprojected capture words would skip that
+boundary. The current runner likewise retains full words until the runtime
+adapter calls extraction. Earlier preprocessing-only frames do not consume
+this triplet. Public schemas and fixed profile policy are unchanged.
+
 Earlier frames reconstruct preprocessing state when the selected operation is
 not the first use of its generation. They run in exact chronological order
 after one preprocessor initialization and before the target frame. Their

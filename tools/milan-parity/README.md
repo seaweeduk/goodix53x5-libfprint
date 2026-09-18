@@ -25,7 +25,10 @@ The checker accepts exactly runtime schema `goodix53x5-runtime-debug/v3` and
 print schema 4.
 
 The fixed policy is sensor subtype 12, profile 9, anti-fake mode 1,
-`canonical-zero-v1`, print schema 4, tcode 121, DAC high 125, and DAC low 198.
+`canonical-zero-v1`, and print schema 4. Temperature code, DAC high, and DAC low
+are captured unsigned 16-bit values, not fixed policy constants. Both runners
+receive those exact words and project their low bytes only at the algorithm
+adapter boundary, preserving the full captured metadata.
 Runtime JSON must be canonical, internally consistent, and named with the exact
 action, epoch, generation, stage, chronology, and CRC identities it contains.
 Chronology and generation-use indexes must be complete within each capture

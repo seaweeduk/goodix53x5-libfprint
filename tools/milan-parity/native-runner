@@ -32,7 +32,7 @@ POLICY = {
     "profile": 9,
     "subtype": 12,
 }
-METADATA = {"tcode": 0x79, "dac_high": 0x7D, "dac_low": 0xC6}
+CALIBRATION_FIELDS = ("tcode", "dac_high", "dac_low")
 UINT32_MAX = 0xFFFFFFFF
 PREPROCESS_RETRY_STATUSES = {0x29AA, 0x29BB, 0x7531, 0xC351}
 AUTHORITY_COMMIT = "be2e3ae78ce5942006155aae9dc97e6462f115a2"
@@ -182,8 +182,10 @@ def native_contract(case, verified: dict[str, Path]):
         raise RunnerError(f"native DLL runner does not support operation {operation!r}")
     if purpose != "identify":
         raise RunnerError("identify/study replay purpose must be identify")
-    if {key: replay.get(key) for key in METADATA} != METADATA:
-        raise RunnerError("replay metadata must equal tcode=121,dac_high=125,dac_low=198")
+    for field in CALIBRATION_FIELDS:
+        value = replay.get(field)
+        if type(value) is not int or not 0 <= value <= 0xFFFF:
+            raise RunnerError(f"replay {field} must be a uint16")
     setup = artifact(verified, replay.get("setup"), "replay setup")
     live_names = replay.get("live")
     if not isinstance(live_names, list) or len(live_names) != 1:
@@ -592,7 +594,10 @@ def run_dll_authority_batch(executable: Path, wine: str, jobs, dll: Path):
             output.mkdir(mode=0o700)
             outputs.append(output)
             fields = [windows_path(output), windows_path(setup), windows_path(live),
-                      windows_path(template)]
+                       windows_path(template)]
+            # Preserve captured words through the CLI; the oracle models the
+            # sample adapter's byte projection only at the algorithm call.
+            fields.extend(str(case["replay"][field]) for field in CALIBRATION_FIELDS)
             fields.extend(f"{purpose}:{windows_path(prelude)}"
                           for prelude, purpose in preludes)
             if any("\t" in field or "\r" in field or "\n" in field for field in fields):
