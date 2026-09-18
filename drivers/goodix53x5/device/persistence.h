@@ -1,5 +1,5 @@
 /*
- * Goodix 53x5 driver for libfprint - Milan preprocessing and DAC persistence
+ * Goodix 53x5 driver for libfprint - Milan preprocessing persistence
  * Copyright (C) 2026 goodix-fp-linux-dev contributors
  *
  * This library is free software; you can redistribute it and/or
@@ -11,11 +11,6 @@
 #pragma once
 
 #include "device/base.h"
-#include "driver-private.h"
-
-void goodix_milan_dac_resume (FpDevice          *dev,
-                              GoodixCalibParams *seeded);
-void goodix_milan_dac_checkpoint (FpDevice *dev);
 
 void goodix_milan_persistence_prepare (FpDevice *dev);
 void goodix_milan_persistence_clear (FpDevice *dev);
