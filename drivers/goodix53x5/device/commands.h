@@ -110,9 +110,10 @@ void goodix_cmd_ec_control (FpiSsm *ssm, FpDevice *dev, gboolean on);
 /* ========================================================================
  * Named reply parsers
  *
- * Ordinary payload pointers borrow the validated RX buffer until receive reset.
- * Firmware and manual FDT getters borrow independent parser caches, which
- * survive readiness reset but may be overwritten by a later received packet.
+ * Payload pointers borrow the transport's validated reply view. Shared-response
+ * commands consume parser cache bytes, even when data arrived before ACK.
+ * Firmware uses that same cache; manual FDT uses its own. Consume borrowed
+ * views before the next receive/invalidation can replace them.
  * ======================================================================== */
 
 gboolean goodix_cmd_parse_fw_version_reply (FpDevice      *dev,

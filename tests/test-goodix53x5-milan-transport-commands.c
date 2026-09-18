@@ -153,7 +153,8 @@ ack_budget (guint8 command)
 {
   if (command == 0x60 || command == 0xae)
     return 200;
-  if (command == 0x32 || command == 0x34 || command == 0x36 || command == 0x90)
+  if (command == 0x32 || command == 0x34 || command == 0x36 || command == 0x90 ||
+      command == 0xa2 || command == 0x82 || command == 0xa6 || command == 0xe4 || command == 0xe2)
     return 500;
   return 2000;
 }
@@ -478,12 +479,12 @@ command_reply (FpiUsbTransfer *transfer)
             payload[i] = i * 7 + 3;
           g_autofree guint8 *message = goodix_proto_build_message (
             8, 1, payload, sizeof (payload), TRUE, &size);
-          /* Ordinary data retains its per-continuation 5-second budget.
-           * Three valid cells arrive four seconds apart; no wall-clock wait. */
-          if (usb.timeout != GOODIX_DATA_TIMEOUT)
+          /* Sized register data has one 200-ms response budget across cells.
+           * Three valid cells arrive 60 ms apart; no wall-clock wait. */
+          if (usb.timeout != 200 - io.data_chunks * 60)
             g_test_fail ();
-          test_clock_us += MIN (usb.timeout, 4000) * 1000;
-          if (usb.timeout < 4000)
+          test_clock_us += MIN (usb.timeout, 60) * 1000;
+          if (usb.timeout < 60)
             error = g_error_new_literal (G_USB_DEVICE_ERROR,
                                          G_USB_DEVICE_ERROR_TIMED_OUT,
                                          "Continuation budget shortened");

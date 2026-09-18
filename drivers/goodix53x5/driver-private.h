@@ -80,6 +80,21 @@ typedef struct
 
 typedef struct _GoodixTransport GoodixTransport;
 
+/* Independent native response events; the first four retain their existing
+ * readiness bits used by the named command consumers. */
+typedef enum
+{
+  GOODIX_RESPONSE_NONE = -1,
+  GOODIX_RESPONSE_MANUAL,
+  GOODIX_RESPONSE_CONFIG,
+  GOODIX_RESPONSE_SYSTEM,
+  GOODIX_RESPONSE_IMAGE,
+  GOODIX_RESPONSE_REGISTER,
+  GOODIX_RESPONSE_OTP,
+  GOODIX_RESPONSE_PRODUCTION,
+  GOODIX_RESPONSE_COUNT,
+} GoodixResponseSlot;
+
 /* --- Device struct --- */
 struct _FpiDeviceGoodix53x5
 {
@@ -112,11 +127,11 @@ struct _FpiDeviceGoodix53x5
   /* Demand-driven physical IN/OUT and the accepted foreground operation. */
   GoodixTransport *transport;
 
-  /* Repeated mode and issued manual/config ACK slots. Kept for the device
+  /* Repeated mode and issued response-command ACK slots. Kept for the device
    * lifetime: the wire has no generation or reliable remaining ACK count. */
-  guint8 retried_mode_acks;
-  /* Native response events reset per send; the manual cache survives reset.
-   * Retain its four metadata bytes for existing Linux touch-flag consumers. */
+  guint16 routed_command_acks;
+  /* Native response events reset per send; cached bytes survive reset.
+   * The manual cache retains metadata for Linux touch-flag consumers. */
   guint8 command_response_ready;
   /* Receiver-owned decoded image, independent of the command ACK and of the
    * captured frame handed to the runtime worker. Readiness resets per send. */
@@ -146,8 +161,16 @@ struct _FpiDeviceGoodix53x5
 
   /* Firmware version string */
   gchar *fw_version;
-  /* Observable prefix of native's shared response cache. */
-  guint8 shared_response[64];
+  /* Shared native cache, including retained unwritten suffixes. Keep the
+   * firmware consumer's 64-byte view while retaining complete framed replies. */
+  union
+  {
+    guint8 shared_response[64];
+    guint8 shared_response_storage[GOODIX_RX_BUF_SIZE];
+  };
+  /* Received lengths preserve Linux short-reply validation independently of
+   * the native event grouping and shared byte overwrites. */
+  gsize shared_response_lengths[GOODIX_RESPONSE_COUNT];
 
   /* Hardware identity and its validated Milan algorithm subtype. */
   guint32 chip_id;
