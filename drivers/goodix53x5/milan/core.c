@@ -763,6 +763,7 @@ profile9_calibration_admit (const uint16_t             *source,
 {
   size_t coarse_rows = rows / 2;
   size_t coarse_columns = columns / 2;
+  int refresh_reference = state->auxiliary_sample_count == 0;
 
   if (state->auxiliary_sample_count != 0)
     {
@@ -783,20 +784,24 @@ profile9_calibration_admit (const uint16_t             *source,
       if (difference_sum / (coarse_rows * coarse_columns) < 30)
         state->stable_count++;
       else
-        state->stable_count = 0;
+        {
+          state->stable_count = 0;
+          refresh_reference = 1;
+        }
     }
   else
     {
       state->stable_count = 0;
     }
 
-  if (state->auxiliary_sample_count == 0 || state->stable_count == 0)
+  if (refresh_reference)
     for (size_t row = 0; row < coarse_rows; row++)
       for (size_t column = 0; column < coarse_columns; column++)
         state->coarse_reference[row * coarse_columns + column] =
           source[(row * 2) * columns + column * 2];
 
-  if (state->stable_count > 3)
+  /* Native increments a wrapping dword, then compares it as signed. */
+  if ((int32_t) state->stable_count > 3)
     return 0;
 
   return 1;
