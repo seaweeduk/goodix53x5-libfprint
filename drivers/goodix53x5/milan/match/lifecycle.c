@@ -145,9 +145,27 @@ goodix_milan_match_serialized_feature_result_internal (
         {
           GoodixMilanFeatureView view;
 
-          if (!retained_gallery && goodix_milan_template_parse_feature_element (
+          if (goodix_milan_template_parse_feature_element (
                 unpacked->feature_elements[i], unpacked->feature_element_sizes[i],
-                &view) == 0 && view.record_count > 0 &&
+                &view) != 0)
+            continue;
+          /* Ordinary native dispatch resets every gallery owner before traversal,
+           * including retained galleries and rows that matching later skips. */
+          if (view.fields.tagged_values[5] == 5)
+            {
+              if (goodix_milan_template_patch_feature_scalar (
+                    (guint8 *) unpacked->feature_elements[i],
+                    unpacked->feature_element_sizes[i], 0xba, 0) != 0)
+                {
+                  g_free (unpacked);
+                  g_free (updated_milan);
+                  g_free (normalized_milan);
+                  goto invalid;
+                }
+              if (!updated_milan)
+                updated_milan = g_malloc (normalized_milan_len);
+            }
+          if (!retained_gallery && view.record_count > 0 &&
               view.record_count <= 150 &&
               view.fields.tagged_values[2] == (int32_t) view.record_count)
             {
