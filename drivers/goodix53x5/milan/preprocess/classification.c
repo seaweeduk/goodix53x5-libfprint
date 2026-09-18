@@ -1237,7 +1237,7 @@ milan_profile9_update_history (GoodixMilanPreprocessState *state,
 
         state->profile9_history_reference[i] =
           (uint16_t) ((normalized +
-                       (int) state->profile9_history_reference[i] *
+                       (int16_t) state->profile9_history_reference[i] *
                          (int) state->profile9_history_count) /
                       (int) (state->profile9_history_count + 1));
       }
@@ -1376,7 +1376,7 @@ milan_profile9_secondary_count_state (const uint16_t *source,
         threshold = 400;
     }
   for (size_t i = 0; i < count; i++)
-    selected += scores[i] > threshold;
+    selected += (int16_t) scores[i] > threshold;
   if (selected > 600)
     result = 2;
   else if (selected > 300)

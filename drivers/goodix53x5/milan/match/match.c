@@ -976,6 +976,10 @@ milan_match_build_feature_candidate (
             context->match_selection->acceptance_evidence == 0;
           return 1;
         }
+      if (goodix_milan_match_transform_proximity (
+            feature_result->candidate.transform,
+            late_policy_context->probe_low_class, sensor_type) != 0)
+        return 1;
       memcpy (feature_result->metrics, feature_result->candidate.words,
               sizeof (feature_result->metrics));
       memcpy (feature_result->transform, feature_result->candidate.transform,
@@ -1906,7 +1910,8 @@ milan_match_finalize (MilanMatchFinalizationContext *context)
                          decoded_high <= 2 ? decoded_high :
                          decoded_high <= 5 ? decoded_high + 1 : 0;
           transform_classifier = goodix_milan_match_transform_proximity (
-            transform, decoded_high, context->enrolled->metadata.sensor_type);
+            transform, MAX (decoded_high, context->late_context->probe_low_class),
+            context->enrolled->metadata.sensor_type);
           if (filtered_count <= 4 || transform_classifier != 0)
             continue;
           if (goodix_milan_match_overlap_metrics_with_context (

@@ -318,14 +318,23 @@ goodix_milan_runtime_preprocess_input (const GoodixMilanRuntimeInput *input,
   goodix_milan_debug_runtime_preprocess_finished (
     output, preprocess_status, *processed);
   output->preprocess_state_valid = TRUE;
-  if (preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY ||
-      preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_RAW_ADMISSION ||
-      preprocess_status == GOODIX_MILAN_PREPROCESS_RETRY_CLASSIFICATION)
+  /* The native adapter preserves retry statuses for enrollment, but identify
+   * admits completed late-retry images when both live metrics are nonzero. */
+  if (input->purpose == GOODIX_MILAN_PURPOSE_ENROLL &&
+      preprocess_status != 0)
     {
       output->status = GOODIX_MILAN_RUNTIME_RETRY;
       g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
                            GOODIX_MILAN_PRINT_ERROR_INVALID,
                            "Native Milan preprocessing requested retry");
+      return FALSE;
+    }
+  if (output->quality == 0 || output->coverage == 0)
+    {
+      output->status = GOODIX_MILAN_RUNTIME_RETRY;
+      g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
+                           GOODIX_MILAN_PRINT_ERROR_INVALID,
+                           "Native Milan sample quality is insufficient");
       return FALSE;
     }
   return TRUE;
