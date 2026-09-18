@@ -81,16 +81,6 @@ clamp (int32_t value,
   return value;
 }
 
-static int32_t
-normalized_quality (int32_t quality,
-                    int32_t coverage)
-{
-  if (coverage < 6 || coverage > 49)
-    return quality;
-  quality = quality * 2500 / (coverage * coverage);
-  return quality < 100 ? quality : 100;
-}
-
 static void
 initial_classifier (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                     int32_t       image_quality,
@@ -837,7 +827,7 @@ late_eligibility (const int32_t metrics[GOODIX_MILAN_CANDIDATE_WORDS],
                   int32_t       image_coverage,
                   int32_t       output[2])
 {
-  int32_t quality = normalized_quality (image_quality, image_coverage);
+  int32_t quality = image_quality;
   int32_t primary = metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY] > 12 ?
                     12 : metrics[GOODIX_MILAN_POLICY_METRIC_PRIMARY];
   int32_t quality_band = (quality - 1) / 10;
