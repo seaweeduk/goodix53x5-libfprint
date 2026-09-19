@@ -50,17 +50,10 @@ check_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel)
 {
   if (transfer->endpoint == GOODIX_EP_IN)
     {
-      g_assert_cmpuint (transfer->length, ==, 64);
-      if (timeout != 0)
-        {
-          if (io.command == 0 || io.command == 0xa8)
-            {
-              if (cancel != action_cancel_token)
-                g_test_fail ();
-            }
-          else
-            g_assert_null (cancel);
-        }
+      g_assert_cmpuint (transfer->length, ==, 0x8000);
+      g_assert_cmpuint (timeout, ==, 0);
+      g_assert_nonnull (cancel);
+      g_assert_true (cancel != action_cancel_token);
     }
   else
     {
@@ -685,10 +678,8 @@ test_shared_response (gconstpointer data)
         }
       if (idle)
         {
-          /* The cache outlives idle reception; join before the query OUT. */
+          /* The cache and physical IN survive command admission. */
           fpi_ssm_start (fpi_ssm_new (dev, alias_command, 1), idle_test_command_done);
-          g_assert_true (g_cancellable_is_cancelled (usb.cancel));
-          fixture_complete (g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "Alias idle handoff"));
           g_assert_cmpuint (usb.pending->endpoint, ==, GOODIX_EP_OUT);
           fixture_complete (NULL);
         }
@@ -718,6 +709,7 @@ test_shared_response (gconstpointer data)
       g_assert_cmpmem (cached, len, expected, sizeof (expected));
     }
   g_assert_cmpuint (io.completions, ==, idle ? 2 : 1);
+  fixture_join_reader (dev);
   g_assert_null (usb.pending);
   g_assert_null (self->transport);
   g_clear_pointer (&self->rx.buf, g_free);
