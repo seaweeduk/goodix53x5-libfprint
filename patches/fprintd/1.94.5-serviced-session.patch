@@ -3,7 +3,7 @@ Base-Revision: b54a007ccf58ac0ae074c7151b223f35cbd17306
 Requires: 1.94.5-milan-update-save.patch
 
 diff --git a/src/device.c b/src/device.c
-index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408f601470a 100644
+index 772d6de669fe9913e4f741cf20d6533decdfae74..b58f887024c2d55fbf1c5fa9a6284f177185c6eb 100644
 --- a/src/device.c
 +++ b/src/device.c
 @@ -119,6 +119,11 @@ typedef struct
@@ -58,7 +58,34 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
  
    G_OBJECT_CLASS (fprint_device_parent_class)->constructed (object);
  }
-@@ -492,6 +509,52 @@ suspend_cb (GObject      *source_obj,
+@@ -477,6 +494,19 @@ _fprint_device_get_id (FprintDevice *rdev)
+   return priv->id;
+ }
+ 
++/* FpDevice::removed can fire while a suspend or resume is still in flight, when
++ * libfprint rejects close; finish the removal once that power task settled. */
++static void
++shutdown_if_removed (FprintDevice *rdev)
++{
++  FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
++  gboolean removed = FALSE;
++
++  g_object_get (priv->dev, "removed", &removed, NULL);
++  if (removed && fp_device_is_open (priv->dev))
++    fprint_device_shutdown (rdev);
++}
++
+ static void
+ suspend_cb (GObject      *source_obj,
+             GAsyncResult *res,
+@@ -486,12 +516,59 @@ suspend_cb (GObject      *source_obj,
+   GError *error = NULL;
+ 
+   fp_device_suspend_finish (FP_DEVICE (source_obj), res, &error);
++  shutdown_if_removed (g_task_get_source_object (task));
+   if (error)
+     g_task_return_error (task, error);
+   else
      g_task_return_boolean (task, TRUE);
  }
  
@@ -111,15 +138,16 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
  static void
  resume_cb (GObject      *source_obj,
             GAsyncResult *res,
-@@ -501,6 +564,7 @@ resume_cb (GObject      *source_obj,
+@@ -501,6 +578,8 @@ resume_cb (GObject      *source_obj,
    GError *error = NULL;
  
    fp_device_resume_finish (FP_DEVICE (source_obj), res, &error);
++  shutdown_if_removed (g_task_get_source_object (task));
 +  power_settled (g_task_get_source_object (task), error == NULL);
    if (error)
      g_task_return_error (task, error);
    else
-@@ -517,6 +581,7 @@ fprint_device_suspend (FprintDevice       *rdev,
+@@ -517,6 +596,7 @@ fprint_device_suspend (FprintDevice       *rdev,
  
    /* Just forward to libfprint. */
  
@@ -127,7 +155,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
    task = g_task_new (rdev, NULL, callback, user_data);
    fp_device_suspend (priv->dev, NULL, suspend_cb, task);
  }
-@@ -954,7 +1019,6 @@ _fprint_device_client_vanished (GDBusConnection *connection,
+@@ -954,7 +1034,6 @@ _fprint_device_client_vanished (GDBusConnection *connection,
                                  const char      *name,
                                  FprintDevice    *rdev)
  {
@@ -135,7 +163,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
    g_autoptr(SessionData) session = NULL;
    FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
  
-@@ -964,37 +1028,8 @@ _fprint_device_client_vanished (GDBusConnection *connection,
+@@ -964,37 +1043,8 @@ _fprint_device_client_vanished (GDBusConnection *connection,
    if (session != NULL &&
        g_strcmp0 (session->sender, name) == 0)
      {
@@ -175,7 +203,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
        session_data_set_new (priv, NULL, NULL);
      }
    g_hash_table_remove (priv->clients, name);
-@@ -1120,43 +1155,87 @@ fprint_device_claim (FprintDBusDevice      *dbus_dev,
+@@ -1120,43 +1170,87 @@ fprint_device_claim (FprintDBusDevice      *dbus_dev,
  
    g_debug ("user '%s' claiming the device: %d", session->username, priv->id);
  
@@ -209,7 +237,8 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
 +  if (fp_device_is_open (priv->dev))
 +    {
 +      g_autoptr(GDBusMethodInvocation) invocation = g_steal_pointer (&session->invocation);
-+
+ 
+-  if (!fp_device_close_finish (dev, res, &error))
 +      g_debug ("claimed already open device %d", priv->id);
 +      fprint_dbus_device_complete_claim (FPRINT_DBUS_DEVICE (rdev), invocation);
 +      return;
@@ -225,8 +254,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
 +stop_current_action (FprintDevice *rdev)
 +{
 +  FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
- 
--  if (!fp_device_close_finish (dev, res, &error))
++
 +  fail_deferred_start (rdev, "Claim released before start");
 +  if (!priv->current_cancellable)
      {
@@ -284,7 +312,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
  }
  
  static gboolean
-@@ -1164,7 +1243,6 @@ fprint_device_release (FprintDBusDevice      *dbus_dev,
+@@ -1164,7 +1258,6 @@ fprint_device_release (FprintDBusDevice      *dbus_dev,
                         GDBusMethodInvocation *invocation)
  {
    g_autoptr(GError) error = NULL;
@@ -292,7 +320,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
    FprintDevice *rdev = FPRINT_DEVICE (dbus_dev);
    FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
  
-@@ -1174,35 +1252,34 @@ fprint_device_release (FprintDBusDevice      *dbus_dev,
+@@ -1174,35 +1267,34 @@ fprint_device_release (FprintDBusDevice      *dbus_dev,
        return TRUE;
      }
  
@@ -305,13 +333,13 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
 -        g_warning ("Verification was in progress, stopping it");
 -      else if (priv->current_action == ACTION_DELETE)
 -        g_warning ("Deletion was in progress, stopping it");
--
++  stop_current_action (rdev);
+ 
 -      g_cancellable_cancel (priv->current_cancellable);
 -      while (priv->current_action != ACTION_NONE)
 -        g_main_context_iteration (NULL, TRUE);
 -    }
-+  stop_current_action (rdev);
- 
+-
 -  session = session_data_get (priv);
 +  /* The hardware stays open for the next claim; only the user's authority
 +   * ends here. */
@@ -351,7 +379,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
    return TRUE;
  }
  
-@@ -1682,6 +1759,9 @@ fprint_device_verify_start (FprintDBusDevice      *dbus_dev,
+@@ -1682,6 +1774,9 @@ fprint_device_verify_start (FprintDBusDevice      *dbus_dev,
        return TRUE;
      }
  
@@ -361,7 +389,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
    session = session_data_get (priv);
  
    if (!can_start_action (rdev, &error))
-@@ -1827,6 +1907,13 @@ fprint_device_verify_stop (FprintDBusDevice      *dbus_dev,
+@@ -1827,6 +1922,13 @@ fprint_device_verify_stop (FprintDBusDevice      *dbus_dev,
        return TRUE;
      }
  
@@ -375,7 +403,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
    if (!can_stop_action (rdev, ACTION_VERIFY, &error))
      {
        g_dbus_method_invocation_return_gerror (invocation, error);
-@@ -2218,6 +2305,9 @@ fprint_device_enroll_start (FprintDBusDevice      *dbus_dev,
+@@ -2218,6 +2320,9 @@ fprint_device_enroll_start (FprintDBusDevice      *dbus_dev,
        return TRUE;
      }
  
@@ -385,7 +413,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
    session = session_data_get (priv);
    store.print_data_load (priv->dev, finger,
                           session->username, &existing_print);
-@@ -2295,6 +2385,7 @@ fprint_device_enroll_stop (FprintDBusDevice      *dbus_dev,
+@@ -2295,6 +2400,7 @@ fprint_device_enroll_stop (FprintDBusDevice      *dbus_dev,
                             GDBusMethodInvocation *invocation)
  {
    FprintDevice *rdev = FPRINT_DEVICE (dbus_dev);
@@ -393,7 +421,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408
  
    g_autoptr(GError) error = NULL;
  
-@@ -2304,6 +2395,13 @@ fprint_device_enroll_stop (FprintDBusDevice      *dbus_dev,
+@@ -2304,6 +2410,13 @@ fprint_device_enroll_stop (FprintDBusDevice      *dbus_dev,
        return TRUE;
      }
  
