@@ -85,7 +85,26 @@ returning zero. Null adapter/context instead returns `0x80004003`. This is the
 deactivation callback's update/save gate, rather than an unconditional save at
 operation clear or detach.
 
+The setup-save passes the same adapter-status output used by initialization to
+`FUN_18002aef0`. Allocation or serialization failure can therefore reject the
+sample after `preprocessor_init` has succeeded: `FUN_180031d00` does not publish
+its local initialized byte or frame length when that status is nonzero. The
+global setup-ready flag remains the result of successful initialization in this
+case. File-writer failure alone does not take that path because it does not
+change the adapter status. This differs from the enrollment/update callers,
+which discard the save result after storage publication.
+
 The latter two gates map to successful publication in `device/enroll.c` and
 `device/auth.c`, respectively. The Linux preparation owner
 `device/base.c:goodix_milan_generation_prepare_setup` performs restore and
 process-state transfer; it has no immediate setup-save call.
+
+The native setup-save copies the just-loaded workspace packet even when older
+live classifier globals survive outside the workspace. It does not import or
+reserialize those globals. The Linux state after process transfer contains both
+the loaded extraction persistence snapshot and surviving live component/support
+ages and reference. Its normal `goodix_milan_persistence_save` encodes that
+snapshot plus the live age/reference fields, after completed classification at
+its production save gates. This mixed post-transfer state is distinct from the
+native setup-save packet snapshot. The native packed reference also undergoes
+no downsample/reconstruction round trip during setup-save.

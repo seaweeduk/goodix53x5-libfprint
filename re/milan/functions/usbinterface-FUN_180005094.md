@@ -201,14 +201,18 @@ configuration callers. The Linux command counterparts are
 `goodix_arm_handler` downloads/rearms. The repeated arm reads the then-current
 down/up store, which can include parser mutations during configuration.
 
-`device/scan.c:goodix_scan_startup_arm_done` is the Linux cached-start consumer
-of this wrapper's outcome. Ordinary exhaustion sets `needs_reinit` even though
-the wrapper completes; this consumer checks it before entering indefinite event
-wait. It can select one cold reconstruction through the existing session owner,
-then observes the reconstructed first arm without granting another retry.
-Configuration failure alone still does not invalidate a successful repeated arm.
-This is a bounded Linux recovery policy around the native-compatible wrapper,
-not an additional native configuration predicate or another reference capture.
+`goodix_arm_result` uses `session_cancel` during idle maintenance and the
+foreground `cancel` token otherwise. Ordinary arm exhaustion sets `needs_reinit`
+while completing the wrapper; configuration failure alone does not set it.
+The coordinator can continue its FDT wait after ordinary exhaustion. At a later
+session settlement, `device/session.c:goodix_session_settled` gates servicing
+and joins terminal transport ownership when `needs_reinit` remains set; it does
+not run a cached-start/first-arm fallback.
+
+Explicit action-three configuration maps separately to
+`device/commands.c:goodix_cmd_restore_config` and
+`device/scan.c:goodix_scan_config_restored`, which continues to down-arm after
+ordinary configuration exhaustion. Terminal host errors use coordinator cleanup.
 
 See `usbinterface-FUN_18000e1f0.md` for mode dispatch and
 `usbinterface-FUN_180015c60.md` for the base-acquisition caller.

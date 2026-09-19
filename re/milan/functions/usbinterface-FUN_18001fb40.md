@@ -110,3 +110,22 @@ already been delivered and `+0xf8` is clear before the down handler arms up.
 That later arm has no request owner to complete again or change to failure.
 Its transport result is not propagated by the profile-9 arm wrapper; see
 `usbinterface-FUN_180014e10.md`.
+
+### Marker Consumption Is Callback-Based
+
+The marker is not acknowledged by the engine or by successful WDF request
+completion. `MilanHV_ReadImg` calls the void callback at `0x180015391`, then
+unconditionally reaches the marker/callback clears at
+`0x180015397..0x1800153a7`; it tests no callback return or request status.
+If `gfOnCancel` has already cleared `device+0xf8` while a live read was in
+progress, `CaptureFramedone` can still update its staging sample and return
+without publishing request output. The caller nevertheless consumes the
+nonzero marker, clears `HAL+0x240`, and frees the successful live buffer.
+Likewise cancellation winning the unmark race does not preserve the marker.
+
+Cancellation itself does not consume that marker. A subsequent failed live
+read preserves it; successful callback invocation is the consuming boundary.
+The HAL callback and remaining-frame count have no request-generation field,
+and the callback looks up the device's current request/output slots when it
+runs. Request ownership is serialized by the device critical sections, rather
+than by an acquisition token carried to this callback.

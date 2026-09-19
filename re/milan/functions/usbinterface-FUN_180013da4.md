@@ -27,8 +27,9 @@
 
 ## Handoff
 
-The next delivered sample carries `+0x236` to `CaptureFramedone` and then to
-`GoodixEngineAdapter.dll`. The ordinary live owner `FUN_1800150e0` requires a
+The next eligible callback invocation carries `+0x236` to `CaptureFramedone`;
+successful WDF delivery forwards it to `GoodixEngineAdapter.dll`.
+The ordinary live owner `FUN_1800150e0` requires a
 zero live-read result, a non-null callback at `+0x240`, and nonzero enabled
 global `0x18005f398` at `0x18001535a..0x180015375`. It passes the marker as
 callback argument 5 at `0x180015377..0x180015391`, clears it at
@@ -36,12 +37,13 @@ callback argument 5 at `0x180015377..0x180015391`, clears it at
 The alternate retained-frame action in `FUN_18000e1f0` clears the marker at
 `0x18000e661` after its callback dispatch.
 
-Marker consumption is sample delivery, not successful preprocessing,
-extraction, or matching. Neither clearing site tests the callback return or
-waits for an engine acceptance result. A live-read result that bypasses the
-callback leaves the marker unchanged. A later delivered sample therefore
-carries it once even if an earlier live-read attempt produced no sample;
-an engine retry after delivery does not restore the hardware marker.
+Marker consumption is callback dispatch, not acknowledgement of WDF delivery,
+preprocessing, extraction, or matching. Neither clearing site tests the callback
+return or waits for an engine acceptance result. Cancellation can prevent WDF
+delivery while the callback caller still clears the marker; see
+`usbinterface-FUN_18001fb40.md#marker-consumption-is-callback-based`.
+A live-read result that bypasses the callback leaves the marker unchanged.
+An engine retry after delivery does not restore the hardware marker.
 
 Repeated successful refreshes overwrite this byte with one rather than
 incrementing it. Before delivery, the latest admitted retained reference is

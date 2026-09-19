@@ -6,10 +6,25 @@
 serialized send/ACK, and response wait. The corresponding current owners are
 `drivers/goodix53x5/device/transport.c` (`goodix_transport_send`,
 `goodix_cmd_set_policy`, `goodix_transport_select_response`, receive completion
-and command retry) and the named wrappers in `device/commands.c`. This note owns
-the generic reset/register/OTP/
-production command contracts; profile-9 mode/manual consumers are also mapped
+and command retry) and the named wrappers in `device/commands.c`.
+`goodix_reader_start` / `goodix_rx_cb` own the continuous IN callback;
+`goodix_transport_arm_wait` / `goodix_transport_expired` own command budgets;
+`goodix_transport_quiesce` joins the reader at hardware boundaries. This note owns
+the generic reset/register/OTP/production command contracts; profile-9
+mode/manual consumers are also mapped
 in `usbinterface-FUN_180005420.md` and the FDT event-loop note.
+
+The physical owner is `FpiDeviceGoodix53x5.reader`; `transport` instead owns one
+command or logical event/MCU wait. `goodix_reader_start` posts one 0x8000-byte IN
+with no timeout, and `goodix_rx_cb` dispatches its transferred bytes in 64-byte
+cells through `goodix_rx_cell` before completing a logical waiter. It does not
+inspect the allocation suffix beyond the transferred length. Command expiry,
+retry and `goodix_transport_cancel_event` preserve that reader and incomplete
+assembly. Successful open/resume and ordinary service/action handoffs likewise
+preserve it. Hardware-stop paths join it before `goodix_transport_invalidate`.
+A physical read error is retained in the reader and sets `needs_reinit`; these
+owners provide no WDF-equivalent pipe-reset/restart operation. Session fault
+handling is mapped in `usbinterface-profile9-fdt-event-loop.md`.
 
 ## Response ownership and budget origin
 
@@ -70,6 +85,46 @@ events. Multiple publications coalesce; successful wait consumes the signal,
 not the cached bytes. Protocol initialization publishes the initialized byte
 only after creating all seven handles. Failure closes created handles and
 replaces those entries with -1.
+
+## Independent USB Receive Boundary
+
+`ConfigContReaderForReadEndPoint` (`0x180020058`) zeroes a 0x48-byte WDF
+continuous-reader configuration, sets its transfer length from device word
+`+0x30` (`0x8000` from device construction), sets one pending read, and installs
+completion `0x180021200` and failure `0x1800211a0`. The decisive stores are
+`0x1800200c9..0x1800200f5`. It does not select a transfer size from a command,
+image header, declared remaining length or sender deadline. A completed image
+transfer shorter than 0x8000 is therefore not the posted request size.
+
+Read completion uses received length only as a nonzero gate and traverses the
+full 0x8000-byte allocation in 64-byte cells, provided its first byte is nonzero.
+The loop does not bound traversal by actual transferred bytes; see the
+[FDT event-loop note](usbinterface-profile9-fdt-event-loop.md) for its exact
+instruction boundaries. First cells carry
+three header bytes and up to 61 declared bytes; continuations carry one selector
+and up to 63 declared bytes. For declared size `n` (including checksum), native
+`DataFromDevice` computes `ceil((n+2)/63)` cells. Single-cell `n < 62` copies
+only `n` bytes, and the final continuation copies only the remaining declared
+bytes. Padding is not another packed message. A different selector abandons
+an active partial message; any even first-cell selector starts a new message;
+an orphan odd continuation returns zero. These rules apply equally within one
+completed USB buffer and across read completions.
+
+Checksum rejection returns zero without ACK, response-event or FDT publication.
+ACKs replace their independent status slots; an unrelated ACK is not a command
+failure. Complete packets after an ACK or data reply in the same read buffer
+still pass through the callback's cell loop. This is not a callback that returns
+after finding one sender's reply.
+
+ACK/response expiry belongs to the blocked sender, not this posted read. The
+sender neither cancels the continuous read nor clears partial assembly on
+expiry/retry. USB read failure instead reaches `0x1800211a0`, which clears the
+initialization-active byte and returns TRUE for framework pipe recovery; it
+does not parse a partial failed-transfer buffer. D0 exit stops the read target.
+Capture cancellation alone does not stop that target. Consequently the DLL
+provides no per-64-byte completion guarantee for a truncated image interrupted
+by one padded cell: parser visibility begins at completed USB-read callbacks,
+not at each protocol cell received by the USB stack.
 
 ## Reset and chip-register consumers
 

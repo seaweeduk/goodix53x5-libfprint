@@ -416,27 +416,16 @@ and the two `send_mcu` post-send 2-ms delays have no corresponding states.
 The 100-ms failed-probe delay and 10-ms failed-handshake delay are represented.
 
 `goodix53x5.c:goodix_open` starts the session state machine with
-`open_usb_reset_required` false. After exclusive claim, its `GOODIX_OPEN_STARTUP`
-state selects cached startup or the full reset/chip/OTP/configuration route.
-`device/persistence.c:goodix_milan_warm_bootstrap` reconstructs metadata from
-one same-boot, location-keyed record, checking the complete 32-byte OTP, derived
-type/profile, firmware snapshot encoding and current configuration projection.
-USB platform/descriptor identity locates the record; chip family selects the
-profile. The supported continuity scope is the same internal sensor without
-reprogramming during this boot. Cached metadata does not establish a session.
-Both routes read the current local PSK and complete fresh GTLS. Cached startup
-then skips the configuration/acquisition/sleep tail; activation owns EC and arm.
-Bus reset belongs to whole-open recovery and explicit reinitialization.
-`device/base.c:goodix_milan_warm_park` quarantines the complete generation,
-distinct consumed setup image and hardware/FDT tuple after joins.
-`goodix_milan_warm_resume` installs that tuple only after fresh GTLS;
-`device/persistence.c:goodix_milan_warm_load` rereads and reconciles the trusted
-disk projection even when a complete engine is parked in RAM. Unchanged disk
-preserves newer uncheckpointed RAM; an intervening publication supplies the
-hardware/FDT tuple with the native marked/unmarked setup rules.
-`goodix_milan_warm_save` publishes metadata and the settled hardware projection
-in one record at joined close while the interface claim is held. These owners
-map retained native inputs across Linux resource teardown.
+`open_usb_reset_required` false. After exclusive claim it runs the firmware
+probe, reset/chip discovery, OTP selection, selected-key validation, fresh GTLS,
+configuration and base acquisition. `GOODIX_OPEN_PARSE_OTP` reseeds current/default
+calibration; module-static DAC history remains owned by live capture across
+reconstruction (see `usbinterface-FUN_180007c84.md`). There is no cached-startup or hardware
+checkpoint route. Bus reset belongs to whole-open recovery and explicit
+reinitialization. Joined close and reinitialization retain only algorithm
+process-state source through `device/base.c:goodix_milan_generation_retain_process`;
+they release the hardware reference and consumed setup image. Native retained
+HAL/D0 ownership has no corresponding cross-open hardware owner in these paths.
 `goodix_milan_persistence_restore` remains the independent
 engine-preprocessing import, not `GFCheckbase_isexist`'s hardware image/FDT set.
 
@@ -451,23 +440,35 @@ The native postlude's result classes are:
 
 The Linux completion counterparts are `goodix_open_ssm_done`,
 `goodix_open_complete_after_idle`, and `goodix_cleanup_failed_open`.
-They join reception on failure, retain process state, clear persistence/key
-ownership, and either perform one full USB-reset retry or report failed open.
+On failure, `goodix_open_ssm_done` calls `goodix_transport_quiesce` before
+`goodix_open_complete_after_idle` invalidates transport, retains algorithm
+process state, clears persistence/key ownership, and either performs one full
+USB-reset retry or reports failed open. Success calls the completion owner
+directly, preserving the physical reader and its partial assembly.
 Cold GTLS exhaustion sets `open_gtls_failed` and suppresses that full-reset
-retry. A failed cached startup can instead select one cold reconstruction;
-`GoodixStartupMode` carries this consumed recovery budget through the first
-active arm. `device/scan.c:goodix_scan_startup_arm_done` observes exhausted arms
-before indefinite FDT wait, preserving status-three repair inside the ordinary
-arm owner. Cancellation, removal and local/preparation failures remain terminal.
-This bounded cold fallback is Linux recovery policy, not the native initialized
-worker's failure branch. Compatible retained reference state survives successful cold
-reconstruction without an unconditional new reference pair.
+retry. Cancellation/removal do not select that retry. The retry performs cold
+reconstruction and another reference acquisition; it is a Linux recovery owner,
+not the native initialized worker's failure branch.
 An initial base error runs the base SSM's sleep/EC-off cleanup before propagating;
 a configuration error occurs before `open_ref_powered` is set and the open
 cleanup skips its sleep. Successful initial base acquisition instead reaches
 the open SSM's mode-2 sleep; its successful path performs no EC-off command.
+Successful open then enters `goodix_session_start_service` and the idle mode of
+`goodix_scan_coordinator_handler`, without an initial down-arm command.
 These source owners map platform completion and recovery, not the native
 initialized-byte publication or retained HAL lifetime on failure.
+
+`goodix_session_suspend` uses `goodix_session_quiesce` to join the selected
+service/action owner, CPU work and physical reader. `goodix_suspend_service_joined`
+then starts sleep/EC-off with a fresh session cancellation token; those commands
+start reception again. `goodix_suspend_power_done` joins that reader before
+`goodix_suspend_joined` invalidates transport, releases hardware/setup frames and
+completes suspend. `goodix_session_resume` invokes full reconstruction through
+`goodix_maybe_start_reinit_subsm` before restarting service and completing resume.
+Successful resume preserves the reconstruction reader; failure joins it before
+invalidation and error completion. This source path reacquires hardware state
+rather than taking the retained native resume branch below. Close uses
+`goodix_session_quiesce` before releasing the interface.
 
 ## Resume Branch
 
@@ -551,6 +552,12 @@ the reader. See [reader failure ownership](usbinterface-profile9-fdt-event-loop.
   device-context initialized byte, not the biometric operation type.
 
 ## Initialization Predicate Boundary
+
+Constructor return zero and HAL-enabled are not complete resource-validity
+predicates: the selected constructor can return success after worker-event or
+retained-buffer allocation failure. The exact allocation/publication ordering
+is owned by `usbinterface-FUN_1800162ac.md`. The successful-resource contracts
+here require the actual buffers/events, not merely the initialized byte.
 
 This function consumes device-context byte `+0x110` as the full-initialization
 versus resume predicate. The full-initialization tail sets that byte to one at

@@ -249,22 +249,23 @@ fresh module initialization starts their static zero images. There is no
 serialized adjustment-history restore at these boundaries. Module unload
 scheduling is outside these routines.
 
-The session-scoped current seed mapping is
-`device/session.c:GOODIX_OPEN_PARSE_OTP`: verified OTP populates `self->calib`,
-then a fresh `GoodixDynamicDacState` retains only `default_dac = calib.dac_h`.
-All four history words start at zero. `calib.dac_h` owns current DAC while
-`default_dac` remains the original OTP seed during live adaptation.
-Operations and admitted reference refreshes within that initialized session do
-not reseed history. Every cold initialization, including reopen and post-sleep
-reinitialization, repeats the OTP/history initialization; no DAC sidecar or
-prior-open RAM reconciliation participates. This is a conservative Linux
-session boundary, distinct from native sensor checking with DLL-static history.
+The current/default seed mapping is
+`device/session.c:GOODIX_OPEN_PARSE_OTP`: verified OTP populates `self->calib`
+and `dynamic_dac.default_dac`. `device/scan.c:goodix_capture_ssm_handler` owns
+the module-static `goodix_dac_history` and serializes each live adjustment with
+`goodix_dac_history_lock`. It supplies the device's default and latest hardware
+reference to `goodix_device_adjust_dac`, then copies the resulting history to
+the device's last-live snapshot. The four history words survive close, reopen,
+new device objects and post-sleep reconstruction within the loaded library;
+the current/default words are reseeded by sensor initialization. Neither
+reference refresh nor idle FDT reception adjusts them. No serialized DAC state
+participates in these lifetimes.
 
 The session-scoped hardware reference ends at joined close, failed-open cleanup,
-full reinitialization or finalization. It remains independent of retained
-preprocessing state. Native retained D0's longer hardware/reference/history
-lifetime is owned by `usbinterface-FUN_180020970.md`; preserving bytes across
-unserviced intervals is not equivalent to the event handling documented in
+joined suspend, full reinitialization or finalization. It remains independent of
+retained preprocessing state and module-owned DAC history. The native retained
+D0 route and Linux reconstruction mapping are owned by
+`usbinterface-FUN_180020970.md`; request-independent servicing is mapped in
 `usbinterface-profile9-fdt-event-loop.md`.
 The current mask uses `A=0` for the native unwritten upper word, retaining `Q=R`.
 

@@ -31,9 +31,11 @@ requested live reads succeed. A live read returning `-1` reaches neither route.
 ## Consequences
 
 - Every completed operation packet can carry the same retained image base.
-- The base-refresh marker is one-shot. A temperature/base recalibration marks
-  only the next completed sample, causing `GoodixEngineAdapter.dll`
-  `FUN_18001f610` to rerun `preprocessor_init` with the newly retained base.
+- The base-refresh marker is one-shot at callback dispatch. A successfully
+  delivered marked sample causes `GoodixEngineAdapter.dll` `FUN_18001f610`
+  to rerun `preprocessor_init` with the newly retained base. The dispatcher
+  clears the marker even if cancellation prevented WDF delivery; see
+  `usbinterface-FUN_18001fb40.md#marker-consumption-is-callback-based`.
 - Reuse is therefore explicit at the hardware boundary; reference acquisition
   is decoupled from individual enrollment/identify probes.
 
@@ -118,7 +120,8 @@ critical section. Actions 0, 1 and 4 select down, up and reverse handlers withou
 testing capture callback `+0x240`, sleep mode `+0x1e0`, wait state `+0x1fc`,
 or the device request's cancellation bytes. Individual handlers own any
 additional gates. Up/reverse refresh and rearm therefore do not require an
-outstanding capture; the ordinary down live-image path separately does.
+outstanding capture request; the ordinary down live-image path separately tests
+the retained capture callback, which cancellation can leave installed.
 
 Action 7 (`0x18000e35f..0x18000e3d7`) requires a nonnull argument, stops and
 clears a nonnull timer at `+0x238`, then invokes arm callback `+0xb0` with the
@@ -133,7 +136,13 @@ Mode 2 skips the whole branch. It neither acquires bases nor installs a capture
 callback. [Display notifications](usbinterface-FUN_1800174a0.md) select between
 this mode-gated route and the capability-one action-7 route.
 
-The current counterparts for actions 0/1/4 are the active coordinator in
-`drivers/goodix53x5/device/scan.c`; idle reception in `device/transport.c`
-applies FDT parser mutations without dispatching those handlers. There is no
-current request-independent display action-7/action-`0x16` owner.
+The current counterparts for actions 0/1/4 are foreground and idle modes of
+`drivers/goodix53x5/device/scan.c:goodix_scan_coordinator_handler`.
+`goodix_scan_start_service` enters request-independent event handling;
+`device/transport.c:goodix_rx_cell` applies parser mutations and publishes the
+coalescing `pending_fdt` notification independently of a foreground request.
+Action 3 maps to `GOODIX_SCAN_COORD_RESTORE_CONFIG`,
+`device/commands.c:goodix_cmd_restore_config`, and the existing down-arm path.
+There is no request-independent display action-7/action-`0x16` owner. See
+`usbinterface-profile9-fdt-event-loop.md#current-source-mapping` for servicing,
+handoff and power ownership.

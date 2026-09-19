@@ -21,6 +21,13 @@ by a periodic temperature task.
 
 ## Down-Event Decision
 
+Before choosing either image route, enabled health checking (`+0x2e1 != 0`)
+clears study-status byte `+0x30e` and resets health event `+0x300` at
+`0x180014ed9..0x180014ef0`. This has no capture-request or mode predicate.
+The up wrapper later performs the optional health pair and signals the event
+when health checking is enabled and image-valid is one. Deactivation's health
+wait/output consumer is documented in `usbinterface-FUN_180011b9c.md`.
+
 The first capture-route selector tests screen-active global `0x18005f398 == 0`
 and device-context byte `+0x151 == 1`. That branch calls
 `MilanHV_ReadImg_ForWOF` (`0x18001545c`), sets the screen-active global to one,
@@ -61,8 +68,8 @@ event a real finger.
 
 If the comparison returns one, the handler calls
 `MilanHV_temperature_event` at `0x180014ffe`. That synchronously reacquires the
-profile-9 FDT/TX-on/TX-off base set and marks the next completed sample on
-success. After it returns, this down handler calls `+0xb0` with one and returns
+profile-9 FDT/TX-on/TX-off base set and sets the pending callback marker on
+admission. After it returns, this down handler calls `+0xb0` with one and returns
 without reading a live image.
 
 The false/drift branch passes one to callback `+0xb0` regardless of whether
@@ -84,6 +91,21 @@ standard request path.
 
 The manual-FDT comparison and false-down refresh precede this live-image gate:
 a null capture callback or mode 2 does not suppress those earlier operations.
+
+On a genuine-down comparison with the live-image gate false, the handler still
+calls `+0x110(1)` and **arms up** through `+0xb0(0)`. At
+`0x180014f8e`, `ESI` retains the successful manual-FDT callback result; the
+four failed-gate edges at `0x180015061..0x18001507d` join `0x180015089`
+without replacing it. The `ESI != -1` postlude at `0x18001508b..0x18001509d`
+therefore selects up, even with no capture callback, mode 2, or no valid image.
+No live frame or DAC adjustment occurs on that route. This up arm supplies the
+next lift event to request-independent maintenance; an inactive genuine down
+is not an unconditional down rearm or a discarded notification.
+
+Failure to obtain the raw event (`+0x70` nonzero) or manual TX-off sample
+(`+0x160 == -1`) instead returns directly at `0x1800150ac`, without either
+arm callback. This early failure differs from live-image failure, which reaches
+the down rearm. Both leave the retained image and pending setup marker intact.
 
 ### Wake-On-Finger Read And DAC Side Effect
 
@@ -172,6 +194,10 @@ callback, frees the temporary live buffer, and returns zero. This direct call
 is the ordinary standard-capture completion edge; device action `0x15` is a
 separate completion route.
 
+Those clears follow callback invocation even when cancellation prevents WDF
+sample completion; the callback supplies no acknowledgement to this owner.
+See `usbinterface-FUN_18001fb40.md#marker-consumption-is-callback-based`.
+
 For a single-frame success, the callback observes remaining count zero but
 still owns the nonnull HAL callback and the original one-shot marker. It
 serializes and completes the pending standard request synchronously; only after
@@ -250,7 +276,11 @@ handler rearms down, the worker returns to its indefinite event wait.
 
 `drivers/goodix53x5/device/scan.c:goodix_scan_coordinator_handler` owns the
 down/manual-validation, capture-ready-before-up-arm and read-error down-rearm
-boundaries. `goodix_capture_ssm_handler` and `goodix_capture_ssm_done` implement
+boundaries. Its request-independent mode, entered through
+`goodix_scan_start_service`, performs the same manual validation and false-down
+refresh; genuine inactive down selects up arming without a live image.
+`device/session.c:goodix_session_start_action` joins that selected handler before
+foreground admission. `goodix_capture_ssm_handler` and `goodix_capture_ssm_done` implement
 one live read per capture child. `device/enroll.c:goodix_enroll_capture_ready`
 copies that frame into the enrollment worker input; the native count-two loop
 and its retained unread-count state have no corresponding loop in that child.
@@ -258,9 +288,10 @@ The successful-read `FUN_1800074bc -> FUN_180007c84 -> FUN_1800115a4` DAC/histor
 mutation maps to `goodix_capture_ssm_handler` calling
 `device/calibration.c:goodix_device_adjust_dac` after command success and raw
 decode. `device/session.c:GOODIX_OPEN_PARSE_OTP` calls `goodix_device_parse_otp`
-to seed calibration and initializes the default DAC with zero adjustment history.
+to seed current/default calibration. Capture owns module-static adjustment
+history across device reconstruction.
 `goodix_cmd_request_image` consumes the current full DAC word for the next wire
 request; auth/enrollment runtime-input constructors consume the post-read word
-for live metadata. The session-scoped history and independent hardware-reference
+for live metadata. The module history and independent hardware-reference
 lifetime are mapped in
 `usbinterface-FUN_180007c84.md`.

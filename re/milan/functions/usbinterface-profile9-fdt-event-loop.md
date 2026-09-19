@@ -92,6 +92,28 @@ After storing the event type at profile context `+0x08`, the parser calls
 `SetEvent(profile_context->event_10)`. A manual-FDT response uses a separate
 completion event and does not enter this state-machine dispatch.
 
+For a nonmanual selector, IRQ values `0`, `1`, `4`, `8`, `0x10`, `0x20`
+and `0x40` return without worker publication. Other unrecognized IRQ values
+take `0x180005e52..0x180005e71`: store context `+0x200 = 0x30`, publish
+event `0x14`, and signal the same worker event, without replacing the raw FDT
+vector, retained touch word, reverse predecessor, or arm bases. Worker
+instructions `0x18000e00d..0x18000e01b` dispatch
+action 3 only when mode `+0x1e0 != 2`; sleep mode suppresses that action.
+The profile-9 action requests configuration mode 4 and rearms down, without
+acquiring a reference or setting a setup marker. Thus the parser's default
+event is configuration/rearm handling rather than an environmental comparison.
+Action 3 selects HAL callback `+0x1a0`, installed as `FUN_180015710` by
+`FUN_1800162ac`. It passes `{mode=4, timeout=0}` to callback `+0x40`,
+discards that callback's status, then calls `+0xb0(1)` and returns its
+result. Profile-9 arm wrapper `FUN_180005a60` returns zero even after
+command exhaustion and stores down wait state `+0x1fc = 0xf0`.
+Configuration failure therefore does not skip the arm. A dispatcher result
+of `-1` is logged by the worker, which continues its event loop. There is no
+release notification, raw-sample normalization, drift-anchor comparison,
+base-validity change, or image acquisition in this action. See
+`usbinterface-FUN_18000e1f0.md#profile-9-direct-mode` for configuration and
+mode-store ownership.
+
 `FUN_180005b80` receives the payload pointer and command selector. Selector `3`
 copies payload bytes `4..27` to the manual result store and signals context
 `+0x2d8`; it does not publish a worker event. For asynchronous down/up packets,
@@ -137,6 +159,16 @@ an arm waits for its ACK. After the arm releases the action lock, the worker
 can consume that notification and enter the same threshold/refresh/rearm path.
 The worker dispatch and up/down/reverse threshold paths do not consult those two
 request-cancellation bytes or request slot `+0xf8` before such work.
+
+Cancellation also leaves HAL capture callback `+0x240` installed. Request-null
+therefore does not itself make the ordinary down live-image gate false: when
+mode, image-valid and screen predicates still pass, a later genuine down can
+read a live image, adjust DAC/history, and invoke `CaptureFramedone` despite
+the cancelled request. The callback's request-null gate prevents output
+publication; its caller still consumes the setup marker and clears the HAL
+callback. These exact owners are in `usbinterface-FUN_180014e10.md` and
+`usbinterface-FUN_18001fb40.md`. A driver-level action token is separate from
+this native retained callback pointer.
 
 This differs from deactivation's event-`0x15` publication: if it replaces an
 unconsumed FDT event first, the worker observes the replacement. If the worker
@@ -490,6 +522,12 @@ capture. Mode 2 or a null capture callback therefore suppresses a genuine-down
 live image, not the preceding manual measurement or false-down refresh. The
 separate screen-off/power-button capture route is owned by the down handler.
 
+When that genuine-down live gate is false, successful manual measurement still
+selects the ordinary up rearm; the next up event can run anchor/base recovery
+and health work without any delivered capture. A failed manual measurement
+instead exits the down handler before rearming. See the instruction-level
+continuations in `usbinterface-FUN_180014e10.md`.
+
 Parser replacement alone is not equivalent to this worker continuation. On a
 reverse event, the parser preserves the prior down base only in its separate
 snapshot, installs the new down base and signals the worker. The worker's
@@ -502,11 +540,8 @@ command nor the up path reconstructs the lost prior-base comparison.
 
 Native's one-slot event publication also allows notification coalescing; the
 contract above applies when the worker selects the triggering event before a
-later publication replaces it. Current Linux idle reception in
-`device/transport.c:goodix_rx_cb` applies the parser mutation but suppresses
-worker notification for every idle packet. Active dispatch in `device/scan.c`
-implements the majority/anchor continuation when a notification is selected;
-it does not reconstruct a prior comparison already lost during idle reception.
+later publication replaces it. Parser mutation and selected-handler execution
+remain distinct boundaries even when no application request is retained.
 
 ## Request Cancellation And Deactivation
 
@@ -610,26 +645,82 @@ read-pipe target through slot `+0x350` before creating/resuming `deviceInit`.
 
 ## Current Source Mapping
 
-The native continuous-reader/parser and worker are split across
-`drivers/goodix53x5/device/transport.c:goodix_rx_cb`,
-`goodix_recv_apply_fdt_event`, and
-`device/scan.c:goodix_scan_coordinator_handler`. Command/event waits own their
-receive operations. `device/commands.c:goodix_run_cmd_ec_off` additionally
-requests idle reception after successful EC-off ACK; `goodix_transport_complete`
-starts that receiver before notifying command completion. In the idle route,
-parsed FDT updates its retained bases without installing a worker notification.
-`goodix_transport_quiesce` joins that receiver before close or reset; the native
-read-target lifetime is instead owned by D0 entry/exit.
+Paths below are relative to `drivers/goodix53x5/`.
 
-`device/session.c:goodix_session_suspend`, `goodix_session_resume`,
-`goodix_maybe_start_reinit_subsm`, and `goodix_reinit_idle_joined` own the Linux
-power transition. Suspend marks reinit and stops the scan, completing suspend
-with `FP_DEVICE_ERROR_NOT_SUPPORTED`; resume only completes its callback.
-The next enrollment/authentication action invokes the full open SSM after the
-idle join, transport invalidation and stale-claim release. This initialization
-reacquires the hardware reference and initializes calibration/history from OTP;
-ordinary open uses the same cold path. There is no hardware/FDT checkpoint or
-cached-startup owner in the current driver. The native initialized `deviceInit`
-route instead retains HAL buffers and optionally reestablishes GTLS; see
-`usbinterface-FUN_180020970.md`. These are different ownership boundaries;
-the Windows scheduling of the native callbacks is not specified by this mapping.
+The native continuous-reader/parser maps to
+`device/transport.c:goodix_reader_start`, `goodix_rx_cb`, `goodix_rx_cell` and
+`goodix_recv_apply_fdt_event`. `FpiDeviceGoodix53x5.reader` owns one 32-KiB IN
+with no physical-read timeout. `transport` owns a separate command/event/MCU
+wait; ACK/response budgets use `goodix_transport_arm_wait` and
+`goodix_transport_expired`. Command completion, retry and logical event
+cancellation preserve physical reception and partial assembly. Each completed
+buffer is drained in 64-byte cells before waiter completion; only transferred
+bytes are parsed. The receive/command mapping is also maintained in
+`usbinterface-FUN_180018dd8.md`.
+
+FDT parser mutations precede publication to the coalescing `pending_fdt` slot,
+including reception without a foreground request. `goodix_recv_select_fdt`
+transfers a selected event and reverse predecessor into coordinator-owned state,
+separate from a newer pending notification.
+`device/session.c:goodix_session_start_service` enters
+`device/scan.c:goodix_scan_start_service` and idle mode of
+`goodix_scan_coordinator_handler`. This mode waits without an initial arm,
+dispatches down/manual validation, false-down refresh and up/reverse maintenance,
+and arms up after a genuine down without a live capture. Pending GTLS restart
+is handled through `goodix_scan_event_done` and `goodix_start_gtls_restart`.
+No periodic acquisition or software touch polling is added.
+
+`goodix_session_start_action` calls `goodix_scan_join_service` before foreground
+admission. Selected maintenance finishes; newer pending notifications do not
+extend that handoff. `goodix_transport_cancel_event` retires only the logical
+event wait. Idle handoff preserves arm state, pending notification, physical
+reader and partial assembly. Foreground completion instead retains its existing
+sleep/EC-off cleanup and notification retirement, then
+`goodix_session_action_done` returns a healthy open session to servicing without
+joining the reader. Cancellation suppresses Linux capture delivery through the
+coordinator's stop/action ownership; it does not reproduce native residual
+callback eligibility. The hardware-marker handoff is mapped in
+`FUN_180031d00.md#current-linux-ownership-map`.
+
+`device/commands.c:goodix_cmd_parse_fdt_event` maps the down/up/reverse IRQ
+classes, the seven no-publication IRQs to `GOODIX_FDT_EVENT_NONE`, and the
+default event `0x14` to `GOODIX_FDT_EVENT_CONFIG`. CONFIG carries a worker
+notification without a new raw/touch sample. `goodix_recv_apply_fdt_event`
+preserves the bases for NONE and CONFIG; `goodix_recv_select_fdt` selects
+CONFIG without replacing the active raw/touch snapshot. The scan coordinator's
+`GOODIX_SCAN_COORD_RESTORE_CONFIG` state and `goodix_scan_config_restored`
+map action 3 to `goodix_cmd_restore_config` followed by the existing down-arm
+workflow. Ordinary configuration exhaustion still reaches down-arm; terminal
+host errors enter cleanup. During sleep OUT/ACK, `goodix_rx_cell` suppresses
+CONFIG without consuming the pending sample-drain allowance. This is the
+command-scoped suppression predicate; the driver has no separate retained
+counterpart for native HAL mode `+0x1e0`.
+
+`goodix53x5.c:fpi_device_goodix53x5_class_init` advertises
+`FP_DEVICE_FEATURE_SERVICED_SESSION`; its suspend/resume callbacks delegate to
+`device/session.c:goodix_session_suspend` / `goodix_session_resume`, including
+open idle ownership. Suspend uses `goodix_session_quiesce` to cancel and join
+selected service/action work, CPU work and the physical reader. A separate
+sleep/EC-off state machine then runs with a fresh session token and reception;
+`goodix_suspend_power_done` joins that reader before `goodix_suspend_joined`
+invalidates transport, releases hardware/setup frames and completes suspend.
+Known suspend-induced action cancellation maps to `FP_DEVICE_ERROR_BUSY` in
+`goodix_session_action_joined` before power completion.
+
+Resume runs full reconstruction through `goodix_maybe_start_reinit_subsm` and
+`goodix_reinit_idle_joined` before restarting service and completing resume.
+Successful open/resume preserves the initialization reader; failure joins it
+before invalidation. OTP reseeds current/default DAC while module-static
+adjustment history survives. These paths have no hardware/FDT checkpoint or
+cached-startup owner. The native initialized `deviceInit` route instead retains
+HAL buffers and optionally reestablishes GTLS; see `usbinterface-FUN_180020970.md`.
+Windows callback scheduling is separate from these source ownership mappings.
+
+Terminal maintenance failure, or `needs_reinit` at session settlement, latches
+`service_error` and gates new actions. `goodix_session_fault_joined` invalidates
+transport after its physical-reader join and reports `fpi_device_session_error`
+once; completed foreground result policy remains separately owned. A physical
+read error is latched by `goodix_rx_cb` rather than followed by native WDF pipe
+reset/restart. `goodix53x5.c:goodix_removed` stops servicing and requests
+coordinator shutdown on removal; `goodix_close` uses `goodix_session_quiesce`
+before `goodix_close_joined` frees session resources and releases the interface.

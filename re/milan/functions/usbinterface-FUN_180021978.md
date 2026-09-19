@@ -38,6 +38,16 @@
   FDT-down; otherwise HAL wait state `+0x1fc == 0xf1` selects FDT-up and every
   other value selects FDT-down. The selected arm callback completes before
   `FUN_18000ebcc` stores `CaptureFramedone` at HAL context `+0x240`.
+- The selected action releases HAL action lock `0x18005e7c8` before that
+  callback store. The common tail at `0x18000f3f5..0x18000f425` rewrites frame
+  count `+0x280`, caller-supplied dword `+0x308`, mode `+0x1e0 = 0`, and the
+  nonnull callback argument at `+0x240` after the lock-release call at
+  `0x18000f3ef`. EC selection and arm are separately locked actions, not one
+  transaction including capture publication. A worker event selected during
+  the arm's ACK wait can proceed once that lock is released; the worker's
+  live-image gate then observes whichever callback ownership is present.
+  Request admission does not synthesize a replacement down event after the
+  callback store.
 - Global byte `0x18005f398` has image-initialized value one. A fresh enabled
   request therefore takes this arm-selection branch without requiring a
   preceding sensor IRQ or successful image-base admission.

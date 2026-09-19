@@ -21,6 +21,14 @@
 - A first D0 entry reaches full initialization and action `0x0c`; an ordinary
   resume reaches `deviceInit`'s resume branch and preserves the base.
 
+Reader-start failure is not an internal initialization-thread suppression
+predicate. The signed-negative branch at `0x180022eb0..0x180022ed3` stops
+the read target with action one and then rejoins `0x180022ed9`. It still sets
+`0x1800a2109 = 1` and, if the initialization-thread handle is `-1`, attempts
+to create/resume `deviceInit`. The function finally returns the original
+reader-start status saved in `EDI`, not thread or GTLS success. The framework's
+reaction to that error is a separate lifetime boundary.
+
 ## Stored Power State
 
 `usbEvtDeviceD0Exit` (`FUN_180022ff0`) records the framework-reported system

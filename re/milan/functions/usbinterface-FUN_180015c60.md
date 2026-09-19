@@ -464,19 +464,21 @@ reference at the next delivered sample.
 - The hardware reference also supplies the engine's setup input. Its consumed
   setup/workspace lifetime maps to `GoodixMilanGeneration`,
   `goodix_milan_generation_prepare_setup`,
-  `goodix_milan_generation_transfer_process_state`, and the unmarked direct
-  recovery branch in `goodix_base_ssm_handler`.
-  Its publication branch preserves an existing pending marker across direct
-  recovery, but does not manufacture one for an uninitialized engine. The
-  separate first-setup gate handles that engine's latest hardware image.
-  Same-object retained generations and fresh-engine hardware restoration map
-  to `device/base.c:goodix_milan_warm_park` / `goodix_milan_warm_resume`; the
-  latter reconciles a changed trusted hardware/FDT checkpoint with the retained
-  engine. Initialized, unmarked engines keep their consumed setup; uninitialized
-  engines or an outstanding local/published marker use the latest hardware
-  setup input. Settled FDT values use `GoodixMilanRetainedFdt`, independently
-  of command/event ownership. Base publication prepares the replacement
-  generation before committing the correlated hardware and FDT stores.
+  `goodix_milan_generation_transfer_process_state`, and
+  `FpiDeviceGoodix53x5.hardware_refresh_pending`. Within an open session,
+  hardware refresh leaves the consumed setup/workspace intact and publishes
+  the admitted hardware tuple only after replacement preparation succeeds.
+  Marked refresh sets the separate hardware marker; unmarked direct recovery
+  leaves it unchanged. At completed-sample delivery, setup preparation selects
+  the latest hardware plane when the engine is uninitialized or a marker is
+  pending, then consumes the hardware marker. An initialized unmarked engine
+  retains its consumed setup.
+  The first-setup gate independently admits an uninitialized engine's setup.
+  `GoodixProfile9FdtState` separately owns current command bases, validity,
+  event and drift anchor. Joined close/reinitialization invokes
+  `goodix_milan_generation_retain_process`, which releases the consumed setup
+  image and retains algorithm process-state source; hardware teardown releases
+  `hardware_reference`. There is no cross-open hardware/FDT restoration owner.
   The retained-consumer composition and saved-file failure contract are described
   in [the initialization owner](usbinterface-FUN_180020970.md).
 - The independent decoded-image cache maps to the receive owner in

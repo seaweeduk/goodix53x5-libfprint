@@ -24,6 +24,32 @@
 - Destroys driver synchronization state, GTLS state, notification registration,
   and device initialization handles after HAL teardown.
 
+### Worker Stop Is A Bounded Wait
+
+`device_disable -> FUN_18000e184` writes worker event type `0x16`, clears
+run byte `0x180061218`, and signals HAL event `+0x10`. It then waits on
+thread handle `0x18005e788` for 20000 ms at `0x18000e1bc..0x18000e1c8`.
+The next instructions do not test the wait result: a handle other than `-1`
+is closed and the helper returns zero. The helper does not restore the handle
+sentinel. `device_disable` then invokes profile close and deletes the action
+critical section regardless of that wait result.
+
+Worker `0x18000df20` tests the run byte only after finishing its selected
+handler. Stop publication therefore does not interrupt an already selected
+handler or a synchronous command wait. Event `0x16` has no action in that
+worker's dispatch; it supplies a wake for the subsequent run-byte test. This
+is distinct from deactivation event `0x15`, which dispatches EC power policy
+and does not terminate the worker. A timeout return from the stop wait is not
+proof that all references to HAL storage have ceased.
+
+The release path's GTLS destruction `0x1800208c4` frees ring descriptor
+`device+0x190`, closes event `+0x1a0`, deletes wrapper critical section
+`0x180084868`, and closes global handshake event `0x180084860`. Neither this
+helper nor `ReleaseHardware` waits on reader-created restart-thread handle
+`0x1800a2110`. That thread owns the same device/ring inputs; its launch and
+completion rules are in `usbinterface-FUN_180025400.md`. The separately
+conditional initialization-thread wait cannot be treated as its join.
+
 ## Lifetime Consequence
 
 Unlike D0 exit, this callback ends the hardware-context image-base lifetime.
@@ -77,29 +103,26 @@ the previous close result.
 
 ## Current Source Mapping
 
-`drivers/goodix53x5/goodix53x5.c:goodix_close` joins idle reception before
-`goodix_close_joined` invalidates transport and releases the USB claim.
-Before teardown, `device/base.c:goodix_milan_warm_park` can move the admitted
-`hardware_reference` (HAL `+0x248` counterpart), complete engine generation,
-distinct consumed setup image and settled FDT tuple into inactive ownership.
+`drivers/goodix53x5/goodix53x5.c:goodix_close` calls
+`device/session.c:goodix_session_quiesce` to join selected maintenance,
+foreground/CPU ownership and logical transport work, then the physical reader
+through `goodix_transport_quiesce`. Only afterward does `goodix_close_joined`
+invalidate transport and release the USB claim.
 `device/session.c:goodix_open_complete_after_idle` and
-`goodix_reinit_idle_joined` use the same park boundary on failed open and before
-post-suspend reconstruction. `goodix_milan_warm_resume` reinstalls compatible
-state only after checked metadata and fresh GTLS under exclusive claim; metadata
-comes from the sensor on cold reconstruction or the same-boot startup record.
-Joined close publishes the metadata and hardware/FDT projection together
-through `device/persistence.c:goodix_milan_warm_save` before interface release;
-a disk restore creates fresh engine setup ownership. See
-[deviceInit's retained consumer map](usbinterface-FUN_180020970.md).
-
-When warm parking is ineligible, `goodix_milan_generation_retain_process`
+`goodix_reinit_idle_joined` likewise invalidate transport after the reader join
+on failed open and before post-suspend reconstruction.
+`goodix_suspend_joined` releases hardware/setup ownership after the separate
+power-command reader join. Successful open, successful resume and ordinary
+service/action handoff preserve the reader; they are not hardware teardown.
+`device/base.c:goodix_milan_generation_retain_process`
 frees the old setup frame but retains the process gain/classifier source in
 `milan_retained_generation`; hardware teardown then frees the raw reference.
-`goodix_finalize` destroys both inactive owners. A replacement object has no
+`goodix_finalize` destroys that retained generation. A replacement object has no
 in-memory process transfer even in the same Linux process. Its first setup uses
 the independently validated preprocessing subset or defaults through
 `goodix_milan_generation_prepare_setup` and `goodix_milan_persistence_restore`,
-separately from warm hardware-reference restoration.
+after fresh hardware-reference acquisition. There is no hardware-reference
+checkpoint, warm parking or cross-open FDT restoration in these source owners.
 
 Native USB hardware release and engine detach are distinct callbacks. The
 former frees the hardware reference through `FUN_1800160a0`; the latter clears

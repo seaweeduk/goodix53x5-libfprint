@@ -15,6 +15,14 @@
   are relative to `drivers/goodix53x5/`; the Linux encoding stores the consumed
   calibration/history subset rather than the native payload verbatim.
 
+The restore selector runs at completed-sample delivery, before worker input is
+copied, whenever setup is uninitialized or a refresh marker is pending. Hardware
+base publication alone does not select the file. Within an initialized engine,
+an unmarked hardware-reference replacement leaves the consumed setup reference
+and workspace unchanged. `FUN_180031d00.md` maps these separate native/Linux
+owners, including live process-state transfer and the `FpDevice` finalization
+boundary.
+
 ## Input And Validation
 
 The input is a calibration payload of at least `0x224b0` bytes. The caller's

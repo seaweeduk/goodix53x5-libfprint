@@ -21,10 +21,21 @@
   `device/crypto.c:goodix_crypto_gtls_init`, called from
   `device/session.c:goodix_gtls_ssm_handler` before each client hello.
 - `usbinterface.dll!0x180021200`'s image-error history maps to
-  `device/transport.c:goodix_rx_cb`. The Linux pending restart is consumed by
+  `device/transport.c:goodix_rx_cell`, called by `goodix_rx_cb` for each
+  transferred cell. The Linux pending restart is consumed by
   `goodix_transport_wait_event` / `goodix_transport_complete` and
   `device/scan.c:goodix_scan_event_done`, with continuation through
-  `goodix_scan_gtls_restarted`.
+  `goodix_scan_gtls_restarted`. Both foreground and request-independent service
+  modes of the coordinator use this handoff; restart shares their serialized
+  command owner while the physical reader remains independent.
+- Idle restart exhaustion in `goodix_gtls_retry_handler` fails the service
+  coordinator. `goodix_session_service_done` latches its error;
+  `goodix_session_settled` / `goodix_session_fault_joined` join and invalidate
+  transport before reporting `fpi_device_session_error`. Subsequent foreground
+  admission is blocked until close/open. Foreground ordinary restart exhaustion
+  instead completes the restart coordinator without an error, retaining the
+  failed attempt's GTLS state. Native restart itself only logs final failure,
+  as described below.
 
 ## Client steps and completion admission
 
@@ -267,11 +278,11 @@ the established-session restart boundary retains the selected PSK and its
 validity independently of every attempt's session-key/context reset. The
 current counterpart at this boundary is `device/session.c:goodix_gtls_ssm_handler`
 passing retained `self->psk` to `goodix_crypto_gtls_init`; initial selection is
-owned by `goodix_load_psk`. `GOODIX_OPEN_STARTUP` reads that local selection on
-every open, including cached startup; no key, random, counter or session-ready
-state enters the warm checkpoint. Cached startup reaches the same initializer
-without sensor reset. Its final failure can select one Linux cold reconstruction;
-the native initialized worker instead returns through its own failure postlude.
+owned by `goodix_load_psk`, called by `GOODIX_OPEN_PARSE_OTP` on each cold open
+or reinitialization. In-session restart uses the existing selected key without
+repeating chip/OTP/configuration acquisition. Joined close clears selected-key
+ownership. These source owners have no cached-startup or warm checkpoint path;
+the native initialized worker's retained-HAL failure postlude remains separate.
 
 `FUN_180007ee0` holds the GTLS critical section across at most three complete
 initialization/handshake attempts. Each clears the caller's completion dword

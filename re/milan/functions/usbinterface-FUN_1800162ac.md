@@ -75,10 +75,13 @@ not a replacement for image-valid state.
 Current source mapping: `device/session.c:goodix_open_ssm_handler` and
 `device/calibration.c:goodix_device_parse_otp` own Linux calibration selection;
 `GoodixDynamicDacState` and `calib.dac_h` split history/default from current DAC.
-Cached startup uses `device/persistence.c:goodix_milan_warm_bootstrap` to verify
-the complete retained OTP and chip/type mapping locally, then calls the same
-calibration parser and independent DAC-resume owner. The hardware checkpoint's
-compatibility projection excludes adjusted high DAC and history.
+Every cold open/reinitialization parses freshly read OTP and reseeds
+`calib.dac_h` and `dynamic_dac.default_dac`. The four adjustment-history words
+belong to module-static `device/scan.c:goodix_dac_history`, used under
+`goodix_dac_history_lock` by `goodix_capture_ssm_handler`; cold initialization
+does not clear them. `self->dynamic_dac` holds the device default and last-live
+history snapshot. The complete mapping is in `usbinterface-FUN_180007c84.md`.
+These owners have no cached OTP/bootstrap or serialized DAC-resume route.
 `device/base.c:goodix_base_ssm_handler` owns fresh reference admission and
 `GoodixProfile9FdtState` owns the FDT validity/anchor state. These are separate
 owners rather than a retained native HAL allocation.
@@ -121,6 +124,14 @@ image/configuration/session boundaries.
 ## Initial-Failure Consequence
 
 Failures after the enabled publication are not transactional. In particular,
+worker-event creation failure at `0x1800164ce` jumps to `0x180016569` with
+the earlier successful profile-open status unchanged, just as the following
+buffer-allocation failures do. The enabled byte was already incremented at
+`0x180016475`. By contrast, failure of any of the eleven earlier auto-reset
+response events explicitly sets `EBX = -1` at `0x18001656f` and enters their
+cleanup loop. A zero constructor return does not prove a usable worker event.
+
+For the retained buffers,
 the image and auxiliary `malloc` null branches at `0x18001653e` and
 `0x180016555` reach the common return without assigning a new nonzero status;
 the final FDT allocation is stored without a null check. These paths can return
