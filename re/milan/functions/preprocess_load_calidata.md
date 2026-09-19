@@ -48,6 +48,13 @@ Missing, invalid or unreadable input leaves the destination unchanged, retaining
 the caller's reset defaults. Process-state transfer does not replace the loaded
 calibration/count or pre-append extraction snapshot with unsaved live values.
 
+The restore also returns `GoodixMilanSetupSave`, an owned destination path and
+the original validated encoded bytes. A missing, invalid or unreadable file
+instead creates the semantic pre-live default record. This separate owner is
+stored on the generation until auth/enroll bind it to the worker input; it is
+not changed by process-state transfer or live preprocessing. The setup hook
+publishes it only after setup succeeds; see `preprocess_save_calidata.md`.
+
 ## Input And Validation
 
 The input is a calibration payload of at least `0x224b0` bytes. The caller's

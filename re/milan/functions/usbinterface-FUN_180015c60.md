@@ -471,8 +471,11 @@ reference at the next delivered sample.
   Marked refresh sets the separate hardware marker; unmarked direct recovery
   leaves it unchanged. At completed-sample delivery, setup preparation selects
   the latest hardware plane when the engine is uninitialized or a marker is
-  pending, then consumes the hardware marker. An initialized unmarked engine
-  retains its consumed setup.
+  pending, then consumes the hardware marker. Completed hardware callback
+  handling also consumes the marker when cancellation suppresses engine delivery,
+  without preparing unused setup; failed reads retain it. An initialized unmarked
+  engine retains its consumed setup. See
+  [the handoff owner](FUN_180031d00.md#current-linux-ownership-map).
   The first-setup gate independently admits an uninitialized engine's setup.
   `GoodixProfile9FdtState` separately owns current command bases, validity,
   event and drift anchor. Joined close/reinitialization invokes
@@ -486,12 +489,34 @@ reference at the next delivered sample.
   Down/up/manual FDT stores map to `GoodixProfile9FdtState.base_*`; caller-owned
   post-refresh down restoration is described in `usbinterface-FUN_180014480.md`.
 
-For forced refresh, validation rejection reaches `goodix_base_complete_recovery`
-and then the coordinator's `REFRESH_DONE`/down-rearm continuation. Ordinary
-command errors instead reach `goodix_base_ssm_done` with an error, set fatal
-refresh outcome and `needs_reinit`, and fail the coordinator. They do not enter
-the first-TX-on FDT postlude or rejected-reverse down-only restoration. Native's
-mode-4/first-FDT early exits and later-read common-postlude exits above therefore
-map to distinct Linux error completion from its existing validation-rejection
-completion. The hardware reference and pending marker are retained until that
-error's subsequent session teardown.
+`goodix_base_command_result` distinguishes ordinary transaction exhaustion from
+terminal hardware/host errors. Before the first TX-on manual sample, ordinary
+failure completes without a FDT-store postlude; after that sample it enters
+`goodix_base_complete_recovery`, preserving image and marker while publishing
+the first-TX-on-derived FDT stores. Both forced-refresh outcomes reach the
+coordinator's `REFRESH_DONE` and caller-owned rearm, including the reverse drift
+down-only fallback. They do not latch reconstruction. Host removal, terminal
+cancellation and rejected command ownership retain error completion.
+
+For cold initialization, `device/session.c:goodix_open_native_result` owns the
+split mode-4 result. Ordinary configuration exhaustion skips the base child,
+leaves validity clear and initial recovery pending, and enters the common
+final-version/mode-2 tail. A cold base child returning ordinary first-manual
+failure or later rejection likewise leaves power transitions to that parent;
+it does not sleep before the final version query. These continuations do not
+turn a failed acquisition into a reference publication. The native caller's
+exact active/stop predicates and ignored tail statuses are owned by
+[the initialization note](usbinterface-FUN_180020970.md).
+
+After copying the successful TX-off manual reply,
+`GOODIX_BASE_FDT_TX_OFF_DONE` starts `goodix_health_start_pair` with
+`GOODIX_HEALTH_PAIR_BASE`. `goodix_base_health_done` copies the borrowed
+measurement's availability/count before `GOODIX_BASE_VALIDATE_FDT_PAIR` runs.
+Ordinary unavailable health does not reject or select the reference; terminal
+host errors retain failed completion. Only complete reference admission invokes
+`goodix_health_seed_base`, which seeds once per cold health lifetime and only
+from an available measurement. Later rejected reference attempts can still have
+acquired the health pair without seeding history. An eligible UP wrapper runs
+its own separate pair after this acquisition returns; see
+[health ownership](usbinterface-FUN_180011b9c.md) and
+[the UP wrapper](usbinterface-FUN_180015aa0.md).

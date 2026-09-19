@@ -41,6 +41,13 @@ still read the mutable programmed-base stores. This establishes local snapshot
 lifetime, not an atomic guarantee across concurrently replaced type/raw/prior
 stores.
 
+The prior-base getter reads the shared manual/prior store when the selected
+reverse handler executes, not a value frozen into its notification. The
+all-base setter `0x180005950:0x1800059a0..0x1800059af` can overwrite
+`0x180060778` after reception and before that getter. The first majority
+comparison then uses the replacement's high bytes. Once copied, those local
+operands survive later parser or setter writes.
+
 ## Startup Command And Reader Power Lifetime
 
 `deviceInit` (`0x180020970`), when device context `+0x110` is not initialized,
@@ -752,8 +759,13 @@ bytes are parsed. The receive/command mapping is also maintained in
 
 FDT parser mutations precede publication to the coalescing `pending_fdt` slot,
 including reception without a foreground request. `goodix_recv_select_fdt`
-transfers a selected event and reverse predecessor into coordinator-owned state,
-separate from a newer pending notification.
+copies the selected raw/touch event into coordinator-owned state. For REVERSE it
+reads `profile9_fdt.base_manual[i * 2 + 1]` at selection into `prior_down[i]`;
+the notification does not freeze a reception-time predecessor. Reference
+postlude publication between reception and selection therefore changes this
+operand. The selected operands remain local during subsequent commands,
+separate from a newer pending notification. This serialized Linux snapshot does
+not reproduce every native interleaving between its separate type/raw/prior reads.
 `device/session.c:goodix_session_start_service` enters
 `device/scan.c:goodix_scan_start_service` and idle mode of
 `goodix_scan_coordinator_handler`. This mode waits without an initial arm,
@@ -766,24 +778,54 @@ No periodic acquisition or software touch polling is added.
 admission. Selected maintenance finishes; newer pending notifications do not
 extend that handoff. `goodix_transport_cancel_event` retires only the logical
 event wait. Idle handoff preserves arm state, pending notification, physical
-reader and partial assembly. Foreground completion instead retains its existing
-sleep/EC-off cleanup and notification retirement, then
+reader and partial assembly. Foreground deactivation publishes
+`GOODIX_FDT_EVENT_DEACTIVATE` to the same slot before sleep. Later FDT/notice
+packets can replace it; foreground completion does not clear their publication.
 `goodix_session_action_done` returns a healthy open session to servicing without
-joining the reader. Cancellation suppresses Linux capture delivery through the
-coordinator's stop/action ownership; it does not reproduce native residual
-callback eligibility. The hardware-marker handoff is mapped in
+joining the reader. Selected DEACTIVATE work delays 500 ms before EC-off with
+ACK budget 200; it is not an unconditional foreground EC command. Cancellation
+suppresses application output while device-owned callback/count and hardware
+marker retain their selected-handler lifetime. The hardware-marker handoff is mapped in
 `FUN_180031d00.md#current-linux-ownership-map`.
 
+After foreground CPU work joins, `GOODIX_SCAN_COORD_CLEANUP_HEALTH` clears the
+Linux callback owner and checks health completion. If incomplete,
+`goodix_scan_start_health_wait` lends coordinator ownership to a maintenance-only
+child and starts one 1500-ms timer. The child continues ordinary event handling,
+including eligible UP health and any selected DEACTIVATE delay/EC work. Health
+completion or timer expiry stops further selection; already-selected work still
+joins before the child restores parent ownership and destroys the parent's
+timer. Thus 1500 ms bounds the completion wait, not total cleanup duration.
+`goodix_health_finish_deactivation` then re-signals completion, resets the
+module enrollment-check count and returns retained study permission before the
+parent sends sleep. The coalescing slot, rather than a separate EC timer, owns
+the 500-ms work. This serialized join is a Linux ownership mapping, not an
+assertion of every native deactivation/sleep interleaving.
+
 Selected refresh bypasses the explicit action-cancellation check in
-`device/base.c:goodix_base_check_cancelled`. Its command writes nevertheless
-use `device/session.c:goodix_session_io_cancellable`, which selects the current
-request cancellable when neither idle service nor suspend owns the session.
-`device/transport.c:goodix_transport_send` passes that token to USB OUT.
-Foreground cleanup's sleep command can consume one raw FDT publication as a
-drain, applying its parser mutations without retaining the worker notification;
-`goodix_scan_coordinator_done` also clears the pending notification on foreground
-completion. These are separate from the request-independent reader lifetime and
-the selected idle-handler join.
+`device/base.c:goodix_base_check_cancelled`. Commands under an admitted scan
+owner use `device/session.c:goodix_session_io_cancellable`'s session token,
+including foreground manual/refresh/capture/arm/cleanup work. Request cancellation
+does not cancel those USB writes. Terminal close/suspend/removal owns session
+cancellation and joins selected work and the physical reader. During sleep
+reception, every admitted FDT packet applies its parser mutations and publishes
+to the same replaceable worker slot; there is no one-packet raw drain.
+
+Category C/0 and C/1 map in `goodix_rx_cell` to `GOODIX_FDT_EVENT_ESD` and
+`GOODIX_FDT_EVENT_WAKE` without raw/base mutation. C/0 copies the shared response
+cache prefix before deriving its retained notice IRQ, so unwritten bytes come
+from that shared cache and already-signalled command consumers observe the same
+alias. No unrelated response event is signalled. The complete cache contract is
+in [the transaction note](usbinterface-FUN_180018dd8.md#unsolicited-category-c-notifications).
+`device/commands.c:goodix_cmd_repair_esd`
+implements the two mask-selected reset/chip retry branches and configuration/
+down-arm continuation with native missing-saved-file RAM ownership. It does not
+reseed OTP/DAC, replace reference or reinitialize GTLS. Its local chip comparison
+word starts at zero and retains successful reads; native's clear-mask branch
+does not initialize that local before a first failed read. Present-file base
+restoration remains separate. C/1 selects up rearm for retained up wait and down
+otherwise, without a mode-2 or foreground-request predicate. This is the
+ordinary screen-on route, independent of optional display/WOF input.
 
 `device/commands.c:goodix_cmd_parse_fdt_event` maps the down/up/reverse IRQ
 classes, the seven no-publication IRQs to `GOODIX_FDT_EVENT_NONE`, and the
@@ -797,12 +839,12 @@ workflow. Ordinary configuration exhaustion still reaches down-arm; terminal
 host errors enter cleanup.
 
 HAL `+0x1e0` maps to `FpiDeviceGoodix53x5.requested_mode`, separately from
-coordinator lifecycle and FDT `wait_mode`. Both sleep helpers reach
+coordinator lifecycle and FDT `wait_mode`. Sleep reaches
 `device/commands.c:goodix_command_done`, which stores `GOODIX_REQUESTED_MODE_SLEEP`
 after the final transport result, on success or ordinary exhaustion. Retry does
 not store it; host rejection, cancellation and terminal reader failure keep the
 previous mode until cold invalidation. CONFIG publication in `goodix_rx_cell`
-does not inspect mode or consume the cancelled raw-sample drain allowance.
+does not inspect mode.
 Selection in `goodix_scan_coordinator_handler`, immediately after
 `goodix_recv_select_fdt`, consumes but does not dispatch CONFIG when mode is sleep:
 there is no configuration upload, down rearm, raw/touch replacement, reference

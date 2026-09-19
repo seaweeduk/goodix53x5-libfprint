@@ -286,10 +286,17 @@ boundaries. Its request-independent mode, entered through
 `goodix_scan_start_service`, performs the same manual validation and false-down
 refresh; genuine inactive down selects up arming without a live image.
 `device/session.c:goodix_session_start_action` joins that selected handler before
-foreground admission. `goodix_capture_ssm_handler` and `goodix_capture_ssm_done` implement
-one live read per capture child. `device/enroll.c:goodix_enroll_capture_ready`
-copies that frame into the enrollment worker input; the native count-two loop
-and its retained unread-count state have no corresponding loop in that child.
+foreground admission. `goodix_capture_ssm_handler` and `goodix_capture_ssm_done`
+use device-owned `capture_unread`, set to two for each newly admitted enrollment
+capture and one for other purposes. Each successful read adjusts DAC before
+decrement. The attempt owns its first image privately until all remaining reads
+succeed; failure frees that image while retaining unread count, callback and DAC
+effects. `device/enroll.c:goodix_enroll_capture_ready` copies the first image of
+the successful attempt with the post-last-read DAC into the worker input.
+`GOODIX_CAPTURE_STORE` snapshots enrollment permission into
+`captured_enroll_allowed` at the same completed-attempt boundary. Later UP health
+cannot change this sample's permission; see
+[the health consumer](usbinterface-FUN_180011b9c.md#publication-consumers).
 The successful-read `FUN_1800074bc -> FUN_180007c84 -> FUN_1800115a4` DAC/history
 mutation maps to `goodix_capture_ssm_handler` calling
 `device/calibration.c:goodix_device_adjust_dac` after command success and raw
@@ -302,19 +309,25 @@ for live metadata. The module history and independent hardware-reference
 lifetime are mapped in
 `usbinterface-FUN_180007c84.md`.
 
-The current `GOODIX_SCAN_COORD_ARM_UP` state calls
-`goodix_milan_generation_prepare_setup` only when `stop_requested` is false;
-that preparation consumes `hardware_refresh_pending`. A successful selected
-live read still adjusts DAC before reaching this gate. If cancellation has
-requested stop, Linux skips both preparation and CPU delivery, retaining the
-hardware marker. Native `FUN_1800150e0` instead invokes its installed callback
-and consumes the marker even when `CaptureFramedone` finds no pending request.
-This callback-based marker lifetime is separate from suppressing cancelled
-application output.
+`GOODIX_SCAN_COORD_ARM_UP` consumes `capture_callback_pending` and
+`hardware_refresh_pending` after successful hardware acquisition even when
+application cancellation suppresses setup preparation and CPU delivery. The
+marker is consumed without initializing an unused engine setup in that case.
+Failed reads retain both owners and reach down rearm, including after application
+cancellation; terminal hardware cancellation/removal remains a distinct error.
+That retention covers the selected handler and its continuation. Linux's later
+`GOODIX_SCAN_COORD_CLEANUP_HEALTH` clears the callback before handing hardware
+ownership to maintenance. Native request cancellation alone leaves its HAL
+callback installed, without a request-generation token; the Linux cleanup
+boundary does not retain that cross-action callback alias.
 
-Before manual validation, the current down dispatch tests `cycle_active`.
-With an active cycle, an unreleased cycle whose wait mode is not down fails
-with a protocol error; the other active-cycle route goes directly to recovery
-up arming. Neither route executes `GOODIX_SCAN_COORD_DOWN_MANUAL` or its
-false-down comparison. The normal inactive-service down route instead reaches
-that comparison before suppressing live capture.
+Down dispatch always reaches `GOODIX_SCAN_COORD_DOWN_MANUAL` before its live
+gate. A prior CPU cycle suppresses only another live image; it does not suppress
+false-down reference refresh or make wait-up an invalid down state. Manual
+ordinary exhaustion returns to the worker wait without an arm. Live eligibility
+uses requested capture mode, retained hardware image and installed callback;
+it does not use FDT-base validity. Reference replacement selected while a CPU
+input is outstanding joins that input before replacement, retaining wait state.
+`goodix_scan_set_disposition` records terminal completion intent before starting
+a deferred selected refresh. Its refresh/down-rearm continuation therefore does
+not require another release IRQ to complete an already-successful authentication.

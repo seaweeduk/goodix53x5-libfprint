@@ -284,6 +284,15 @@ Version snapshot consumers include `FirmwareVersionFunc` (`0x18001ca70`),
 outputs; the image-base callback and engine image payload do not receive that
 snapshot. The optional updater consumes the earlier probe snapshot only.
 
+The inter-operation predicates are process byte `0x1800600a4 != 0` and the
+byte at `*(device_context +0x160) +0x68e0 != 1`. They are tested after action `0x0c`
+at `0x180020d09..0x180020d24` and after the final version query at
+`0x180020d70..0x180020d8b`. Either failed predicate branches to
+`0x180020b1d`, which signals only context event `+0x108`; it bypasses the
+mode-2 command, initialized-byte write, and global initialized event. The
+action return in EAX is not tested at either boundary. Mode-2 return likewise
+has no status test before the initialized publication at `0x180020de6..0x180020e01`.
+
 ### Saved-Base Restore In An Already-Enabled HAL
 
 Action `0x0a` during cold initialization is not the loader's only context.
@@ -411,8 +420,10 @@ worker with the selected profile's reset/chip/OTP/configuration handoffs.
 `goodix_gtls_retry_handler` implements selected-key handshake retries;
 `device/base.c:goodix_base_ssm_handler` owns the primary base acquisitions.
 `goodix_chip_ssm_handler` implements the initial reset/10-ms delay and chip
-recovery described above. The firmware update, final version refresh,
-and the two `send_mcu` post-send 2-ms delays have no corresponding states.
+recovery described above. `GOODIX_OPEN_FINAL_FIRMWARE` implements the final
+version refresh through the same shared-cache getter as the startup probe.
+The firmware update and the two `send_mcu` post-send 2-ms delays have no
+corresponding states.
 The 100-ms failed-probe delay and 10-ms failed-handshake delay are represented.
 
 `goodix53x5.c:goodix_open` starts the session state machine with
@@ -449,14 +460,26 @@ Cold GTLS exhaustion sets `open_gtls_failed` and suppresses that full-reset
 retry. Cancellation/removal do not select that retry. The retry performs cold
 reconstruction and another reference acquisition; it is a Linux recovery owner,
 not the native initialized worker's failure branch.
-An initial base error runs the base SSM's sleep/EC-off cleanup before propagating;
-a configuration error occurs before `open_ref_powered` is set and the open
-cleanup skips its sleep. Successful initial base acquisition instead reaches
-the open SSM's mode-2 sleep; its successful path performs no EC-off command.
+`goodix_open_native_result` handles ordinary configuration exhaustion by
+leaving FDT validity clear, setting initial recovery pending, and skipping the
+manual/image sequence. Both that exit and ordinary first-manual or later
+all-base failure reach `GOODIX_OPEN_FINAL_FIRMWARE`, then
+`GOODIX_OPEN_FINAL_SLEEP`. The cold base child inserts no sleep or EC-off on
+these returns. Final query success replaces the version string from the
+64-byte shared cache; ordinary exhaustion preserves the previous snapshot.
+Final sleep success or ordinary exhaustion publishes requested mode 2 through
+`goodix_command_done` and completes initialization without EC-off. Neither
+tail status grants reference validity or seeds base health. The callback and
+tail entry states check cancellation/removal; terminal protocol, reader and
+ownership errors retain failed completion and joined transport teardown.
+The separate `GOODIX_OPEN_SLEEP`/EC-off states are defensive host-error cleanup,
+not the normal native tail. An initial terminal base error runs child cleanup
+before propagating; a terminal configuration error precedes
+`open_ref_powered`, so parent cleanup skips sleep.
 Successful open then enters `goodix_session_start_service` and the idle mode of
 `goodix_scan_coordinator_handler`, without an initial down-arm command.
-These source owners map platform completion and recovery, not the native
-initialized-byte publication or retained HAL lifetime on failure.
+This cold continuation maps the native ignored all-base/final-tail status
+decisions; full-reset recovery and retained HAL lifetime remain separate owners.
 
 `goodix_session_suspend` uses `goodix_session_quiesce` to join the selected
 service/action owner, CPU work and physical reader. `goodix_suspend_service_joined`

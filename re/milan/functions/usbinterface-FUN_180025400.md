@@ -28,14 +28,14 @@
   `goodix_scan_gtls_restarted`. Both foreground and request-independent service
   modes of the coordinator use this handoff; restart shares their serialized
   command owner while the physical reader remains independent.
-- Idle restart exhaustion in `goodix_gtls_retry_handler` fails the service
-  coordinator. `goodix_session_service_done` latches its error;
+- Ordinary in-place restart exhaustion in `goodix_gtls_retry_handler` completes
+  without an error in both foreground and idle service, retaining the final
+  failed attempt's GTLS state. Terminal host failure remains separate:
+  `goodix_session_service_done` latches the service error, and
   `goodix_session_settled` / `goodix_session_fault_joined` join and invalidate
-  transport before reporting `fpi_device_session_error`. Subsequent foreground
-  admission is blocked until close/open. Foreground ordinary restart exhaustion
-  instead completes the restart coordinator without an error, retaining the
-  failed attempt's GTLS state. Native restart itself only logs final failure,
-  as described below.
+  transport before reporting `fpi_device_session_error`. Cold initialization
+  has its own exhaustion result, mapped in
+  [deviceInit](usbinterface-FUN_180020970.md#full-initialization-source-map).
 
 ## Client steps and completion admission
 
@@ -300,6 +300,12 @@ returns take the ten-millisecond delay and retry through attempt three. The
 restart entry tests only the wrapper's final return at `0x180021115`; failure
 adds a log call, and both branches share the same return tail. Neither branch
 queues a device initialization or changes the HAL reference/capture owner.
+
+`device/session.c:goodix_gtls_retry_handler` maps ordinary in-place restart
+exhaustion to logged completion in both foreground and idle service. It retains
+the final failed context and permits the worker's next event; it does not turn
+absence of an application request into a reconstruction or service-fault gate.
+Terminal hardware cancellation/removal remains separate from ordinary exhaustion.
 
 The first authenticated reply uses the newly derived HMAC key and the
 zero-extended server counter at `+0xd0`; no extra initial increment occurs in

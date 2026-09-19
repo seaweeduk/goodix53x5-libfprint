@@ -70,6 +70,17 @@ event `0x14` and do not perform a reference refresh themselves. Unrecognized
 categories and unsupported command subcodes in otherwise dispatched families
 return zero without a worker or response notification.
 
+`device/transport.c:goodix_rx_cell` maps every category-9 command to
+`GOODIX_RESPONSE_CONFIG`, retaining command-two status in
+`config_response_status`. Category F copies the shared byte and publishes
+`GOODIX_RESPONSE_FIRMWARE`; this event has no current command consumer.
+Readiness publication is independent of ACK and waiter ownership. A data waiter
+completes only for its selected response slot, while other logical waits retain
+their existing deadline. The status-byte readers reject an empty payload before
+accessing it. Unclaimed complete packets do not pass through the ACK or FDT
+decoder merely because that kind of waiter is active. The bounded MCU consumer
+is `goodix_transport_wait_mcu`; there is no generic untyped receive entry point.
+
 Payload length excludes the envelope checksum. Copies retain every unwritten
 suffix; events are separate but the bytes are shared. Thus a reply received
 before ACK is retained for the subsequent response wait. A later unrelated
@@ -202,9 +213,12 @@ Failure to reach matching chip sleeps 200 ms. Exhaustion sends type-one reset
 with null output; it does not force the function return to failure. Matching
 chip invokes HAL `+0x40` with local value 4, calls `0x18000d24c`, then calls
 HAL `+0xb0` with mode 1. Both recovery branches set HAL dword `+0x200 = 0x10`; the retained
-read/reset result is returned. Current platform recovery is owned by
-`device/session.c` and `device/scan.c`; no separate GFESD command wrapper is
-present in `device/commands.c`.
+read/reset result is returned. The bounded current counterpart is
+`device/commands.c:goodix_cmd_repair_esd`, with `goodix_esd_handler` and
+`goodix_esd_result` owning its reset/chip/configuration/down-arm sequence.
+`device/scan.c:GOODIX_SCAN_COORD_ESD` selects that child and resumes worker
+service after ordinary completion. The missing-file and platform boundaries
+are described below.
 
 `device_action` (`0x18000e1f0`) action 2 dispatches GFESD under the enabled-HAL
 critical section and returns its result. Action 6 dispatches type-zero reset
@@ -250,23 +264,22 @@ with FDT events. Their parser mutations precede worker selection. Neither
 notification checks for a pending capture. Down/wake and power-button timer
 consumers are owned by [the event loop](usbinterface-profile9-fdt-event-loop.md).
 
-`device/transport.c:goodix_rx_cell` has no category-C publication counterpart.
-`device/scan.c:goodix_scan_event_done` consumes GTLS restart and FDT notifications;
-it has no GFESD event or IRQ-word owner. The generic reset wrapper alone does
-not implement the native reset/chip/configuration/retained-base repair sequence.
-While a `GOODIX_TRANSPORT_EVENT` waiter is active, an unhandled category-C packet
-reaches `goodix_cmd_parse_fdt_event` and returns a protocol error; with no logical
-waiter it is consumed without notification. The native command-zero cache write
-also affects subsequent shared-cache readers independently of whether its worker
-event survives coalescing.
+`device/transport.c:goodix_rx_cell` maps C/0 and C/1 to
+`GOODIX_FDT_EVENT_ESD` and `GOODIX_FDT_EVENT_WAKE` in `pending_fdt`. C/0 first
+copies the bounded payload prefix to `shared_response_storage`, preserving its
+unwritten suffix, then derives `notice_irq` from the resulting first two bytes.
+The same copy can change an already-signalled command response before its
+consumer runs, even if the ESD notification is subsequently replaced. C/0
+publishes no command-response readiness. C/1 changes neither this cache nor the
+retained notice IRQ; neither notification changes raw FDT or base stores.
+Other category-C commands are consumed without completing an unrelated waiter;
+the capability/display-dependent C/2 timer route has no current counterpart.
 
-The current event-wait fallthrough also calls the FDT parser for a category-F
-publication after copying its shared byte, and for an unrecognized category.
-`goodix_rx_cell` handles category-9 command zero as a response slot, but has no
-response-slot mapping for the other category-9 commands. Native protocol
-response publication and ignored-category return do not themselves fail a HAL
-worker wait. MCU-only waits already filter unrelated complete packets while
-retaining their parser publications.
+`device/scan.c:GOODIX_SCAN_COORD_ESD` invokes `goodix_cmd_repair_esd` using the
+retained IRQ. `GOODIX_FDT_EVENT_WAKE` selects up rearm for retained up wait and
+down otherwise, without a requested-mode or foreground-request predicate. This
+maps the ordinary screen-on native route; the screen-off/WOF route remains a
+separate platform mapping.
 
 At the successful GFESD join, a missing saved-base file takes the loader's
 zero-return branch, clears only persisted-file byte `+0x231`, and leaves the
@@ -274,6 +287,14 @@ existing image/FDT stores and validity intact before down-arm. Mode 4 does not
 write requested mode `+0x1e0`, and this repair does not renew GTLS or reseed DAC.
 The separate present-file restore and its retained-state effects are mapped in
 [deviceInit](usbinterface-FUN_180020970.md#saved-base-restore-in-an-already-enabled-hal).
+
+The current repair maps that missing-file branch: configuration and down-arm
+retain the RAM image/FDT/validity tuple, without GTLS renewal, OTP reload, DAC
+reseed or new reference acquisition. It performs no saved-base disk restore.
+Its chip-comparison local starts at zero and retains successful reads; native's
+clear-mask branch leaves that local uninitialized before its first failed read.
+Sensor-command GFESD repair is separate from the unmapped WDF pipe-reset/restart
+boundary above.
 
 The protocol-side timer initializer `0x1800186f8` installs callback
 `0x1800188d0` into WDF timer configuration, with period zero. Its only code

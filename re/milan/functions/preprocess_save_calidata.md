@@ -7,8 +7,10 @@
 - Serializes the calibration workspace; paired importer:
   [`preprocess_load_calidata`](preprocess_load_calidata.md).
 - Semantic Linux counterpart: `drivers/goodix53x5/device/persistence.c`,
-  `goodix_milan_persistence_save`. That function encodes the consumed retained
-  subset in the device-keyed Linux format rather than this native file layout.
+  `goodix_milan_persistence_save` for post-live publication and
+  `goodix_milan_setup_save_publish` for immediate setup publication. They write
+  the consumed retained subset in the device-keyed Linux format rather than
+  this native file layout.
 
 ## Arguments And Result
 
@@ -126,7 +128,8 @@ which discard the save result after storage publication.
 The latter two gates map to successful publication in `device/enroll.c` and
 `device/auth.c`, respectively. The Linux preparation owner
 `device/base.c:goodix_milan_generation_prepare_setup` performs restore and
-process-state transfer; it has no immediate setup-save call.
+process-state transfer, retaining an independent setup-save record selected
+by that restore.
 
 The native setup-save copies the just-loaded workspace packet even when older
 live classifier globals survive outside the workspace. It does not import or
@@ -156,6 +159,33 @@ so the distinction is invisible after that initializer but remains part of the
 pre-live setup-save subset. Its semantic compact record has zero counters,
 planes, ages, and packed reference, with calibration words `0x2000`.
 
+`GoodixMilanSetupSave` owns the selected encoded bytes and destination path.
+`goodix_milan_persistence_bind_setup` transfers that owner from the generation
+to the runtime input, whose destructor frees it after worker completion. A
+superseding preparation, generation destruction or process-retention transition
+also frees an unbound owner. The worker never reads the live device's identity
+or mutable generation to publish this record.
+
+`goodix_milan_runtime_preprocess_input` calls the optional setup hook only for
+an entered successful setup, before live processing. The hook maps unavailable
+record allocation to `0x8001` and absent destination identity to `0x8002`;
+these reject the sample while restoring the prior context-initialized flag.
+Successful setup-ready remains represented by `setup_not_ready == 0`, and the
+refresh marker remains consumed. Both failed admission attempts bypass the
+hook. Successful setup and its hook precede the captured enrollment-permission
+gate; a denied enrollment still retains this pre-live publication and setup
+state. The gate is mapped in
+[the health contract](usbinterface-FUN_180011b9c.md#publication-consumers).
+The existing checked writer's filesystem failures are logged and return
+zero to the runtime, so they do not reject the sample. Ordinary initialized
+calls and filesystem-free runtime callers without a hook do not publish.
+
+Auth/enroll retain the joined task output even on cancellation, with normal
+runtime/result cancellation still in force. The separate `setup_state_valid`
+output permits only the three setup flags to be installed when cancelled live
+state is discarded; it does not authorize publication of gain changes or a
+print result. Cancellation before runtime preprocessing enters invokes no hook.
+
 ## Current Linux Save Ownership
 
 All paths below are relative to `drivers/goodix53x5/`.
@@ -167,8 +197,9 @@ All paths below are relative to `drivers/goodix53x5/`.
 - `device/auth.c:goodix_auth_task_done` and
   `device/enroll.c:goodix_enroll_task_done` install valid worker preprocessing
   state into the current generation before result-status handling, subject to
-  action/epoch/generation ownership. Retry/no-match is not itself a RAM-state
-  rollback. These copies precede the callbacks' cancellation branches as well.
+  action/epoch/generation ownership and cancellation. Retry/no-match is not
+  itself a RAM-state rollback. Setup publication has the independent flag-only
+  continuation described above.
 - Authentication captures `pending_persistence_state` only when a match has
   produced `pending_update_data`. `goodix_verify_complete` saves after replacing
   the target print's raw data and before outward result delivery, provided no
