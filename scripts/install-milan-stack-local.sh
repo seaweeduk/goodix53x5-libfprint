@@ -38,6 +38,7 @@ ldconfig
 milan_trigger_udev
 systemctl daemon-reload
 milan_unmask_runtime
+# Enumeration eagerly opens the sensor, including on installs without a reboot.
 systemctl restart fprintd.service
 milan_verify_active_system
 trap - EXIT

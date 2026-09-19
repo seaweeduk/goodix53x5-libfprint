@@ -33,25 +33,39 @@ background maintenance; the stack scripts build and install them together.
 
 Upstream fprintd opens the sensor on `Claim` and closes it on `Release` or
 when the client disappears, so every unlock repeats the driver's cold
-initialization. With this overlay the first authorized `Claim` opens the
-device and it then stays open, the way the native Windows service keeps its
-hardware host resident:
+initialization. With this overlay enumeration starts an unclaimed open and the
+device then stays open, the way the native Windows service keeps its hardware
+host resident:
 
-- `Claim` on an already open device completes immediately; only the first
-  claim (or a claim after the daemon restarted) performs the cold open.
+- After exporting a device, the manager makes one asynchronous open attempt
+  without a client claim. Success logs `Device N ready before first claim`;
+  failure logs an error and leaves the next authorized `Claim` to retry. An
+  open is not started while device power handling is pending.
+- `Claim` on an already open device completes immediately. A claim arriving
+  during eager initialization joins that open and receives its result, without
+  starting a second open. Authorization and claim exclusivity still apply.
 - `Release` and client disappearance still cancel a running action and wait
   for it, but only end the user's authority; the hardware stays open and the
   driver keeps servicing finger-detection events between claims.
-- The device's `busy` property is also true while the hardware is open, so
+- The device's `busy` property is also true while opening or open, so
   the manager never arms its idle exit while a sensor is retained. On
   `SIGTERM` or bus-name loss the manager ends any claim and closes each open
-  device for real before storage is deinitialized.
+  device for real before storage is deinitialized, waiting for any pending open
+  first. The initial idle timeout also respects devices opened at enumeration.
 - The manager's existing `PrepareForSleep` handling drives suspend and resume
   as before; the libfprint patch makes the idle-open device reach the driver.
   While the device is asleep or still resuming, a cold `Claim` open and one
   `VerifyStart`/`EnrollStart` are held and dispatched when resume completes,
   instead of failing with a busy device. `VerifyStop`, `EnrollStop`,
   `Release` and client disappearance fail a held start.
+
+The installed Milan udev rule starts `fprintd.service` when a supported sensor
+appears; D-Bus activation remains available. Installation already restarts the
+daemon, so eager initialization also runs without a reboot. No `--no-timeout`
+flag is needed. The sensor remains initialized from daemon startup, with the
+driver's event-driven idle servicing and its associated sensor power draw;
+that draw has not been measured. Initialization overlaps boot rather than
+blocking the greeter, so a claim arriving early still waits for the open.
 
 Nothing else in the daemon changes: authorization, claim ownership checks,
 retries, status signals, storage and the update-save overlay behave as
