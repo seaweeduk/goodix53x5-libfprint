@@ -47,6 +47,7 @@ typedef struct
 {
   FpiSsm                *ssm;
   GoodixCmdResultCallback result;
+  gboolean               sleep;
 } GoodixCommandCompletion;
 
 static void
@@ -60,6 +61,10 @@ goodix_command_done (FpDevice                    *dev,
   GoodixCmdResultCallback callback = completion->result;
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
+  /* Milan_SetMode stores two after ChangeMode returns, including exhaustion.
+   * Host rejection/cancellation is not a completed native mode request. */
+  if (completion->sleep && (!error || result->ordinary_exhaustion))
+    self->requested_mode = GOODIX_REQUESTED_MODE_SLEEP;
   g_free (completion);
   if (g_error_matches (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_BUSY))
     {
@@ -109,6 +114,7 @@ goodix_run_cmd_full (FpiSsm                   *ssm,
 
   completion->ssm = ssm;
   completion->result = callback;
+  completion->sleep = category == 6 && command == 0;
   goodix_transport_command (dev, &request, goodix_command_done, completion);
 }
 

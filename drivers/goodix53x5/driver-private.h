@@ -93,6 +93,13 @@ typedef struct
 typedef struct _GoodixTransport GoodixTransport;
 typedef struct _GoodixReader GoodixReader;
 
+/* HAL +0x1e0: requested mode, independent of coordinator and FDT wait state. */
+typedef enum
+{
+  GOODIX_REQUESTED_MODE_CAPTURE = 0,
+  GOODIX_REQUESTED_MODE_SLEEP = 2,
+} GoodixRequestedMode;
+
 /* Independent native response events; the first four retain their existing
  * readiness bits used by the named command consumers. */
 typedef enum
@@ -162,6 +169,7 @@ struct _FpiDeviceGoodix53x5
   guint16 fdt_prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
   GoodixFdtNotification pending_fdt;
   gboolean rx_idle_partial;
+  GoodixRequestedMode requested_mode;
 
   /* Profile-9 FDT state persists across actions and hardware reinitialization. */
   GoodixProfile9FdtState profile9_fdt;

@@ -448,6 +448,15 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
 
         if (data->event_type == GOODIX_FDT_EVENT_CONFIG)
           {
+            /* Native worker 00e00d tests the persistent requested mode at
+             * selection, not when the parser publishes the notification. */
+            if (self->requested_mode == GOODIX_REQUESTED_MODE_SLEEP)
+              {
+                data->dispatching = FALSE;
+                fdt->event.pending = FALSE;
+                fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+                return;
+              }
             /* No sample or release was published. Preserve the selected raw
              * vector, drift/reference state and outstanding CPU ownership. */
             fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_RESTORE_CONFIG);
@@ -824,6 +833,9 @@ goodix_scan_start_coordinator_subsm (
                     (GDestroyNotify) goodix_scan_coordinator_data_free);
   self->profile9_fdt.owner = ssm;
   self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_ACTIVE;
+  /* device_get_data clears HAL +0x1e0 before EC control and initial arming.
+   * Maintenance rearming and configuration repair do not change this mode. */
+  self->requested_mode = GOODIX_REQUESTED_MODE_CAPTURE;
   fpi_ssm_start (ssm, goodix_scan_coordinator_done);
   if (self->profile9_fdt.owner == ssm && data->action_cancel)
     data->action_cancel_id = g_cancellable_connect (

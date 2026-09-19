@@ -269,10 +269,8 @@ goodix_validate_ack_for_cmd (FpDevice       *dev,
       if (!goodix_cmd_parse_fdt_event (dev, operation->cancelled_fdt_mode,
                                       &type, &event, error))
         return FALSE;
-      if (!event.pending || type == GOODIX_FDT_EVENT_CONFIG)
+      if (!event.pending)
         {
-          /* Native mode 2 suppresses event 0x14. It is not the outstanding
-           * down/up sample, so keep that cleanup drain available. */
           *status = 0;
           return TRUE;
         }
@@ -842,18 +840,18 @@ goodix_rx_cell (GoodixTransport *operation,
                   goto receive_more;
                 }
             }
-          else if (category == 3 && (command == 1 || command == 2) &&
-                   (idle_packet || self->gtls_restart_active ||
-                    (current && (current->response_slot != GOODIX_RESPONSE_NONE ||
-                                 (current->cmd.category == 3 && current->cmd.command <= 2)))))
+          else if (category == 3 && (command == 1 || command == 2))
             {
               GoodixFdtEventType type;
               GoodixProfile9FdtEvent event;
               GoodixProfile9FdtWaitMode mode = command == 1 ?
                 GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
               g_autoptr(GError) event_error = NULL;
+              gboolean async_event = idle_packet || self->gtls_restart_active ||
+                (current && (current->response_slot != GOODIX_RESPONSE_NONE ||
+                             (current->cmd.category == 3 && current->cmd.command <= 2)));
 
-              if (payload_len != GOODIX_FDT_EVENT_PAYLOAD_LEN)
+              if (async_event && payload_len != GOODIX_FDT_EVENT_PAYLOAD_LEN)
                 event_error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                         "Unexpected FDT event length");
               if (event_error || !goodix_cmd_parse_fdt_event (dev, mode, &type, &event, &event_error))
@@ -861,26 +859,32 @@ goodix_rx_cell (GoodixTransport *operation,
                   error = g_steal_pointer (&event_error);
                   goto protocol_error;
                 }
-              /* Every native parser mutation precedes replacement of the
-               * latest worker notification, including during config/manual. */
-              if (!event.pending)
+              /* CONFIG always publishes, including during sleep SEND/ACK;
+               * it coalesces notifications but consumes no raw-sample drain.
+               * Keep the existing command admission guards for raw FDT. */
+              if ((type == GOODIX_FDT_EVENT_CONFIG && operation->phase != GOODIX_TRANSPORT_EVENT) ||
+                  async_event)
                 {
+                  /* Parser mutations precede notification replacement. */
+                  if (!event.pending)
+                    {
+                      goodix_proto_rx_reset (&self->rx);
+                      goto receive_more;
+                    }
+                  goodix_recv_apply_fdt_event (dev, type, &event);
+                  if (type == GOODIX_FDT_EVENT_CONFIG || !idle_packet || operation->completion_pending ||
+                      (self->transport && self->transport->phase == GOODIX_TRANSPORT_SEND))
+                    {
+                      if (type != GOODIX_FDT_EVENT_CONFIG)
+                        self->pending_fdt.event = event;
+                      self->pending_fdt.event.pending = TRUE;
+                      self->pending_fdt.type = type;
+                      memcpy (self->pending_fdt.prior_down, self->fdt_prior_down,
+                              sizeof (self->pending_fdt.prior_down));
+                    }
                   goodix_proto_rx_reset (&self->rx);
                   goto receive_more;
                 }
-              goodix_recv_apply_fdt_event (dev, type, &event);
-              if (!idle_packet || operation->completion_pending ||
-                  (self->transport && self->transport->phase == GOODIX_TRANSPORT_SEND))
-                {
-                  if (type != GOODIX_FDT_EVENT_CONFIG)
-                    self->pending_fdt.event = event;
-                  self->pending_fdt.event.pending = TRUE;
-                  self->pending_fdt.type = type;
-                  memcpy (self->pending_fdt.prior_down, self->fdt_prior_down,
-                          sizeof (self->pending_fdt.prior_down));
-                }
-              goodix_proto_rx_reset (&self->rx);
-              goto receive_more;
             }
           else if (shared && current && !current_data)
             {
@@ -1133,6 +1137,9 @@ goodix_transport_invalidate (FpDevice *dev)
   self->reply_valid = FALSE;
   self->rx_idle_partial = FALSE;
   self->pending_fdt.event.pending = FALSE;
+  /* Joined cold teardown retires the HAL mode owner, not an ordinary reader
+   * stop, command completion, FDT rearm or coordinator handoff. */
+  self->requested_mode = GOODIX_REQUESTED_MODE_CAPTURE;
 }
 
 gboolean
