@@ -1444,16 +1444,8 @@ goodix_session_close_joined (FpDevice *dev, gpointer data)
 void
 goodix_session_close (FpDevice *dev)
 {
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-
-  /* The core only blocks close once suspend has completed. A close admitted
-   * while suspend is still joining must not complete early: the core closes
-   * the USB handle and marks the device closed regardless of the result. */
-  if (self->suspend_pending)
-    {
-      self->close_pending = TRUE;
-      return;
-    }
+  /* The paired core rejects close while a power task is pending and admits
+   * it for a quiesced suspended session, which needs no hardware I/O here. */
   goodix_session_quiesce (dev, goodix_session_close_joined, NULL);
 }
 
@@ -1479,13 +1471,6 @@ goodix_suspend_joined (FpDevice *dev, gpointer data)
   self->suspend_pending = FALSE;
   self->session_suspended = TRUE;
   fpi_device_suspend_complete (dev, data);
-  if (self->close_pending)
-    {
-      /* Everything is joined; the close admitted during suspend can tear
-       * down now, on the same path as an ordinary close. */
-      self->close_pending = FALSE;
-      goodix_session_close_joined (dev, NULL);
-    }
 }
 
 static void
