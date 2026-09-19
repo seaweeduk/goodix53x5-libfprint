@@ -1068,6 +1068,12 @@ goodix_scan_start_coordinator_subsm (
   /* device_get_data clears HAL +0x1e0 before EC control and initial arming.
    * Maintenance rearming and configuration repair do not change this mode. */
   self->requested_mode = GOODIX_REQUESTED_MODE_CAPTURE;
+  /* The previous owner has joined. A new capture supersedes only its
+   * unselected power-off notification; retain real sensor notifications.
+   * Already-selected deactivation finishes before this admission point. */
+  if (self->pending_fdt.event.pending &&
+      self->pending_fdt.type == GOODIX_FDT_EVENT_DEACTIVATE)
+    self->pending_fdt.event.pending = FALSE;
   self->capture_unread = fpi_device_get_current_action (dev) == FPI_DEVICE_ACTION_ENROLL ? 2 : 1;
   goodix_health_note_capture (&self->health, self->capture_unread == 2);
   self->capture_callback_pending = TRUE;
