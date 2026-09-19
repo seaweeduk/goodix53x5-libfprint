@@ -250,9 +250,8 @@ struct _FpiDeviceGoodix53x5
   /* USB interface state */
   gboolean usb_interface_claimed;
 
-  /* System sleep happened while the device was open; the USB claim and GTLS
-   * session may be stale (S4 reset/re-enumeration rebinds cdc_acm). The next
-   * verify/identify/enroll runs the full open SSM before any auth USB I/O. */
+  /* A hardware fault requires cold reconstruction on resume or the next
+   * action. Ordinary sleep retains host state and only re-keys GTLS. */
   gboolean needs_reinit;
 
   /* Retained for the open/reinitialization parent SSM. */
