@@ -47,7 +47,11 @@ The patch changes only that dispatch in `fpi_device_suspend()` and
   and `resume` vfuncs instead of completing immediately;
 - a suspend that overlaps a short action (open, close, delete, list, clear)
   is dispatched again once that action completes, so a device opened during
-  the transition is still quiesced.
+  the transition is still quiesced;
+- `fp_device_close()` is rejected while a suspend or resume task is pending
+  (its completion would close the USB handle underneath the power owner) and
+  admitted for a completed suspend, so a device removed during sleep can be
+  closed without resuming hardware and the context can finish its removal.
 
 The driver completes both asynchronously with `fpi_device_suspend_complete()`
 and `fpi_device_resume_complete()`. Suspend joins all background hardware work
@@ -56,7 +60,7 @@ calibration/reference state, with one cold reconstruction on failure, before it
 completes. Actions that arrive while the driver is quiescing fail with `FP_DEVICE_ERROR_BUSY`
 from the driver; the core rejects them itself once suspend has completed.
 
-Three assertions in `tests/test-fpi-device.c` are updated for the new idle
+Four assertions in `tests/test-fpi-device.c` are updated for the new idle
 dispatch. No new core API, signal or feature flag is added; the paired fprintd
 overlay only relies on the driver-side behaviour above.
 

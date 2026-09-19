@@ -64,8 +64,7 @@ gboolean goodix_error_indicates_stale_device (const GError *error);
 void goodix_session_suspend (FpDevice *dev);
 void goodix_session_resume (FpDevice *dev);
 
-/* Join every hardware owner, release the interface and complete the close.
- * A close arriving while suspend is settling runs after suspend completes. */
+/* Join every hardware owner, release the interface and complete the close. */
 void goodix_session_close (FpDevice *dev);
 
 /* Background and power owners use session_cancel even during foreground
