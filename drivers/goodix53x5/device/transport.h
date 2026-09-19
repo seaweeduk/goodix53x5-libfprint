@@ -41,7 +41,6 @@ typedef struct
   gboolean expect_data;
   /* Retained caller hint; IN now survives every command until quiesce. */
   gboolean idle_after_ack;
-  GoodixProfile9FdtWaitMode cancelled_mode;
 } GoodixTransportRequest;
 
 typedef struct

@@ -26,6 +26,7 @@
 #include "device/auth.h"
 #include "device/persistence.h"
 #include "device/transport.h"
+#include "device/scan.h"
 
 #include <string.h>
 #include <openssl/crypto.h>
@@ -44,6 +45,10 @@ goodix_open (FpDevice *dev)
 
   self->open_recovery_attempted = FALSE;
   self->open_usb_reset_required = FALSE;
+  g_clear_object (&self->session_cancel);
+  self->session_cancel = g_cancellable_new ();
+  self->session_suspended = FALSE;
+  self->suspend_pending = FALSE;
   goodix_start_open_ssm (dev);
 }
 
@@ -58,6 +63,9 @@ goodix_close_joined (FpDevice *dev, gpointer data)
     g_cancellable_cancel (self->cancel);
   g_clear_object (&self->milan_task);
   g_clear_object (&self->cancel);
+  g_clear_object (&self->session_cancel);
+  self->session_suspended = FALSE;
+  self->session_open = FALSE;
   goodix_clear_pending_result_report (self);
   g_clear_pointer (&self->otp_data, g_free);
   g_clear_pointer (&self->fw_version, g_free);
@@ -70,6 +78,7 @@ goodix_close_joined (FpDevice *dev, gpointer data)
   g_clear_pointer (&self->pending_persistence_state, g_free);
   goodix_milan_generation_retain_process (dev);
   g_clear_pointer (&self->hardware_reference, g_free);
+  self->hardware_refresh_pending = FALSE;
   g_clear_pointer (&self->enroll_transaction,
                    goodix_milan_enrollment_transaction_free);
   goodix_milan_persistence_clear (dev);
@@ -88,37 +97,41 @@ goodix_close_joined (FpDevice *dev, gpointer data)
 static void
 goodix_close (FpDevice *dev)
 {
-  goodix_transport_quiesce (dev, goodix_close_joined, NULL);
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  /* The core only blocks close once suspend has completed. */
+  if (self->suspend_pending)
+    {
+      fpi_device_close_complete (dev, fpi_device_error_new_msg (
+                                   FP_DEVICE_ERROR_BUSY,
+                                   "Hardware session is suspending"));
+      return;
+    }
+  goodix_session_quiesce (dev, goodix_close_joined, NULL);
 }
 
 static void
 goodix_enroll (FpDevice *dev)
 {
-  goodix_enroll_start (dev);
+  goodix_session_start_action (dev);
 }
 
 static void
 goodix_verify (FpDevice *dev)
 {
-  goodix_auth_start (dev);
+  goodix_session_start_action (dev);
 }
 
 static void
 goodix_identify (FpDevice *dev)
 {
-  goodix_auth_start (dev);
+  goodix_session_start_action (dev);
 }
 
 static void
 goodix_suspend (FpDevice *dev)
 {
   goodix_session_suspend (dev);
-}
-
-static void
-goodix_suspend_idle_notify (FpDevice *dev)
-{
-  FPI_DEVICE_GOODIX53X5 (dev)->needs_reinit = TRUE;
 }
 
 static void
@@ -132,11 +145,30 @@ goodix_cancel (FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
+  if (goodix_session_cancel_pending_action (dev))
+    return;
+
   if (self->cancel)
     {
       self->action_epoch++;
       g_cancellable_cancel (self->cancel);
     }
+}
+
+static void
+goodix_removed (FpDevice *dev, GParamSpec *pspec, gpointer data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  gboolean removed = FALSE;
+
+  g_object_get (dev, "removed", &removed, NULL);
+  if (!removed || (!self->session_open && !self->task_ssm))
+    return;
+  self->needs_reinit = TRUE;
+  if (self->session_cancel)
+    g_cancellable_cancel (self->session_cancel);
+  goodix_scan_stop_coordinator (
+    dev, fpi_device_error_new (FP_DEVICE_ERROR_REMOVED));
 }
 
 /* ========================================================================
@@ -154,6 +186,8 @@ fpi_device_goodix53x5_init (FpiDeviceGoodix53x5 *self)
 #endif
   memset (self->psk, 0, sizeof (self->psk));
   self->profile9_fdt.drift_anchor_empty = TRUE;
+  self->session_cancel = g_cancellable_new ();
+  g_signal_connect (self, "notify::removed", G_CALLBACK (goodix_removed), NULL);
 }
 
 static const FpIdEntry goodix53x5_id_table[] = {
@@ -170,6 +204,7 @@ goodix_finalize (GObject *object)
 
   goodix_milan_generation_invalidate (&self->milan_retained_generation);
   g_clear_pointer (&self->hardware_reference, g_free);
+  g_clear_object (&self->session_cancel);
   G_OBJECT_CLASS (fpi_device_goodix53x5_parent_class)->finalize (object);
 }
 
@@ -197,5 +232,4 @@ fpi_device_goodix53x5_class_init (FpiDeviceGoodix53x5Class *klass)
   dev_class->cancel = goodix_cancel;
   dev_class->suspend = goodix_suspend;
   dev_class->resume  = goodix_resume;
-  dev_class->suspend_idle_notify = goodix_suspend_idle_notify;
 }

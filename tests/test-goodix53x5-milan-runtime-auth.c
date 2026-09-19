@@ -284,9 +284,11 @@ test_auth_cleanup_results (gconstpointer user_data)
   guint row = GPOINTER_TO_UINT (user_data);
   gboolean missing = row == 7;
   gboolean failed_cleanup = row % 2 || row >= 6;
-  gboolean publish = row < 6;
   gboolean matched = row < 4 || row >= 6;
-  gboolean update_expected = publish && row < 2;
+  /* A scan failure after the comparison only invalidates negative results;
+   * cancellation, removal and a missing capture still fail the action. */
+  gboolean publish = (row < 6 && (matched || !failed_cleanup)) || row == 6;
+  gboolean update_expected = publish && (row < 2 || row == 6);
   gint32 score = matched ? 37 : 0;
   g_autoptr(FpDevice) device = new_device ();
   g_autoptr(GBytes) stored = generate_template (0);
@@ -304,6 +306,7 @@ test_auth_cleanup_results (gconstpointer user_data)
   pause_cycle_settled = !missing;
   fp_device_verify (device, print, cancel, match_report, &result, NULL, verify_done, &result);
   wait_paused ();
+  /* Nothing reaches the application until the action completes. */
   g_assert_cmpuint (result.reports, ==, 0);
   g_assert_cmpuint (result.completions, ==, 0);
   g_assert_cmpint (self->pending_result_report, ==, !missing);
@@ -312,12 +315,13 @@ test_auth_cleanup_results (gconstpointer user_data)
 
   /* Scan provenance is the seam here; the USB suite proves its actual producer.
    * All matching, update admission and deferred publication use real owners. */
-  self->scan_cleanup_only_error = failed_cleanup && row != 6;
   if (failed_cleanup)
     self->needs_reinit = TRUE;
   if (row == 8)
     {
-      g_cancellable_cancel (cancel);
+      /* Internal power/terminal cancellation still owns the completion error,
+       * unlike ordinary client cleanup after a reported positive match. */
+      g_cancellable_cancel (fpi_device_get_cancellable (device));
       wait_cancelled ();
     }
   if (row == 9)

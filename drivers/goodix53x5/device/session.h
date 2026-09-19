@@ -56,9 +56,33 @@ gboolean goodix_maybe_start_reinit_subsm (FpiSsm   *ssm,
 gboolean goodix_error_indicates_stale_device (const GError *error);
 
 /**
- * Handle system sleep/wake while the device is open. Suspend marks the device
- * for reinitialization and asks libfprint to cancel and join the current
- * action. Resume never restarts old state-machine state.
+ * Handle system sleep/wake while the device is open, including ACTION_NONE.
+ * Suspend cancels/joins the selected hardware owner and CPU consumer, sends
+ * sleep/EC-off, then joins reception. Resume reconstructs the hardware session
+ * and restarts packet-driven servicing before completing.
  */
 void goodix_session_suspend (FpDevice *dev);
 void goodix_session_resume (FpDevice *dev);
+
+/* Background and power owners use session_cancel even during foreground
+ * admission. Only foreground/open callers use libfprint's action token. */
+GCancellable *goodix_session_io_cancellable (FpDevice *dev);
+
+/* Every hardware owner reports here when it stops; the session then starts
+ * the pending action, the requested reader join, or idle maintenance. */
+void goodix_session_settle (FpDevice *dev);
+/* The idle service or a detached deactivation tail finished. A terminal error
+ * disables maintenance until the next action reconstructs the session. */
+void goodix_session_service_done (FpDevice *dev, GError *error);
+/* The coordinator hands a finished action back and keeps running its
+ * deactivation tail as background maintenance. */
+void goodix_session_detach_action (FpDevice *dev);
+void goodix_session_quiesce (FpDevice *dev,
+                            void (*joined) (FpDevice *, gpointer),
+                            gpointer data);
+void goodix_session_start_action (FpDevice *dev);
+/* Complete an unadmitted request without taking ownership of maintenance I/O. */
+gboolean goodix_session_cancel_pending_action (FpDevice *dev);
+/* Deliver the action's outcome, then settle the next hardware owner. */
+void goodix_session_action_done (FpDevice *dev, GError *error,
+                                void (*complete) (FpDevice *, GError *));

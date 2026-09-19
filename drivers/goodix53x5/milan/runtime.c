@@ -41,6 +41,11 @@ struct _GoodixMilanRuntimeInput
   GoodixMilanRuntimeCancelFunc      cancel_func;
   gpointer                          cancel_data;
   GDestroyNotify                    cancel_destroy;
+  GoodixMilanRuntimeSetupFunc       setup_func;
+  gpointer                          setup_data;
+  GDestroyNotify                    setup_destroy;
+  gboolean                          capture_health_present;
+  gboolean                          capture_enroll_allowed;
 };
 
 static void
@@ -196,12 +201,36 @@ goodix_milan_runtime_input_set_cancel_check (
 }
 
 void
+goodix_milan_runtime_input_set_setup_hook (
+  GoodixMilanRuntimeInput *input, GoodixMilanRuntimeSetupFunc setup_func,
+  gpointer user_data, GDestroyNotify destroy)
+{
+  g_return_if_fail (input != NULL);
+  if (input->setup_destroy)
+    input->setup_destroy (input->setup_data);
+  input->setup_func = setup_func;
+  input->setup_data = user_data;
+  input->setup_destroy = destroy;
+}
+
+void
+goodix_milan_runtime_input_set_capture_health (GoodixMilanRuntimeInput *input,
+                                               gboolean                 enroll_allowed)
+{
+  g_return_if_fail (input != NULL);
+  input->capture_health_present = TRUE;
+  input->capture_enroll_allowed = enroll_allowed;
+}
+
+void
 goodix_milan_runtime_input_free (GoodixMilanRuntimeInput *input)
 {
   if (!input)
     return;
   if (input->cancel_destroy)
     input->cancel_destroy (input->cancel_data);
+  if (input->setup_destroy)
+    input->setup_destroy (input->setup_data);
   g_clear_pointer (&input->gallery, g_ptr_array_unref);
   g_clear_pointer (&input->setup_tx_on, g_free);
   g_clear_pointer (&input->live_raw, g_free);
@@ -251,6 +280,9 @@ goodix_milan_runtime_output_new (const GoodixMilanRuntimeInput *input)
   output->dac_high = input->dac_high;
   output->dac_low = input->dac_low;
   output->sensor_subtype = input->sensor_subtype;
+  output->capture_health_present = input->capture_health_present;
+  output->capture_enroll_allowed = !input->capture_health_present ||
+                                   input->capture_enroll_allowed;
   output->winner_index = G_MAXUINT;
   output->winner_position = G_MAXSIZE;
   output->cancellation.cancelled_gallery_position = G_MAXSIZE;
@@ -281,11 +313,27 @@ goodix_milan_runtime_preprocess_input (const GoodixMilanRuntimeInput *input,
 {
   gint32 setup_status;
   gint32 preprocess_status;
+  gboolean setup_required = !input->profile_state.setup_initialized ||
+                            input->profile_state.setup_refresh_pending;
 
   output->preprocess_state = input->preprocess_state;
   output->profile_state = input->profile_state;
   setup_status = goodix_milan_runtime_initialize_setup (
     &output->profile_state, input->setup_tx_on);
+  if (setup_required && input->setup_func)
+    {
+      output->setup_state_valid = TRUE;
+      if (setup_status == 0)
+        {
+          /* Native setup-save precedes live processing and is not revoked by
+           * later cancellation. Withhold context publication if it cannot be
+           * prepared, retaining successful setup-ready and marker consumption. */
+          setup_status = input->setup_func (input->setup_data);
+          if (setup_status != 0)
+            output->profile_state.setup_initialized =
+              input->profile_state.setup_initialized;
+        }
+    }
   if (setup_status != 0)
     {
       goodix_milan_debug_runtime_setup_failed (output, setup_status);
@@ -297,6 +345,22 @@ goodix_milan_runtime_preprocess_input (const GoodixMilanRuntimeInput *input,
       return FALSE;
     }
 
+  /* EngineAdapterAcceptSampleData 01ffe2: the completed capture's permission,
+   * not a later UP result, gates purpose 4 after setup and its publication. */
+  if (input->purpose == GOODIX_MILAN_PURPOSE_ENROLL &&
+      !output->capture_enroll_allowed)
+    {
+      output->preprocess_state_valid = TRUE;
+      output->status = GOODIX_MILAN_RUNTIME_RETRY;
+      output->admission_status = 0x80098008u;
+      output->admission_detail = 10;
+      g_set_error_literal (&output->error, GOODIX_MILAN_PRINT_ERROR,
+                           GOODIX_MILAN_PRINT_ERROR_INVALID,
+                           "Native Milan sensor health rejected enrollment (0x80098008/detail 10)");
+      return FALSE;
+    }
+
+  /* Setup and its publication have completed. Live admission starts here. */
   *processed = g_malloc (GOODIX_MILAN_SENSOR_PIXELS);
   goodix_milan_debug_runtime_preprocess_started (output);
   preprocess_status = goodix_milan_preprocess (

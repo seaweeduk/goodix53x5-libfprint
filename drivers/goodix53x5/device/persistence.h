@@ -11,10 +11,14 @@
 #pragma once
 
 #include "device/base.h"
+#include "milan/runtime.h"
 
 void goodix_milan_persistence_prepare (FpDevice *dev);
 void goodix_milan_persistence_clear (FpDevice *dev);
-void goodix_milan_persistence_restore (FpDevice              *dev,
-                                       GoodixMilanGeneration *generation);
+GoodixMilanSetupSave *goodix_milan_persistence_restore (FpDevice              *dev,
+                                                        GoodixMilanGeneration *generation);
+void goodix_milan_setup_save_free (GoodixMilanSetupSave *save);
+void goodix_milan_persistence_bind_setup (GoodixMilanRuntimeInput *input,
+                                          GoodixMilanGeneration   *generation);
 void goodix_milan_persistence_save (FpDevice                         *dev,
                                     const GoodixMilanPreprocessState *state);

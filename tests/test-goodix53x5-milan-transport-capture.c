@@ -37,6 +37,7 @@ static void
 reverse_event (FpiUsbTransfer *transfer, guint ordinal)
 {
   guint8 payload[4 + GOODIX_FDT_BASE_LEN] = { 0x80, 0, 0, 0 };
+
   for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
     payload[4 + 2 * i] = 100 + 2 * i + 2 * ordinal;
   reply (transfer, 3, 1, payload, sizeof (payload));
@@ -47,6 +48,7 @@ static void
 up_event (FpiUsbTransfer *transfer)
 {
   guint8 payload[4 + GOODIX_FDT_BASE_LEN] = { 0, 2 };
+
   for (guint i = 0; i < GOODIX_FDT_BASE_LEN; i++)
     payload[4 + i] = 3 * i + 1;
   reply (transfer, 3, 2, payload, sizeof (payload));
@@ -75,6 +77,7 @@ capture_event_reply (FpiUsbTransfer *transfer, GCancellable *cancel)
 {
   const Scenario *scenario = io.scenario;
   GError *error = NULL;
+
   if (scenario->standalone_arm)
     {
       if (io.duplicates == 0)
@@ -91,19 +94,21 @@ capture_event_reply (FpiUsbTransfer *transfer, GCancellable *cancel)
           for (guint i = 0; i < GOODIX_FDT_BASE_LEN; i++)
             payload[4 + i] = 3 * i + 1;
           reply (transfer, 3, (scenario->standalone_arm & 0xf) >> 1,
-                  payload, sizeof (payload));
+                 payload, sizeof (payload));
           io.events++;
         }
     }
   else if (scenario->schedule == EVENT_COMPLETES_DURING_CANCEL && io.events == 0)
-    up_event (transfer);
+    {
+      up_event (transfer);
+    }
   else
     {
       g_assert_nonnull (cancel);
       g_assert_true (g_cancellable_is_cancelled (cancel));
       io.cancellations++;
       error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
-                                    "Scheduled event cancellation");
+                                   "Scheduled event cancellation");
     }
   return error;
 }
@@ -115,10 +120,10 @@ cancel_arm_reply (FpiUsbTransfer *transfer)
   GError *error = NULL;
   gboolean config = io.command == 0x90;
   gboolean cancel_now = !io.action_cancelled &&
-    ((io.command == 0x34 &&
-      (scenario->schedule == CANCEL_ARM_FIRST ||
-       (scenario->schedule == CANCEL_ARM_REPEAT && io.sends[0x90]))) ||
-     (config && io.ec_data && scenario->schedule == CANCEL_ARM_CONFIG));
+                        ((io.command == 0x34 &&
+                          (scenario->schedule == CANCEL_ARM_FIRST ||
+                           (scenario->schedule == CANCEL_ARM_REPEAT && io.sends[0x90]))) ||
+                         (config && io.ec_data && scenario->schedule == CANCEL_ARM_CONFIG));
 
   if (cancel_now)
     {
@@ -126,7 +131,9 @@ cancel_arm_reply (FpiUsbTransfer *transfer)
       g_cancellable_cancel (FPI_DEVICE_GOODIX53X5 (transfer->device)->cancel);
     }
   if (io.command == 0x60 && scenario->schedule != CANCEL_ARM_CONFIG && !io.events)
-    up_event (transfer);
+    {
+      up_event (transfer);
+    }
   else if (config && io.ec_data)
     {
       guint8 status = 0;
@@ -135,7 +142,7 @@ cancel_arm_reply (FpiUsbTransfer *transfer)
   else
     {
       guint8 ack[] = { io.command, io.command == 0x34 && !io.sends[0x90] ?
-                      scenario->ec_status : 1 };
+                       scenario->ec_status : 1 };
       reply (transfer, 0xb, 0, ack, sizeof (ack));
       io.ec_data = config;
     }
@@ -149,8 +156,11 @@ repair_arm_reply (FpiUsbTransfer *transfer)
   GError *error = NULL;
   gboolean config = io.command == 0x90;
   gboolean repeated = io.sends[0x90] != 0;
+
   if (config && scenario->schedule == ARM_CONFIG_PROTO)
-    reply (transfer, 0xb, 0, &io.command, 1);
+    {
+      reply (transfer, 0xb, 0, &io.command, 1);
+    }
   else if (config && scenario->schedule == ARM_CONFIG_CANCEL)
     {
       io.action_cancelled = TRUE;
@@ -161,15 +171,17 @@ repair_arm_reply (FpiUsbTransfer *transfer)
   else if (scenario->schedule == ARM_FIRST_FAIL ||
            (config && (scenario->schedule == ARM_CONFIG_FAIL ||
                        (scenario->schedule == ARM_CONFIG_DATA_FAIL && io.ec_data))) ||
-      (!config && repeated && scenario->schedule == ARM_REPEAT_FAIL) ||
-      (!config && scenario->schedule == ARM_MAX && (io.sends[io.command] & 1)))
+           (!config && repeated && scenario->schedule == ARM_REPEAT_FAIL) ||
+           (!config && scenario->schedule == ARM_MAX && (io.sends[io.command] & 1)))
     {
       test_clock_us += usb.timeout * 1000;
       error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
                                    "Scheduled arm recovery timeout");
     }
   else if (config && scenario->schedule == ARM_REFRESH && io.events < 2)
-    reverse_event (transfer, io.events);
+    {
+      reverse_event (transfer, io.events);
+    }
   else if (config && io.ec_data)
     {
       guint8 status = 0;
@@ -178,8 +190,8 @@ repair_arm_reply (FpiUsbTransfer *transfer)
   else
     {
       guint8 ack[] = { io.command, config ? 1 :
-                      repeated ? (scenario->schedule == ARM_REPEAT_STATUS ? 3 : 1) :
-                      scenario->ec_status };
+                       repeated ? (scenario->schedule == ARM_REPEAT_STATUS ? 3 : 1) :
+                       scenario->ec_status };
       reply (transfer, 0xb, 0, ack, sizeof (ack));
       io.ec_data = config;
     }
@@ -190,6 +202,7 @@ static void
 complete_usb (void)
 {
   FpiUsbTransfer *transfer = usb.pending;
+
   g_autoptr(FpDevice) dev = g_object_ref (transfer->device);
   GCancellable *cancel = usb.cancel;
   GError *error = NULL;
@@ -231,15 +244,25 @@ complete_usb (void)
                                    "Scheduled idle receive join");
     }
   else if (transfer->endpoint == GOODIX_EP_OUT)
-    error = complete_write (transfer, cancel);
+    {
+      error = complete_write (transfer, cancel);
+    }
   else if (usb.timeout == 0)
-    error = capture_event_reply (transfer, cancel);
+    {
+      error = capture_event_reply (transfer, cancel);
+    }
   else if (cancel_arm_case (scenario))
-    error = cancel_arm_reply (transfer);
+    {
+      error = cancel_arm_reply (transfer);
+    }
   else if (arm_repair_case (scenario))
-    error = repair_arm_reply (transfer);
+    {
+      error = repair_arm_reply (transfer);
+    }
   else
-    error = command_reply (transfer);
+    {
+      error = command_reply (transfer);
+    }
 
   fixture_complete (error);
   if (rearm_case (scenario) && io.events > events_before)
@@ -299,8 +322,8 @@ boundary_handler (FpiSsm *ssm, FpDevice *dev)
       return;
     }
   if (fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_ENSURE_REFERENCE)
-    fpi_ssm_jump_to_state (ssm, (rearm_case (io.scenario) || down_drain_case (io.scenario))
-                           ? GOODIX_SCAN_COORD_REARM_DOWN : GOODIX_SCAN_COORD_ARM_UP);
+    fpi_ssm_jump_to_state (ssm, (rearm_case (io.scenario) || down_drain_case (io.scenario)) ?
+                           GOODIX_SCAN_COORD_REARM_DOWN : GOODIX_SCAN_COORD_ARM_UP);
   else
     goodix_scan_coordinator_handler (ssm, dev);
 }
@@ -309,7 +332,7 @@ boundary_handler (FpiSsm *ssm, FpDevice *dev)
  * than inventing a second capture cycle to reach a down-arm wait. */
 static void
 arm_event_done (FpDevice *dev, const GoodixTransportResult *result,
-                 GError *error, gpointer data)
+                GError *error, gpointer data)
 {
   if (error)
     fpi_ssm_mark_failed (data, error);
@@ -322,6 +345,7 @@ arm_handler (FpiSsm *ssm, FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   gint state = fpi_ssm_get_cur_state (ssm);
+
   if (io.scenario->schedule == SAME_COMMAND_PRECEDENCE)
     {
       if (state == 1)
@@ -335,19 +359,21 @@ arm_handler (FpiSsm *ssm, FpDevice *dev)
   switch (state)
     {
     case 0:
-      self->profile9_fdt.wait_mode = io.scenario->standalone_arm == 0x32
-        ? GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
+      self->profile9_fdt.wait_mode = io.scenario->standalone_arm == 0x32 ?
+                                     GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
       if (io.scenario->standalone_arm == 0x32)
         goodix_cmd_fdt_down_setup (ssm, dev, self->profile9_fdt.base_down);
       else
         goodix_cmd_fdt_up_setup (ssm, dev, self->profile9_fdt.base_up);
       break;
+
     case 1:
       if (arm_repair_case (io.scenario) && self->pending_fdt.event.pending)
         fpi_ssm_next_state (ssm);
       else
         goodix_transport_wait_event (dev, self->profile9_fdt.wait_mode, arm_event_done, ssm);
       break;
+
     case 2:
       {
         GoodixFdtEventType type;
@@ -355,7 +381,9 @@ arm_handler (FpiSsm *ssm, FpDevice *dev)
         GError *error = NULL;
         if (!goodix_recv_select_fdt (dev, &type, &self->profile9_fdt.event,
                                      prior_down, &error))
-          fpi_ssm_mark_failed (ssm, error);
+          {
+            fpi_ssm_mark_failed (ssm, error);
+          }
         else
           {
             io.dispatches++;
@@ -370,6 +398,7 @@ static void
 arm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
   self->profile9_fdt.owner = NULL;
   self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED;
   boundary_done (ssm, dev, error);
@@ -379,10 +408,16 @@ static void
 boundary_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
   (void) ssm;
-  g_assert_null (self->profile9_fdt.owner);
-  g_assert_cmpuint (self->profile9_fdt.lifecycle, ==,
-                    GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED);
+  /* The action returns as soon as its CPU work joined; the coordinator may
+   * still own the hardware for the deactivation tail. */
+  if (self->profile9_fdt.owner)
+    g_assert_cmpuint (self->profile9_fdt.lifecycle, ==,
+                      GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPING);
+  else
+    g_assert_cmpuint (self->profile9_fdt.lifecycle, ==,
+                      GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED);
   io.completions++;
   g_assert_cmpuint (io.completions, ==, 1);
   io.error = error;
@@ -402,13 +437,29 @@ static void
 idle_joined (FpDevice *dev, gpointer data)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
   g_assert_null (self->transport);
+}
+
+static void
+maintenance_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  self->profile9_fdt.owner = NULL;
+  self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED;
+  self->service_active = FALSE;
+  if (!io.error)
+    io.error = error;
+  else
+    g_clear_error (&error);
 }
 
 static void
 test_scenario (gconstpointer user_data)
 {
   const Scenario *scenario = user_data;
+
   g_autoptr(FpDevice) dev = NULL;
   FpiDeviceGoodix53x5 *self;
   GoodixScanCoordinatorData *data;
@@ -420,6 +471,7 @@ test_scenario (gconstpointer user_data)
   dev = fixture_device_new ();
   self = FPI_DEVICE_GOODIX53X5 (dev);
   self->cancel = g_cancellable_new ();
+  self->session_cancel = g_cancellable_new ();
 
   /* Explicit abstraction: an admitted frame has already been captured. No
    * preprocessing, extraction, match score or authentication is fabricated.
@@ -446,11 +498,11 @@ test_scenario (gconstpointer user_data)
     }
   if (scenario->standalone_arm)
     {
-      ssm = scenario->schedule == MULTICELL_DATA
-        ? fpi_ssm_new (dev, data_handler, 2)
-        : response_case (scenario) ? fpi_ssm_new (dev, response_handler, 5)
-        : fpi_ssm_new (dev, arm_handler,
-                       scenario->schedule == SAME_COMMAND_PRECEDENCE ? 4 : 3);
+      ssm = scenario->schedule == MULTICELL_DATA ?
+            fpi_ssm_new (dev, data_handler, 2) :
+            response_case (scenario) ? fpi_ssm_new (dev, response_handler, 5) :
+            fpi_ssm_new (dev, arm_handler,
+                         scenario->schedule == SAME_COMMAND_PRECEDENCE ? 4 : 3);
       self->profile9_fdt.owner = ssm;
       self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_ACTIVE;
       fpi_ssm_start (ssm, arm_done);
@@ -459,7 +511,7 @@ test_scenario (gconstpointer user_data)
     {
       data = g_new0 (GoodixScanCoordinatorData, 1);
       ssm = fpi_ssm_new_full (dev, boundary_handler, GOODIX_SCAN_COORD_NUM_STATES,
-                             GOODIX_SCAN_COORD_CLEANUP_JOIN, "transport-boundary");
+                              GOODIX_SCAN_COORD_CLEANUP_JOIN, "transport-boundary");
       data->ssm = ssm;
       parent = fpi_ssm_new (dev, parent_handler, 2);
       data->parent_ssm = parent;
@@ -470,7 +522,7 @@ test_scenario (gconstpointer user_data)
       if (rearm_case (scenario) || down_drain_case (scenario))
         {
           /* Prior capture and up-release have completed; CPU publication has
-           * not. B0 is a programmed base distinct from either early event. */
+          * not. B0 is a programmed base distinct from either early event. */
           data->cycle_active = TRUE;
           data->release_settled = TRUE;
           data->cpu_outstanding = TRUE;
@@ -485,7 +537,11 @@ test_scenario (gconstpointer user_data)
         data->action_cancel_id = g_cancellable_connect (
           data->action_cancel, G_CALLBACK (goodix_scan_action_cancelled), data, NULL);
     }
-  for (guint step = 0; io.completions == 0 && step < 48; step++)
+  /* Drive until the action boundary completes and, for coordinator cases,
+   * the detached deactivation tail has released the hardware as well. */
+  for (guint step = 0;
+       (io.completions == 0 || (!scenario->standalone_arm && self->profile9_fdt.owner)) &&
+       step < 48; step++)
     {
       if (!self->transport && cancel_arm_case (scenario) && !io.disposition_sent &&
           self->profile9_fdt.owner &&
@@ -498,7 +554,7 @@ test_scenario (gconstpointer user_data)
           fpi_ssm_get_cur_state (self->profile9_fdt.owner) >= GOODIX_SCAN_COORD_CLEANUP_JOIN &&
           !io.disposition_sent)
         stop_after_capture (dev); /* Join the deferred CPU callback on failure. */
-      if (io.completions)
+      if (io.completions && (scenario->standalone_arm || !self->profile9_fdt.owner))
         break;
       if (!self->transport && !self->reader->joined)
         {
@@ -510,6 +566,37 @@ test_scenario (gconstpointer user_data)
     }
 
   g_assert_cmpuint (io.completions, ==, 1);
+  g_assert_null (self->profile9_fdt.owner);
+  g_assert_cmpuint (self->profile9_fdt.lifecycle, ==,
+                    GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED);
+  if (!scenario->standalone_arm && !stop_state_case (scenario) &&
+      !cancel_arm_case (scenario) && self->pending_fdt.event.pending &&
+      self->pending_fdt.type == GOODIX_FDT_EVENT_DEACTIVATE)
+    {
+      /* Foreground completion precedes the independent delayed EC worker.
+       * Keep the original EC reply/deadline schedules on that actual owner. */
+      data = g_new0 (GoodixScanCoordinatorData, 1);
+      ssm = fpi_ssm_new_full (dev, goodix_scan_coordinator_handler,
+                              GOODIX_SCAN_COORD_NUM_STATES,
+                              GOODIX_SCAN_COORD_CLEANUP_JOIN, "deactivate-worker");
+      data->ssm = ssm;
+      data->idle = TRUE;
+      self->service_active = TRUE;
+      self->profile9_fdt.owner = ssm;
+      self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_ACTIVE;
+      fpi_ssm_set_data (ssm, data, (GDestroyNotify) goodix_scan_coordinator_data_free);
+      fpi_ssm_start (ssm, maintenance_done);
+      for (guint step = 0; self->profile9_fdt.owner && step < 32; step++)
+        {
+          if (fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_WAIT_EVENT)
+            goodix_scan_join_service (dev);
+          if (!self->transport)
+            g_main_context_iteration (NULL, TRUE);
+          else
+            complete_usb ();
+        }
+      g_assert_null (self->profile9_fdt.owner);
+    }
   if (self->reader)
     {
       /* Action completion no longer closes the handle-owned idle receiver.
@@ -528,16 +615,16 @@ test_scenario (gconstpointer user_data)
    * releases its owners and the complete suite can expose baseline failures. */
   gboolean cancelled = scenario->schedule == CANCEL_DURING_RETRY ||
                        scenario->schedule == WRITE_STALLED_CANCEL ||
-                        cancel_arm_case (scenario) ||
+                       cancel_arm_case (scenario) ||
                        scenario->schedule == ARM_CONFIG_CANCEL;
   gboolean delivered = (scenario->standalone_arm && !arm_repair_case (scenario) &&
-                         scenario->schedule != MULTICELL_DATA &&
-                         !response_case (scenario)) ||
-    scenario->schedule == EVENT_BEFORE_ARM_ACK ||
-    scenario->schedule == EVENT_COMPLETES_DURING_CANCEL;
+                        scenario->schedule != MULTICELL_DATA &&
+                        !response_case (scenario)) ||
+                       scenario->schedule == EVENT_BEFORE_ARM_ACK ||
+                       scenario->schedule == EVENT_COMPLETES_DURING_CANCEL;
   gboolean duplicate = (scenario->standalone_arm && scenario->schedule != MULTICELL_DATA &&
-                         !(response_command_case (scenario) || arm_repair_case (scenario))) ||
-    scenario->schedule == DUPLICATE_SLEEP_BEFORE_EC_ACK;
+                        !(response_command_case (scenario) || arm_repair_case (scenario))) ||
+                       scenario->schedule == DUPLICATE_SLEEP_BEFORE_EC_ACK;
   if (rearm_case (scenario))
     {
       gboolean two = scenario->schedule == TWO_EARLY_REVERSE;
@@ -583,14 +670,15 @@ test_scenario (gconstpointer user_data)
                       io.packet_down[1][0], io.packet_manual[1][0]);
     }
   gboolean excluded_send = scenario->schedule == SEND_DISCONNECT ||
-    scenario->schedule == SEND_CANCELLED || scenario->schedule == EARLIER_CLEANUP_ERROR;
+                           scenario->schedule == SEND_CANCELLED || scenario->schedule == EARLIER_CLEANUP_ERROR;
   if (cancel_arm_case (scenario))
     {
       gboolean armed = scenario->schedule != CANCEL_ARM_CONFIG;
 
       if (io.dispatches || io.events != armed ||
-          io.sends[0x90] != (scenario->schedule != CANCEL_ARM_FIRST) ||
-          io.sends[0x32] || self->pending_fdt.event.pending)
+          io.sends[0x90] != (scenario->ec_status == 3) ||
+          io.sends[0x32] || !self->pending_fdt.event.pending ||
+          self->pending_fdt.type != (armed ? GOODIX_FDT_EVENT_UP : GOODIX_FDT_EVENT_DEACTIVATE))
         g_test_fail ();
       for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
         {
@@ -603,7 +691,8 @@ test_scenario (gconstpointer user_data)
         }
     }
   gboolean malformed = scenario->schedule == ACK_EVEN_THEN_MALFORMED ||
-                       scenario->schedule == ARM_CONFIG_PROTO;
+                       scenario->schedule == ARM_CONFIG_PROTO ||
+                       scenario->schedule == CLEANUP_LATE_PROTO;
   if (stop_state_case (scenario))
     {
       gboolean down = scenario->schedule == DOWN_BEFORE_SLEEP_ACK;
@@ -612,16 +701,19 @@ test_scenario (gconstpointer user_data)
 
       if (io.events != (down || reverse || up) || io.dispatches ||
           io.cancellations != 1 || self->profile9_fdt.event.pending ||
-          self->pending_fdt.event.pending || !self->profile9_fdt.base_valid ||
+          !self->pending_fdt.event.pending || !self->profile9_fdt.base_valid ||
           self->profile9_fdt.drift_anchor_empty)
         g_test_fail ();
+      g_assert_cmpint (self->pending_fdt.type, ==,
+                       down ? GOODIX_FDT_EVENT_DOWN : reverse ? GOODIX_FDT_EVENT_REVERSE :
+                       up ? GOODIX_FDT_EVENT_UP : GOODIX_FDT_EVENT_DEACTIVATE);
       for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
         {
           /* Up uses the existing fixture's consecutive bytes; reverse/down
            * use samples 100,102,... . Expected words are independent formulas. */
           guint16 sample = (6 * i + 1) | ((6 * i + 4) << 8);
           guint16 expected_down = up ? (guint16) ((sample >> 1) * 257) :
-                                   reverse ? (50 + i) * 257 : 45 * 257;
+                                  reverse ? (50 + i) * 257 : 45 * 257;
           guint16 expected_up = down ? (80 + i) * 257 : 60 * 257;
           guint8 expected_manual = reverse ? 45 : 70;
 
@@ -644,7 +736,7 @@ test_scenario (gconstpointer user_data)
       scenario->schedule != RESPONSE_HANDOFF &&
       (io.sends[scenario->standalone_arm] !=
        (scenario->schedule == RESPONSE_RETRY || scenario->schedule == RESPONSE_EARLY_RESET ? 2 : 1) ||
-        io.events || io.dispatches))
+       io.events || io.dispatches))
     g_test_fail ();
   if (scenario->schedule == RESPONSE_EARLY_RESET && io.data_chunks != 2)
     g_test_fail ();
@@ -676,7 +768,16 @@ test_scenario (gconstpointer user_data)
   if (scenario->schedule == LATE_EVEN_ACK &&
       (io.duplicates != 1 || io.expected_acks != 1 || io.sends[0xae] != 1))
     g_test_fail ();
-  if (malformed && !g_error_matches (io.error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO))
+  if (malformed && !scenario->standalone_arm && io.disposition_sent &&
+      scenario->schedule != CLEANUP_LATE_PROTO)
+    {
+      /* A protocol failure after the comparison joins the same rule as a
+       * failed send: the positive result stands, the session reconstructs.
+       * The later independent EC worker still reports its own failure. */
+      if (io.error || !self->needs_reinit)
+        g_test_fail ();
+    }
+  else if (malformed && !g_error_matches (io.error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO))
     g_test_fail ();
   if (delivered && io.dispatches == 1)
     for (guint i = 0; i < GOODIX_FDT_BASE_LEN; i++)
@@ -684,19 +785,8 @@ test_scenario (gconstpointer user_data)
         g_test_fail ();
   gboolean exhausted_arm = scenario->schedule == ARM_REPEAT_FAIL ||
                            scenario->schedule == ARM_FIRST_FAIL;
-  if (!scenario->standalone_arm &&
-      ((scenario->timeout_command == 0x60 && scenario->timeout_count == 2) ||
-       scenario->timeout_command == 0xae))
-    {
-      gboolean cleanup_only = scenario->schedule != EARLIER_CLEANUP_ERROR &&
-                              scenario->schedule != CLEANUP_LATE_PROTO;
-      if (self->scan_cleanup_only_error != cleanup_only)
-        g_test_fail ();
-    }
-  if ((cancelled || excluded_send) && self->scan_cleanup_only_error)
-    g_test_fail ();
   if (scenario->schedule == WRITE_STALLED_CANCEL &&
-      (io.started_writes != 1 || io.precancelled_writes != 2 || io.cancelled_writes != 3))
+      (io.started_writes != 3 || io.precancelled_writes != 0 || io.cancelled_writes != 0))
     g_test_fail ();
   if (arm_repair_case (scenario))
     {
@@ -728,17 +818,16 @@ test_scenario (gconstpointer user_data)
        (io.deadline_violation || io.expected_acks || io.duplicates != 1 ||
         test_clock_us - io.ec_ack_started != ack_budget (0xae) * 1000LL || io.sends[0xae] != 1)) ||
       (scenario->success && (io.error || (self->needs_reinit && !exhausted_arm))) ||
-      (exhausted_arm && (io.error || !self->needs_reinit)) ||
+      (exhausted_arm && (io.error || self->needs_reinit)) ||
       (cancelled && (!io.action_cancelled ||
-                    (self->needs_reinit != (io.cancelled_writes != 0)) ||
-                    !g_error_matches (io.error, G_IO_ERROR, G_IO_ERROR_CANCELLED))) ||
-      (excluded_send && !g_error_matches (io.error, G_USB_DEVICE_ERROR,
-                           scenario->schedule == SEND_DISCONNECT ||
-                           scenario->schedule == EARLIER_CLEANUP_ERROR ?
-                           G_USB_DEVICE_ERROR_NO_DEVICE : G_USB_DEVICE_ERROR_CANCELLED)) ||
+                     (self->needs_reinit != (io.cancelled_writes != 0)) ||
+                     !g_error_matches (io.error, G_IO_ERROR, G_IO_ERROR_CANCELLED))) ||
+      /* The up-arm failed after the comparison: the positive result stands and
+       * the hardware session is marked for reconstruction. */
+      (excluded_send && (io.error || !self->needs_reinit)) ||
       (!scenario->success && !exhausted_arm && !cancelled && !excluded_send && !malformed &&
        (!g_error_matches (io.error, G_USB_DEVICE_ERROR,
-                           G_USB_DEVICE_ERROR_TIMED_OUT) || !self->needs_reinit)))
+                          G_USB_DEVICE_ERROR_TIMED_OUT) || !self->needs_reinit)))
     {
       g_test_message ("expected up=%u sleep=%u success=%d; needs_reinit=%d",
                       scenario->expected_up_sends, scenario->expected_sleep_sends,
@@ -755,6 +844,7 @@ test_scenario (gconstpointer user_data)
   g_clear_pointer (&self->rx.buf, g_free);
   goodix_milan_generation_invalidate (&self->milan_generation);
   g_clear_object (&self->cancel);
+  g_clear_object (&self->session_cancel);
 }
 
 static void
@@ -774,19 +864,20 @@ register_capture_tests (void)
   static const Scenario drain_control = { 0, 0, 1, 1, TRUE, STOP_DRAIN_CONTROL };
   static const Scenario cleanup_earlier = { 0x60, 2, 1, 2, FALSE, EARLIER_CLEANUP_ERROR };
   static const Scenario cleanup_protocol = { 0x60, 2, 1, 2, FALSE, CLEANUP_LATE_PROTO };
+
   add_transport_case ("cleanup/earlier-error", &cleanup_earlier, test_scenario);
   add_transport_case ("cleanup/later-protocol", &cleanup_protocol, test_scenario);
   static const Scenario cancel_arms[] = {
     { 0, 0, 1, 1, FALSE, CANCEL_ARM_FIRST, 0, 1 },
-    { 0, 0, 1, 1, FALSE, CANCEL_ARM_FIRST, 0, 3 },
+    { 0, 0, 2, 1, FALSE, CANCEL_ARM_FIRST, 0, 3 },
     { 0, 0, 2, 1, FALSE, CANCEL_ARM_REPEAT, 0, 3 },
-    { 0, 0, 1, 1, FALSE, CANCEL_ARM_CONFIG, 0, 3 },
+    { 0, 0, 2, 1, FALSE, CANCEL_ARM_CONFIG, 0, 3 },
   };
   const char *cancel_arm_names[] = { "first", "first-status-three", "repeat", "config" };
   for (guint i = 0; i < G_N_ELEMENTS (cancel_arms); i++)
     {
       g_autofree char *name = g_strdup_printf ("cancel-arm/%s",
-                                              cancel_arm_names[i]);
+                                               cancel_arm_names[i]);
       add_transport_case (name, &cancel_arms[i], test_scenario);
     }
   static const Scenario arms[] = {

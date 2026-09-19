@@ -28,6 +28,7 @@
 #include "device/crypto.h"
 #include "device/debug.h"
 #include "device/base.h"
+#include "device/health.h"
 #include "milan/match/match.h"
 
 /* USB interface claimed at open and released at close — interface 1,
@@ -79,6 +80,9 @@ typedef enum
   GOODIX_FDT_EVENT_REVERSE,
   GOODIX_FDT_EVENT_NONE,
   GOODIX_FDT_EVENT_CONFIG,
+  GOODIX_FDT_EVENT_ESD,
+  GOODIX_FDT_EVENT_WAKE,
+  GOODIX_FDT_EVENT_DEACTIVATE,
 } GoodixFdtEventType;
 
 typedef struct
@@ -87,7 +91,6 @@ typedef struct
    * scan copies selected work before another packet can replace this slot. */
   GoodixProfile9FdtEvent event;
   GoodixFdtEventType type;
-  guint16 prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
 } GoodixFdtNotification;
 
 typedef struct _GoodixTransport GoodixTransport;
@@ -122,6 +125,21 @@ struct _FpiDeviceGoodix53x5
   FpDevice      parent;
 
   GCancellable *cancel;
+  /* Hardware service authority is independent of the current client action. */
+  GCancellable *session_cancel;
+  gboolean      session_open;
+  /* Exactly one owner drives the hardware at a time: background maintenance
+   * (idle service or a detached deactivation tail), a foreground action, or
+   * the reader join requested by suspend/close. */
+  gboolean      service_active;
+  gboolean      foreground_active;
+  gboolean      action_pending;
+  gboolean      suspend_pending;
+  gboolean      session_suspended;
+  /* Physical stop in flight; service_joined remains owned until its callback. */
+  gboolean      service_draining;
+  void (*service_joined) (FpDevice *dev, gpointer data);
+  gpointer service_joined_data;
 
   /* GTLS session (persists across captures) */
   GoodixGtlsCtx gtls;
@@ -131,11 +149,18 @@ struct _FpiDeviceGoodix53x5
 
   /* Calibration seeded from OTP; live reads update the current high DAC. */
   GoodixCalibParams calib;
-  /* Current/history persist within an initialized session; cold OTP resets them. */
+  /* Per-device default and last live snapshot of module-owned DAC history. */
   GoodixDynamicDacState dynamic_dac;
+  GoodixSensorHealth health;
   /* Latest admitted hardware TX-on plane, independent of consumed setup.
    * Owned until hardware teardown; recoverable base rejection retains it. */
   guint16 *hardware_reference;
+  guint64  hardware_reference_id;
+  gboolean hardware_refresh_pending;
+  /* Installed hardware callback/count outlive an individual read attempt. */
+  guint    capture_unread;
+  gboolean captured_enroll_allowed;
+  gboolean capture_callback_pending;
 
   /* Reassembly buffer for multi-chunk reads */
   GoodixReassembly rx;
@@ -163,14 +188,12 @@ struct _FpiDeviceGoodix53x5
    * captured frame handed to the runtime worker. Readiness resets per send. */
   guint16 *image_response;
   gboolean image_response_failed;
-  /* Current scan's first error is ordinary deactivation transport failure,
-   * after worker join. Only authentication may preserve a computed result. */
-  gboolean scan_cleanup_only_error;
   guint8 manual_response[4 + GOODIX_FDT_BASE_LEN];
   /* Parser mutations precede coalesced notification. The latest reverse event
    * retains the down base installed by its predecessor, not the arm payload. */
   guint16 fdt_prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
   GoodixFdtNotification pending_fdt;
+  guint8 notice_irq[2];
   gboolean rx_idle_partial;
   GoodixRequestedMode requested_mode;
 
@@ -235,7 +258,7 @@ struct _FpiDeviceGoodix53x5
   /* Retained for the open/reinitialization parent SSM. */
   FpiSsm *task_ssm;
 
-  /* Verify/identify result queued until post-match cleanup has completed. */
+  /* Result computed by the CPU worker, delivered when the action completes. */
   gboolean        pending_result_report;
   FpiDeviceAction pending_result_action;
   FpiMatchResult  pending_verify_result;

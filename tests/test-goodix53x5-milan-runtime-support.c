@@ -211,6 +211,8 @@ match_report (FpDevice *device,
   g_clear_error (&result->reported_error);
   if (error)
     result->reported_error = g_error_copy (error);
+  if (result->cancel_on_report)
+    g_cancellable_cancel (result->cancel_on_report);
 }
 
 void

@@ -20,6 +20,9 @@ test_monotonic_time (void)
 GCancellable *
 test_action_cancellable (FpDevice *dev)
 {
+  /* Production idle commands must not borrow libfprint's action-only token. */
+  g_assert_false (FPI_DEVICE_GOODIX53X5 (dev)->service_active);
+  g_assert_false (FPI_DEVICE_GOODIX53X5 (dev)->session_suspended);
   return action_cancel_token;
 }
 
@@ -37,6 +40,8 @@ fixture_device_new (void)
   action_cancel_token = g_cancellable_new ();
   klass->type = FP_DEVICE_TYPE_VIRTUAL;
   dev = g_object_new (FPI_TYPE_DEVICE_GOODIX53X5, NULL);
+  /* Existing command/coordinator fixtures enter with a constructed HAL. */
+  goodix_health_reset (&FPI_DEVICE_GOODIX53X5 (dev)->health);
   g_type_class_unref (klass);
   return dev;
 }
