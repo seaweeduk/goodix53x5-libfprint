@@ -45,8 +45,12 @@ host resident:
   during eager initialization joins that open and receives its result, without
   starting a second open. Authorization and claim exclusivity still apply.
 - `Release` and client disappearance still cancel a running action and wait
-  for it, but only end the user's authority; the hardware stays open and the
-  driver keeps servicing finger-detection events between claims.
+  for it (and unset a completed verify/identify/enroll that was never
+  stopped), but only end the user's authority; the hardware stays open and
+  the driver keeps servicing finger-detection events between claims.
+- A removed device is closed on `FpDevice::removed`, since libfprint withholds
+  `FpContext::device-removed` until an open device has been closed; the
+  manager's existing removal handling then unexports it.
 - The device's `busy` property is also true while opening or open, so
   the manager never arms its idle exit while a sensor is retained. On
   `SIGTERM` or bus-name loss the manager ends any claim and closes each open
