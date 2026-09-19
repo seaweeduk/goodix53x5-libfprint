@@ -136,8 +136,6 @@ struct _FpiDeviceGoodix53x5
   gboolean      action_pending;
   gboolean      suspend_pending;
   gboolean      session_suspended;
-  /* Close admitted while suspend was still joining; torn down afterwards. */
-  gboolean      close_pending;
   /* Physical stop in flight; service_joined remains owned until its callback. */
   gboolean      service_draining;
   void (*service_joined) (FpDevice *dev, gpointer data);
