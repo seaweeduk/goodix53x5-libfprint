@@ -3,7 +3,7 @@ Base-Revision: b54a007ccf58ac0ae074c7151b223f35cbd17306
 Requires: 1.94.5-milan-update-save.patch
 
 diff --git a/src/device.c b/src/device.c
-index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882d4d38ddd 100644
+index 772d6de669fe9913e4f741cf20d6533decdfae74..b178e9220dc664ad3cbf9b698b96b408f601470a 100644
 --- a/src/device.c
 +++ b/src/device.c
 @@ -119,6 +119,11 @@ typedef struct
@@ -48,11 +48,22 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
                             g_hash_table_size (priv->clients) != 0 ||
                             fp_device_get_temperature (priv->dev) > FP_TEMPERATURE_COLD);
        break;
-@@ -492,6 +506,51 @@ suspend_cb (GObject      *source_obj,
+@@ -399,6 +413,9 @@ fprint_device_constructed (GObject *object)
+                            G_CALLBACK (on_temperature_changed),
+                            rdev, G_CONNECT_SWAPPED);
+   on_temperature_changed (rdev, NULL, priv->dev);
++  g_signal_connect_object (priv->dev, "removed",
++                           G_CALLBACK (fprint_device_shutdown),
++                           rdev, G_CONNECT_SWAPPED);
+ 
+   G_OBJECT_CLASS (fprint_device_parent_class)->constructed (object);
+ }
+@@ -492,6 +509,52 @@ suspend_cb (GObject      *source_obj,
      g_task_return_boolean (task, TRUE);
  }
  
 +static void claim_open (FprintDevice *rdev);
++static void stop_current_action (FprintDevice *rdev);
 +
 +static void
 +fail_deferred_start (FprintDevice *rdev,
@@ -100,7 +111,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
  static void
  resume_cb (GObject      *source_obj,
             GAsyncResult *res,
-@@ -501,6 +560,7 @@ resume_cb (GObject      *source_obj,
+@@ -501,6 +564,7 @@ resume_cb (GObject      *source_obj,
    GError *error = NULL;
  
    fp_device_resume_finish (FP_DEVICE (source_obj), res, &error);
@@ -108,7 +119,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
    if (error)
      g_task_return_error (task, error);
    else
-@@ -517,6 +577,7 @@ fprint_device_suspend (FprintDevice       *rdev,
+@@ -517,6 +581,7 @@ fprint_device_suspend (FprintDevice       *rdev,
  
    /* Just forward to libfprint. */
  
@@ -116,7 +127,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
    task = g_task_new (rdev, NULL, callback, user_data);
    fp_device_suspend (priv->dev, NULL, suspend_cb, task);
  }
-@@ -954,7 +1015,6 @@ _fprint_device_client_vanished (GDBusConnection *connection,
+@@ -954,7 +1019,6 @@ _fprint_device_client_vanished (GDBusConnection *connection,
                                  const char      *name,
                                  FprintDevice    *rdev)
  {
@@ -124,10 +135,34 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
    g_autoptr(SessionData) session = NULL;
    FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
  
-@@ -988,13 +1048,8 @@ _fprint_device_client_vanished (GDBusConnection *connection,
-       while (priv->current_action != ACTION_NONE)
-         g_main_context_iteration (NULL, TRUE);
- 
+@@ -964,37 +1028,8 @@ _fprint_device_client_vanished (GDBusConnection *connection,
+   if (session != NULL &&
+       g_strcmp0 (session->sender, name) == 0)
+     {
+-      g_cancellable_cancel (priv->current_cancellable);
+-
+-      if (!priv->current_cancellable)
+-        {
+-          /* This isn't optimal, but for verify/identify/enroll we expect the stop
+-           * command. And we use current_cancellable as a flag to know that the
+-           * underlying operation has finished already.
+-           * If it has finished, unset the current_action. */
+-          switch (priv->current_action)
+-            {
+-            case ACTION_VERIFY:
+-            case ACTION_IDENTIFY:
+-            case ACTION_ENROLL:
+-              priv->current_action = ACTION_NONE;
+-              break;
+-
+-            default:
+-              break;
+-            }
+-        }
+-
+-      while (priv->current_action != ACTION_NONE)
+-        g_main_context_iteration (NULL, TRUE);
+-
 -      /* The session may have disappeared at this point if the device
 -       * was already closing. */
 -      g_clear_pointer (&session, session_data_unref);
@@ -136,11 +171,11 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
 -        g_critical ("Error closing device after disconnect: %s", error->message);
 -
 +      /* The hardware stays open for the next claim. */
-+      fail_deferred_start (rdev, "Client disconnected before start");
++      stop_current_action (rdev);
        session_data_set_new (priv, NULL, NULL);
      }
    g_hash_table_remove (priv->clients, name);
-@@ -1120,43 +1175,70 @@ fprint_device_claim (FprintDBusDevice      *dbus_dev,
+@@ -1120,43 +1155,87 @@ fprint_device_claim (FprintDBusDevice      *dbus_dev,
  
    g_debug ("user '%s' claiming the device: %d", session->username, priv->id);
  
@@ -165,43 +200,56 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
 -  g_autoptr(SessionData) session = NULL;
 -  g_autoptr(GDBusMethodInvocation) invocation = NULL;
 -  g_autoptr(FprintDeviceActionUnset) action_unset = NULL;
--
++  g_autoptr(SessionData) session = session_data_get (priv);
+ 
 -  session = session_data_get (priv);
 -  session_data_set_new (priv, NULL, NULL);
 -  invocation = g_steal_pointer (&session->invocation);
 -  action_unset = rdev;
-+  g_autoptr(SessionData) session = session_data_get (priv);
++  if (fp_device_is_open (priv->dev))
++    {
++      g_autoptr(GDBusMethodInvocation) invocation = g_steal_pointer (&session->invocation);
++
++      g_debug ("claimed already open device %d", priv->id);
++      fprint_dbus_device_complete_claim (FPRINT_DBUS_DEVICE (rdev), invocation);
++      return;
++    }
++
++  priv->current_action = ACTION_OPEN;
++  fp_device_open (priv->dev, NULL, (GAsyncReadyCallback) dev_open_cb, rdev);
++}
++
++/* End the claim's action: cancel a running one and wait for it, or unset a
++ * completed verify/identify/enroll that was never stopped explicitly. */
++static void
++stop_current_action (FprintDevice *rdev)
++{
++  FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
  
 -  if (!fp_device_close_finish (dev, res, &error))
-+  if (fp_device_is_open (priv->dev))
++  fail_deferred_start (rdev, "Claim released before start");
++  if (!priv->current_cancellable)
      {
 -      g_autoptr(GError) dbus_error = NULL;
-+      g_autoptr(GDBusMethodInvocation) invocation = g_steal_pointer (&session->invocation);
++      switch (priv->current_action)
++        {
++        case ACTION_VERIFY:
++        case ACTION_IDENTIFY:
++        case ACTION_ENROLL:
++          priv->current_action = ACTION_NONE;
++          break;
  
 -      dbus_error = g_error_new (FPRINT_ERROR,
 -                                FPRINT_ERROR_INTERNAL,
 -                                "Release failed with error: %s", error->message);
 -      g_dbus_method_invocation_return_gerror (invocation, dbus_error);
-+      g_debug ("claimed already open device %d", priv->id);
-+      fprint_dbus_device_complete_claim (FPRINT_DBUS_DEVICE (rdev), invocation);
++        default:
++          break;
++        }
        return;
      }
  
 -  g_debug ("released device %d", priv->id);
-+  priv->current_action = ACTION_OPEN;
-+  fp_device_open (priv->dev, NULL, (GAsyncReadyCallback) dev_open_cb, rdev);
-+}
-+
-+/* Cancel any running action and wait for it to finish. */
-+static void
-+stop_current_action (FprintDevice *rdev)
-+{
-+  FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
-+
-+  fail_deferred_start (rdev, "Claim released before start");
-+  if (!priv->current_cancellable)
-+    return;
-+
 +  if (priv->current_action == ACTION_ENROLL)
 +    g_warning ("Enrollment was in progress, stopping it");
 +  else if (priv->current_action == ACTION_IDENTIFY ||
@@ -217,7 +265,9 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
 +    g_main_context_iteration (NULL, TRUE);
 +}
 +
-+/* Daemon exit: end the claim, then close the retained hardware for real. */
++/* Daemon exit or device removal: end the claim, then close the retained
++ * hardware for real. libfprint withholds FpContext::device-removed until a
++ * removed device has been closed. */
 +void
 +fprint_device_shutdown (FprintDevice *rdev)
 +{
@@ -228,12 +278,13 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
 +  stop_current_action (rdev);
 +  session_data_set_new (priv, NULL, NULL);
 +  if (fp_device_is_open (priv->dev) &&
-+      !fp_device_close_sync (priv->dev, NULL, &error))
++      !fp_device_close_sync (priv->dev, NULL, &error) &&
++      !g_error_matches (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_REMOVED))
 +    g_warning ("Error closing device %d: %s", priv->id, error->message);
  }
  
  static gboolean
-@@ -1164,7 +1246,6 @@ fprint_device_release (FprintDBusDevice      *dbus_dev,
+@@ -1164,7 +1243,6 @@ fprint_device_release (FprintDBusDevice      *dbus_dev,
                         GDBusMethodInvocation *invocation)
  {
    g_autoptr(GError) error = NULL;
@@ -241,7 +292,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
    FprintDevice *rdev = FPRINT_DEVICE (dbus_dev);
    FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
  
-@@ -1174,35 +1255,34 @@ fprint_device_release (FprintDBusDevice      *dbus_dev,
+@@ -1174,35 +1252,34 @@ fprint_device_release (FprintDBusDevice      *dbus_dev,
        return TRUE;
      }
  
@@ -300,7 +351,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
    return TRUE;
  }
  
-@@ -1682,6 +1762,9 @@ fprint_device_verify_start (FprintDBusDevice      *dbus_dev,
+@@ -1682,6 +1759,9 @@ fprint_device_verify_start (FprintDBusDevice      *dbus_dev,
        return TRUE;
      }
  
@@ -310,7 +361,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
    session = session_data_get (priv);
  
    if (!can_start_action (rdev, &error))
-@@ -1827,6 +1910,13 @@ fprint_device_verify_stop (FprintDBusDevice      *dbus_dev,
+@@ -1827,6 +1907,13 @@ fprint_device_verify_stop (FprintDBusDevice      *dbus_dev,
        return TRUE;
      }
  
@@ -324,7 +375,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
    if (!can_stop_action (rdev, ACTION_VERIFY, &error))
      {
        g_dbus_method_invocation_return_gerror (invocation, error);
-@@ -2218,6 +2308,9 @@ fprint_device_enroll_start (FprintDBusDevice      *dbus_dev,
+@@ -2218,6 +2305,9 @@ fprint_device_enroll_start (FprintDBusDevice      *dbus_dev,
        return TRUE;
      }
  
@@ -334,7 +385,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
    session = session_data_get (priv);
    store.print_data_load (priv->dev, finger,
                           session->username, &existing_print);
-@@ -2295,6 +2388,7 @@ fprint_device_enroll_stop (FprintDBusDevice      *dbus_dev,
+@@ -2295,6 +2385,7 @@ fprint_device_enroll_stop (FprintDBusDevice      *dbus_dev,
                             GDBusMethodInvocation *invocation)
  {
    FprintDevice *rdev = FPRINT_DEVICE (dbus_dev);
@@ -342,7 +393,7 @@ index 772d6de669fe9913e4f741cf20d6533decdfae74..823144d768b2c313725fe75ff7085882
  
    g_autoptr(GError) error = NULL;
  
-@@ -2304,6 +2398,13 @@ fprint_device_enroll_stop (FprintDBusDevice      *dbus_dev,
+@@ -2304,6 +2395,13 @@ fprint_device_enroll_stop (FprintDBusDevice      *dbus_dev,
        return TRUE;
      }
  
