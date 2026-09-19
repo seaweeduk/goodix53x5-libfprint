@@ -930,10 +930,11 @@ goodix_scan_coordinator_done (FpiSsm   *ssm,
     }
   if (data->detached)
     {
-      /* The action already owns any pre-detach error; failures in the tail
-       * itself have set needs_reinit at the command boundary. */
-      g_clear_error (&error);
-      goodix_session_service_done (dev, NULL);
+      /* Reconstruction already owns known failures. Let the session classify
+       * any remaining tail error without changing the delivered result. */
+      if (self->needs_reinit)
+        g_clear_error (&error);
+      goodix_session_service_done (dev, error);
       return;
     }
   /* Every action-owned coordinator passes through CLEANUP_JOIN and detaches. */
