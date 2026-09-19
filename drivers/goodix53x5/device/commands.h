@@ -83,6 +83,9 @@ void goodix_cmd_upload_config (FpiSsm *ssm, FpDevice *dev,
 void goodix_cmd_restore_config (FpiSsm *ssm, FpDevice *dev,
                                 GoodixCmdResultCallback callback);
 
+/* Category-C/0 GFESD repair, native missing-saved-file/RAM continuation. */
+void goodix_cmd_repair_esd (FpiSsm *ssm, FpDevice *dev);
+
 /* Arm finger-down detection with @fdt_base. ACK only; the FDT event arrives
  * later via a cancellable receive. */
 void goodix_cmd_fdt_down_setup (FpiSsm *ssm, FpDevice *dev,
@@ -97,18 +100,23 @@ void goodix_cmd_fdt_up_setup (FpiSsm *ssm, FpDevice *dev,
  * Expects data (irq status, touch flag and live FDT data). */
 void goodix_cmd_fdt_manual (FpiSsm *ssm, FpDevice *dev,
                             gboolean tx_enable, const guint8 *fdt_base);
+void goodix_cmd_fdt_manual_result (FpiSsm *ssm, FpDevice *dev,
+                                   gboolean tx_enable, const guint8 *fdt_base,
+                                   GoodixCmdResultCallback callback);
 
 /* Request an image frame. Expects data (the encrypted frame). */
 void goodix_cmd_request_image (FpiSsm *ssm, FpDevice *dev,
                                gboolean tx_enable, gboolean hv_enable,
                                gboolean is_finger, guint16 dac);
+void goodix_cmd_request_image_result (FpiSsm *ssm, FpDevice *dev,
+                                      gboolean tx_enable, gboolean hv_enable,
+                                      gboolean is_finger, guint16 dac,
+                                      GoodixCmdResultCallback callback);
 
 /* Put the MCU into sleep mode. ACK only. */
 void goodix_cmd_set_sleep_mode (FpiSsm *ssm, FpDevice *dev);
-void goodix_cmd_set_sleep_mode_drain_fdt (
-  FpiSsm                    *ssm,
-  FpDevice                  *dev,
-  GoodixProfile9FdtWaitMode  cancelled_mode);
+void goodix_cmd_set_sleep_mode_result (FpiSsm *ssm, FpDevice *dev,
+                                       GoodixCmdResultCallback callback);
 
 /* Switch sensor EC power on or off. ACK only; off enables idle tail servicing. */
 void goodix_cmd_ec_control (FpiSsm *ssm, FpDevice *dev, gboolean on);

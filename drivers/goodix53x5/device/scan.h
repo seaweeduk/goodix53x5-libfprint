@@ -21,8 +21,11 @@
 
 #include "driver-private.h"
 
-/* Record command failure before the scan SSM retains its first error. */
-void goodix_scan_note_command_error (FpiSsm *ssm, FpDevice *dev, const GError *error);
+/* Takes an ordinary exhausted command error only when its native continuation
+ * ignores that result. Terminal hardware/host errors never enter this path. */
+gboolean goodix_scan_continue_command_error (FpiSsm   *ssm,
+                                             FpDevice *dev,
+                                             GError   *error);
 
 typedef enum
 {
@@ -70,3 +73,9 @@ void goodix_scan_set_disposition (FpDevice             *dev,
  * Internal successful stops are requested by returning a disposition instead. */
 void goodix_scan_stop_coordinator (FpDevice *dev,
                                    GError   *error);
+
+/* Request-independent mode of the same coordinator. Start only after the
+ * preceding logical wait has joined. Stop completes selected work before the
+ * session handoff; it neither captures a live frame nor adds an initial arm. */
+void goodix_scan_start_service (FpDevice *dev);
+void goodix_scan_join_service (FpDevice *dev);

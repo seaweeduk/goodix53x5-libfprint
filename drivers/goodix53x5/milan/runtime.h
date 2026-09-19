@@ -51,6 +51,11 @@ typedef gboolean (*GoodixMilanRuntimeCancelFunc) (
   gsize                         gallery_position,
   gpointer                      user_data);
 
+/* Called only after an entered setup succeeds, before live preprocessing.
+ * Return an adapter status for preparation/serialization failure; publication
+ * I/O errors are nonfatal. The input owns user_data through worker completion. */
+typedef gint32 (*GoodixMilanRuntimeSetupFunc) (gpointer user_data);
+
 typedef struct
 {
   gsize                         gallery_position;
@@ -132,6 +137,12 @@ typedef struct _GoodixMilanRuntimeOutput
   GError                       *learning_error;
   /* Sample admission precedes extraction and its possible retry. */
   gboolean                               enrollment_sample_admitted;
+  /* Setup publication is independent of later live-state cancellation. */
+  gboolean                               setup_state_valid;
+  gboolean                               capture_health_present;
+  gboolean                               capture_enroll_allowed;
+  guint32                                admission_status;
+  guint32                                admission_detail;
 } GoodixMilanRuntimeOutput;
 
 _Static_assert (offsetof (GoodixMilanRuntimeCancellationMetadata,
@@ -190,6 +201,13 @@ void goodix_milan_runtime_input_set_cancel_check (
   GoodixMilanRuntimeCancelFunc cancel_func,
   gpointer                     user_data,
   GDestroyNotify               destroy);
+void goodix_milan_runtime_input_set_setup_hook (
+  GoodixMilanRuntimeInput *input, GoodixMilanRuntimeSetupFunc setup_func,
+  gpointer user_data, GDestroyNotify destroy);
+/* Production binds the completed capture snapshot before worker submission.
+ * Existing offline inputs without hardware evidence retain default allowance. */
+void goodix_milan_runtime_input_set_capture_health (
+  GoodixMilanRuntimeInput *input, gboolean enroll_allowed);
 static inline gint32
 goodix_milan_runtime_initialize_setup (GoodixMilanProfileState *profile_state,
                                        guint16                 *setup_tx_on)

@@ -127,13 +127,16 @@ static void
 goodix_flush_pending_result_report (FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  g_autoptr(GError) learning_error = NULL;
 
   if (!self->pending_result_report)
     return;
 
-  if (self->pending_learning_error)
+  self->pending_result_report = FALSE;
+  learning_error = g_steal_pointer (&self->pending_learning_error);
+  if (learning_error)
     fp_warn ("Native Milan learning was discarded after a positive match: %s",
-             self->pending_learning_error->message);
+             learning_error->message);
 
   if (self->pending_result_action == FPI_DEVICE_ACTION_IDENTIFY)
     fpi_device_identify_report (
@@ -143,15 +146,6 @@ goodix_flush_pending_result_report (FpDevice *dev)
     fpi_device_verify_report (
       dev, self->pending_verify_result, NULL,
       g_steal_pointer (&self->pending_result_error));
-
-  self->pending_result_report = FALSE;
-  self->pending_result_action = 0;
-  self->pending_verify_result = 0;
-  g_clear_object (&self->pending_identify_match);
-  g_clear_object (&self->pending_update_target);
-  g_clear_pointer (&self->pending_update_data, g_variant_unref);
-  g_clear_pointer (&self->pending_persistence_state, g_free);
-  g_clear_error (&self->pending_learning_error);
 }
 
 static gboolean
@@ -249,6 +243,7 @@ goodix_auth_task_done (GObject      *source_object,
   gboolean action_owned;
   gboolean generation_current;
   gboolean cancelled;
+  gboolean matched = FALSE;
   GOODIX53X5_DEBUG_ONLY (const gchar *finger_name = "none";)
   GOODIX53X5_DEBUG_ONLY (FpPrint *winner_print = NULL;)
   GOODIX53X5_DEBUG_ONLY (g_autofree gchar *template_features = NULL;)
@@ -287,12 +282,26 @@ goodix_auth_task_done (GObject      *source_object,
   if (generation_current && output &&
       output->action_epoch == data->action_epoch &&
       output->generation_id == data->generation_id &&
-      output->preprocess_state_valid)
+      output->preprocess_state_valid && !cancelled)
     {
       self->milan_generation->state = output->preprocess_state;
       self->milan_generation->profile_state = output->profile_state;
       if (data->action == FPI_DEVICE_ACTION_IDENTIFY)
         goodix_milan_generation_note_identify_prelude (self->milan_generation);
+    }
+  else if (generation_current && output &&
+           output->action_epoch == data->action_epoch &&
+           output->generation_id == data->generation_id &&
+           output->setup_state_valid)
+    {
+      /* Setup-save has already happened, even if cancellation discards live
+       * processing. Preserve only its three flags, not cancelled gain changes. */
+      self->milan_generation->profile_state.setup_initialized =
+        output->profile_state.setup_initialized;
+      self->milan_generation->profile_state.setup_refresh_pending =
+        output->profile_state.setup_refresh_pending;
+      self->milan_generation->profile_state.setup_not_ready =
+        output->profile_state.setup_not_ready;
     }
 
   if (cancelled)
@@ -364,8 +373,7 @@ goodix_auth_task_done (GObject      *source_object,
           }
         if (output->learning_error)
           self->pending_learning_error = g_error_copy (output->learning_error);
-        goodix_scan_set_disposition (
-          dev, GOODIX_SCAN_DISPOSITION_AUTH_SUCCESS, NULL);
+        matched = TRUE;
       }
       break;
 
@@ -439,6 +447,11 @@ out:
   g_clear_pointer (&self->captured_image, g_free);
 #endif
   g_clear_pointer (&self->captured_raw_image, g_free);
+  /* The coordinator hands the action back as soon as this join settles;
+   * the report itself is delivered by goodix_verify_complete. */
+  if (matched)
+    goodix_scan_set_disposition (
+      dev, GOODIX_SCAN_DISPOSITION_AUTH_SUCCESS, NULL);
 }
 
 static void
@@ -544,11 +557,18 @@ goodix_auth_start_task (FpDevice *dev)
         fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
       return;
     }
+  goodix_milan_persistence_bind_setup (task_data->runtime_input,
+                                      self->milan_generation);
+  goodix_milan_runtime_input_set_capture_health (task_data->runtime_input,
+                                                 self->captured_enroll_allowed);
   goodix_milan_runtime_input_set_cancel_check (
     task_data->runtime_input, goodix_auth_runtime_cancelled,
     g_object_ref (self->cancel), g_object_unref);
   g_autoptr(GTask) task = g_task_new (dev, self->cancel,
-                                      goodix_auth_task_done, NULL);
+                                       goodix_auth_task_done, NULL);
+  /* Runtime cancellation still suppresses results. Keep the joined output so
+   * an entered setup publication can retain its independent state flags. */
+  g_task_set_check_cancellable (task, FALSE);
   g_task_set_task_data (task, task_data,
                         (GDestroyNotify) goodix_auth_task_data_free);
   self->milan_task = g_object_ref (task);
@@ -593,8 +613,7 @@ goodix_verify_ssm_handler (FpiSsm   *ssm,
 }
 
 static void
-goodix_verify_ssm_done (FpiSsm   *ssm,
-                        FpDevice *dev,
+goodix_verify_complete (FpDevice *dev,
                         GError   *error)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
@@ -602,8 +621,6 @@ goodix_verify_ssm_done (FpiSsm   *ssm,
   gboolean updated = FALSE;
   gboolean removed = FALSE;
   gboolean cancelled;
-
-  (void) ssm;
 
 #ifdef GOODIX53X5_DEBUG
   g_clear_pointer (&self->captured_image, g_free);
@@ -613,42 +630,28 @@ goodix_verify_ssm_done (FpiSsm   *ssm,
   g_object_get (dev, "removed", &removed, NULL);
   cancelled = fpi_device_action_is_cancelled (dev) ||
               (self->cancel && g_cancellable_is_cancelled (self->cancel));
-  if (error && self->scan_cleanup_only_error && self->pending_result_report &&
-      !cancelled && !removed)
-    {
-      /* Native deactivation attempts shutdown before update/storage, but its
-       * IOCTL result does not invalidate the completed comparison or admission.
-       * Scan and worker callbacks have joined before reaching this owner. */
-      fp_dbg ("Preserving completed authentication after cleanup failure: %s", error->message);
-      self->needs_reinit = TRUE;
-      g_clear_error (&error);
-    }
-  self->scan_cleanup_only_error = FALSE;
   if (!error && cancelled)
     error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "Authentication cancelled");
   if (!error && removed)
     error = fpi_device_error_new (FP_DEVICE_ERROR_REMOVED);
+  if (!error && !self->pending_result_report)
+    error = fpi_device_error_new_msg (
+      FP_DEVICE_ERROR_GENERAL,
+      "Native Milan auth completed without a result");
   if (!error)
     {
-      if (!self->pending_result_report)
-        error = fpi_device_error_new_msg (
-          FP_DEVICE_ERROR_GENERAL,
-          "Native Milan auth completed without a result");
-      else
+      /* Adaptive update and its persistence publish with the result, before
+       * the application learns of the match. */
+      if (self->pending_update_target && self->pending_update_data)
         {
-          if (self->pending_update_target && self->pending_update_data)
-            {
-              fpi_print_set_raw_data (self->pending_update_target,
-                                      self->pending_update_data);
-              updated = TRUE;
-              goodix_milan_persistence_save (
-                dev, self->pending_persistence_state);
-            }
-          goodix_flush_pending_result_report (dev);
+          fpi_print_set_raw_data (self->pending_update_target,
+                                  self->pending_update_data);
+          updated = TRUE;
+          goodix_milan_persistence_save (dev, self->pending_persistence_state);
         }
+      goodix_flush_pending_result_report (dev);
     }
-  if (error)
-    goodix_clear_pending_result_report (self);
+  goodix_clear_pending_result_report (self);
 
   if (error && goodix_error_indicates_stale_device (error))
     self->needs_reinit = TRUE;
@@ -658,6 +661,12 @@ goodix_verify_ssm_done (FpiSsm   *ssm,
     fpi_device_identify_complete_with_update (dev, updated, error);
   else
     fpi_device_verify_complete_with_update (dev, updated, error);
+}
+
+static void
+goodix_verify_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  goodix_session_action_done (dev, error, goodix_verify_complete);
 }
 
 void
@@ -670,7 +679,6 @@ goodix_auth_start (FpDevice *dev)
   self->cancel = g_cancellable_new ();
   goodix_clear_pending_result_report (self);
   self->action_epoch++;
-  self->scan_cleanup_only_error = FALSE;
   if (self->action_epoch == 0)
     self->action_epoch++;
 #ifdef GOODIX53X5_DEBUG

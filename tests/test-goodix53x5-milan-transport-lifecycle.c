@@ -58,13 +58,27 @@ idle_test_usb_close (void)
 static void
 idle_test_open_complete (FpDevice *dev, GError *error)
 {
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
   g_assert_true (idle_open_testing);
   g_assert_true (dev == idle_device);
+  fixture_refresh_wait ();
   if (error)
-    g_assert_null (usb.pending);
+    {
+      g_assert_null (usb.pending);
+      g_assert_null (self->transport);
+      g_assert_false (self->service_active);
+    }
   else
-    g_assert_nonnull (usb.pending);
-  g_assert_null (FPI_DEVICE_GOODIX53X5 (dev)->transport);
+    {
+      g_assert_nonnull (usb.pending);
+      g_assert_cmpuint (usb.pending->endpoint, ==, GOODIX_EP_IN);
+      g_assert_cmpuint (usb.timeout, ==, 0);
+      g_assert_nonnull (self->transport);
+      g_assert_true (self->service_active);
+      g_assert_true (self->session_open);
+      g_assert_nonnull (self->profile9_fdt.owner);
+    }
   g_assert_null (io.error);
   io.error = error;
   io.completions++;
@@ -231,8 +245,47 @@ test_idle_lifetime (gconstpointer user_data)
           g_assert_cmpuint (self->profile9_fdt.base_manual[2 * i], ==, 50 + i);
           g_assert_cmpuint (self->profile9_fdt.base_down[2 * i], ==, 51 + i);
         }
-      g_assert_false (self->pending_fdt.event.pending);
+      g_assert_true (self->pending_fdt.event.pending);
+      g_assert_cmpint (self->pending_fdt.type, ==, GOODIX_FDT_EVENT_REVERSE);
       g_assert_null (self->profile9_fdt.owner);
+
+      /* The retained notification is work for the session owner. Even a
+       * cancelled previous action must not suppress its arm/config repair. */
+      self->session_open = TRUE;
+      self->profile9_fdt.base_valid = TRUE;
+      self->calib.delta_down = G_MAXUINT16;
+      g_cancellable_cancel (self->cancel);
+      GoodixReader *reader = self->reader;
+      goodix_session_settle (dev);
+      /* The worker snapshots the shared predecessor at selection. */
+      GoodixScanCoordinatorData *selected = fpi_ssm_get_data (self->profile9_fdt.owner);
+      g_assert_cmpmem (selected->prior_down, sizeof (selected->prior_down),
+                       self->fdt_prior_down, sizeof (self->fdt_prior_down));
+      g_assert_true (self->reader == reader);
+      g_assert_false (g_cancellable_is_cancelled (reader->cancel));
+      g_assert_true (self->service_active);
+      g_assert_false (self->pending_fdt.event.pending);
+      g_assert_cmpuint (io.command, ==, 0x32);
+      g_assert_true (usb.cancel == self->session_cancel);
+      fixture_complete (NULL);
+      guint8 repair_ack[] = { 0x32, 3 };
+      reply (usb.pending, 0x0b, 0, repair_ack, sizeof (repair_ack));
+      fixture_complete (NULL);
+      g_assert_cmpuint (io.command, ==, 0x90);
+      fixture_complete (NULL);
+      ack_reply (usb.pending, 0x90);
+      fixture_complete (NULL);
+      reply (usb.pending, 9, 0, ec_data, 1);
+      fixture_complete (NULL);
+      g_assert_cmpuint (io.command, ==, 0x32);
+      fixture_complete (NULL);
+      ack_reply (usb.pending, 0x32);
+      fixture_complete (NULL);
+      g_assert_true (self->service_active);
+      g_assert_cmpuint (usb.timeout, ==, 0);
+      g_assert_cmpuint (io.sends[0x32], ==, 2);
+      g_assert_cmpuint (io.sends[0x90], ==, 1);
+      g_assert_cmpuint (io.sends[0x20], ==, 0);
     }
   if (which == 10)
     {
@@ -350,7 +403,17 @@ test_idle_lifetime (gconstpointer user_data)
 
   /* Retain only the explicit idle device reference until the close joins. */
   gboolean pending = self->reader && self->reader->pending;
+  gboolean service = self->service_active;
   goodix_close (dev);
+  if (service)
+    {
+      fixture_refresh_wait ();
+      g_assert_true (g_cancellable_is_cancelled (usb.cancel));
+      g_assert_false (g_cancellable_is_cancelled (usb.physical_cancel));
+      fixture_complete (g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                              "Retired maintenance wait"));
+      g_assert_true (g_cancellable_is_cancelled (usb.physical_cancel));
+    }
   if (pending)
     {
       g_assert_cmpuint (idle_releases, ==, idle_resets);
@@ -371,6 +434,7 @@ test_idle_lifetime (gconstpointer user_data)
   g_assert_cmpuint (idle_closes, ==, 1);
   g_assert_null (weak);
   g_assert_null (usb.pending);
+  g_clear_pointer (&io.first_down, g_bytes_unref);
   g_clear_object (&action_cancel_token);
   idle_device = NULL;
 }
@@ -518,8 +582,18 @@ test_idle_failed_open (gconstpointer user_data)
   g_clear_pointer (&io.first_sleep, g_bytes_unref);
   if (recover)
     {
+      g_assert_nonnull (usb.pending);
+      g_assert_true (self->service_active);
       goodix_close (dev);
-      fixture_complete (g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "Close joined"));
+      fixture_refresh_wait ();
+      g_assert_true (g_cancellable_is_cancelled (usb.cancel));
+      g_assert_cmpuint (idle_closes, ==, 0);
+      g_assert_false (g_cancellable_is_cancelled (usb.physical_cancel));
+      fixture_complete (g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                              "Retired maintenance wait"));
+      g_assert_true (g_cancellable_is_cancelled (usb.physical_cancel));
+      fixture_complete (g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                              "Joined maintenance at close"));
       g_assert_cmpuint (idle_closes, ==, 1);
     }
   else
@@ -529,6 +603,9 @@ test_idle_failed_open (gconstpointer user_data)
       g_clear_object (&self->cancel);
       g_assert_cmpuint (idle_closes, ==, 0);
     }
+  g_assert_null (usb.pending);
+  g_assert_null (self->transport);
+  g_assert_false (self->service_active);
   g_clear_object (&action_cancel_token);
   idle_device = NULL;
   g_clear_object (&dev);

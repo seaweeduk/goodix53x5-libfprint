@@ -25,6 +25,7 @@
 #include "device/commands.h"
 #include "device/calibration.h"
 #include "device/image.h"
+#include "device/session.h"
 
 #include <string.h>
 
@@ -71,7 +72,6 @@ struct _GoodixTransport
   GoodixProfile9FdtWaitMode event_mode;
   GoodixCmd                 cmd;
   gboolean                  expect_data;
-  GoodixProfile9FdtWaitMode cancelled_fdt_mode;
   gboolean                  retry;
   GoodixResponseSlot        response_slot;
   guint8                    ack_status;
@@ -251,39 +251,6 @@ goodix_validate_ack_for_cmd (FpDevice       *dev,
       return FALSE;
     }
 
-  if (category == GOODIX_PROTO_CATEGORY_FDT &&
-      operation->cancelled_fdt_mode != GOODIX_PROFILE9_FDT_WAIT_NONE)
-    {
-      GoodixFdtEventType type;
-      GoodixProfile9FdtEvent event;
-      guint8 expected_command = operation->cancelled_fdt_mode == GOODIX_PROFILE9_FDT_WAIT_DOWN
-                                  ? GOODIX_PROTO_CMD_FDT_DOWN : GOODIX_PROTO_CMD_FDT_UP;
-
-      if (command != expected_command || payload_len != GOODIX_FDT_EVENT_PAYLOAD_LEN)
-        {
-          g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
-                       "Unexpected FDT packet during cleanup: armed=0x%02x cat=0x%02x cmd=0x%02x len=%zu",
-                       expected_command, category, command, payload_len);
-          return FALSE;
-        }
-      if (!goodix_cmd_parse_fdt_event (dev, operation->cancelled_fdt_mode,
-                                      &type, &event, error))
-        return FALSE;
-      if (!event.pending)
-        {
-          *status = 0;
-          return TRUE;
-        }
-      /* Stopping invalidates notification, not parser-side base publication.
-       * A zero status continues ACK reception with the original deadline. */
-      goodix_recv_apply_fdt_event (dev, type, &event);
-      operation->cancelled_fdt_mode = GOODIX_PROFILE9_FDT_WAIT_NONE;
-      fp_dbg ("Drained cancelled FDT event before sleep ACK: mode=0x%02x irq=0x%04x",
-              expected_command, event.irq);
-      *status = 0;
-      return TRUE;
-    }
-
   if (category != GOODIX_PROTO_CATEGORY_ACK ||
       command != GOODIX_PROTO_CMD_ACK ||
       payload_len < 2)
@@ -334,7 +301,7 @@ goodix_tx_cb (FpiUsbTransfer *transfer,
   operation->deadline_us = g_get_monotonic_time () + operation->ack_timeout_ms * 1000LL;
   if ((operation->cmd.category == 0 && operation->cmd.command == 0) ||
       (operation->cmd.category == 0x0a && operation->cmd.command == 4))
-    operation->cancellable = g_object_ref (fpi_device_get_cancellable (dev));
+    operation->cancellable = g_object_ref (goodix_session_io_cancellable (dev));
   if (operation->ack_status & GOODIX_PROTO_ACK_FLAG_VALID)
     goodix_transport_ack (operation);
   else
@@ -390,10 +357,10 @@ goodix_transport_send (GoodixTransport *operation)
   transfer = fpi_usb_transfer_new (dev);
   fpi_usb_transfer_fill_bulk_full (transfer, GOODIX_EP_OUT,
                                    chunked, padded_len, g_free);
-  /* Native writes have no timeout. The active libfprint action owns device
-   * lifetime and cancellation until this callback joins; Linux USB removal
+  /* Native writes have no timeout. The selected action or hardware-service
+   * owner supplies cancellation until this callback joins; Linux USB removal
    * independently completes in-flight transfers with NO_DEVICE. */
-  fpi_usb_transfer_submit (transfer, 0, fpi_device_get_cancellable (dev),
+  fpi_usb_transfer_submit (transfer, 0, goodix_session_io_cancellable (dev),
                            goodix_tx_cb, operation);
   goodix_reader_start (dev);
 }
@@ -578,10 +545,12 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   GoodixTransportDone done = operation->done;
   gpointer data = operation->data;
+  gboolean image_failed = !error && operation->response_slot == GOODIX_RESPONSE_IMAGE &&
+                          self->image_response_failed &&
+                          (operation->phase == GOODIX_TRANSPORT_ACK ||
+                           operation->phase == GOODIX_TRANSPORT_RESPONSE);
 
-  if (!error && operation->response_slot == GOODIX_RESPONSE_IMAGE && self->image_response_failed &&
-      (operation->phase == GOODIX_TRANSPORT_ACK ||
-       operation->phase == GOODIX_TRANSPORT_RESPONSE))
+  if (image_failed)
     error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO,
                                  "Image receiver rejected the frame");
   if (!error && operation->expect_data &&
@@ -591,7 +560,7 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
     .ack_status = operation->ack_status,
     .restart_gtls = operation->phase == GOODIX_TRANSPORT_EVENT && self->gtls_restart_pending,
     .ordinary_exhaustion = error && !(self->reader && self->reader->error) &&
-      goodix_cmd_native_zero (operation->phase, error),
+      (image_failed || goodix_cmd_native_zero (operation->phase, error)),
     .write_cancelled = operation->phase == GOODIX_TRANSPORT_SEND &&
       (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
        g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_CANCELLED)),
@@ -640,7 +609,7 @@ goodix_transport_ack (GoodixTransport *operation)
       operation->deadline_us = g_get_monotonic_time () + operation->response_timeout_ms * 1000LL;
       g_clear_object (&operation->cancellable);
       if (operation->cmd.category == 0x0a && operation->cmd.command == 4)
-        operation->cancellable = g_object_ref (fpi_device_get_cancellable (operation->dev));
+        operation->cancellable = g_object_ref (goodix_session_io_cancellable (operation->dev));
       goodix_transport_receive (operation, operation->response_timeout_ms);
     }
 }
@@ -715,6 +684,33 @@ goodix_rx_cell (GoodixTransport *operation,
 
       if (self->reply_valid)
         {
+          if (category == 0x0c)
+            {
+              /* Notice publication shares the worker's coalescing slot, but
+               * never supplies a raw FDT vector or mutates FDT bases. */
+              if (command <= 1)
+                {
+                  if (command == 0)
+                    {
+                      /* Native 019264 aliases the command response cache.
+                       * Both the notice IRQ and an already-signaled response
+                       * observe this prefix and its retained unwritten suffix. */
+                      memcpy (self->shared_response_storage, payload,
+                              MIN (payload_len, sizeof (self->shared_response_storage)));
+                      memcpy (self->notice_irq, self->shared_response_storage,
+                              sizeof (self->notice_irq));
+                    }
+                  self->pending_fdt.type = command == 0 ?
+                                           GOODIX_FDT_EVENT_ESD : GOODIX_FDT_EVENT_WAKE;
+                  self->pending_fdt.event.pending = TRUE;
+                }
+              goodix_proto_rx_reset (&self->rx);
+              if (command <= 1 && operation->phase == GOODIX_TRANSPORT_EVENT)
+                goodix_transport_complete (operation, NULL);
+              else
+                goto receive_more;
+              return;
+            }
           if (category == 2)
             {
               gsize decoded_len;
@@ -857,14 +853,10 @@ goodix_rx_cell (GoodixTransport *operation,
               GoodixFdtEventType type;
               GoodixProfile9FdtEvent event;
               g_autoptr(GError) event_error = NULL;
-              gboolean async_event = idle_packet || self->gtls_restart_active ||
-                (current && (current->response_slot != GOODIX_RESPONSE_NONE ||
-                             (current->cmd.category == 3 && current->cmd.command <= 2)));
-              GoodixProfile9FdtWaitMode mode = operation->phase == GOODIX_TRANSPORT_EVENT && !async_event ?
-                                               operation->event_mode : command == 1 ?
-                                               GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
+              GoodixProfile9FdtWaitMode mode = command == 1 ?
+                GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
 
-              if (async_event && payload_len != GOODIX_FDT_EVENT_PAYLOAD_LEN)
+              if (payload_len != GOODIX_FDT_EVENT_PAYLOAD_LEN)
                 event_error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                         "Unexpected FDT event length");
               if (event_error || !goodix_cmd_parse_fdt_event (dev, mode, &type, &event, &event_error))
@@ -872,50 +864,25 @@ goodix_rx_cell (GoodixTransport *operation,
                   error = g_steal_pointer (&event_error);
                   goto protocol_error;
                 }
-              /* CONFIG always publishes, including during sleep SEND/ACK;
-               * it coalesces notifications but consumes no raw-sample drain.
-               * Keep the existing command admission guards for raw FDT. */
-              if ((type == GOODIX_FDT_EVENT_CONFIG && operation->phase != GOODIX_TRANSPORT_EVENT) ||
-                  async_event)
+              /* Every native parser mutation precedes replacement of the
+               * latest worker notification, including during config/manual. */
+              if (!event.pending)
                 {
-                  /* Parser mutations precede notification replacement. */
-                  if (!event.pending)
-                    {
-                      goodix_proto_rx_reset (&self->rx);
-                      goto receive_more;
-                    }
-                  goodix_recv_apply_fdt_event (dev, type, &event);
-                  if (type == GOODIX_FDT_EVENT_CONFIG || !idle_packet || operation->completion_pending ||
-                      (self->transport && self->transport->phase == GOODIX_TRANSPORT_SEND))
-                    {
-                      if (type != GOODIX_FDT_EVENT_CONFIG)
-                        self->pending_fdt.event = event;
-                      self->pending_fdt.event.pending = TRUE;
-                      self->pending_fdt.type = type;
-                      memcpy (self->pending_fdt.prior_down, self->fdt_prior_down,
-                              sizeof (self->pending_fdt.prior_down));
-                    }
                   goodix_proto_rx_reset (&self->rx);
                   goto receive_more;
                 }
+              goodix_recv_apply_fdt_event (dev, type, &event);
+              if (type != GOODIX_FDT_EVENT_CONFIG)
+                self->pending_fdt.event = event;
+              self->pending_fdt.event.pending = TRUE;
+              self->pending_fdt.type = type;
+              goodix_proto_rx_reset (&self->rx);
               if (operation->phase == GOODIX_TRANSPORT_EVENT)
                 {
-                  GoodixFdtNotification *pending = &self->pending_fdt;
-
-                  if (!event.pending)
-                    {
-                      goodix_proto_rx_reset (&self->rx);
-                      goto receive_more;
-                    }
-                  pending->type = type;
-                  if (type != GOODIX_FDT_EVENT_CONFIG)
-                    pending->event = event;
-                  pending->event.pending = TRUE;
-                  goodix_recv_apply_fdt_event (dev, pending->type, &pending->event);
-                  memcpy (pending->prior_down, self->fdt_prior_down, sizeof (pending->prior_down));
                   goodix_transport_complete (operation, NULL);
                   return;
                 }
+              goto receive_more;
             }
           if (idle_packet)
             {
@@ -940,16 +907,14 @@ goodix_rx_cell (GoodixTransport *operation,
           goodix_proto_rx_reset (&self->rx);
           goto receive_more;
         }
-      if (ack_wait &&
-          ((category == GOODIX_PROTO_CATEGORY_ACK && command == GOODIX_PROTO_CMD_ACK) ||
-           (category == GOODIX_PROTO_CATEGORY_FDT && (command == 1 || command == 2) &&
-            operation->cancelled_fdt_mode != GOODIX_PROFILE9_FDT_WAIT_NONE)))
+      if (ack_wait && category == GOODIX_PROTO_CATEGORY_ACK &&
+          command == GOODIX_PROTO_CMD_ACK)
         {
           guint8 status;
 
           if (!goodix_validate_ack_for_cmd (dev, current, &status, &error))
             goodix_transport_complete (operation, error);
-          /* Even status (or drained cleanup FDT) preserves this attempt's
+          /* Even status preserves this attempt's
            * original ACK deadline. Only exhaustion permits a retry. */
           else if (!(status & GOODIX_PROTO_ACK_FLAG_VALID))
             {
@@ -974,7 +939,8 @@ goodix_rx_cell (GoodixTransport *operation,
     {
       /* Preserve unrelated per-continuation data budgets. Scoped command waits
        * keep one deadline across interleaved packets and continuations. */
-      if (!fixed_deadline && !goodix_transport_is_idle (operation))
+      if (!fixed_deadline && !goodix_transport_is_idle (operation) &&
+          !(operation->phase == GOODIX_TRANSPORT_EVENT && self->service_active))
         operation->deadline_us = g_get_monotonic_time () + GOODIX_DATA_TIMEOUT * 1000LL;
       goto receive_more;
     }
@@ -1152,11 +1118,18 @@ goodix_recv_select_fdt (FpDevice *dev, GoodixFdtEventType *type,
   if (pending->event.pending)
     {
       *type = pending->type;
-      if (*type != GOODIX_FDT_EVENT_CONFIG)
+      if (*type == GOODIX_FDT_EVENT_DOWN || *type == GOODIX_FDT_EVENT_UP ||
+          *type == GOODIX_FDT_EVENT_REVERSE)
         *event = pending->event;
       event->pending = TRUE;
       if (*type == GOODIX_FDT_EVENT_REVERSE)
-        memcpy (prior_down, pending->prior_down, sizeof (pending->prior_down));
+        {
+          /* 014480 calls 0053b0 at handler execution. Reference publication
+           * can replace this shared manual/prior store after packet reception;
+           * only the selected handler's local operands become immutable. */
+          for (guint i = 0; i < GOODIX_PROFILE9_FDT_AREA_COUNT; i++)
+            prior_down[i] = self->profile9_fdt.base_manual[i * 2 + 1];
+        }
       pending->event.pending = FALSE;
       return TRUE;
     }
@@ -1173,7 +1146,8 @@ goodix_recv_apply_fdt_event (FpDevice                     *dev,
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   GoodixProfile9FdtState *fdt = &self->profile9_fdt;
 
-  if (type == GOODIX_FDT_EVENT_NONE || type == GOODIX_FDT_EVENT_CONFIG)
+  if (type != GOODIX_FDT_EVENT_DOWN && type != GOODIX_FDT_EVENT_UP &&
+      type != GOODIX_FDT_EVENT_REVERSE)
     return;
   if (type == GOODIX_FDT_EVENT_DOWN)
     {
@@ -1217,7 +1191,6 @@ goodix_transport_command (FpDevice                     *dev,
   operation->cmd.payload = request->cmd.payload_len ?
     g_memdup2 (request->cmd.payload, request->cmd.payload_len) : NULL;
   operation->expect_data = request->expect_data;
-  operation->cancelled_fdt_mode = request->cancelled_mode;
   goodix_cmd_set_policy (operation);
 
   goodix_transport_send (operation);
