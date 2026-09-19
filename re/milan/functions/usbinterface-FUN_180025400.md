@@ -31,9 +31,8 @@
 - Ordinary in-place restart exhaustion in `goodix_gtls_retry_handler` completes
   without an error in both foreground and idle service, retaining the final
   failed attempt's GTLS state. Terminal host failure remains separate:
-  `goodix_session_service_done` latches the service error, and
-  `goodix_session_settled` / `goodix_session_fault_joined` join and invalidate
-  transport before reporting `fpi_device_session_error`. Cold initialization
+  `goodix_session_service_done` sets `needs_reinit`, so maintenance stays
+  stopped until the next action reconstructs the session. Cold initialization
   has its own exhaustion result, mapped in
   [deviceInit](usbinterface-FUN_180020970.md#full-initialization-source-map).
 

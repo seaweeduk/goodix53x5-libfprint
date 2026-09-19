@@ -205,9 +205,9 @@ down/up store, which can include parser mutations during configuration.
 foreground `cancel` token otherwise. Ordinary arm exhaustion sets `needs_reinit`
 while completing the wrapper; configuration failure alone does not set it.
 The coordinator can continue its FDT wait after ordinary exhaustion. At a later
-session settlement, `device/session.c:goodix_session_settled` gates servicing
-and joins terminal transport ownership when `needs_reinit` remains set; it does
-not run a cached-start/first-arm fallback.
+session settlement, `device/session.c:goodix_session_settle` leaves servicing
+stopped while `needs_reinit` remains set, until the next action reconstructs
+the session; it does not run a cached-start/first-arm fallback.
 
 Explicit action-three configuration maps separately to
 `device/commands.c:goodix_cmd_restore_config` and

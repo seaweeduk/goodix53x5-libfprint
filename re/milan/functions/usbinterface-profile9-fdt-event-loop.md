@@ -766,9 +766,9 @@ postlude publication between reception and selection therefore changes this
 operand. The selected operands remain local during subsequent commands,
 separate from a newer pending notification. This serialized Linux snapshot does
 not reproduce every native interleaving between its separate type/raw/prior reads.
-`device/session.c:goodix_session_start_service` enters
+`device/session.c:goodix_session_settle` enters
 `device/scan.c:goodix_scan_start_service` and idle mode of
-`goodix_scan_coordinator_handler`. This mode waits without an initial arm,
+`goodix_scan_coordinator_handler` whenever no other hardware owner remains. This mode waits without an initial arm,
 dispatches down/manual validation, false-down refresh and up/reverse maintenance,
 and arms up after a genuine down without a live capture. Pending GTLS restart
 is handled through `goodix_scan_event_done` and `goodix_start_gtls_restart`.
@@ -869,8 +869,9 @@ selected service/action work, CPU work and the physical reader. A separate
 sleep/EC-off state machine then runs with a fresh session token and reception;
 `goodix_suspend_power_done` joins that reader before `goodix_suspend_joined`
 invalidates transport, releases hardware/setup frames and completes suspend.
-Known suspend-induced action cancellation maps to `FP_DEVICE_ERROR_BUSY` in
-`goodix_session_action_joined` before power completion.
+Actions arriving while suspend is pending fail with `FP_DEVICE_ERROR_BUSY` in
+`goodix_session_start_action`; an action interrupted by suspend completes with
+`G_IO_ERROR_CANCELLED`.
 
 Resume runs full reconstruction through `goodix_maybe_start_reinit_subsm` and
 `goodix_reinit_idle_joined` before restarting service and completing resume.
@@ -881,11 +882,11 @@ cached-startup owner. The native initialized `deviceInit` route instead retains
 HAL buffers and optionally reestablishes GTLS; see `usbinterface-FUN_180020970.md`.
 Windows callback scheduling is separate from these source ownership mappings.
 
-Terminal maintenance failure, or `needs_reinit` at session settlement, latches
-`service_error` and gates new actions. `goodix_session_fault_joined` invalidates
-transport after its physical-reader join and reports `fpi_device_session_error`
-once; completed foreground result policy remains separately owned. A physical
-read error is latched by `goodix_rx_cb` rather than followed by native WDF pipe
-reset/restart. `goodix53x5.c:goodix_removed` stops servicing and requests
+Terminal maintenance failure sets `needs_reinit` in
+`goodix_session_service_done`; `goodix_session_settle` then leaves maintenance
+stopped until the next action reconstructs the session through
+`goodix_maybe_start_reinit_subsm`. Completed foreground result policy remains
+separately owned. A physical read error is latched by `goodix_rx_cb` rather
+than followed by native WDF pipe reset/restart. `goodix53x5.c:goodix_removed` stops servicing and requests
 coordinator shutdown on removal; `goodix_close` uses `goodix_session_quiesce`
 before `goodix_close_joined` frees session resources and releases the interface.

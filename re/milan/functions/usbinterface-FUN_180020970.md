@@ -476,8 +476,8 @@ The separate `GOODIX_OPEN_SLEEP`/EC-off states are defensive host-error cleanup,
 not the normal native tail. An initial terminal base error runs child cleanup
 before propagating; a terminal configuration error precedes
 `open_ref_powered`, so parent cleanup skips sleep.
-Successful open then enters `goodix_session_start_service` and the idle mode of
-`goodix_scan_coordinator_handler`, without an initial down-arm command.
+Successful open then enters `goodix_session_settle`, which starts the idle mode
+of `goodix_scan_coordinator_handler` without an initial down-arm command.
 This cold continuation maps the native ignored all-base/final-tail status
 decisions; full-reset recovery and retained HAL lifetime remain separate owners.
 
