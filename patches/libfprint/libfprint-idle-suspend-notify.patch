@@ -1,7 +1,22 @@
-Libfprint-Idle-Suspend-Notify-Patch: 3
+Libfprint-Idle-Suspend-Notify-Patch: 4
 Base-Revision: 0c97a47d8ef405cd577b87058c1e89cae9d242e7
 Base-Tag: v1.94.10
 
+diff --git a/libfprint/fp-device.c b/libfprint/fp-device.c
+index 6040c1be58ef1b2680a6dce8d4c67da99fd77f35..09890c37ac03c5c9e7bde8aee827750a24f9c644 100644
+--- a/libfprint/fp-device.c
++++ b/libfprint/fp-device.c
+@@ -919,7 +919,9 @@ fp_device_close (FpDevice           *device,
+       return;
+     }
+ 
+-  if (priv->current_task || priv->is_suspended)
++  /* A quiesced Goodix session may be closed without resuming hardware,
++   * for example after removal during sleep; a pending power task may not. */
++  if (priv->current_task || priv->suspend_resume_task)
+     {
+       g_task_return_error (task,
+                            fpi_device_error_new (FP_DEVICE_ERROR_BUSY));
 diff --git a/libfprint/fpi-device.c b/libfprint/fpi-device.c
 index a1be30c0e6c5cdf4d68bf6cbb6061b66c0042561..2d2d32a8c1fb82b344597e85d03fb3c17c00f020 100644
 --- a/libfprint/fpi-device.c

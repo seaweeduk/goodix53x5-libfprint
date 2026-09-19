@@ -48,7 +48,6 @@ goodix_open (FpDevice *dev)
   self->session_cancel = g_cancellable_new ();
   self->session_suspended = FALSE;
   self->suspend_pending = FALSE;
-  self->close_pending = FALSE;
   goodix_start_open_ssm (dev);
 }
 
