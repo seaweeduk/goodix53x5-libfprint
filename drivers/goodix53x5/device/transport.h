@@ -39,6 +39,7 @@ typedef struct
    * completed reply view contains the little-endian three-byte IRQ value.
    * Without data the type-zero payload is {1,20}, ACK-only. */
   gboolean expect_data;
+  /* Retained caller hint; IN now survives every command until quiesce. */
   gboolean idle_after_ack;
   GoodixProfile9FdtWaitMode cancelled_mode;
 } GoodixTransportRequest;
@@ -59,7 +60,7 @@ typedef void (*GoodixTransportDone) (FpDevice *dev,
                                     GError *error, gpointer data);
 typedef void (*GoodixTransportJoined) (FpDevice *dev, gpointer data);
 
-/* Copy the request before returning; reserve it while an idle IN joins. */
+/* Copy the request before returning. The independent IN remains posted. */
 void goodix_transport_command (FpDevice *dev, const GoodixTransportRequest *request,
                                 GoodixTransportDone done, gpointer data);
 void goodix_transport_wait_event (FpDevice *dev, GoodixProfile9FdtWaitMode mode,
@@ -70,7 +71,7 @@ void goodix_transport_wait_mcu (FpDevice *dev, guint timeout, gsize length,
                                 GoodixTransportDone done, gpointer data);
 void goodix_transport_reset_mcu (FpDevice *dev);
 void goodix_transport_cancel_event (FpDevice *dev);
-/* Foreground and CPU work must already be settled. Join optional idle IN;
+/* Foreground and CPU work must already be settled. Join the continuous IN;
  * this is not a policy to cancel outstanding commands or CPU work. */
 void goodix_transport_quiesce (FpDevice *dev, GoodixTransportJoined joined,
                                gpointer data);

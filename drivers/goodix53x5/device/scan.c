@@ -50,6 +50,7 @@ typedef enum
   GOODIX_SCAN_COORD_REFRESH_DONE,
   GOODIX_SCAN_COORD_REARM_DOWN,
   GOODIX_SCAN_COORD_REARM_DOWN_DONE,
+  GOODIX_SCAN_COORD_RESTORE_CONFIG,
   GOODIX_SCAN_COORD_WAIT_CPU,
   GOODIX_SCAN_COORD_CYCLE_SETTLED,
   GOODIX_SCAN_COORD_CLEANUP_JOIN,
@@ -342,6 +343,21 @@ goodix_scan_prepare_refresh (FpiSsm                        *ssm,
 }
 
 static void
+goodix_scan_config_restored (FpiSsm *ssm, FpDevice *dev, guint8 status,
+                             gboolean native_zero, GError *error)
+{
+  /* usbinterface!180015710 discards mode-4 failure before down-arm. Keep
+   * terminal host errors on the existing joined cleanup path. */
+  if (error && !native_zero)
+    {
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+  g_clear_error (&error);
+  fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_REARM_DOWN);
+}
+
+static void
 goodix_scan_coordinator_handler (FpiSsm   *ssm,
                                  FpDevice *dev)
 {
@@ -430,11 +446,20 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
           }
         data->dispatching = TRUE;
 
+        if (data->event_type == GOODIX_FDT_EVENT_CONFIG)
+          {
+            /* No sample or release was published. Preserve the selected raw
+             * vector, drift/reference state and outstanding CPU ownership. */
+            fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_RESTORE_CONFIG);
+            return;
+          }
+
         if (data->event_type == GOODIX_FDT_EVENT_DOWN)
           {
             if (data->cycle_active)
               {
-                if (!data->release_settled)
+                if (!data->release_settled &&
+                    fdt->wait_mode != GOODIX_PROFILE9_FDT_WAIT_DOWN)
                   {
                     fpi_ssm_mark_failed (
                       ssm, fpi_device_error_new_msg (
@@ -443,7 +468,8 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
                     return;
                   }
 
-                /* A new press raced the prior CPU result. Keep the sensor
+                /* A new press raced the prior CPU result, or configuration
+                 * recovery rearmed down before release. Keep the sensor
                  * event-driven by arming up and discarding this too-early
                  * enrollment press only after its matching release. */
                 fpi_device_report_finger_status_changes (
@@ -640,6 +666,10 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_WAIT_CPU:
+      break;
+
+    case GOODIX_SCAN_COORD_RESTORE_CONFIG:
+      goodix_cmd_restore_config (ssm, dev, goodix_scan_config_restored);
       break;
 
     case GOODIX_SCAN_COORD_CYCLE_SETTLED:

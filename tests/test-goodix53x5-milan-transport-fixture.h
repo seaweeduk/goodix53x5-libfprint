@@ -15,6 +15,7 @@ typedef struct {
   gpointer user_data;
   GCancellable *cancel;
   guint timeout;
+  GCancellable *physical_cancel;
 } TestUsb;
 
 extern TestUsb usb;
@@ -27,6 +28,11 @@ gint64 test_monotonic_time (void);
 GCancellable *test_action_cancellable (FpDevice *dev);
 FpDevice *fixture_device_new (void);
 void fixture_complete (GError *error);
+void fixture_refresh_wait (void);
+void fixture_select_read (void);
+void fixture_join_reader (FpDevice *dev);
+void test_transport_wait_info (FpDevice *dev, guint *timeout, GCancellable **cancel);
+void test_transport_wait_failed (FpDevice *dev, GError *error);
 gsize fixture_fragment (const guint8 *packet, gsize size, gsize offset);
 void reply (FpiUsbTransfer *, guint8, guint8, const guint8 *, gsize);
 void ack_reply (FpiUsbTransfer *, guint8);

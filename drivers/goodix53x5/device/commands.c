@@ -328,6 +328,19 @@ goodix_cmd_upload_config (FpiSsm *ssm, FpDevice *dev,
   goodix_run_cmd (ssm, dev, 0x9, 0x0, config, config_len, TRUE);
 }
 
+void
+goodix_cmd_restore_config (FpiSsm *ssm, FpDevice *dev,
+                           GoodixCmdResultCallback callback)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  gsize length;
+  const guint8 *config = goodix_device_get_default_config (&length);
+  g_autofree guint8 *payload = g_memdup2 (config, length);
+
+  goodix_device_patch_config (payload, length, &self->calib);
+  goodix_run_cmd_result (ssm, dev, 9, 0, payload, length, TRUE, callback);
+}
+
 typedef enum {
   GOODIX_ARM_FIRST,
   GOODIX_ARM_CONFIG,
@@ -674,6 +687,17 @@ goodix_cmd_parse_fdt_event (FpDevice      *dev,
   irq = payload[0] | ((guint16) payload[1] << 8);
   switch (irq)
     {
+    case 0:
+    case 1:
+    case 4:
+    case 8:
+    case 0x10:
+    case 0x20:
+    case 0x40:
+      /* Native selector-1/2 no-ops do not publish raw data or wake the worker. */
+      *out_type = GOODIX_FDT_EVENT_NONE;
+      out_event->pending = FALSE;
+      return TRUE;
     case GOODIX_FDT_IRQ_DOWN:
       *out_type = GOODIX_FDT_EVENT_DOWN;
       break;
@@ -685,9 +709,12 @@ goodix_cmd_parse_fdt_event (FpDevice      *dev,
       *out_type = GOODIX_FDT_EVENT_REVERSE;
       break;
     default:
-      g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
-                   "Unexpected FDT IRQ 0x%04x", irq);
-      return FALSE;
+      /* Native event 0x14 replaces only the worker notification. Its payload
+       * is not a raw/touch sample and must not replace any retained base. */
+      *out_type = GOODIX_FDT_EVENT_CONFIG;
+      out_event->irq = irq;
+      out_event->pending = TRUE;
+      return TRUE;
     }
 
   out_event->irq = irq;
