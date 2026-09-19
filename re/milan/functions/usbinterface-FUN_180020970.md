@@ -485,13 +485,12 @@ decisions; full-reset recovery and retained HAL lifetime remain separate owners.
 service/action owner, CPU work and physical reader. `goodix_suspend_service_joined`
 then starts sleep/EC-off with a fresh session cancellation token; those commands
 start reception again. `goodix_suspend_power_done` joins that reader before
-`goodix_suspend_joined` invalidates transport, releases hardware/setup frames and
-completes suspend. `goodix_session_resume` invokes full reconstruction through
-`goodix_maybe_start_reinit_subsm` before restarting service and completing resume.
-Successful resume preserves the reconstruction reader; failure joins it before
-invalidation and error completion. This source path reacquires hardware state
-rather than taking the retained native resume branch below. Close uses
-`goodix_session_quiesce` before releasing the interface.
+`goodix_suspend_joined` invalidates protocol reception and pending notifications,
+retaining the host calibration, reference/setup generation, FDT bases/validity,
+drift anchor, refresh marker, DAC and requested mode. Suspend itself does not
+set `needs_reinit`; existing hardware faults, interrupted writes and power-command
+errors retain that cold-recovery requirement. Close uses `goodix_session_quiesce`
+before releasing the interface and hardware/setup frames.
 
 ## Resume Branch
 
@@ -534,6 +533,34 @@ rather than taking the retained native resume branch below. Close uses
   download configuration when the first arm status satisfies `(status & 3) ==
   3`. The explicit action-3 contract is in `usbinterface-FUN_18000e1f0.md`;
   neither route is part of resume-worker completion.
+
+### Resume Source Map
+
+`drivers/goodix53x5/device/session.c:goodix_resume_handler` selects the retained
+path unless `needs_reinit` already requires cold hardware recovery.
+`goodix_resume_warm` releases the remembered USB claim and reclaims with
+kernel-driver detach, without a USB or sensor reset. This repairs Linux's stale
+claim after kernel reset-resume. The joined suspend boundary has already retired
+the old reader and incomplete protocol publications before those operations.
+
+The warm child invokes `goodix_gtls_retry_handler` in its two-group/six-attempt
+mode with the selected in-memory PSK. `goodix_gtls_ssm_handler` initializes a fresh
+client, sends hello and validates identity/completion. This maps the initialized
+worker's session replacement above; the independent event-driven
+`goodix_start_gtls_restart` keeps its one-group budget and ordinary-exhaustion
+continuation. Resume performs no chip/OTP/hash/version/configuration/reference
+work on this path. `goodix_resume_joined` restarts event servicing and completes
+resume. A later capture's first arm retains the status-dependent configuration
+repair in `goodix_arm_result` / `goodix_arm_handler`.
+
+`goodix_resume_warm_done` propagates cancellation/removal. Other warm failures
+select `goodix_maybe_start_reinit_subsm` once; that cold path releases retained
+hardware/setup state and runs the full open SSM. A pre-existing hardware fault
+selects that same cold branch directly. There is no cold-to-warm retry edge.
+This full-reset fallback is Linux recovery, not the native worker's failed
+second-wrapper branch. Failed resume joins reception before invalidation and
+keeps `needs_reinit` for the next action; successful resume retains the new
+reader. No sleep-duration or disk-checkpoint predicate selects reference reuse.
 
 ## Retained Startup Metadata And Session Boundary
 
