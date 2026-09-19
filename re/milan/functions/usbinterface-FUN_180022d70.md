@@ -21,6 +21,16 @@
 - A first D0 entry reaches full initialization and action `0x0c`; an ordinary
   resume reaches `deviceInit`'s resume branch and preserves the base.
 
+The `startInitDeviceMonitoring` diagnostic at `0x180022efd` names this same
+launch block. Its `_beginthreadex` call at `0x180022f39` installs
+`0x180020970` with creation flag 4, then resumes the returned handle. There is
+no separate monitoring callback or periodic polling loop behind that label.
+`deviceInit` performs the bounded initialization/resume route, restores the
+thread-handle sentinel and returns. The other `_beginthreadex` caller is HAL
+worker startup at `0x18000e15d`; `CreateThread` at `0x180021384` instead launches
+the image-error-driven GTLS restart. These are distinct from the WDF live-frame
+expiry timers and the independent continuous-reader callback.
+
 Reader-start failure is not an internal initialization-thread suppression
 predicate. The signed-negative branch at `0x180022eb0..0x180022ed3` stops
 the read target with action one and then rejoins `0x180022ed9`. It still sets

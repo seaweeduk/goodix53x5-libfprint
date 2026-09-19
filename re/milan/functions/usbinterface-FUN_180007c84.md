@@ -219,6 +219,15 @@ or background-reference read alone cannot. This screen-off owner and its
 current-source absence are described in
 [the down handler](usbinterface-FUN_180014e10.md#wake-on-finger-read-and-dac-side-effect).
 
+The explicit vendor-private retry owner `MilanHV_RetryCaptureIMG`
+(`0x180015760`) also passes adjustment one and `&HAL[0x312]` after its TX-on/off
+manual-FDT comparison detects a finger. Its image call uses capture-mode one,
+rather than the standard/WOF mode four, and does not require or consume the
+standard capture callback. It is dispatched by `OnRetryCaptureIMG` action
+`0x10`, not by idle time or the FDT worker's event switch. The request boundary,
+arm mutations and ordinary-operation reachability are owned by
+`usbinterface-FUN_180015760.md`.
+
 ## Reference and state lifetime
 
 The mask reference is the **latest admitted hardware TX-on base**, not the

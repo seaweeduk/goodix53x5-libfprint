@@ -86,6 +86,16 @@ These owners have no cached OTP/bootstrap or serialized DAC-resume route.
 `GoodixProfile9FdtState` owns the FDT validity/anchor state. These are separate
 owners rather than a retained native HAL allocation.
 
+Linux sets `drift_anchor_empty` during `FpDevice` construction and clears the
+anchor on admitted initial-base publication. A same-object close/open or full
+post-sleep reconstruction does not independently set that flag before acquisition:
+`goodix_milan_base_start_subsm` clears base validity and initial-recovery state,
+but does not change the anchor. An initial validation rejection therefore retains
+the earlier object's active anchor until a later event or successful acquisition
+changes it. This mapping differs from the constructor's unconditional inactive
+flag at `0x1800164b0`, which precedes all reference acquisition outcomes; retained
+D0 entry bypasses that native constructor entirely.
+
 ### FDT Stores At The Next Command Boundary
 
 The profile-open callback installs setter `0x180005950` at `+0x68`, arm

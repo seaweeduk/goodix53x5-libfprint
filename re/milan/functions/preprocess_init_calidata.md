@@ -55,6 +55,11 @@ Q13 unity before they can affect rendering. Thus the initializer's entry Q13
 calibration plane and the process globals' initial zero gain planes converge to
 the same live-call inputs before consumption.
 
+That convergence occurs after the adapter's immediate successful setup-save.
+The pre-live save still contains the initializer's `0x2000` calibration words;
+see `preprocess_save_calidata.md` for its compact-format mapping and its separate
+loaded-packet ownership.
+
 The zero-sample branch of `FUN_1800672e0` also writes zero to auxiliary sample
 count `DAT_1801efbf4` and to gain-initialization `DAT_1801efbf8`; its common tail
 then changes zero gain-initialization to one. It does not clear stability

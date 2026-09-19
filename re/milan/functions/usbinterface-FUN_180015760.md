@@ -30,8 +30,11 @@
 - Image size is the low 16 bits of `rows_u8_1f0 * columns_u8_1f1 * 2`. For
   profile 9/type 12 this is `19008` bytes.
 - It neither clears base validity bytes `+0x232/+0x237` nor calls
-  `MilanHV_update_allbase`; successful and rejected retries leave the HAL
-  context unchanged.
+  `MilanHV_update_allbase`; successful and rejected retries preserve the
+  retained reference, validity and one-shot setup marker. Other HAL state is
+  mutable: the arm callback records down/up wait state `+0x1fc`, and a successful
+  image read can change high DAC `+0x312` and module-static adjustment history.
+  The read wrapper also stores acquisition state `+0x200 = 4`.
 - `FUN_1800162ac` installs the function as HAL retry callback slot `+0x1c0` at
   `0x1800163fb..0x180016402`; it has no static direct caller because dispatch is
   indirect.
@@ -61,6 +64,15 @@ vendor-private retry IOCTL. Within `usbinterface.dll`, `OnRetryCaptureIMG` is
 the only caller that selects device action `0x10`.
 
 ## Error-Recovery Consequence
+
+The image call at `0x180015981..0x1800159a7` passes adjustment one,
+finger-image one and capture-mode one in its three stack arguments, and
+`&HAL[0x312]` in `R9`. This is an additional explicit-request producer of
+`FUN_180007c84`, independently of standard capture callback `+0x240` and
+remaining count `+0x280`. It does not invoke or consume that callback/marker.
+The successful read adjusts before up arming and output copying. The adjustment
+owner is `usbinterface-FUN_180007c84.md`; Linux has no vendor-private retry IOCTL
+counterpart or automatic idle invocation of this request.
 
 A retry-capture error does not invalidate the retained calibration base. Base
 reacquisition is reserved for the initial action-`0x0c` path and the FDT drift

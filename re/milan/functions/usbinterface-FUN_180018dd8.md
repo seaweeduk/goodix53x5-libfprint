@@ -62,6 +62,14 @@ independently of any blocked command and before signalling:
 | A/3 | Copy payload to same prefix | 4 (`0x1800688f8`) |
 | Any category E command | Store payload length dword, copy payload at +4 | 6 (`0x180068908`) |
 
+All category-9 commands signal protocol event 1 (`0x1800688e0`); command two
+also copies payload byte zero to status byte `0x18006a112`. Category F copies
+payload byte zero into the shared-cache prefix and signals protocol event 2
+(`0x1800688e8`). These protocol response events are not HAL worker CONFIG
+event `0x14` and do not perform a reference refresh themselves. Unrecognized
+categories and unsupported command subcodes in otherwise dispatched families
+return zero without a worker or response notification.
+
 Payload length excludes the envelope checksum. Copies retain every unwritten
 suffix; events are separate but the bytes are shared. Thus a reply received
 before ACK is retained for the subsequent response wait. A later unrelated
@@ -212,6 +220,72 @@ FDT parser `0x180005b80` publishes event codes `0x0f`, `0x10`, `0x11` for
 down/up/reverse and `0x14` for its unrecognized-IRQ branch; it does not itself
 publish `0x12`. The explicit GFESD dispatch must not be conflated with these
 ordinary FDT events.
+
+### Unsolicited category-C notifications
+
+`DataFromDevice` dispatches every checksum-admitted category-C packet to
+`get_notice_data` (`0x180019264`), passing command, payload and payload length.
+This dispatch has no active-request, command-wait, requested-mode or profile
+predicate. With a nonnull payload, the notification owner handles:
+
+- Command zero: copy the payload into shared cache `0x1800638d3`; with a
+  nonnull HAL, assemble its first two retained cache bytes as a little-endian
+  word into HAL `+0x282`, replace event type `+8` with `0x12`, and signal
+  event `+0x10`. This is the protocol producer of GFESD action 2, including
+  while no biometric request exists. The helper has no minimum-length check;
+  a short copy leaves the cache suffix retained.
+- Command one: with a nonnull HAL, replace event type with `0x13` and signal
+  the same event. Worker `0x18000df20` selects action zero when screen-active
+  byte `0x18005f398` is zero, otherwise calls `0x18000dc84`. This is a wake
+  notification, distinct from an ordinary category-3 down packet.
+- Command two: only when Modern Standby capability `0x1800e2120 == 1` and
+  HAL is nonnull, clear power-button byte `+0x358`; synchronously stop an
+  existing `+0x360` timer and clear its handle. If the screen is off and
+  cached-live pointer `+0x340` is nonnull, call timer initializer
+  `0x1800186f8`. This branch publishes no worker event.
+- Other commands return without these effects.
+
+The first two commands share the HAL's single coalescing notification slot
+with FDT events. Their parser mutations precede worker selection. Neither
+notification checks for a pending capture. Down/wake and power-button timer
+consumers are owned by [the event loop](usbinterface-profile9-fdt-event-loop.md).
+
+`device/transport.c:goodix_rx_cell` has no category-C publication counterpart.
+`device/scan.c:goodix_scan_event_done` consumes GTLS restart and FDT notifications;
+it has no GFESD event or IRQ-word owner. The generic reset wrapper alone does
+not implement the native reset/chip/configuration/retained-base repair sequence.
+While a `GOODIX_TRANSPORT_EVENT` waiter is active, an unhandled category-C packet
+reaches `goodix_cmd_parse_fdt_event` and returns a protocol error; with no logical
+waiter it is consumed without notification. The native command-zero cache write
+also affects subsequent shared-cache readers independently of whether its worker
+event survives coalescing.
+
+The current event-wait fallthrough also calls the FDT parser for a category-F
+publication after copying its shared byte, and for an unrecognized category.
+`goodix_rx_cell` handles category-9 command zero as a response slot, but has no
+response-slot mapping for the other category-9 commands. Native protocol
+response publication and ignored-category return do not themselves fail a HAL
+worker wait. MCU-only waits already filter unrelated complete packets while
+retaining their parser publications.
+
+At the successful GFESD join, a missing saved-base file takes the loader's
+zero-return branch, clears only persisted-file byte `+0x231`, and leaves the
+existing image/FDT stores and validity intact before down-arm. Mode 4 does not
+write requested mode `+0x1e0`, and this repair does not renew GTLS or reseed DAC.
+The separate present-file restore and its retained-state effects are mapped in
+[deviceInit](usbinterface-FUN_180020970.md#saved-base-restore-in-an-already-enabled-hal).
+
+The protocol-side timer initializer `0x1800186f8` installs callback
+`0x1800188d0` into WDF timer configuration, with period zero. Its only code
+caller is command two's branch above. It starts HAL `+0x360` with relative
+due time `-10000000 * uint8(config[0x441])` in 100-ns units; a null configuration
+pointer selects `-30000000`. Expiry resolves the parent device/HAL, takes HAL
+critical section `+0x368`, frees cached-live pointer `+0x340` if nonnull,
+nulls it, and releases the lock. It sends no command, publishes no worker
+notification, and does not restart itself. This is one-shot cached-frame
+expiry, not a periodic reference, DAC or health poll. The profile-9 live-frame
+path has a separate initializer/callback pair `0x180013e60`/`0x180014270`;
+both use `+0x360`, but the callbacks must not be conflated.
 
 The HAL `+0xe8` DAC callback is invoked by `0x18001f520`
 (`Test_OpenShortUpdateDAC`) when its byte argument is nonzero; it then invokes

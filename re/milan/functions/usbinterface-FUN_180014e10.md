@@ -91,6 +91,12 @@ standard request path.
 
 The manual-FDT comparison and false-down refresh precede this live-image gate:
 a null capture callback or mode 2 does not suppress those earlier operations.
+There is also no wait-state `+0x1fc`, previous-frame/CPU-completion, or prior
+release predicate before the comparison. A second down selected after successful
+capture has cleared `+0x240` still reads manual FDT and can take false-down
+refresh. If it is a genuine down, the null callback suppresses the image only,
+and the ordinary postlude arms up. A down notification selected while wait state
+is already up is not a protocol error in this handler.
 
 On a genuine-down comparison with the live-image gate false, the handler still
 calls `+0x110(1)` and **arms up** through `+0xb0(0)`. At
@@ -295,3 +301,20 @@ request; auth/enrollment runtime-input constructors consume the post-read word
 for live metadata. The module history and independent hardware-reference
 lifetime are mapped in
 `usbinterface-FUN_180007c84.md`.
+
+The current `GOODIX_SCAN_COORD_ARM_UP` state calls
+`goodix_milan_generation_prepare_setup` only when `stop_requested` is false;
+that preparation consumes `hardware_refresh_pending`. A successful selected
+live read still adjusts DAC before reaching this gate. If cancellation has
+requested stop, Linux skips both preparation and CPU delivery, retaining the
+hardware marker. Native `FUN_1800150e0` instead invokes its installed callback
+and consumes the marker even when `CaptureFramedone` finds no pending request.
+This callback-based marker lifetime is separate from suppressing cancelled
+application output.
+
+Before manual validation, the current down dispatch tests `cycle_active`.
+With an active cycle, an unreleased cycle whose wait mode is not down fails
+with a protocol error; the other active-cycle route goes directly to recovery
+up arming. Neither route executes `GOODIX_SCAN_COORD_DOWN_MANUAL` or its
+false-down comparison. The normal inactive-service down route instead reaches
+that comparison before suppressing live capture.

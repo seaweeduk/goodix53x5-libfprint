@@ -485,3 +485,13 @@ reference at the next delivered sample.
   `device/transport.c` and `device/commands.c:goodix_cmd_dup_image_reply`.
   Down/up/manual FDT stores map to `GoodixProfile9FdtState.base_*`; caller-owned
   post-refresh down restoration is described in `usbinterface-FUN_180014480.md`.
+
+For forced refresh, validation rejection reaches `goodix_base_complete_recovery`
+and then the coordinator's `REFRESH_DONE`/down-rearm continuation. Ordinary
+command errors instead reach `goodix_base_ssm_done` with an error, set fatal
+refresh outcome and `needs_reinit`, and fail the coordinator. They do not enter
+the first-TX-on FDT postlude or rejected-reverse down-only restoration. Native's
+mode-4/first-FDT early exits and later-read common-postlude exits above therefore
+map to distinct Linux error completion from its existing validation-rejection
+completion. The hardware reference and pending marker are retained until that
+error's subsequent session teardown.

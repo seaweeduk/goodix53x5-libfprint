@@ -29,6 +29,18 @@ queue, so a later packet can replace an event that the worker has not read. No
 software path polls current touch level or synthesizes an event when an arm
 completes; dispatch requires an actual parsed packet.
 
+Native event-type selection and data copying are separate instructions, not an
+atomic event record. The worker loads `+0x08` at `0x18000dfbe` before entering
+the action dispatcher/lock. The ordinary down handler copies raw data through
+`+0x70` at `0x180014f61..0x180014f6a`, before its manual command. Installed getter
+`0x1800053f0` copies sixteen plus eight bytes from `0x180060760` without taking
+a parser lock. Reverse's prior-base getter `0x1800053b0` separately copies
+`0x180060778` and extracts its high bytes, likewise without such a lock.
+Handler-local copies survive later packet publication, while later arm commands
+still read the mutable programmed-base stores. This establishes local snapshot
+lifetime, not an atomic guarantee across concurrently replaced type/raw/prior
+stores.
+
 ## Startup Command And Reader Power Lifetime
 
 `deviceInit` (`0x180020970`), when device context `+0x110` is not initialized,
@@ -205,6 +217,63 @@ undo that selection. Neither schedule is a universal cancellation barrier.
 | `0x0f` | `0` | slot `+0x190`: `FUN_180014e10` (`MilanHV_Down_procedure`) |
 | `0x10` | `1` | slot `+0x188`: `FUN_180015aa0` (`MilanHV_UP_procedure`) |
 | `0x11` | `4` | slot `+0x198`: `FUN_180015a60` (reverse wrapper) |
+| `0x12` | `2` | `FUN_18000d660` (enabled-HAL ESD repair) |
+| `0x13` | `0` when screen byte is zero; otherwise actions `0x12`, `7` | down handler, or `FUN_18000dc84` retained-wait rearm |
+| `0x14` | `3` only when requested mode is not two | slot `+0x1a0`: `FUN_180015710` (configuration/down rearm) |
+| `0x15` | `0x11` | delayed EC policy described below |
+
+For event `0x13`, the screen-on helper `FUN_18000dc84` first queries wait state
+through action `0x12`, then sends argument zero to action 7 only for wait state
+`0xf1`; all other wait states select argument one. Action 7 stops its `+0x238`
+timer before calling the arm callback. This helper neither captures an image nor
+acquires a reference. The screen-off branch instead invokes the same down
+handler as event `0x0f`. The installed profile-9 FDT parser `FUN_180005b80`
+does not publish worker events `0x12` or `0x13`; its default IRQ branch publishes
+`0x14`. The conditional ESD repair consumer is owned by
+`usbinterface-FUN_180020970.md#saved-base-restore-in-an-already-enabled-hal`.
+Their actual producer is category-C notification owner `FUN_180019264`:
+command zero copies the shared payload cache, writes the retained two-byte IRQ
+to HAL `+0x282`, and publishes `0x12`; command one publishes `0x13` without
+replacing FDT raw/base stores. Both signal the same coalescing worker event
+without a capture, requested-mode, or display predicate. The screen-on event
+`0x13` consumer consequently remains applicable without wake-on-finger support:
+it preserves up wait by rearming up for `0xf1`, otherwise down. Category-C
+command two instead owns the capability-gated power-button/timer route, not a
+worker publication. Complete notification/cache/timer and current receiver
+mapping is maintained in
+`usbinterface-FUN_180018dd8.md#unsolicited-category-c-notifications`.
+Other event values perform no action. A handler return of `-1` is logged and
+does not terminate the worker or clear its next notification.
+
+The action dispatcher has additional explicit entry points; their presence is
+not a periodic worker producer:
+
+| Action | Profile-9 target and lifetime |
+| --- | --- |
+| `5` | `FUN_18000dc84`, query retained wait state and rearm through action 7 |
+| `6` | direct type-zero reset `FUN_18001b6c8`, before the HAL-enabled check and action lock |
+| `7` | stop `+0x238` timer, then arm using the supplied byte |
+| `8` | `+0x110`, installed no-op `FUN_180005b70` |
+| `9` | sensor-check `+0x18`, installed `FUN_180004a40`; OTP/current/default seeding owner |
+| `0x0a` | saved-base loader `FUN_18000d24c`; cold and enabled-HAL repair contexts are distinct |
+| `0x0b` | live-image callback `+0x1a8`, installed `FUN_1800150e0` |
+| `0x0c` | all-base callback `+0x180`, installed `FUN_180015c60` |
+| `0x0d` | copy retained metadata to the supplied output, after HAL-enabled admission but outside the action lock |
+| `0x0e` | requested mode via `+0x40`, installed `FUN_1800059c0` |
+| `0x10` | private retry `+0x1c0`, installed `FUN_180015760`; return discarded |
+| `0x11` | EC policy and optional pre-send delay |
+| `0x12`, `0x13` | read/write HAL wait-state dword `+0x1fc`, with no arm command |
+| `0x15` | screen-on retained-frame callback delivery and marker/frame/callback consumption |
+| `0x16` | mode-zero screen-on EC/rearm |
+| `0x17` | clear power-button byte `+0x358` |
+
+Unrecognized actions, including `0x0f` and `0x14`, return the dispatcher's
+initial zero without a command after enabled-HAL admission. The worker does not
+select actions `9`, `0x0a`, `0x0b`, `0x0c` or `0x10` from an ordinary FDT IRQ.
+In particular, the private retry's adjustment-enabled image is an explicit
+IOCTL consumer, documented in `usbinterface-FUN_180015760.md`, not autonomous
+idle calibration. The register-DAC helper at HAL `+0xe8` is not an action-table
+target here; its factory producer is documented in `usbinterface-FUN_180005200.md`.
 
 `FUN_1800162ac` installs those three profile-9 callbacks. The up and reverse
 wrappers call `UP_Occure` and `Reverse_Occure` respectively before rearming.
@@ -704,6 +773,17 @@ joining the reader. Cancellation suppresses Linux capture delivery through the
 coordinator's stop/action ownership; it does not reproduce native residual
 callback eligibility. The hardware-marker handoff is mapped in
 `FUN_180031d00.md#current-linux-ownership-map`.
+
+Selected refresh bypasses the explicit action-cancellation check in
+`device/base.c:goodix_base_check_cancelled`. Its command writes nevertheless
+use `device/session.c:goodix_session_io_cancellable`, which selects the current
+request cancellable when neither idle service nor suspend owns the session.
+`device/transport.c:goodix_transport_send` passes that token to USB OUT.
+Foreground cleanup's sleep command can consume one raw FDT publication as a
+drain, applying its parser mutations without retaining the worker notification;
+`goodix_scan_coordinator_done` also clears the pending notification on foreground
+completion. These are separate from the request-independent reader lifetime and
+the selected idle-handler join.
 
 `device/commands.c:goodix_cmd_parse_fdt_event` maps the down/up/reverse IRQ
 classes, the seven no-publication IRQs to `GOODIX_FDT_EVENT_NONE`, and the

@@ -138,6 +138,24 @@ its production save gates. This mixed post-transfer state is distinct from the
 native setup-save packet snapshot. The native packed reference also undergoes
 no downsample/reconstruction round trip during setup-save.
 
+For the fields represented by the Linux version-2 format, successful native
+setup is an identity transformation of a successfully loaded record:
+`FUN_180064bb0` changes the setup plane and setup mean, but leaves the loaded
+calibration plane, sample count, and packet unchanged. The setup plane and mean
+are absent from the compact format. Re-emitting its validated packed bytes
+therefore retains that subset without reference reconstruction/resampling or
+reading surviving classifier globals.
+
+The missing/invalid-file fallback has a different initial calibration plane:
+`preprocess_init_calidata` writes every calibration word as `0x2000`, count zero,
+and a zeroed packet. Successful setup leaves that calibration plane intact for
+its immediate save. Linux `goodix_milan_preprocess_reset` instead leaves
+`calibration_map` zero while initializing only the live gain maps to unity.
+The next live zero-count gain initializer clears calibration in either case,
+so the distinction is invisible after that initializer but remains part of the
+pre-live setup-save subset. Its semantic compact record has zero counters,
+planes, ages, and packed reference, with calibration words `0x2000`.
+
 ## Current Linux Save Ownership
 
 All paths below are relative to `drivers/goodix53x5/`.
@@ -165,6 +183,13 @@ All paths below are relative to `drivers/goodix53x5/`.
 - `pending_persistence_state` is an owned full `GoodixMilanPreprocessState`
   copy. Its production data consumer is `goodix_milan_persistence_save`; error,
   cancellation, result-clear and final-completion paths free it.
+- Enrollment also tests that pending pointer for nonnull before publishing the
+  completed transaction. The current snapshot allocation does not validate
+  persistence ranges; range or filesystem failure in the later void save
+  function does not revoke an otherwise valid final print. Authentication
+  likewise does not turn a calibration-save refusal into authentication failure.
+  Persistence-identity validity is tested at save time, after the session's
+  action-completion handoff, rather than sealed when the pending state is copied.
 - Both Linux saves precede the daemon's actual print-file storage result. Native
   post-live saves follow successful storage publication. Driver calibration
   persistence and daemon print persistence are separate commits.
