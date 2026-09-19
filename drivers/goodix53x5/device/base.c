@@ -396,6 +396,10 @@ goodix_milan_generation_prepare_setup (FpDevice              *dev,
 
       g_free (generation->setup_tx_on);
       generation->setup_tx_on = setup;
+      /* Debug replay counts delivered samples within this reference, not
+       * across the lifetime of the retained preprocessing state. */
+      if (generation->generation_id != self->hardware_reference_id)
+        generation->use_count = 0;
       generation->generation_id = self->hardware_reference_id;
     }
   if (self->hardware_refresh_pending)
