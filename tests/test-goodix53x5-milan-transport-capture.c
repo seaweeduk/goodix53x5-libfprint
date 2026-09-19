@@ -10,6 +10,9 @@ static void
 capture_setup (FpDevice *dev, GoodixMilanGeneration *generation)
 {
   g_assert_true (generation == FPI_DEVICE_GOODIX53X5 (dev)->milan_generation);
+  GOODIX53X5_DEBUG_ONLY (
+    g_assert_cmpuint (generation->use_count, ==, io.captures);
+                        )
 }
 
 static gboolean
@@ -478,6 +481,7 @@ test_scenario (gconstpointer user_data)
    * The test owns only the subsequent USB/scan scheduling and final status. */
   self->milan_sensor_subtype = 12;
   self->milan_generation = g_new0 (GoodixMilanGeneration, 1);
+  self->milan_generation->admitted = TRUE;
   self->captured_raw_image = g_new0 (guint16, GOODIX_SENSOR_PIXELS);
   self->profile9_fdt.base_valid = TRUE;
   self->profile9_fdt.drift_anchor_empty = TRUE;
@@ -527,6 +531,7 @@ test_scenario (gconstpointer user_data)
           data->release_settled = TRUE;
           data->cpu_outstanding = TRUE;
           io.captures = 1;
+          self->milan_generation->use_count = 1;
           memset (self->profile9_fdt.base_down, 45, GOODIX_FDT_BASE_LEN);
         }
       fpi_ssm_set_data (ssm, data, (GDestroyNotify) goodix_scan_coordinator_data_free);
@@ -834,6 +839,9 @@ test_scenario (gconstpointer user_data)
                       scenario->success, self->needs_reinit);
       g_test_fail ();
     }
+  GOODIX53X5_DEBUG_ONLY (
+    g_assert_cmpuint (self->milan_generation->use_count, ==, io.captures);
+                        )
   g_clear_error (&io.error);
   g_clear_pointer (&io.first_up, g_bytes_unref);
   g_clear_pointer (&io.first_sleep, g_bytes_unref);
