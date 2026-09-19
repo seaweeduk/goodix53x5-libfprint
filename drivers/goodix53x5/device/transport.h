@@ -65,8 +65,6 @@ void goodix_transport_command (FpDevice *dev, const GoodixTransportRequest *requ
                                 GoodixTransportDone done, gpointer data);
 void goodix_transport_wait_event (FpDevice *dev, GoodixProfile9FdtWaitMode mode,
                                    GoodixTransportDone done, gpointer data);
-void goodix_transport_wait_reply (FpDevice *dev, guint timeout,
-                                   GoodixTransportDone done, gpointer data);
 void goodix_transport_wait_mcu (FpDevice *dev, guint timeout, gsize length,
                                 GoodixTransportDone done, gpointer data);
 void goodix_transport_reset_mcu (FpDevice *dev);

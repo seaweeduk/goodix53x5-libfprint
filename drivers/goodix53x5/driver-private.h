@@ -112,6 +112,7 @@ typedef enum
   GOODIX_RESPONSE_REGISTER,
   GOODIX_RESPONSE_OTP,
   GOODIX_RESPONSE_PRODUCTION,
+  GOODIX_RESPONSE_FIRMWARE,
   GOODIX_RESPONSE_COUNT,
 } GoodixResponseSlot;
 
@@ -156,6 +157,8 @@ struct _FpiDeviceGoodix53x5
   /* Native response events reset per send; cached bytes survive reset.
    * The manual cache retains metadata for Linux touch-flag consumers. */
   guint8 command_response_ready;
+  /* Category-9/command-2 status is separate from shared response-cache bytes. */
+  guint8 config_response_status;
   /* Receiver-owned decoded image, independent of the command ACK and of the
    * captured frame handed to the runtime worker. Readiness resets per send. */
   guint16 *image_response;

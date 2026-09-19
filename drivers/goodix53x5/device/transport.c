@@ -788,16 +788,24 @@ goodix_rx_cell (GoodixTransport *operation,
             }
           GoodixResponseSlot slot =
             category == 3 && command == 3 ? GOODIX_RESPONSE_MANUAL :
-            category == 9 && command == 0 ? GOODIX_RESPONSE_CONFIG :
+            category == 9 ? GOODIX_RESPONSE_CONFIG :
             category == 0x0a && (command == 0 || command == 1 || command == 4) ? GOODIX_RESPONSE_SYSTEM :
             category == 8 ? GOODIX_RESPONSE_REGISTER :
             category == 0x0a && command == 3 ? GOODIX_RESPONSE_OTP :
+            category == 0x0f ? GOODIX_RESPONSE_FIRMWARE :
             category == 0x0e ? GOODIX_RESPONSE_PRODUCTION : GOODIX_RESPONSE_NONE;
           gboolean shared = slot == GOODIX_RESPONSE_SYSTEM || slot == GOODIX_RESPONSE_REGISTER ||
                             slot == GOODIX_RESPONSE_OTP || slot == GOODIX_RESPONSE_PRODUCTION ||
                             category == 0x0f;
-          gboolean current_data = current && operation->phase == GOODIX_TRANSPORT_RESPONSE &&
-                                  current->cmd.category == category && current->cmd.command == command;
+
+          if ((category == 0x0f || (category == 9 && command == 2)) && !payload_len)
+            {
+              error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                "Status reply is too short");
+              goto protocol_error;
+            }
+          if (category == 9 && command == 2)
+            self->config_response_status = payload[0];
 
           /* DataFromDevice publishes these shared stores without a matching
            * command. Only A/0, A/1 and A/4 signal the version getter's event.
@@ -830,26 +838,31 @@ goodix_rx_cell (GoodixTransport *operation,
                     }
                   memcpy (self->manual_response, payload, sizeof (self->manual_response));
                 }
-              /* Configuration publishes only an event, never a success byte.
-               * Response slots are independent of ACK reception. */
+              /* Native 01a7ec publishes response events independently of the
+               * waiter. Every category-9 command signals configuration; its
+               * command-2 status does not decide download success. Category F
+               * signals the separate firmware event after its shared-byte copy. */
               self->command_response_ready |= goodix_response_bit (slot);
               if (!current || operation->phase != GOODIX_TRANSPORT_RESPONSE ||
-                  (current->response_slot != slot && !current_data))
+                  current->response_slot != slot)
                 {
                   goodix_proto_rx_reset (&self->rx);
                   goto receive_more;
                 }
+              goodix_transport_complete (operation, NULL);
+              return;
             }
           else if (category == 3 && (command == 1 || command == 2))
             {
               GoodixFdtEventType type;
               GoodixProfile9FdtEvent event;
-              GoodixProfile9FdtWaitMode mode = command == 1 ?
-                GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
               g_autoptr(GError) event_error = NULL;
               gboolean async_event = idle_packet || self->gtls_restart_active ||
                 (current && (current->response_slot != GOODIX_RESPONSE_NONE ||
                              (current->cmd.category == 3 && current->cmd.command <= 2)));
+              GoodixProfile9FdtWaitMode mode = operation->phase == GOODIX_TRANSPORT_EVENT && !async_event ?
+                                               operation->event_mode : command == 1 ?
+                                               GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
 
               if (async_event && payload_len != GOODIX_FDT_EVENT_PAYLOAD_LEN)
                 event_error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
@@ -885,12 +898,24 @@ goodix_rx_cell (GoodixTransport *operation,
                   goodix_proto_rx_reset (&self->rx);
                   goto receive_more;
                 }
-            }
-          else if (shared && current && !current_data)
-            {
-              /* Category F overwrites one byte but has no command consumer. */
-              goodix_proto_rx_reset (&self->rx);
-              goto receive_more;
+              if (operation->phase == GOODIX_TRANSPORT_EVENT)
+                {
+                  GoodixFdtNotification *pending = &self->pending_fdt;
+
+                  if (!event.pending)
+                    {
+                      goodix_proto_rx_reset (&self->rx);
+                      goto receive_more;
+                    }
+                  pending->type = type;
+                  if (type != GOODIX_FDT_EVENT_CONFIG)
+                    pending->event = event;
+                  pending->event.pending = TRUE;
+                  goodix_recv_apply_fdt_event (dev, pending->type, &pending->event);
+                  memcpy (pending->prior_down, self->fdt_prior_down, sizeof (pending->prior_down));
+                  goodix_transport_complete (operation, NULL);
+                  return;
+                }
             }
           if (idle_packet)
             {
@@ -908,15 +933,6 @@ goodix_rx_cell (GoodixTransport *operation,
           goto receive_more;
         }
 
-      /* Native EC has no response event. Optional category-A/command-7 data
-       * is ignored independently of the command or event currently awaited. */
-      if (self->reply_valid &&
-          category == 0x0a && command == 7)
-        {
-          goodix_proto_rx_reset (&self->rx);
-          goto receive_more;
-        }
-
       /* Native updates independent ACK slots. Only the command being polled
        * consumes its status; unrelated ACKs never fail or satisfy that wait. */
       if (ack_packet && !expected_ack)
@@ -924,7 +940,10 @@ goodix_rx_cell (GoodixTransport *operation,
           goodix_proto_rx_reset (&self->rx);
           goto receive_more;
         }
-      if (ack_wait)
+      if (ack_wait &&
+          ((category == GOODIX_PROTO_CATEGORY_ACK && command == GOODIX_PROTO_CMD_ACK) ||
+           (category == GOODIX_PROTO_CATEGORY_FDT && (command == 1 || command == 2) &&
+            operation->cancelled_fdt_mode != GOODIX_PROFILE9_FDT_WAIT_NONE)))
         {
           guint8 status;
 
@@ -944,33 +963,12 @@ goodix_rx_cell (GoodixTransport *operation,
             }
           return;
         }
-      if (operation->phase == GOODIX_TRANSPORT_REPLY && operation->mcu_length)
-        {
-          /* A bounded MCU read observes only the category-D ring signal. */
-          goodix_proto_rx_reset (&self->rx);
-          goto receive_more;
-        }
-      if (operation->phase == GOODIX_TRANSPORT_EVENT)
-        {
-          GoodixFdtNotification *pending = &self->pending_fdt;
-          GoodixProfile9FdtEvent event;
-          GoodixFdtEventType type;
-          if (!goodix_cmd_parse_fdt_event (dev, operation->event_mode,
-                                          &type, &event, &error))
-            goto protocol_error;
-          if (!event.pending)
-            {
-              goodix_proto_rx_reset (&self->rx);
-              goto receive_more;
-            }
-          pending->type = type;
-          if (type != GOODIX_FDT_EVENT_CONFIG)
-            pending->event = event;
-          pending->event.pending = TRUE;
-          goodix_recv_apply_fdt_event (dev, pending->type, &pending->event);
-          memcpy (pending->prior_down, self->fdt_prior_down, sizeof (pending->prior_down));
-        }
-      goodix_transport_complete (operation, NULL);
+      /* A complete packet is not evidence that this waiter completed. Native
+       * unclaimed families/subcommands publish nothing; passive responses above
+       * publish only their own event. Keep ACK/data/MCU/FDT waits and their clocks
+       * intact, including for notifications without a consumer in this layer. */
+      goodix_proto_rx_reset (&self->rx);
+      goto receive_more;
     }
   else
     {
@@ -1272,16 +1270,6 @@ goodix_transport_wait_event (FpDevice                  *dev,
                               gpointer                  data)
 {
   goodix_transport_wait (dev, GOODIX_TRANSPORT_EVENT, 0, 0, mode, done, data);
-}
-
-void
-goodix_transport_wait_reply (FpDevice           *dev,
-                              guint               timeout,
-                              GoodixTransportDone done,
-                              gpointer            data)
-{
-  goodix_transport_wait (dev, GOODIX_TRANSPORT_REPLY, timeout, 0,
-                         GOODIX_PROFILE9_FDT_WAIT_NONE, done, data);
 }
 
 void
