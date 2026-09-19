@@ -6,6 +6,7 @@ MILAN_LIBFPRINT_PATCH_SHA256="fa9a4a89df02894a01013dc787d06cdbb74a4908b8e3cdc5da
 MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256="743c13782228869b8b5ea834caa096abadd38e5542303d7af8bc7acb4c925ae0"
 MILAN_LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256="50ba9283c7df26a5798f0e00c33ca89dc5f065302c5742f5cca17088366094f8"
 MILAN_FPRINTD_PATCH_SHA256="5d87cd806587fa5f035847a38ba3155b38f9a612a3070d9abfa6f83114e58db8"
+MILAN_FPRINTD_SESSION_PATCH_SHA256="d66ec63d48b7fff4239246f3b38afb6cc5cb7230d51ce17f7c1cbf6702de8034"
 MILAN_METADATA_DIR="/usr/share/goodix53x5-milan"
 MILAN_BUILD_ENV="$MILAN_METADATA_DIR/build.env"
 MILAN_INVENTORY="$MILAN_METADATA_DIR/inventory.json"
@@ -112,7 +113,8 @@ milan_overlay_input_sha256() {
       patches/libfprint/libfprint-update-result.patch \
       patches/libfprint/libfprint-goodix53x5-usb-persist.patch \
       patches/libfprint/libfprint-idle-suspend-notify.patch \
-      patches/fprintd/1.94.5-milan-update-save.patch
+      patches/fprintd/1.94.5-milan-update-save.patch \
+      patches/fprintd/1.94.5-serviced-session.patch
   ) | sha256sum | cut -d ' ' -f 1
 }
 
@@ -135,6 +137,8 @@ milan_verify_repo_inputs() {
     milan_die "libfprint idle suspend notification patch digest mismatch"
   [[ "$(milan_sha256 "$repo_dir/patches/fprintd/1.94.5-milan-update-save.patch")" == "$MILAN_FPRINTD_PATCH_SHA256" ]] ||
     milan_die "fprintd patch digest mismatch"
+  [[ "$(milan_sha256 "$repo_dir/patches/fprintd/1.94.5-serviced-session.patch")" == "$MILAN_FPRINTD_SESSION_PATCH_SHA256" ]] ||
+    milan_die "fprintd serviced-session patch digest mismatch"
 }
 
 milan_verify_git_pristine() {
