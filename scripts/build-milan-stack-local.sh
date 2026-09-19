@@ -57,6 +57,7 @@ ensure_source fprintd "$fprintd_pristine" \
 "$repo_dir/patches/libfprint/verify-goodix53x5-usb-persist-patch.sh" "$libfprint_pristine"
 "$repo_dir/patches/libfprint/verify-idle-suspend-notify-patch.sh" "$libfprint_pristine"
 "$repo_dir/patches/fprintd/verify-update-save-patch.sh" "$fprintd_pristine"
+"$repo_dir/patches/fprintd/verify-serviced-session-patch.sh" "$fprintd_pristine"
 
 mkdir -p "$MILAN_STACK_ROOT/builds"
 exec 9>"$MILAN_STACK_ROOT/.build.lock"
@@ -103,6 +104,8 @@ fprintd_build="$staging/fprintd-build"
 milan_run_stage "clone pinned fprintd checkout" git clone --local --no-hardlinks \
   "$fprintd_pristine" "$fprintd_source"
 git -C "$fprintd_source" apply "$repo_dir/patches/fprintd/1.94.5-milan-update-save.patch"
+git -C "$fprintd_source" apply "$repo_dir/patches/fprintd/1.94.5-serviced-session.patch"
+git -C "$fprintd_source" apply --reverse --check "$repo_dir/patches/fprintd/1.94.5-serviced-session.patch"
 milan_run_stage "configure fprintd against paired libfprint" meson devenv -C "$libfprint_build" \
   meson setup "$fprintd_build" "$fprintd_source" --prefix=/usr \
   --libdir="$MILAN_LIBDIR" --libexecdir="$(dirname "$MILAN_DAEMON_PATH")" \
