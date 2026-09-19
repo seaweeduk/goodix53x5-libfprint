@@ -29,7 +29,6 @@
 #include "device/scan.h"
 
 #include <string.h>
-#include <openssl/crypto.h>
 
 G_DEFINE_TYPE (FpiDeviceGoodix53x5, fpi_device_goodix53x5,
                FP_TYPE_DEVICE)
@@ -49,65 +48,14 @@ goodix_open (FpDevice *dev)
   self->session_cancel = g_cancellable_new ();
   self->session_suspended = FALSE;
   self->suspend_pending = FALSE;
+  self->close_pending = FALSE;
   goodix_start_open_ssm (dev);
-}
-
-static void
-goodix_close_joined (FpDevice *dev, gpointer data)
-{
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  GError *error = NULL;
-
-  self->action_epoch++;
-  if (self->cancel)
-    g_cancellable_cancel (self->cancel);
-  g_clear_object (&self->milan_task);
-  g_clear_object (&self->cancel);
-  g_clear_object (&self->session_cancel);
-  self->session_suspended = FALSE;
-  self->session_open = FALSE;
-  goodix_clear_pending_result_report (self);
-  g_clear_pointer (&self->otp_data, g_free);
-  g_clear_pointer (&self->fw_version, g_free);
-  goodix_transport_invalidate (dev);
-  g_clear_pointer (&self->rx.buf, g_free);
-#ifdef GOODIX53X5_DEBUG
-  g_clear_pointer (&self->captured_image, g_free);
-#endif
-  g_clear_pointer (&self->captured_raw_image, g_free);
-  g_clear_pointer (&self->pending_persistence_state, g_free);
-  goodix_milan_generation_retain_process (dev);
-  g_clear_pointer (&self->hardware_reference, g_free);
-  self->hardware_refresh_pending = FALSE;
-  g_clear_pointer (&self->enroll_transaction,
-                   goodix_milan_enrollment_transaction_free);
-  goodix_milan_persistence_clear (dev);
-  g_clear_error (&self->pending_enroll_error);
-  OPENSSL_cleanse (self->psk, sizeof (self->psk));
-  OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
-  self->psk_imported = FALSE;
-
-  g_usb_device_release_interface (fpi_device_get_usb_device (dev),
-                                  GOODIX_USB_INTERFACE, 0, &error);
-  self->usb_interface_claimed = FALSE;
-
-  fpi_device_close_complete (dev, error);
 }
 
 static void
 goodix_close (FpDevice *dev)
 {
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-
-  /* The core only blocks close once suspend has completed. */
-  if (self->suspend_pending)
-    {
-      fpi_device_close_complete (dev, fpi_device_error_new_msg (
-                                   FP_DEVICE_ERROR_BUSY,
-                                   "Hardware session is suspending"));
-      return;
-    }
-  goodix_session_quiesce (dev, goodix_close_joined, NULL);
+  goodix_session_close (dev);
 }
 
 static void
