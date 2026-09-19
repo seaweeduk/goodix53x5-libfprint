@@ -50,7 +50,9 @@ host resident:
   the driver keeps servicing finger-detection events between claims.
 - A removed device is closed on `FpDevice::removed`, since libfprint withholds
   `FpContext::device-removed` until an open device has been closed; the
-  manager's existing removal handling then unexports it.
+  manager's existing removal handling then unexports it. Removal while a
+  suspend or resume is still in flight is finished from that power task's
+  completion, because libfprint rejects close until the task has settled.
 - The device's `busy` property is also true while opening or open, so
   the manager never arms its idle exit while a sensor is retained. On
   `SIGTERM` or bus-name loss the manager ends any claim and closes each open
