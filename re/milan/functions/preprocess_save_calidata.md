@@ -73,8 +73,9 @@ argument checks.
   then calls `FUN_180031120`. It does not replace the storage result with the
   calibration-save result.
 - `_CheckIdentifyUpdate_Unify` (`FUN_180031510`) reaches `FUN_180030b40` at
-  `0x180031c1e` after a positive update count, an allocated candidate, successful
-  record validation, nonnegative storage-delete, and nonnegative storage-add.
+  `0x180031c1e` after a successful-match latch, a positive signed update count,
+  an allocated candidate, successful record validation, nonnegative
+  storage-delete, and nonnegative storage-add.
   Before calibration save it frees/clears the candidate and its length/count/
   identity fields. Its returned HRESULT remains the storage result.
 
@@ -84,6 +85,34 @@ first and then performs that update check, ignoring both return values and
 returning zero. Null adapter/context instead returns `0x80004003`. This is the
 deactivation callback's update/save gate, rather than an unconditional save at
 operation clear or detach.
+
+`FUN_18002ba60` copies match byte `DAT_18019b9b4` to context `+0x11c` and
+enters `templateStudy` only when that byte is exactly one. A zero match byte
+ends the update path before candidate publication. A successful match whose
+study update is zero or negative also produces no calibration save: the later
+`FUN_180031510` publication predicate is signed context `+0xf0 > 0` together
+with nonnull candidate `+0xf8`. A successful comparison alone is not the save
+trigger. See `FUN_18002ba60.md` for the match/study handoff.
+
+These file writes are separate from classifier packet serialization:
+
+| Event | Calibration-file effect |
+| --- | --- |
+| Either setup attempt succeeds | Save before live processing, even if the ensuing image is rejected or never produces a template update |
+| Both setup attempts fail | No setup-save |
+| Entered live classifier completes | Replace the in-workspace packet; no file write merely for reaching this boundary |
+| Preprocessing retry, extraction failure, ordinary no-match, or match with nonpositive study update | No additional post-live calibration save from that result |
+| Intermediate enrollment sample accepted or retried | No enrollment-commit save from that attempt |
+| Enrollment storage-add succeeds | Save the current workspace |
+| Positive identify update passes validation and both storage operations | Save the current workspace |
+| Operation clear or adapter detach | No unconditional calibration flush |
+
+An unsaved live mutation remains available to the next ordinary sample in the
+same attachment. A later eligible save includes the workspace then present,
+rather than only mutations associated with the successful image. A marked
+setup reload can instead replace unsaved workspace calibration/count state;
+the surviving gain and classifier globals have the separate lifetime described
+in `FUN_180031d00.md`.
 
 The setup-save passes the same adapter-status output used by initialization to
 `FUN_18002aef0`. Allocation or serialization failure can therefore reject the
@@ -108,3 +137,34 @@ snapshot plus the live age/reference fields, after completed classification at
 its production save gates. This mixed post-transfer state is distinct from the
 native setup-save packet snapshot. The native packed reference also undergoes
 no downsample/reconstruction round trip during setup-save.
+
+## Current Linux Save Ownership
+
+All paths below are relative to `drivers/goodix53x5/`.
+
+- `milan/preprocess/classification.c:goodix_milan_profile9_build_broken_mask`
+  copies the extraction ring into `extraction_persistence` at classifier end,
+  before retry admission and extraction append. This snapshot is distinct from
+  the subsequently extended `extraction_classification` ring.
+- `device/auth.c:goodix_auth_task_done` and
+  `device/enroll.c:goodix_enroll_task_done` install valid worker preprocessing
+  state into the current generation before result-status handling, subject to
+  action/epoch/generation ownership. Retry/no-match is not itself a RAM-state
+  rollback. These copies precede the callbacks' cancellation branches as well.
+- Authentication captures `pending_persistence_state` only when a match has
+  produced `pending_update_data`. `goodix_verify_complete` saves after replacing
+  the target print's raw data and before outward result delivery, provided no
+  cancellation/removal/fatal error prevents publication. A cleanup-only error
+  can preserve an already completed result and its update.
+- Enrollment clears prior `pending_persistence_state` on each accepted stage,
+  but takes a new snapshot only at the final required stage with valid
+  preprocessing state. `goodix_enroll_complete` reads it only after the required
+  stage count and transaction publication succeed, saves, then reports the final
+  print. Intermediate stages continue to update generation RAM without taking
+  a pending save snapshot or writing the calibration file.
+- `pending_persistence_state` is an owned full `GoodixMilanPreprocessState`
+  copy. Its production data consumer is `goodix_milan_persistence_save`; error,
+  cancellation, result-clear and final-completion paths free it.
+- Both Linux saves precede the daemon's actual print-file storage result. Native
+  post-live saves follow successful storage publication. Driver calibration
+  persistence and daemon print persistence are separate commits.

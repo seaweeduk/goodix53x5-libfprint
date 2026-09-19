@@ -114,6 +114,29 @@ base-validity change, or image acquisition in this action. See
 `usbinterface-FUN_18000e1f0.md#profile-9-direct-mode` for configuration and
 mode-store ownership.
 
+### Requested Mode And CONFIG Selection
+
+The CONFIG predicate reads persistent HAL dword `+0x1e0` at
+`0x18000e00d`, after the worker has read the published event type. It does not
+test whether a sleep command is currently waiting for ACK. `Milan_SetMode`
+(`0x1800059c0`, sleep call/store at `0x180005a3f..0x180005a4d`) writes two
+after its mode-2 command returns, even after ordinary transport exhaustion.
+Mode 4 and FDT arm callback `0x180005a60` do not change
+this field; down/up wait state `+0x1fc` is independent. An up/reverse handler
+can therefore rearm down while the requested mode remains two, and a later
+CONFIG notification is still suppressed.
+
+Capture owner `device_get_data` (`0x18000ebcc`) writes mode zero at
+`0x18000ec98`, before EC control or down/up arming. It repeats the zero store
+at the common tail `0x18000f419`, before publishing a nonnull capture callback.
+The screen-on path thus makes CONFIG eligible at capture admission, not only
+after arm completion. D0 entry and the initialized resume worker do not reset
+this mode. The parser always publishes default event `0x14`, including while
+mode is two; suppression belongs to worker selection. Such publication can
+replace an older FDT event in the shared slot even when CONFIG itself will
+subsequently be suppressed. Changing mode before selection changes the
+predicate; the parser does not freeze a mode value into the notification.
+
 `FUN_180005b80` receives the payload pointer and command selector. Selector `3`
 copies payload bytes `4..27` to the manual result store and signals context
 `+0x2d8`; it does not publish a worker event. For asynchronous down/up packets,
@@ -691,13 +714,33 @@ CONFIG without replacing the active raw/touch snapshot. The scan coordinator's
 `GOODIX_SCAN_COORD_RESTORE_CONFIG` state and `goodix_scan_config_restored`
 map action 3 to `goodix_cmd_restore_config` followed by the existing down-arm
 workflow. Ordinary configuration exhaustion still reaches down-arm; terminal
-host errors enter cleanup. During sleep OUT/ACK, `goodix_rx_cell` suppresses
-CONFIG without consuming the pending sample-drain allowance. This is the
-command-scoped suppression predicate; the driver has no separate retained
-counterpart for native HAL mode `+0x1e0`.
+host errors enter cleanup.
 
-`goodix53x5.c:fpi_device_goodix53x5_class_init` advertises
-`FP_DEVICE_FEATURE_SERVICED_SESSION`; its suspend/resume callbacks delegate to
+HAL `+0x1e0` maps to `FpiDeviceGoodix53x5.requested_mode`, separately from
+coordinator lifecycle and FDT `wait_mode`. Both sleep helpers reach
+`device/commands.c:goodix_command_done`, which stores `GOODIX_REQUESTED_MODE_SLEEP`
+after the final transport result, on success or ordinary exhaustion. Retry does
+not store it; host rejection, cancellation and terminal reader failure keep the
+previous mode until cold invalidation. CONFIG publication in `goodix_rx_cell`
+does not inspect mode or consume the cancelled raw-sample drain allowance.
+Selection in `goodix_scan_coordinator_handler`, immediately after
+`goodix_recv_select_fdt`, consumes but does not dispatch CONFIG when mode is sleep:
+there is no configuration upload, down rearm, raw/touch replacement, reference
+mutation, or release publication from that notification.
+
+`goodix_scan_start_coordinator_subsm` stores `GOODIX_REQUESTED_MODE_CAPTURE`
+after admitting the foreground coordinator and before starting its SSM, hence
+before EC control or initial arm. This maps the capture owner's early zero
+store; the serialized admission sequence retains zero through arm completion,
+where native repeats the store. Idle service admission, mode-4 configuration,
+down/up rearming, logical wait cancellation and reader quiescence do not change
+requested mode. `goodix_transport_invalidate` resets it to zero only after
+command and physical-reader ownership have joined, together with retiring the
+pending notification. Zero-initialized devices and cold reopen share that
+initial value. This Linux cold teardown is distinct from native retained D0
+entry, which does not reset HAL `+0x1e0`.
+
+The suspend/resume callbacks in `goodix53x5.c` delegate to
 `device/session.c:goodix_session_suspend` / `goodix_session_resume`, including
 open idle ownership. Suspend uses `goodix_session_quiesce` to cancel and join
 selected service/action work, CPU work and the physical reader. A separate

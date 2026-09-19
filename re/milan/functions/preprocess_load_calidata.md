@@ -23,6 +23,31 @@ and workspace unchanged. `FUN_180031d00.md` maps these separate native/Linux
 owners, including live process-state transfer and the `FpDevice` finalization
 boundary.
 
+The Linux file is
+`/var/lib/fprint/goodix53x5-preprocess-<identity-sha256>.bin`, with exact length
+70,323 bytes. `goodix_milan_persistence_prepare` derives its identity from the
+`goodix53x5-preprocess-v2` domain, little-endian chip ID, subtype and OTP length,
+then the verified OTP bytes. This is a sensor-qualified preprocessing file,
+not a user print or a hardware-session checkpoint.
+
+The version-2 encoding contains sample count, calibration plane, three
+88x104 retained class planes and their count, component/support counts and age
+planes, and the signed 44x54 reference. A 64-byte metadata header and SHA-256
+digest qualify that subset. It does not encode setup readiness, hardware or
+consumed raw references, live gain planes/count/readiness/stability, adaptive
+classifier scalars, import latch, extraction hysteresis, or acquisition state.
+
+`goodix_milan_generation_prepare_setup` returns without reading the file when
+setup is initialized and neither engine nor hardware refresh is pending. On a
+required setup it resets a temporary generation, calls
+`goodix_milan_persistence_restore`, then overlays surviving process-owned state
+when the old generation has initialized setup or retained process state. The
+restore validates the whole file before decoding directly into that caller-owned
+reset state. Its fixed-size decode has no subsequent recoverable failure path.
+Missing, invalid or unreadable input leaves the destination unchanged, retaining
+the caller's reset defaults. Process-state transfer does not replace the loaded
+calibration/count or pre-append extraction snapshot with unsaved live values.
+
 ## Input And Validation
 
 The input is a calibration payload of at least `0x224b0` bytes. The caller's
