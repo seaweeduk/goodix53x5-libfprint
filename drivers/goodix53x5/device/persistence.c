@@ -83,6 +83,14 @@ static const guint8 goodix_milan_state_magic[8] = {
 static const gchar goodix_milan_identity_domain[] =
   "goodix53x5-preprocess-v2";
 
+/* Selected at sample delivery, immutable until the setup worker publishes it.
+ * Neither the destination nor the bytes borrow the device or live generation. */
+struct _GoodixMilanSetupSave
+{
+  gchar  *path;
+  guint8 *contents;
+};
+
 static void
 goodix_milan_write_u16 (guint8 *output,
                         guint16 value)
@@ -231,6 +239,34 @@ goodix_milan_state_path (const gchar *prefix,
     }
   encoded[sizeof (encoded) - 1] = '\0';
   return g_strdup_printf (GOODIX_MILAN_STATE_DIR "/%s%s.bin", prefix, encoded);
+}
+
+static void
+goodix_milan_state_header (guint8              *contents,
+                           FpiDeviceGoodix53x5 *self,
+                           guint32              sample_count)
+{
+  memcpy (contents + GOODIX_MILAN_STATE_MAGIC_OFFSET,
+          goodix_milan_state_magic, sizeof (goodix_milan_state_magic));
+  goodix_milan_write_u32 (contents + GOODIX_MILAN_STATE_VERSION_OFFSET,
+                          GOODIX_MILAN_STATE_VERSION);
+  goodix_milan_write_u32 (contents + GOODIX_MILAN_STATE_HEADER_SIZE_OFFSET,
+                          GOODIX_MILAN_STATE_HEADER_SIZE);
+  goodix_milan_write_u16 (contents + GOODIX_MILAN_STATE_SUBTYPE_OFFSET,
+                          self->milan_sensor_subtype);
+  goodix_milan_write_u16 (contents + GOODIX_MILAN_STATE_ROWS_OFFSET,
+                          GOODIX_MILAN_SENSOR_ROWS);
+  goodix_milan_write_u16 (contents + GOODIX_MILAN_STATE_COLUMNS_OFFSET,
+                          GOODIX_MILAN_SENSOR_COLUMNS);
+  goodix_milan_write_u16 (contents + GOODIX_MILAN_STATE_SAMPLE_FORMAT_OFFSET,
+                          GOODIX_MILAN_STATE_SAMPLE_FORMAT);
+  goodix_milan_write_u32 (contents + GOODIX_MILAN_STATE_SAMPLE_COUNT_OFFSET,
+                          sample_count);
+  goodix_milan_write_u32 (contents + GOODIX_MILAN_STATE_PAYLOAD_SIZE_OFFSET,
+                          GOODIX_MILAN_STATE_PAYLOAD_SIZE);
+  memcpy (contents + GOODIX_MILAN_STATE_IDENTITY_OFFSET,
+          self->milan_persistence_identity,
+          sizeof (self->milan_persistence_identity));
 }
 
 static gboolean
@@ -546,47 +582,51 @@ goodix_milan_persistence_clear (FpDevice *dev)
   self->milan_persistence_identity_valid = FALSE;
 }
 
-void
+GoodixMilanSetupSave *
 goodix_milan_persistence_restore (FpDevice              *dev,
                                   GoodixMilanGeneration *generation)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  g_autofree gchar *path = NULL;
   g_autofree guint8 *contents = NULL;
-  g_autofree GoodixMilanPreprocessState *restored = NULL;
+  GoodixMilanPreprocessState *restored;
+  GoodixMilanSetupSave *save;
 
   g_autoptr(GError) error = NULL;
 
-  g_return_if_fail (generation != NULL);
+  g_return_val_if_fail (generation != NULL, NULL);
+  save = g_try_new0 (GoodixMilanSetupSave, 1);
+  if (!save)
+    return NULL;
   if (!self->milan_persistence_identity_valid)
-    return;
+    return save;
+  save->path = goodix_milan_state_path (GOODIX_MILAN_STATE_PREFIX,
+                                        self->milan_persistence_identity);
 
   if (!goodix_milan_state_directory_secure (&error))
     {
       if (!g_error_matches (error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
         fp_warn ("Cannot use Milan preprocessing state directory: %s",
                  error->message);
-      return;
+      goto defaults;
     }
-  path = goodix_milan_state_path (GOODIX_MILAN_STATE_PREFIX,
-                                  self->milan_persistence_identity);
-  if (!goodix_milan_state_read (path, GOODIX_MILAN_STATE_FILE_SIZE, &contents, &error))
+  if (!goodix_milan_state_read (save->path, GOODIX_MILAN_STATE_FILE_SIZE, &contents, &error))
     {
       if (!g_error_matches (error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
         fp_warn ("Failed to read Milan preprocessing state %s: %s",
-                 path, error->message);
-      return;
+                 save->path, error->message);
+      goto defaults;
     }
   if (!goodix_milan_state_valid (contents, GOODIX_MILAN_STATE_FILE_SIZE,
                                  self->milan_persistence_identity,
                                  self->milan_sensor_subtype))
     {
-      fp_warn ("Ignoring invalid Milan preprocessing state %s", path);
-      return;
+      fp_warn ("Ignoring invalid Milan preprocessing state %s", save->path);
+      goto defaults;
     }
 
-  restored = g_new (GoodixMilanPreprocessState, 1);
-  goodix_milan_preprocess_reset (restored);
+  /* The setup caller already reset this temporary generation. All validation
+   * precedes these writes; decoding the validated fixed-size fields cannot fail. */
+  restored = &generation->state;
   /* Native import retains these fresh-DLL defaults, not persisted values. */
   restored->profile9_history_mask_threshold = 60;
   restored->profile9_history_mask_average = 60;
@@ -619,9 +659,68 @@ goodix_milan_persistence_restore (FpDevice              *dev,
   goodix_milan_restore_reference (
     contents + GOODIX_MILAN_STATE_REFERENCE_OFFSET,
     restored->profile9_history_reference);
-  generation->state = *restored;
   fp_info ("Restored Milan preprocessing state with %u samples",
            generation->state.sample_count);
+  /* Setup changes no compact-format field. Keep the original packed reference
+   * and packet instead of encoding the reconstructed or transferred globals. */
+  save->contents = g_steal_pointer (&contents);
+  return save;
+
+defaults:
+  save->contents = g_try_malloc0 (GOODIX_MILAN_STATE_FILE_SIZE);
+  if (save->contents)
+    {
+      /* Native default calibration is unity before the first live initializer
+       * clears it. The immediate setup-save must retain that pre-live value. */
+      goodix_milan_state_header (save->contents, self, 0);
+      for (gsize i = 0; i < GOODIX_MILAN_SENSOR_PIXELS; i++)
+        goodix_milan_write_u16 (
+          save->contents + GOODIX_MILAN_STATE_CALIBRATION_OFFSET +
+          i * sizeof (guint16), 0x2000);
+      goodix_milan_sha256 (save->contents, GOODIX_MILAN_STATE_DIGEST_OFFSET,
+                           save->contents + GOODIX_MILAN_STATE_DIGEST_OFFSET);
+    }
+  return save;
+}
+
+void
+goodix_milan_setup_save_free (GoodixMilanSetupSave *save)
+{
+  if (!save)
+    return;
+  g_free (save->path);
+  g_free (save->contents);
+  g_free (save);
+}
+
+static gint32
+goodix_milan_setup_save_publish (gpointer user_data)
+{
+  GoodixMilanSetupSave *save = user_data;
+
+  g_autoptr(GError) error = NULL;
+
+  if (!save || (save->path && !save->contents))
+    return 0x8001;
+  if (!save->path)
+    return 0x8002;
+  if (!goodix_milan_state_write (save->path, save->contents,
+                                 GOODIX_MILAN_STATE_FILE_SIZE, &error))
+    fp_warn ("Failed to save Milan setup state %s: %s",
+             save->path, error->message);
+  return 0;
+}
+
+void
+goodix_milan_persistence_bind_setup (GoodixMilanRuntimeInput *input,
+                                     GoodixMilanGeneration   *generation)
+{
+  g_return_if_fail (input != NULL);
+  g_return_if_fail (generation != NULL);
+  goodix_milan_runtime_input_set_setup_hook (
+    input, goodix_milan_setup_save_publish,
+    g_steal_pointer (&generation->setup_save),
+    (GDestroyNotify) goodix_milan_setup_save_free);
 }
 
 void
@@ -667,27 +766,7 @@ goodix_milan_persistence_save (FpDevice                         *dev,
       }
 
   contents = g_malloc0 (GOODIX_MILAN_STATE_FILE_SIZE);
-  memcpy (contents + GOODIX_MILAN_STATE_MAGIC_OFFSET,
-          goodix_milan_state_magic, sizeof (goodix_milan_state_magic));
-  goodix_milan_write_u32 (contents + GOODIX_MILAN_STATE_VERSION_OFFSET,
-                          GOODIX_MILAN_STATE_VERSION);
-  goodix_milan_write_u32 (contents + GOODIX_MILAN_STATE_HEADER_SIZE_OFFSET,
-                          GOODIX_MILAN_STATE_HEADER_SIZE);
-  goodix_milan_write_u16 (contents + GOODIX_MILAN_STATE_SUBTYPE_OFFSET,
-                          self->milan_sensor_subtype);
-  goodix_milan_write_u16 (contents + GOODIX_MILAN_STATE_ROWS_OFFSET,
-                          GOODIX_MILAN_SENSOR_ROWS);
-  goodix_milan_write_u16 (contents + GOODIX_MILAN_STATE_COLUMNS_OFFSET,
-                          GOODIX_MILAN_SENSOR_COLUMNS);
-  goodix_milan_write_u16 (contents + GOODIX_MILAN_STATE_SAMPLE_FORMAT_OFFSET,
-                          GOODIX_MILAN_STATE_SAMPLE_FORMAT);
-  goodix_milan_write_u32 (contents + GOODIX_MILAN_STATE_SAMPLE_COUNT_OFFSET,
-                          state->sample_count);
-  goodix_milan_write_u32 (contents + GOODIX_MILAN_STATE_PAYLOAD_SIZE_OFFSET,
-                          GOODIX_MILAN_STATE_PAYLOAD_SIZE);
-  memcpy (contents + GOODIX_MILAN_STATE_IDENTITY_OFFSET,
-          self->milan_persistence_identity,
-          sizeof (self->milan_persistence_identity));
+  goodix_milan_state_header (contents, self, state->sample_count);
   for (gsize i = 0; i < GOODIX_MILAN_SENSOR_PIXELS; i++)
     goodix_milan_write_u16 (
       contents + GOODIX_MILAN_STATE_CALIBRATION_OFFSET +

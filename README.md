@@ -107,6 +107,13 @@ refuses to overwrite package-owned or otherwise unrecorded files.
 Print state stays in `/var/lib/fprint`. The installer does not enable
 fingerprint authentication in PAM; configure that through your distribution.
 
+> [!WARNING]
+> Hyprlock 0.9.6 can record successful fingerprint unlocks as PAM failures and
+> leave fingerprint authentication unavailable after a rapid relock, potentially
+> causing `pam_faillock` lockouts. Use Hyprlock 0.9.5 until
+> [hyprwm/hyprlock#1074](https://github.com/hyprwm/hyprlock/issues/1074) is
+> resolved.
+
 Build dependencies include a C toolchain, Git, Meson, Ninja, pkg-config,
 GLib/GIO, GUsb, OpenSSL 3, Python 3, gettext, Perl's `pod2man`, and the
 development dependencies of libfprint and fprintd, including Polkit's GObject

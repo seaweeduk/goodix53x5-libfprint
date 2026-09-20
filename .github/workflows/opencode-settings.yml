@@ -1,0 +1,23 @@
+name: OpenCode Settings
+
+on:
+  workflow_call:
+    outputs:
+      model:
+        description: OpenAI model used by every OpenCode review entry point
+        value: ${{ jobs.settings.outputs.model }}
+      variant:
+        description: OpenCode variant and OpenAI reasoning effort
+        value: ${{ jobs.settings.outputs.variant }}
+
+jobs:
+  settings:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      # Change these two values to update automatic reviews and /oc together.
+      model: gpt-6-astra
+      variant: high
+    steps:
+      - name: Publish shared settings
+        run: 'true'

@@ -10,6 +10,7 @@ static gboolean
 arm_repair_case (const Scenario *scenario)
 {
   Schedule schedule = scenario->schedule;
+
   return schedule == ARM_STATUS || schedule == ARM_CONFIG_FAIL ||
          schedule == ARM_REPEAT_FAIL || schedule == ARM_REPEAT_STATUS ||
          schedule == ARM_REFRESH || schedule == ARM_MAX ||
@@ -21,9 +22,10 @@ static gboolean
 response_command_case (const Scenario *scenario)
 {
   Schedule schedule = scenario->schedule;
+
   return schedule == RESPONSE_EARLY || schedule == RESPONSE_RETRY ||
          schedule == RESPONSE_EARLY_RESET || schedule == RESPONSE_STATUS ||
-          schedule == RESPONSE_DUPLICATE ||
+         schedule == RESPONSE_DUPLICATE ||
          schedule == RESPONSE_HANDOFF;
 }
 
@@ -31,6 +33,7 @@ static gboolean
 send_error_case (const Scenario *scenario)
 {
   Schedule schedule = scenario->schedule;
+
   return schedule == SEND_IO_RETRY || schedule == SEND_TIMEOUT_RETRY ||
          schedule == SEND_DISCONNECT || schedule == SEND_CANCELLED ||
          schedule == SEND_FAILED_RETRY || schedule == SEND_STALL_RETRY ||
@@ -41,6 +44,7 @@ static gboolean
 write_contract_case (const Scenario *scenario)
 {
   Schedule schedule = scenario->schedule;
+
   return schedule == SEND_FAILED_RETRY || schedule == SEND_STALL_RETRY ||
          schedule == SEND_INTERNAL_RETRY || schedule == WRITE_STALLED_CANCEL;
 }
@@ -50,24 +54,17 @@ check_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel)
 {
   if (transfer->endpoint == GOODIX_EP_IN)
     {
-      g_assert_cmpuint (transfer->length, ==, 64);
-      if (timeout != 0)
-        {
-          if (io.command == 0 || io.command == 0xa8)
-            {
-              if (cancel != action_cancel_token)
-                g_test_fail ();
-            }
-          else
-            g_assert_null (cancel);
-        }
+      g_assert_cmpuint (transfer->length, ==, 0x8000);
+      g_assert_cmpuint (timeout, ==, 0);
+      g_assert_nonnull (cancel);
+      g_assert_true (cancel != action_cancel_token);
     }
   else
     {
       GBytes **first = NULL;
       g_assert_cmpuint (transfer->endpoint, ==, GOODIX_EP_OUT);
       if (write_contract_case (io.scenario) &&
-          (timeout != 0 || cancel != action_cancel_token))
+          (timeout != 0 || cancel != FPI_DEVICE_GOODIX53X5 (transfer->device)->session_cancel))
         g_test_fail ();
       if (cancel && g_cancellable_is_cancelled (cancel))
         io.precancelled_writes++;
@@ -112,25 +109,31 @@ check_submit (FpiUsbTransfer *transfer, guint timeout, GCancellable *cancel)
       if (io.command == 0xae)
         io.ec_ack_started = 0;
       if (io.command == 0x34)
-        first = &io.first_up;
+        {
+          first = &io.first_up;
+        }
       else if (io.command == 0x60)
-        first = &io.first_sleep;
+        {
+          first = &io.first_sleep;
+        }
       else if (io.command == 0x32)
         {
           first = &io.first_down;
           memcpy (io.last_down_payload, transfer->buffer + 5, GOODIX_FDT_BASE_LEN);
         }
       else if (io.command == 0x36 || io.command == 0x90)
-        first = &io.first_response;
+        {
+          first = &io.first_response;
+        }
       if (first)
         {
           g_autoptr(GBytes) bytes = g_bytes_new (transfer->buffer,
-                                                transfer->length);
+                                                 transfer->length);
           if (*first && !(io.scenario->schedule == ARM_REFRESH && io.command == 0x32) &&
               !(io.command == 0x32 &&
-                         (io.scenario->schedule == EARLY_REARM_REVERSE ||
-                          io.scenario->schedule == TWO_EARLY_REVERSE) &&
-                         io.sends[0x32] > 1 + io.scenario->timeout_count))
+                (io.scenario->schedule == EARLY_REARM_REVERSE ||
+                 io.scenario->schedule == TWO_EARLY_REVERSE) &&
+                io.sends[0x32] > 1 + io.scenario->timeout_count))
             g_assert_true (g_bytes_equal (*first, bytes));
           else if (!*first)
             *first = g_bytes_ref (bytes);
@@ -175,6 +178,7 @@ complete_write (FpiUsbTransfer *transfer, GCancellable *cancel)
   const Scenario *scenario = io.scenario;
   GError *error = NULL;
   Schedule order = scenario->schedule;
+
   if (order == WRITE_STALLED_CANCEL && io.command == 0x34 && !io.action_cancelled)
     {
       /* The write stays owned until its cancellation completion. */
@@ -198,11 +202,11 @@ complete_write (FpiUsbTransfer *transfer, GCancellable *cancel)
             order == EARLIER_CLEANUP_ERROR))
     {
       gint code = order == SEND_IO_RETRY ? G_USB_DEVICE_ERROR_IO :
-        order == SEND_TIMEOUT_RETRY ? G_USB_DEVICE_ERROR_TIMED_OUT :
-        order == SEND_DISCONNECT || order == EARLIER_CLEANUP_ERROR ? G_USB_DEVICE_ERROR_NO_DEVICE :
-        order == SEND_CANCELLED ? G_USB_DEVICE_ERROR_CANCELLED :
-        order == SEND_FAILED_RETRY ? G_USB_DEVICE_ERROR_FAILED :
-        order == SEND_STALL_RETRY ? G_USB_DEVICE_ERROR_NOT_SUPPORTED : G_USB_DEVICE_ERROR_INTERNAL;
+                  order == SEND_TIMEOUT_RETRY ? G_USB_DEVICE_ERROR_TIMED_OUT :
+                  order == SEND_DISCONNECT || order == EARLIER_CLEANUP_ERROR ? G_USB_DEVICE_ERROR_NO_DEVICE :
+                  order == SEND_CANCELLED ? G_USB_DEVICE_ERROR_CANCELLED :
+                  order == SEND_FAILED_RETRY ? G_USB_DEVICE_ERROR_FAILED :
+                  order == SEND_STALL_RETRY ? G_USB_DEVICE_ERROR_NOT_SUPPORTED : G_USB_DEVICE_ERROR_INTERNAL;
       stop_after_capture (transfer->device);
       error = g_error_new_literal (G_USB_DEVICE_ERROR, code, "Scheduled send failure");
     }
@@ -214,11 +218,14 @@ command_reply (FpiUsbTransfer *transfer)
 {
   const Scenario *scenario = io.scenario;
   GError *error = NULL;
+
   if (scenario->schedule == RESPONSE_DUPLICATE && io.command == 0xae &&
-           io.sends[0xae] == 2 && io.duplicates < 2)
+      io.sends[0xae] == 2 && io.duplicates < 2)
     {
       if (io.duplicates++ == 0)
-        ack_reply (transfer, scenario->standalone_arm);
+        {
+          ack_reply (transfer, scenario->standalone_arm);
+        }
       else
         {
           guint8 payload[4 + GOODIX_FDT_BASE_LEN];
@@ -241,8 +248,10 @@ command_reply (FpiUsbTransfer *transfer)
         payload[i] = i + 1;
       if (io.command == 0x90)
         payload[0] = scenario->ec_status;
-       if (scenario->schedule == RESPONSE_HANDOFF && io.events < 2)
-        reverse_event (transfer, io.events);
+      if (scenario->schedule == RESPONSE_HANDOFF && io.events < 2)
+        {
+          reverse_event (transfer, io.events);
+        }
       else if (early && !io.ec_data && io.early_attempt != io.sends[io.command])
         {
           io.early_attempt = io.sends[io.command];
@@ -280,9 +289,11 @@ command_reply (FpiUsbTransfer *transfer)
   else if (!io.ec_data)
     {
       if (scenario->schedule == CLEANUP_LATE_PROTO && io.command == 0xae)
-        reply (transfer, 0xb, 0, &io.command, 1);
+        {
+          reply (transfer, 0xb, 0, &io.command, 1);
+        }
       else if (scenario->schedule == EC_LATE_ACK && io.command == scenario->standalone_arm &&
-          io.duplicates == 0)
+               io.duplicates == 0)
         {
           if (usb.timeout != 500)
             g_test_fail ();
@@ -331,7 +342,7 @@ command_reply (FpiUsbTransfer *transfer)
           reverse_event (transfer, io.events);
         }
       else if (io.command == scenario->timeout_command &&
-          io.sends[io.command] <= scenario->timeout_count)
+               io.sends[io.command] <= scenario->timeout_count)
         {
           test_clock_us += usb.timeout * 1000;
           error = g_error_new_literal (G_USB_DEVICE_ERROR,
@@ -340,7 +351,9 @@ command_reply (FpiUsbTransfer *transfer)
         }
       else if (io.command == 0x60 &&
                scenario->schedule == EVENT_BEFORE_SLEEP_ACK && io.events == 0)
-        up_event (transfer);
+        {
+          up_event (transfer);
+        }
       else if (io.command == 0x60 && down_drain_case (scenario) && io.events == 0)
         {
           guint8 payload[4 + GOODIX_FDT_BASE_LEN] = { 2, 0, 0xff, 0x0f };
@@ -354,7 +367,9 @@ command_reply (FpiUsbTransfer *transfer)
         }
       else if (io.command == 0x34 && scenario->schedule == EVENT_BEFORE_ARM_ACK &&
                io.events == 0)
-        up_event (transfer);
+        {
+          up_event (transfer);
+        }
       else if (io.command == 0xae &&
                (scenario->schedule == DUPLICATE_SLEEP_BEFORE_EC_ACK ||
                 scenario->schedule == LATE_EVEN_ACK) &&
@@ -408,11 +423,11 @@ command_reply (FpiUsbTransfer *transfer)
            * has no attempt number; both carry identical command/status bytes. */
           ack_reply (transfer, io.command);
           guint expected_timeout = scenario->schedule == EC_LATE_ACK &&
-                                    io.command == scenario->standalone_arm ? 150 : ack_budget (io.command);
+                                   io.command == scenario->standalone_arm ? 150 : ack_budget (io.command);
           if (scenario->schedule == RESPONSE_DUPLICATE && io.command == 0xae && io.sends[0xae] == 2)
             expected_timeout = 50;
           if (response_case (scenario) && usb.timeout != expected_timeout)
-              g_test_fail ();
+            g_test_fail ();
           if (io.command == 0xae)
             {
               if (scenario->schedule == LATE_EVEN_ACK && usb.timeout != ack_budget (io.command) / 4)
@@ -451,7 +466,7 @@ command_reply (FpiUsbTransfer *transfer)
           else
             {
               if (usb.timeout != (scenario->schedule == EC_LATE_ACK ||
-                                 io.sends[io.command] > 1 ? 500 : 150))
+                                  io.sends[io.command] > 1 ? 500 : 150))
                 g_test_fail ();
               io.data_chunks++;
               if (scenario->schedule == RESPONSE_DEADLINE)
@@ -485,9 +500,11 @@ command_reply (FpiUsbTransfer *transfer)
             g_test_fail ();
           test_clock_us += MIN (usb.timeout, 60) * 1000;
           if (usb.timeout < 60)
-            error = g_error_new_literal (G_USB_DEVICE_ERROR,
-                                         G_USB_DEVICE_ERROR_TIMED_OUT,
-                                         "Continuation budget shortened");
+            {
+              error = g_error_new_literal (G_USB_DEVICE_ERROR,
+                                           G_USB_DEVICE_ERROR_TIMED_OUT,
+                                           "Continuation budget shortened");
+            }
           else
             {
               gsize offset = io.data_chunks ? 64 + (io.data_chunks - 1) * 63 : 0;
@@ -524,7 +541,9 @@ data_handler (FpiSsm *ssm, FpDevice *dev)
       gsize length;
       GError *error = NULL;
       if (!goodix_parse_reply_exact (dev, 8, 1, &payload, &length, &error))
-        fpi_ssm_mark_failed (ssm, error);
+        {
+          fpi_ssm_mark_failed (ssm, error);
+        }
       else
         {
           g_assert_cmpuint (length, ==, 150);
@@ -539,8 +558,11 @@ static void
 send_response_command (FpiSsm *ssm, FpDevice *dev, guint8 command)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
   if (command == 0x36)
-    goodix_cmd_fdt_manual (ssm, dev, TRUE, self->profile9_fdt.base_manual);
+    {
+      goodix_cmd_fdt_manual (ssm, dev, TRUE, self->profile9_fdt.base_manual);
+    }
   else
     {
       gsize len;
@@ -584,7 +606,9 @@ response_handler (FpiSsm *ssm, FpDevice *dev)
               fpi_ssm_mark_completed (ssm);
           }
         else if (!goodix_cmd_parse_fdt_manual_reply (dev, &payload, &length, &error))
-          fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+          {
+            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+          }
         else
           {
             g_assert_cmpuint (length, ==, io.command == 0x90 ? 1 : 4 + GOODIX_FDT_BASE_LEN);
@@ -597,6 +621,7 @@ response_handler (FpiSsm *ssm, FpDevice *dev)
           }
       }
       break;
+
     case 4:
       fpi_ssm_mark_completed (ssm);
       break;
@@ -637,6 +662,7 @@ test_shared_response (gconstpointer data)
   gboolean after_ack = which == 3 || which == 5 || which >= 7;
   guint category = which == 7 ? 8 : which == 8 ? 0x0e : 0;
   static const Scenario scenario = { .schedule = EVENT_CANCELLED };
+
   g_autoptr(FpDevice) dev = NULL;
   guint8 expected[64], payload[76], version[] = { 'v', 0 };
   const guint8 *cached = NULL;
@@ -677,7 +703,9 @@ test_shared_response (gconstpointer data)
               memcpy (expected + 4, payload, 60);
             }
           else
-            memcpy (expected, payload, i == 3 ? 1 : sizes[i]);
+            {
+              memcpy (expected, payload, i == 3 ? 1 : sizes[i]);
+            }
           g_assert_cmpmem (self->shared_response, 64, expected, 64);
           g_assert_cmpuint (self->command_response_ready & 4, ==, 0);
           g_assert_cmpuint (io.completions, ==, idle ? 1 : 0);
@@ -685,10 +713,8 @@ test_shared_response (gconstpointer data)
         }
       if (idle)
         {
-          /* The cache outlives idle reception; join before the query OUT. */
+          /* The cache and physical IN survive command admission. */
           fpi_ssm_start (fpi_ssm_new (dev, alias_command, 1), idle_test_command_done);
-          g_assert_true (g_cancellable_is_cancelled (usb.cancel));
-          fixture_complete (g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "Alias idle handoff"));
           g_assert_cmpuint (usb.pending->endpoint, ==, GOODIX_EP_OUT);
           fixture_complete (NULL);
         }
@@ -718,6 +744,7 @@ test_shared_response (gconstpointer data)
       g_assert_cmpmem (cached, len, expected, sizeof (expected));
     }
   g_assert_cmpuint (io.completions, ==, idle ? 2 : 1);
+  fixture_join_reader (dev);
   g_assert_null (usb.pending);
   g_assert_null (self->transport);
   g_clear_pointer (&self->rx.buf, g_free);
@@ -729,10 +756,10 @@ register_command_tests (void)
 {
   static const Scenario up_retry = { 0x34, 1, 2, 1, TRUE, EVENT_CANCELLED };
   static const Scenario sleep_retry = { 0x60, 1, 1, 2, TRUE, EVENT_CANCELLED };
-  static const Scenario terminal = { 0x60, 2, 1, 2, FALSE, EVENT_CANCELLED };
-  static const Scenario ec_terminal = { 0xae, 1, 1, 1, FALSE, EVENT_CANCELLED };
+  static const Scenario terminal = { 0x60, 2, 1, 2, TRUE, EVENT_CANCELLED };
+  static const Scenario ec_terminal = { 0xae, 1, 1, 1, TRUE, EVENT_CANCELLED };
   static const Scenario sleep_duplicate_ack = { 0x60, 1, 1, 2, TRUE, DUPLICATE_SLEEP_BEFORE_EC_ACK };
-  static const Scenario deadline = { 0x60, 1, 1, 2, FALSE, LATE_ACK_DEADLINE };
+  static const Scenario deadline = { 0x60, 1, 1, 2, TRUE, LATE_ACK_DEADLINE };
   static const Scenario send_io = { 0, 0, 2, 1, TRUE, SEND_IO_RETRY };
   static const Scenario send_timeout = { 0, 0, 2, 1, TRUE, SEND_TIMEOUT_RETRY };
   static const Scenario disconnect = { 0, 0, 1, 1, FALSE, SEND_DISCONNECT };
@@ -741,11 +768,11 @@ register_command_tests (void)
   static const Scenario zero_ack = { 0x34, 0, 1, 1, TRUE, ACK_ZERO_THEN_ONE };
   static const Scenario two_ack = { 0x34, 0, 1, 1, TRUE, ACK_TWO_THEN_ONE };
   static const Scenario even_retry = { 0x60, 1, 1, 2, TRUE, ACK_EVEN_TIMEOUT };
-  static const Scenario even_terminal = { 0x60, 2, 1, 2, FALSE, ACK_EVEN_TIMEOUT };
-  static const Scenario even_ec = { 0xae, 1, 1, 1, FALSE, ACK_EVEN_TIMEOUT };
+  static const Scenario even_terminal = { 0x60, 2, 1, 2, TRUE, ACK_EVEN_TIMEOUT };
+  static const Scenario even_ec = { 0xae, 1, 1, 1, TRUE, ACK_EVEN_TIMEOUT };
   static const Scenario even_malformed = { 0x34, 0, 1, 1, FALSE, ACK_EVEN_THEN_MALFORMED };
   static const Scenario late_even = { 0x60, 1, 1, 2, TRUE, LATE_EVEN_ACK };
-  static const Scenario late_even_deadline = { 0x60, 1, 1, 2, FALSE, LATE_EVEN_DEADLINE };
+  static const Scenario late_even_deadline = { 0x60, 1, 1, 2, TRUE, LATE_EVEN_DEADLINE };
   static const Scenario manual_budget = { 0x60, 1, 0, 2, TRUE, RESPONSE_BUDGET, 0x36 };
   static const Scenario config_budget = { 0x60, 1, 0, 2, TRUE, RESPONSE_BUDGET, 0x90 };
   static const Scenario manual_deadline = { 0x60, 1, 0, 2, FALSE, RESPONSE_DEADLINE, 0x36 };
@@ -755,8 +782,9 @@ register_command_tests (void)
   static const Scenario ec_zero_data = { 0, 0, 0, 1, TRUE, EC_LATE_DATA, 0x36, 0 };
   static const Scenario ec_one_data = { 0, 0, 0, 1, TRUE, EC_LATE_DATA, 0x36, 1 };
   const char *alias_names[] = { "a0-before-ack", "a1-before-ack", "a4-before-ack", "a1-after-ack",
-                               "writers-before-ack", "writers-after-ack", "writers-idle",
-                               "register-response", "psk-response" };
+                                "writers-before-ack", "writers-after-ack", "writers-idle",
+                                "register-response", "psk-response" };
+
   for (guint i = 0; i < G_N_ELEMENTS (alias_names); i++)
     {
       g_autofree char *name = g_strdup_printf ("shared-response/%s", alias_names[i]);

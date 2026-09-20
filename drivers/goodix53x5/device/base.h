@@ -25,6 +25,7 @@
 
 typedef struct _FpiSsm FpiSsm;
 typedef struct _FpDevice FpDevice;
+typedef struct _GoodixMilanSetupSave GoodixMilanSetupSave;
 
 typedef enum
 {
@@ -122,8 +123,11 @@ typedef struct
   gboolean                   admitted;
   gboolean                   identify_prelude_seen;
   guint                      identify_prelude_count;
+  /* Debug sample delivery count for generation_id/setup_tx_on, independent
+   * of the preprocessing state retained when the hardware reference changes. */
   guint64                    use_count;
   gboolean                   process_state_retained;
+  GoodixMilanSetupSave       *setup_save;
 } GoodixMilanGeneration;
 
 typedef enum

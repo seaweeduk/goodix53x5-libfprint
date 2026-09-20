@@ -16,6 +16,7 @@ typedef struct
   GoodixScanCaptureReadyCallback capture_ready;
   GoodixScanCycleSettledCallback cycle_settled;
   gpointer                       user_data;
+  gboolean                       matched;
 } HarnessScanCoordinator;
 
 HarnessPlan plan;
@@ -23,6 +24,16 @@ FpiSsm *paused_ssm;
 gboolean pause_before_capture;
 gboolean pause_cycle_settled;
 gboolean capture_enroll_stage_pattern;
+
+void
+milan_runtime_harness_bind_setup (GoodixMilanRuntimeInput *input,
+                                  GoodixMilanGeneration   *generation)
+{
+  /* This existing harness supplies frames without disk selection and keeps
+   * runtime execution filesystem-free. Production binds its selected record. */
+  (void) input;
+  (void) generation;
+}
 
 void
 reset_plan (const gint32  *scores,
@@ -164,6 +175,7 @@ milan_runtime_harness_scan_capture (FpDevice               *dev,
   self->captured_raw_image = g_new (guint16, PIXELS);
   generate_frames (self->milan_generation->setup_tx_on,
                    self->captured_raw_image, pattern);
+  self->captured_enroll_allowed = TRUE;
   goodix_milan_generation_note_use (self->milan_generation);
   coordinator->capture_ready (dev, coordinator->user_data);
 }
@@ -191,6 +203,11 @@ milan_runtime_harness_scan_done (FpiSsm   *ssm,
   if (self->profile9_fdt.owner == ssm)
     self->profile9_fdt.owner = NULL;
   self->profile9_fdt.lifecycle = GOODIX_PROFILE9_FDT_LIFECYCLE_STOPPED;
+  /* Like the production coordinator, a hardware failure after a positive
+   * comparison does not invalidate that result. */
+  if (error && coordinator->matched &&
+      !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+    g_clear_error (&error);
   if (error)
     fpi_ssm_mark_failed (coordinator->parent_ssm, error);
   else
@@ -248,6 +265,7 @@ milan_runtime_harness_scan_set_disposition (
     }
   if (disposition == GOODIX_SCAN_DISPOSITION_AUTH_SUCCESS)
     {
+      coordinator->matched = TRUE;
       if (pause_cycle_settled)
         {
           paused_ssm = ssm;

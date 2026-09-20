@@ -7,7 +7,11 @@ on:
     types: [created]
 
 jobs:
+  settings:
+    uses: ./.github/workflows/opencode-settings.yml
+
   opencode:
+    needs: settings
     if: |
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
       (
@@ -53,9 +57,9 @@ jobs:
               "provider": {
                 "openai": {
                   "models": {
-                    "gpt-5.6-sol": {
+                    "${{ needs.settings.outputs.model }}": {
                       "options": {
-                        "reasoningEffort": "high"
+                        "reasoningEffort": "${{ needs.settings.outputs.variant }}"
                       }
                     }
                   }
@@ -63,8 +67,8 @@ jobs:
               }
             }
         with:
-          model: openai/gpt-5.6-sol
-          variant: high
+          model: openai/${{ needs.settings.outputs.model }}
+          variant: ${{ needs.settings.outputs.variant }}
           mentions: /opencode,/oc
           share: false
 

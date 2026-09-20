@@ -28,6 +28,7 @@
 #include "device/crypto.h"
 #include "device/debug.h"
 #include "device/base.h"
+#include "device/health.h"
 #include "milan/match/match.h"
 
 /* USB interface claimed at open and released at close — interface 1,
@@ -77,6 +78,11 @@ typedef enum
   GOODIX_FDT_EVENT_DOWN = 0,
   GOODIX_FDT_EVENT_UP,
   GOODIX_FDT_EVENT_REVERSE,
+  GOODIX_FDT_EVENT_NONE,
+  GOODIX_FDT_EVENT_CONFIG,
+  GOODIX_FDT_EVENT_ESD,
+  GOODIX_FDT_EVENT_WAKE,
+  GOODIX_FDT_EVENT_DEACTIVATE,
 } GoodixFdtEventType;
 
 typedef struct
@@ -85,10 +91,17 @@ typedef struct
    * scan copies selected work before another packet can replace this slot. */
   GoodixProfile9FdtEvent event;
   GoodixFdtEventType type;
-  guint16 prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
 } GoodixFdtNotification;
 
 typedef struct _GoodixTransport GoodixTransport;
+typedef struct _GoodixReader GoodixReader;
+
+/* HAL +0x1e0: requested mode, independent of coordinator and FDT wait state. */
+typedef enum
+{
+  GOODIX_REQUESTED_MODE_CAPTURE = 0,
+  GOODIX_REQUESTED_MODE_SLEEP = 2,
+} GoodixRequestedMode;
 
 /* Independent native response events; the first four retain their existing
  * readiness bits used by the named command consumers. */
@@ -102,6 +115,7 @@ typedef enum
   GOODIX_RESPONSE_REGISTER,
   GOODIX_RESPONSE_OTP,
   GOODIX_RESPONSE_PRODUCTION,
+  GOODIX_RESPONSE_FIRMWARE,
   GOODIX_RESPONSE_COUNT,
 } GoodixResponseSlot;
 
@@ -111,6 +125,21 @@ struct _FpiDeviceGoodix53x5
   FpDevice      parent;
 
   GCancellable *cancel;
+  /* Hardware service authority is independent of the current client action. */
+  GCancellable *session_cancel;
+  gboolean      session_open;
+  /* Exactly one owner drives the hardware at a time: background maintenance
+   * (idle service or a detached deactivation tail), a foreground action, or
+   * the reader join requested by suspend/close. */
+  gboolean      service_active;
+  gboolean      foreground_active;
+  gboolean      action_pending;
+  gboolean      suspend_pending;
+  gboolean      session_suspended;
+  /* Physical stop in flight; service_joined remains owned until its callback. */
+  gboolean      service_draining;
+  void (*service_joined) (FpDevice *dev, gpointer data);
+  gpointer service_joined_data;
 
   /* GTLS session (persists across captures) */
   GoodixGtlsCtx gtls;
@@ -120,11 +149,18 @@ struct _FpiDeviceGoodix53x5
 
   /* Calibration seeded from OTP; live reads update the current high DAC. */
   GoodixCalibParams calib;
-  /* Current/history persist within an initialized session; cold OTP resets them. */
+  /* Per-device default and last live snapshot of module-owned DAC history. */
   GoodixDynamicDacState dynamic_dac;
+  GoodixSensorHealth health;
   /* Latest admitted hardware TX-on plane, independent of consumed setup.
    * Owned until hardware teardown; recoverable base rejection retains it. */
   guint16 *hardware_reference;
+  guint64  hardware_reference_id;
+  gboolean hardware_refresh_pending;
+  /* Installed hardware callback/count outlive an individual read attempt. */
+  guint    capture_unread;
+  gboolean captured_enroll_allowed;
+  gboolean capture_callback_pending;
 
   /* Reassembly buffer for multi-chunk reads */
   GoodixReassembly rx;
@@ -139,28 +175,27 @@ struct _FpiDeviceGoodix53x5
   GByteArray      *mcu_rx;
   GBytes          *mcu_reply;
   gboolean         mcu_ready;
-  /* Demand-driven physical IN/OUT and the accepted foreground operation. */
+  /* One handle-owned IN reader and a separately owned command/event waiter. */
+  GoodixReader    *reader;
   GoodixTransport *transport;
 
-  /* Repeated mode and issued response-command ACK slots. Kept for the device
-   * lifetime: the wire has no generation or reliable remaining ACK count. */
-  guint16 routed_command_acks;
   /* Native response events reset per send; cached bytes survive reset.
    * The manual cache retains metadata for Linux touch-flag consumers. */
   guint8 command_response_ready;
+  /* Category-9/command-2 status is separate from shared response-cache bytes. */
+  guint8 config_response_status;
   /* Receiver-owned decoded image, independent of the command ACK and of the
    * captured frame handed to the runtime worker. Readiness resets per send. */
   guint16 *image_response;
   gboolean image_response_failed;
-  /* Current scan's first error is ordinary deactivation transport failure,
-   * after worker join. Only authentication may preserve a computed result. */
-  gboolean scan_cleanup_only_error;
   guint8 manual_response[4 + GOODIX_FDT_BASE_LEN];
   /* Parser mutations precede coalesced notification. The latest reverse event
    * retains the down base installed by its predecessor, not the arm payload. */
   guint16 fdt_prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
   GoodixFdtNotification pending_fdt;
+  guint8 notice_irq[2];
   gboolean rx_idle_partial;
+  GoodixRequestedMode requested_mode;
 
   /* Profile-9 FDT state persists across actions and hardware reinitialization. */
   GoodixProfile9FdtState profile9_fdt;
@@ -215,15 +250,14 @@ struct _FpiDeviceGoodix53x5
   /* USB interface state */
   gboolean usb_interface_claimed;
 
-  /* System sleep happened while the device was open; the USB claim and GTLS
-   * session may be stale (S4 reset/re-enumeration rebinds cdc_acm). The next
-   * verify/identify/enroll runs the full open SSM before any auth USB I/O. */
+  /* A hardware fault requires cold reconstruction on resume or the next
+   * action. Ordinary sleep retains host state and only re-keys GTLS. */
   gboolean needs_reinit;
 
   /* Retained for the open/reinitialization parent SSM. */
   FpiSsm *task_ssm;
 
-  /* Verify/identify result queued until post-match cleanup has completed. */
+  /* Result computed by the CPU worker, delivered when the action completes. */
   gboolean        pending_result_report;
   FpiDeviceAction pending_result_action;
   FpiMatchResult  pending_verify_result;

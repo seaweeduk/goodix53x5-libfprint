@@ -28,12 +28,217 @@
 #include "device/persistence.h"
 #include "device/scan.h"
 #include "device/session.h"
+#include "device/auth.h"
+#include "device/enroll.h"
 
 #include <string.h>
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 
 #define GOODIX_PSK_STATE_FILE "/var/lib/fprint/goodix53x5.psk"
+
+/* ========================================================================
+ * Hardware ownership
+ *
+ * The open session always has at most one hardware owner: background
+ * maintenance (the idle service, or the deactivation tail a completed action
+ * left behind), one foreground action, or the reader join that suspend and
+ * close request. Every owner reports back through goodix_session_settle(),
+ * which then starts whatever is waiting.
+ * ======================================================================== */
+
+GCancellable *
+goodix_session_io_cancellable (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (self->profile9_fdt.owner || self->service_active ||
+      self->suspend_pending || self->session_suspended)
+    return self->session_cancel;
+  return fpi_device_get_cancellable (dev);
+}
+
+static void
+goodix_session_hardware_joined (FpDevice *dev, gpointer data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  void (*joined) (FpDevice *, gpointer) = self->service_joined;
+  gpointer joined_data = self->service_joined_data;
+
+  /* Retire the stop owner only after the physical reader's callback joined.
+   * The continuation may start power I/O or complete an outward request. */
+  self->service_joined = NULL;
+  self->service_joined_data = NULL;
+  self->service_draining = FALSE;
+  joined (dev, joined_data);
+}
+
+void
+goodix_session_settle (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  /* Wait for the current owner; it reports back here when it stops. */
+  if (self->foreground_active || self->service_active || self->service_draining)
+    return;
+  if (self->action_pending)
+    {
+      GError *error = NULL;
+
+      self->action_pending = FALSE;
+      if (self->session_suspended || self->suspend_pending)
+        error = fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
+                                         "Hardware session is suspended");
+      else if (self->service_joined || fpi_device_action_is_cancelled (dev))
+        error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                    "Action cancelled during hardware handoff");
+      if (error)
+        {
+          fpi_device_action_error (dev, error);
+        }
+      else
+        {
+          self->foreground_active = TRUE;
+          if (fpi_device_get_current_action (dev) == FPI_DEVICE_ACTION_ENROLL)
+            goodix_enroll_start (dev);
+          else
+            goodix_auth_start (dev);
+          return;
+        }
+    }
+  if (self->service_joined)
+    {
+      /* Only hardware-stop boundaries cancel the request-independent IN. The
+       * physical reader, partial reassembly and coalesced notifications survive
+       * ordinary owner handoffs. */
+      self->service_draining = TRUE;
+      goodix_transport_quiesce (dev, goodix_session_hardware_joined, NULL);
+      return;
+    }
+  if (self->session_open && !self->needs_reinit &&
+      !self->suspend_pending && !self->session_suspended)
+    goodix_scan_start_service (dev);
+}
+
+void
+goodix_session_service_done (FpDevice *dev, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  self->service_active = FALSE;
+  if (error &&
+      !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) &&
+      !g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_CANCELLED))
+    {
+      /* Maintenance stays off until the next action reconstructs the
+       * hardware session; nothing else retries in the background. */
+      self->needs_reinit = TRUE;
+      fp_warn ("Hardware maintenance stopped: %s", error->message);
+    }
+  g_clear_error (&error);
+  goodix_session_settle (dev);
+}
+
+void
+goodix_session_detach_action (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  g_assert (!self->service_active);
+  self->service_active = TRUE;
+}
+
+void
+goodix_session_start_action (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  /* Actions never queue behind power or close work; the core only blocks
+   * them itself once suspend has completed. */
+  if (self->suspend_pending || self->session_suspended)
+    {
+      fpi_device_action_error (dev, fpi_device_error_new_msg (
+                                 FP_DEVICE_ERROR_BUSY, "Hardware session is suspended"));
+      return;
+    }
+  if (self->service_joined)
+    {
+      fpi_device_action_error (dev, g_error_new_literal (
+                                 G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                 "Hardware session is closing"));
+      return;
+    }
+  self->action_pending = TRUE;
+  if (self->service_active)
+    goodix_scan_join_service (dev);
+  else
+    goodix_session_settle (dev);
+}
+
+gboolean
+goodix_session_cancel_pending_action (FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (!self->action_pending)
+    return FALSE;
+
+  /* Nothing was admitted yet. Detach only the request: the maintenance owner
+   * keeps its selected command and settles servicing through its own join. */
+  self->action_pending = FALSE;
+  fpi_device_action_error (dev, g_error_new_literal (
+                            G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                            "Action cancelled during hardware handoff"));
+  return TRUE;
+}
+
+void
+goodix_session_action_done (FpDevice *dev, GError *error,
+                            void (*complete) (FpDevice *, GError *))
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_CANCELLED))
+    {
+      g_clear_error (&error);
+      error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                   "Action cancelled");
+    }
+  self->foreground_active = FALSE;
+  /* The application callback may start the next action reentrantly; the
+   * ownership state above is already consistent for that. */
+  complete (dev, error);
+  goodix_session_settle (dev);
+}
+
+void
+goodix_session_quiesce (FpDevice *dev,
+                        void (*joined) (FpDevice *, gpointer), gpointer data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  g_assert (!self->service_joined);
+  self->service_joined = joined;
+  self->service_joined_data = data;
+  if (self->session_cancel)
+    g_cancellable_cancel (self->session_cancel);
+  if (self->service_active)
+    goodix_scan_join_service (dev);
+  else if (self->foreground_active)
+    {
+      GCancellable *io_cancel = fpi_device_get_cancellable (dev);
+
+      /* An OUT submitted before suspend still owns the foreground token.
+       * Revoke it as well as the CPU/scan token before awaiting the join. */
+      if (io_cancel)
+        g_cancellable_cancel (io_cancel);
+      if (self->cancel)
+        g_cancellable_cancel (self->cancel);
+      goodix_scan_stop_coordinator (dev, NULL);
+    }
+  else
+    goodix_session_settle (dev);
+}
 
 /* Open SSM — full device initialization */
 typedef enum {
@@ -51,6 +256,8 @@ typedef enum {
   GOODIX_OPEN_VALIDATE_CONFIG,
   GOODIX_OPEN_CAPTURE_REF,
   GOODIX_OPEN_CAPTURE_REF_DONE,
+  GOODIX_OPEN_FINAL_FIRMWARE,
+  GOODIX_OPEN_FINAL_SLEEP,
   GOODIX_OPEN_SLEEP,
   GOODIX_OPEN_EC_POWER_OFF,
   GOODIX_OPEN_EC_POWER_OFF_DONE,
@@ -92,6 +299,10 @@ goodix_open_state_name (GoodixOpenState state)
       return "capture_ref";
     case GOODIX_OPEN_CAPTURE_REF_DONE:
       return "capture_ref_done";
+    case GOODIX_OPEN_FINAL_FIRMWARE:
+      return "final_firmware";
+    case GOODIX_OPEN_FINAL_SLEEP:
+      return "final_sleep";
     case GOODIX_OPEN_SLEEP:
       return "sleep";
     case GOODIX_OPEN_EC_POWER_OFF:
@@ -196,7 +407,7 @@ typedef enum {
 static gboolean
 goodix_probe_cancelled (FpiSsm *ssm, FpDevice *dev)
 {
-  GCancellable *cancel = fpi_device_get_cancellable (dev);
+  GCancellable *cancel = goodix_session_io_cancellable (dev);
   gboolean removed = FALSE;
 
   g_object_get (dev, "removed", &removed, NULL);
@@ -429,7 +640,7 @@ goodix_gtls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
   gsize mcu_len;
   g_autoptr(GError) error = NULL;
 
-  if (g_cancellable_set_error_if_cancelled (fpi_device_get_cancellable (dev), &error))
+  if (g_cancellable_set_error_if_cancelled (goodix_session_io_cancellable (dev), &error))
     {
       fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
       return;
@@ -549,7 +760,7 @@ goodix_gtls_retry_handler (FpiSsm *ssm, FpDevice *dev)
   GoodixGtlsRetry *retry = fpi_ssm_get_data (ssm);
   g_autoptr(GError) error = NULL;
 
-  if (g_cancellable_set_error_if_cancelled (fpi_device_get_cancellable (dev), &error))
+  if (g_cancellable_set_error_if_cancelled (goodix_session_io_cancellable (dev), &error))
     {
       fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
       return;
@@ -558,8 +769,8 @@ goodix_gtls_retry_handler (FpiSsm *ssm, FpDevice *dev)
     {
       if (retry->restart_done)
         {
-          /* The native restart worker logs ordinary exhaustion; it does not
-           * complete or discard the pending capture request. */
+          /* Ordinary restart exhaustion never retires the hardware worker,
+           * whether or not an application currently owns a capture request. */
           fp_dbg ("GTLS restart failed: %s", retry->error->message);
           fpi_ssm_mark_completed (ssm);
           return;
@@ -605,6 +816,61 @@ goodix_start_gtls_restart (FpDevice *dev, GoodixGtlsRestartDone done,
   retry->restart_data = data;
   fpi_ssm_set_data (ssm, retry, (GDestroyNotify) goodix_gtls_retry_free);
   fpi_ssm_start (ssm, goodix_gtls_restart_done);
+}
+
+/* deviceInit ignores ordinary allbase, final-version and mode-2 results.
+ * Configuration failure still exits allbase before its first manual/image;
+ * only the cold owner continues to its common initialization tail. */
+static void
+goodix_open_native_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
+                           gboolean native_zero, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  gboolean failed = error != NULL;
+
+  if (error && !native_zero)
+    {
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+  g_clear_error (&error);
+  if (goodix_probe_cancelled (ssm, dev))
+    return;
+
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case GOODIX_OPEN_UPLOAD_CONFIG:
+      if (failed)
+        {
+          self->profile9_fdt.base_valid = FALSE;
+          self->profile9_fdt.initial_recovery_pending = TRUE;
+          fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_FINAL_FIRMWARE);
+        }
+      else
+        {
+          fpi_ssm_next_state (ssm);
+        }
+      break;
+
+    case GOODIX_OPEN_FINAL_FIRMWARE:
+      if (!failed)
+        {
+          g_free (self->fw_version);
+          self->fw_version = g_strndup ((const gchar *) self->shared_response,
+                                        sizeof (self->shared_response));
+        }
+      fpi_ssm_next_state (ssm);
+      break;
+
+    case GOODIX_OPEN_FINAL_SLEEP:
+      /* Completed native mode request, including ordinary exhaustion. The
+       * command owner has published requested mode 2; no EC-off belongs here. */
+      fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_NUM_STATES);
+      break;
+
+    default:
+      g_assert_not_reached ();
+    }
 }
 
 static void
@@ -668,6 +934,11 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
     case GOODIX_OPEN_RESET:
       {
+        /* Cold HAL construction deactivates the anchor before any reference
+         * outcome. Ordinary actions and in-place repairs do not reset it. */
+        self->profile9_fdt.drift_anchor_empty = TRUE;
+        goodix_health_reset (&self->health);
+        self->capture_callback_pending = FALSE;
         FpiSsm *chip = fpi_ssm_new (dev, goodix_chip_ssm_handler, GOODIX_CHIP_NUM_STATES);
 
         fpi_ssm_set_data (chip, g_new0 (guint, 1), g_free);
@@ -707,10 +978,9 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
 
         goodix_milan_persistence_prepare (dev);
         goodix_device_parse_otp (pl, pl_len, &self->calib);
-        /* Conservative Linux session policy: every cold initialization,
-         * including reinit, starts DAC/history from OTP. This does not model
-         * the full native lifetime. */
-        self->dynamic_dac = (GoodixDynamicDacState){ .default_dac = self->calib.dac_h };
+        /* Sensor checking reseeds current/default; native static adjustment
+         * history is owned by live capture, not HAL reconstruction. */
+        self->dynamic_dac.default_dac = self->calib.dac_h;
         if (!goodix_load_psk (self, &error))
           {
             fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
@@ -852,15 +1122,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         self->open_ref_powered = FALSE;
 
         fp_info ("GTLS handshake completed");
-
-        /* Build and upload config */
-        gsize cfg_len;
-        const guint8 *def_cfg = goodix_device_get_default_config (&cfg_len);
-        guint8 *cfg = g_memdup2 (def_cfg, cfg_len);
-
-        goodix_device_patch_config (cfg, cfg_len, &self->calib);
-        goodix_cmd_upload_config (ssm, dev, cfg, cfg_len);
-        g_free (cfg);
+        goodix_cmd_restore_config (ssm, dev, goodix_open_native_result);
       }
       break;
 
@@ -883,13 +1145,24 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_OPEN_CAPTURE_REF_DONE:
-      /* A recoverable contaminated pair performs its own bounded shutdown and
-       * leaves a typed pending event for the first action. */
+      /* Ordinary allbase failure leaves recovery pending, not a valid image.
+       * The cold owner still performs its final query and mode-2 publication. */
       self->open_ref_powered = self->milan_generation != NULL;
-      fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_SLEEP);
+      fpi_ssm_next_state (ssm);
+      break;
+
+    case GOODIX_OPEN_FINAL_FIRMWARE:
+      if (!goodix_probe_cancelled (ssm, dev))
+        goodix_cmd_probe (ssm, dev, TRUE, goodix_open_native_result);
+      break;
+
+    case GOODIX_OPEN_FINAL_SLEEP:
+      if (!goodix_probe_cancelled (ssm, dev))
+        goodix_cmd_set_sleep_mode_result (ssm, dev, goodix_open_native_result);
       break;
 
     case GOODIX_OPEN_SLEEP:
+      /* Defensive host-error cleanup is separate from the native cold tail. */
       if (self->open_ref_powered)
         goodix_cmd_set_sleep_mode (ssm, dev);
       else
@@ -963,6 +1236,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
       self->open_ref_powered = FALSE;
       goodix_milan_generation_retain_process (dev);
       g_clear_pointer (&self->hardware_reference, g_free);
+      self->hardware_refresh_pending = FALSE;
       goodix_milan_persistence_clear (dev);
       OPENSSL_cleanse (self->psk, sizeof (self->psk));
       OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
@@ -1000,6 +1274,8 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
   self->open_usb_reset_required = FALSE;
   goodix_debug_timing_open_done (self, dev, NULL);
   self->needs_reinit = FALSE;
+  self->session_open = TRUE;
+  goodix_session_settle (dev);
   fpi_device_open_complete (dev, NULL);
 }
 
@@ -1035,7 +1311,7 @@ goodix_start_open_ssm (FpDevice *dev)
 }
 
 /* ========================================================================
- * Post-sleep reinitialization
+ * Cold hardware recovery
  * ======================================================================== */
 
 static void
@@ -1047,10 +1323,11 @@ goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
   /* A USB reset ends the transport that could complete the retained packet. */
   goodix_transport_invalidate (dev);
 
-  fp_info ("Reinitializing device after system sleep");
+  fp_info ("Reinitializing hardware session");
   self->action_epoch++;
   goodix_milan_generation_retain_process (dev);
   g_clear_pointer (&self->hardware_reference, g_free);
+  self->hardware_refresh_pending = FALSE;
   self->open_recovery_attempted = FALSE;
   self->open_gtls_failed = FALSE;
   self->open_usb_reset_required = TRUE;
@@ -1078,11 +1355,10 @@ goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
 }
 
 /**
- * If the device needs reinitialization (system sleep happened while it was
- * open), join idle reception, release any stale interface claim and run the
- * full open-time initialization SSM as a sub-SSM of @ssm. After an S4 reset/
- * re-enumeration the kernel rebinds cdc_acm to our interface, so recovery needs
- * the same USB reset + claim-with-detach + GTLS handshake as a fresh open.
+ * If the hardware session is invalid, join reception, release any stale
+ * interface claim and run full initialization as a sub-SSM of @ssm. This is
+ * also the once-only fallback from warm resume; successful re-keying after
+ * system sleep does not enter this USB reset/calibration/reference path.
  * Returns TRUE if reinit was scheduled (caller returns and the parent advances
  * when it completes), FALSE if no reinit was needed.
  */
@@ -1119,29 +1395,291 @@ goodix_error_indicates_stale_device (const GError *error)
 }
 
 /* ========================================================================
- * Suspend / resume policy
+ * Close
  * ======================================================================== */
+
+static void
+goodix_session_close_joined (FpDevice *dev, gpointer data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GError *error = NULL;
+
+  self->action_epoch++;
+  if (self->cancel)
+    g_cancellable_cancel (self->cancel);
+  g_clear_object (&self->milan_task);
+  g_clear_object (&self->cancel);
+  g_clear_object (&self->session_cancel);
+  self->session_suspended = FALSE;
+  self->session_open = FALSE;
+  goodix_clear_pending_result_report (self);
+  g_clear_pointer (&self->otp_data, g_free);
+  g_clear_pointer (&self->fw_version, g_free);
+  goodix_transport_invalidate (dev);
+  g_clear_pointer (&self->rx.buf, g_free);
+#ifdef GOODIX53X5_DEBUG
+  g_clear_pointer (&self->captured_image, g_free);
+#endif
+  g_clear_pointer (&self->captured_raw_image, g_free);
+  g_clear_pointer (&self->pending_persistence_state, g_free);
+  goodix_milan_generation_retain_process (dev);
+  g_clear_pointer (&self->hardware_reference, g_free);
+  self->hardware_refresh_pending = FALSE;
+  g_clear_pointer (&self->enroll_transaction,
+                   goodix_milan_enrollment_transaction_free);
+  goodix_milan_persistence_clear (dev);
+  g_clear_error (&self->pending_enroll_error);
+  OPENSSL_cleanse (self->psk, sizeof (self->psk));
+  OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
+  self->psk_imported = FALSE;
+
+  g_usb_device_release_interface (fpi_device_get_usb_device (dev),
+                                  GOODIX_USB_INTERFACE, 0, &error);
+  self->usb_interface_claimed = FALSE;
+
+  fpi_device_close_complete (dev, error);
+}
+
+void
+goodix_session_close (FpDevice *dev)
+{
+  /* The paired core rejects close while a power task is pending and admits
+   * it for a quiesced suspended session, which needs no hardware I/O here. */
+  goodix_session_quiesce (dev, goodix_session_close_joined, NULL);
+}
+
+/* ========================================================================
+ * Suspend / resume policy
+ *
+ * Suspend joins every hardware owner, sleeps the sensor and powers the EC
+ * off, retaining the host calibration/reference/FDT tuple. Resume reclaims
+ * USB and re-keys GTLS without resetting that tuple. Existing hardware faults
+ * or failed warm reconstruction take the cold path once before completion.
+ * ======================================================================== */
+
+static void
+goodix_suspend_joined (FpDevice *dev, gpointer data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixRequestedMode requested_mode = self->requested_mode;
+
+  /* Retire packets and notifications, not the retained HAL's mode or bases. */
+  goodix_transport_invalidate (dev);
+  self->requested_mode = requested_mode;
+  if (data)
+    self->needs_reinit = TRUE;
+  self->suspend_pending = FALSE;
+  self->session_suspended = TRUE;
+  fpi_device_suspend_complete (dev, data);
+}
+
+static void
+goodix_suspend_power_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  FPI_DEVICE_GOODIX53X5 (dev)->task_ssm = NULL;
+  goodix_transport_quiesce (dev, goodix_suspend_joined, error);
+}
+
+static void
+goodix_suspend_power (FpiSsm *ssm, FpDevice *dev)
+{
+  if (fpi_ssm_get_cur_state (ssm) == 0)
+    goodix_cmd_set_sleep_mode (ssm, dev);
+  else
+    goodix_cmd_ec_control (ssm, dev, FALSE);
+}
+
+static void
+goodix_suspend_service_joined (FpDevice *dev, gpointer data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  FpiSsm *ssm;
+
+  g_clear_object (&self->session_cancel);
+  self->session_cancel = g_cancellable_new ();
+  ssm = fpi_ssm_new (dev, goodix_suspend_power, 2);
+  self->task_ssm = ssm;
+  fpi_ssm_start (ssm, goodix_suspend_power_done);
+}
 
 void
 goodix_session_suspend (FpDevice *dev)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
 
-  /* Any system sleep while the device is open may invalidate the USB claim
-   * and GTLS session: S4 resets or re-enumerates the device and rebinds the
-   * cdc_acm kernel driver to our interface. Force a full reinitialization at
-   * the start of the next action regardless of what we were doing when sleep
-   * hit. Only a successful reinitialization clears this again. */
-  self->needs_reinit = TRUE;
-  goodix_scan_stop_coordinator (
-    dev, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
-                              "Profile-9 scan stopped for suspend"));
-  fpi_device_suspend_complete (
-    dev, fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
+  self->suspend_pending = TRUE;
+  goodix_session_quiesce (dev, goodix_suspend_service_joined, NULL);
+}
+
+typedef enum {
+  GOODIX_RESUME_WARM,
+  GOODIX_RESUME_COLD,
+  GOODIX_RESUME_NUM_STATES,
+} GoodixResumeState;
+
+typedef struct
+{
+  gint64   started_us;
+  gboolean cold;
+} GoodixResumeData;
+
+static void
+goodix_resume_joined (FpDevice *dev, gpointer data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GError *error = data;
+
+  self->session_suspended = FALSE;
+  if (error)
+    {
+      /* Neither cancellation nor failed reconstruction grants readiness. */
+      self->needs_reinit = TRUE;
+      goodix_transport_invalidate (dev);
+      fp_warn ("Hardware reconstruction after resume failed: %s", error->message);
+    }
+  else
+    {
+      self->needs_reinit = FALSE;
+    }
+  goodix_session_settle (dev);
+  fpi_device_resume_complete (dev, error);
+}
+
+static void
+goodix_resume_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+#ifdef GOODIX53X5_DEBUG
+  GoodixResumeData *data = fpi_ssm_get_data (ssm);
+
+  g_message ("Hardware resume %s (%s): %.2f ms",
+             error ? "failed" : "ready", data->cold ? "cold" : "warm",
+             (g_get_monotonic_time () - data->started_us) / 1000.0);
+#endif
+  FPI_DEVICE_GOODIX53X5 (dev)->task_ssm = NULL;
+  if (error)
+    goodix_transport_quiesce (dev, goodix_resume_joined, error);
+  else
+    goodix_resume_joined (dev, NULL);
+}
+
+/* The physical reader is joined before either interface operation. Release
+ * also clears libusb's remembered claim after the kernel reset-resumes S4. */
+static void
+goodix_resume_warm (FpiSsm *ssm, FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (goodix_probe_cancelled (ssm, dev))
+    return;
+  if (fpi_ssm_get_cur_state (ssm) == 0)
+    {
+      g_autoptr(GError) error = NULL;
+
+      if (self->usb_interface_claimed)
+        {
+          /* A stale release can return EINVAL after reset-resume. The fresh
+          * claim with kernel-driver detach establishes actual ownership. */
+          if (!g_usb_device_release_interface (fpi_device_get_usb_device (dev),
+                                               GOODIX_USB_INTERFACE, 0, &error))
+            fp_dbg ("Releasing USB interface before warm resume: %s", error->message);
+          self->usb_interface_claimed = FALSE;
+          g_clear_error (&error);
+        }
+      if (!g_usb_device_claim_interface (fpi_device_get_usb_device (dev),
+                                         GOODIX_USB_INTERFACE,
+                                         G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER,
+                                         &error))
+        {
+          fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
+          return;
+        }
+      self->usb_interface_claimed = TRUE;
+      fpi_ssm_next_state (ssm);
+    }
+  else
+    {
+      /* usbinterface!180020970 resume uses the same two three-attempt groups
+       * as cold initialization, not the single group of the event restart.
+       * Reuse only the handshake owner, with the already selected PSK. */
+      FpiSsm *sub = fpi_ssm_new (dev, goodix_gtls_retry_handler, 2);
+
+      fpi_ssm_set_data (sub, g_new0 (GoodixGtlsRetry, 1),
+                        (GDestroyNotify) goodix_gtls_retry_free);
+      fpi_ssm_start_subsm (ssm, sub);
+    }
+}
+
+static void
+goodix_resume_warm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  FpiSsm *parent = fpi_ssm_get_data (ssm);
+
+  if (!error)
+    {
+      fpi_ssm_mark_completed (parent);
+    }
+  else if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
+           g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_CANCELLED) ||
+           g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_NO_DEVICE))
+    {
+      fpi_ssm_mark_failed (parent, error);
+    }
+  else
+    {
+      fp_warn ("Warm resume failed; reconstructing hardware once: %s", error->message);
+      g_clear_error (&error);
+      FPI_DEVICE_GOODIX53X5 (dev)->needs_reinit = TRUE;
+      fpi_ssm_next_state (parent);
+    }
+}
+
+static void
+goodix_resume_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixResumeData *data = fpi_ssm_get_data (ssm);
+
+  switch ((GoodixResumeState) fpi_ssm_get_cur_state (ssm))
+    {
+    case GOODIX_RESUME_WARM:
+      if (self->needs_reinit)
+        {
+          fpi_ssm_next_state (ssm);
+        }
+      else
+        {
+          FpiSsm *warm = fpi_ssm_new (dev, goodix_resume_warm, 2);
+
+          fpi_ssm_set_data (warm, ssm, NULL);
+          fpi_ssm_start (warm, goodix_resume_warm_done);
+        }
+      break;
+
+    case GOODIX_RESUME_COLD:
+      data->cold = TRUE;
+      if (!goodix_maybe_start_reinit_subsm (ssm, dev))
+        fpi_ssm_next_state (ssm);
+      break;
+
+    case GOODIX_RESUME_NUM_STATES:
+      g_assert_not_reached ();
+    }
 }
 
 void
 goodix_session_resume (FpDevice *dev)
 {
-  fpi_device_resume_complete (dev, NULL);
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixResumeData *data = g_new0 (GoodixResumeData, 1);
+  FpiSsm *ssm;
+
+  data->started_us = g_get_monotonic_time ();
+  g_clear_object (&self->cancel);
+  self->cancel = g_cancellable_new ();
+  g_clear_object (&self->session_cancel);
+  self->session_cancel = g_cancellable_new ();
+  ssm = fpi_ssm_new (dev, goodix_resume_handler, GOODIX_RESUME_NUM_STATES);
+  fpi_ssm_set_data (ssm, data, g_free);
+  self->task_ssm = ssm;
+  fpi_ssm_start (ssm, goodix_resume_done);
 }

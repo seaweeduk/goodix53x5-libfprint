@@ -5,7 +5,11 @@ on:
     types: [opened, ready_for_review]
 
 jobs:
+  settings:
+    uses: ./.github/workflows/opencode-settings.yml
+
   review:
+    needs: settings
     if: |
       !github.event.pull_request.draft &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
@@ -162,9 +166,9 @@ jobs:
               "provider": {
                 "openai": {
                   "models": {
-                    "gpt-6-astra": {
+                    "${{ needs.settings.outputs.model }}": {
                       "options": {
-                        "reasoningEffort": "high"
+                        "reasoningEffort": "${{ needs.settings.outputs.variant }}"
                       }
                     }
                   }
@@ -172,8 +176,8 @@ jobs:
               }
             }
         with:
-          model: openai/gpt-6-astra
-          variant: high
+          model: openai/${{ needs.settings.outputs.model }}
+          variant: ${{ needs.settings.outputs.variant }}
           share: false
           prompt: |
             Review this pull request.
