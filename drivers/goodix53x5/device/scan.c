@@ -682,6 +682,13 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
                * any worker even if that command fails. */
               data->cpu_outstanding = TRUE;
               goodix_milan_generation_prepare_setup (dev, self->milan_generation);
+              GOODIX53X5_DEBUG_ONLY (
+                guint64 use = goodix_milan_generation_note_use (self->milan_generation);
+
+                fp_info ("Using Milan generation id=%" G_GUINT64_FORMAT
+                         " use=%" G_GUINT64_FORMAT,
+                         self->milan_generation->generation_id, use);
+                                    )
               data->capture_ready (dev, data->user_data);
             }
         }
@@ -1325,16 +1332,6 @@ goodix_capture_ssm_handler (FpiSsm   *ssm,
         self->captured_raw_image = g_steal_pointer (&data->first_frame);
         self->captured_enroll_allowed = goodix_health_enroll_allowed (&self->health);
       }
-      if (self->milan_generation)
-        {
-          GOODIX53X5_DEBUG_ONLY (
-            guint64 use = goodix_milan_generation_note_use (self->milan_generation);
-
-            fp_info ("Using Milan generation id=%" G_GUINT64_FORMAT
-                     " use=%" G_GUINT64_FORMAT,
-                     self->milan_generation->generation_id, use);
-                                )
-        }
       fpi_ssm_mark_completed (ssm);
       break;
     }

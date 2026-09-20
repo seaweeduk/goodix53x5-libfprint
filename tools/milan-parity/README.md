@@ -32,10 +32,15 @@ adapter boundary, preserving the full captured metadata.
 Runtime JSON must be canonical, internally consistent, and named with the exact
 action, epoch, generation, stage, chronology, and CRC identities it contains.
 Chronology and generation-use indexes must be complete within each capture
-session. Each generation ID is permanently bound to exactly one `setup_tx_on`
-SHA-256 within its capture session. Enrollment stage numbers identify the stage
-being attempted, not a unique attempt: retries and repeated attempts at one
-stage are legal, and the session chronology uniquely orders every record.
+session. The driver restarts the use index when it consumes a different hardware
+reference and advances it at sample delivery, after choosing that reference and
+before handing the sample to the runtime. A captured frame discarded before
+delivery does not consume an index. This counter does not reset the retained
+preprocessing state. Each generation ID is permanently bound to exactly one
+`setup_tx_on` SHA-256 within its capture session. Enrollment stage numbers
+identify the stage being attempted, not a unique attempt: retries and repeated
+attempts at one stage are legal, and the session chronology uniquely orders
+every record.
 
 Every runtime-referenced binary artifact is a `.bin` file. Templates are raw
 native payloads; the validator does not unwrap a driver-owned header or accept
