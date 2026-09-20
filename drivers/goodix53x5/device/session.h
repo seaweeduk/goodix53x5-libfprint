@@ -38,9 +38,8 @@ void goodix_start_gtls_restart (FpDevice             *dev,
                                 gpointer              data);
 
 /**
- * If the device needs reinitialization (system sleep happened while it was
- * open), release any stale interface claim and run the full open-time
- * initialization SSM as a sub-SSM of @ssm.
+ * If the hardware session is invalid, release any stale interface claim and
+ * run the full open-time initialization SSM as a sub-SSM of @ssm.
  *
  * Returns TRUE if a reinit sub-SSM was started (caller returns and the
  * parent advances when it completes), FALSE if no reinit was needed.
@@ -58,8 +57,9 @@ gboolean goodix_error_indicates_stale_device (const GError *error);
 /**
  * Handle system sleep/wake while the device is open, including ACTION_NONE.
  * Suspend cancels/joins the selected hardware owner and CPU consumer, sends
- * sleep/EC-off, then joins reception. Resume reconstructs the hardware session
- * and restarts packet-driven servicing before completing.
+ * sleep/EC-off, then joins reception while retaining calibration/reference/FDT
+ * state. Resume reclaims USB and re-keys GTLS, with one cold reconstruction on
+ * failure, then restarts packet-driven servicing before completing.
  */
 void goodix_session_suspend (FpDevice *dev);
 void goodix_session_resume (FpDevice *dev);
