@@ -28,33 +28,33 @@
 
 #include <string.h>
 
-#define GOODIX_PROTO_CATEGORY_FDT     0x03
-#define GOODIX_PROTO_CMD_FDT_DOWN     0x01
-#define GOODIX_PROTO_CMD_FDT_UP       0x02
-#define GOODIX_PROTO_CMD_FDT_MANUAL   0x03
-#define GOODIX_PROTO_CATEGORY_IMAGE   0x02
-#define GOODIX_PROTO_CMD_IMAGE        0x00
+#define GOODIX_PROTO_CATEGORY_FDT 0x03
+#define GOODIX_PROTO_CMD_FDT_DOWN 0x01
+#define GOODIX_PROTO_CMD_FDT_UP 0x02
+#define GOODIX_PROTO_CMD_FDT_MANUAL 0x03
+#define GOODIX_PROTO_CATEGORY_IMAGE 0x02
+#define GOODIX_PROTO_CMD_IMAGE 0x00
 
-#define GOODIX_FDT_IRQ_DOWN           0x0002
-#define GOODIX_FDT_IRQ_REVERSE        0x0080
-#define GOODIX_FDT_IRQ_REVERSE_ALT    0x0082
-#define GOODIX_FDT_IRQ_UP             0x0200
+#define GOODIX_FDT_IRQ_DOWN 0x0002
+#define GOODIX_FDT_IRQ_REVERSE 0x0080
+#define GOODIX_FDT_IRQ_REVERSE_ALT 0x0082
+#define GOODIX_FDT_IRQ_UP 0x0200
 
 /* HV value for image capture */
 #define GOODIX_HV_VALUE 6
 
 typedef struct
 {
-  FpiSsm                *ssm;
+  FpiSsm                 *ssm;
   GoodixCmdResultCallback result;
-  gboolean               sleep;
+  gboolean                sleep;
 } GoodixCommandCompletion;
 
 static void
 goodix_command_done (FpDevice                    *dev,
-                      const GoodixTransportResult *result,
-                      GError                     *error,
-                      gpointer                    data)
+                     const GoodixTransportResult *result,
+                     GError                      *error,
+                     gpointer                     data)
 {
   GoodixCommandCompletion *completion = data;
   FpiSsm *ssm = completion->ssm;
@@ -77,10 +77,14 @@ goodix_command_done (FpDevice                    *dev,
   if (result->write_cancelled)
     self->needs_reinit = TRUE;
   if (callback)
-    callback (ssm, dev, result->ack_status, result->ordinary_exhaustion, error);
+    {
+      callback (ssm, dev, result->ack_status, result->ordinary_exhaustion, error);
+    }
   else if (error)
     {
-      goodix_scan_note_command_error (ssm, dev, error);
+      if (result->ordinary_exhaustion &&
+          goodix_scan_continue_command_error (ssm, dev, error))
+        return;
       /* The active GTLS restart owns handshake retries and terminal failure.
        * Do not turn an intermediate attempt into a deferred full reset. */
       if (self->profile9_fdt.owner && !self->gtls_restart_active &&
@@ -89,27 +93,27 @@ goodix_command_done (FpDevice                    *dev,
       fpi_ssm_mark_failed (ssm, error);
     }
   else
-    fpi_ssm_next_state (ssm);
+    {
+      fpi_ssm_next_state (ssm);
+    }
 }
 
 static void
-goodix_run_cmd_full (FpiSsm                   *ssm,
-                     FpDevice                 *dev,
-                     guint8                    category,
-                     guint8                    command,
-                     const guint8             *payload,
-                     gsize                     payload_len,
-                     gboolean                  expect_data,
-                     GoodixProfile9FdtWaitMode cancelled_mode,
-                     GoodixCmdResultCallback  callback,
-                     gboolean                  idle_after_ack)
+goodix_run_cmd_full (FpiSsm                 *ssm,
+                     FpDevice               *dev,
+                     guint8                  category,
+                     guint8                  command,
+                     const guint8           *payload,
+                     gsize                   payload_len,
+                     gboolean                expect_data,
+                     GoodixCmdResultCallback callback,
+                     gboolean                idle_after_ack)
 {
   GoodixCommandCompletion *completion = g_new0 (GoodixCommandCompletion, 1);
   GoodixTransportRequest request = {
     .cmd = { category, command, (guint8 *) payload, payload_len, TRUE },
     .expect_data = expect_data,
     .idle_after_ack = idle_after_ack,
-    .cancelled_mode = cancelled_mode,
   };
 
   completion->ssm = ssm;
@@ -128,7 +132,7 @@ goodix_run_cmd (FpiSsm       *ssm,
                 gboolean      expect_data)
 {
   goodix_run_cmd_full (ssm, dev, category, command, payload, payload_len,
-                       expect_data, GOODIX_PROFILE9_FDT_WAIT_NONE, NULL, FALSE);
+                       expect_data, NULL, FALSE);
 }
 
 static void
@@ -138,7 +142,7 @@ goodix_run_cmd_result (FpiSsm *ssm, FpDevice *dev,
                        gboolean expect_data, GoodixCmdResultCallback callback)
 {
   goodix_run_cmd_full (ssm, dev, category, command, payload, payload_len,
-                       expect_data, GOODIX_PROFILE9_FDT_WAIT_NONE, callback, FALSE);
+                       expect_data, callback, FALSE);
 }
 
 static void
@@ -146,21 +150,7 @@ goodix_run_cmd_ec_off (FpiSsm *ssm, FpDevice *dev,
                        const guint8 *payload, gsize payload_len)
 {
   goodix_run_cmd_full (ssm, dev, 0x0a, 7, payload, payload_len, FALSE,
-                       GOODIX_PROFILE9_FDT_WAIT_NONE, NULL, TRUE);
-}
-
-static void
-goodix_run_cmd_drain_fdt_once (FpiSsm                   *ssm,
-                              FpDevice                 *dev,
-                              guint8                    category,
-                              guint8                    command,
-                              const guint8             *payload,
-                              gsize                     payload_len,
-                              GoodixProfile9FdtWaitMode cancelled_mode)
-{
-  g_return_if_fail (cancelled_mode != GOODIX_PROFILE9_FDT_WAIT_NONE);
-  goodix_run_cmd_full (ssm, dev, category, command, payload, payload_len,
-                       FALSE, cancelled_mode, NULL, FALSE);
+                       NULL, TRUE);
 }
 
 void
@@ -177,10 +167,10 @@ goodix_recv_mcu (FpiSsm *ssm, FpDevice *dev, guint timeout, gsize length)
  * ======================================================================== */
 
 static void
-goodix_build_fdt_payload (guint8  op_code,
+goodix_build_fdt_payload (guint8        op_code,
                           const guint8 *fdt_base,
-                          guint8 **out_payload,
-                          gsize   *out_len)
+                          guint8      **out_payload,
+                          gsize        *out_len)
 {
   gsize len = 2 + GOODIX_FDT_BASE_LEN;
   guint8 *payload = g_malloc (len);
@@ -194,11 +184,11 @@ goodix_build_fdt_payload (guint8  op_code,
 }
 
 static void
-goodix_build_image_request (gboolean  tx_enable,
-                            gboolean  hv_enable,
-                            gboolean  is_finger,
-                            guint16   dac,
-                            guint8   *out_request)
+goodix_build_image_request (gboolean tx_enable,
+                            gboolean hv_enable,
+                            gboolean is_finger,
+                            guint16  dac,
+                            guint8  *out_request)
 {
   guint8 op_code = tx_enable ? 0x01 : 0x81;
   guint8 hv_value = hv_enable ? GOODIX_HV_VALUE : 0x10;
@@ -256,6 +246,15 @@ goodix_cmd_reset_sensor (FpiSsm *ssm, FpDevice *dev, gboolean request_irq,
 
   goodix_run_cmd_result (ssm, dev, 0xA, 0x1, payload, sizeof (payload),
                          request_irq, callback);
+}
+
+static void
+goodix_cmd_reset_after_esd (FpiSsm *ssm, FpDevice *dev,
+                            GoodixCmdResultCallback callback)
+{
+  guint8 payload[2] = { 2, 50 };
+
+  goodix_run_cmd_result (ssm, dev, 0x0a, 1, payload, sizeof (payload), FALSE, callback);
 }
 
 void
@@ -369,17 +368,17 @@ goodix_arm_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
       fpi_ssm_mark_failed (ssm, error);
       return;
     }
-  /* Native's arm wrapper waits for FDT even after an exhausted arm. This
-   * publishes no capture/result. Retain reinitialization for the next action;
-   * configuration failure alone does not poison a successful repeated arm. */
-  if (error && state != GOODIX_ARM_CONFIG)
-    self->needs_reinit = TRUE;
+  /* Ordinary exhausted arm/config results do not reconstruct the HAL. */
   if (error)
     fp_dbg ("Continuing native FDT wait/repair after %s", error->message);
   g_clear_error (&error);
-  if (self->cancel && g_cancellable_is_cancelled (self->cancel))
+  /* The last foreground token can remain cancelled after action completion.
+   * Idle maintenance belongs to the session, including during handoff. */
+  GCancellable *cancel = self->session_cancel;
+
+  if (cancel && g_cancellable_is_cancelled (cancel))
     {
-      /* A completed arm must reach the coordinator's cancelled-event drain.
+      /* Join a completed arm before the coordinator observes terminal stop.
        * Cancellation still prevents configuration repair or another arm. */
       if (state != GOODIX_ARM_CONFIG && !native_zero)
         fpi_ssm_mark_completed (ssm);
@@ -447,9 +446,160 @@ goodix_cmd_fdt_up_setup (FpiSsm *ssm, FpDevice *dev, const guint8 *fdt_base)
   goodix_arm_start (ssm, dev, GOODIX_PROTO_CMD_FDT_UP, fdt_base);
 }
 
+typedef enum {
+  GOODIX_ESD_RESET,
+  GOODIX_ESD_RESET_AGAIN,
+  GOODIX_ESD_CHIP,
+  GOODIX_ESD_FAILED_READ_RESET,
+  GOODIX_ESD_RETRY,
+  GOODIX_ESD_EXHAUSTED_RESET,
+  GOODIX_ESD_CONFIG,
+  GOODIX_ESD_ARM,
+  GOODIX_ESD_DONE,
+  GOODIX_ESD_NUM_STATES,
+} GoodixEsdState;
+
+typedef struct
+{
+  guint    attempts;
+  gboolean notice_mask;
+  guint32  chip;
+} GoodixEsdOperation;
+
+static void
+goodix_esd_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
+                   gboolean native_zero, GError *error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixEsdOperation *data = fpi_ssm_get_data (ssm);
+  gboolean success = error == NULL;
+
+  if (error && !native_zero)
+    {
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+  g_clear_error (&error);
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case GOODIX_ESD_RESET:
+      if (data->notice_mask)
+        fpi_ssm_jump_to_state_delayed (ssm, GOODIX_ESD_CHIP, 6);
+      else if (success && (((guint) self->shared_response[1] |
+                            ((guint) self->shared_response[2] << 8)) == 0x410))
+        fpi_ssm_jump_to_state (ssm, GOODIX_ESD_RESET_AGAIN);
+      else
+        fpi_ssm_jump_to_state_delayed (ssm, GOODIX_ESD_RETRY, 200);
+      break;
+
+    case GOODIX_ESD_RESET_AGAIN:
+      fpi_ssm_jump_to_state_delayed (ssm, GOODIX_ESD_CHIP, 6);
+      break;
+
+    case GOODIX_ESD_CHIP:
+      if (success)
+        {
+          const guint8 *bytes = self->shared_response;
+          data->chip = ((guint32) bytes[0] << 8) | bytes[1] |
+                       ((guint32) bytes[2] << 24) | ((guint32) bytes[3] << 16);
+        }
+      if ((!data->notice_mask || success) && data->chip == self->chip_id)
+        fpi_ssm_jump_to_state (ssm, GOODIX_ESD_CONFIG);
+      else if (data->notice_mask && !success)
+        fpi_ssm_jump_to_state (ssm, GOODIX_ESD_FAILED_READ_RESET);
+      else
+        fpi_ssm_jump_to_state_delayed (ssm, GOODIX_ESD_RETRY, 200);
+      break;
+
+    case GOODIX_ESD_FAILED_READ_RESET:
+      fpi_ssm_jump_to_state_delayed (ssm, GOODIX_ESD_RETRY, 200);
+      break;
+
+    case GOODIX_ESD_CONFIG:
+      fpi_ssm_jump_to_state (ssm, GOODIX_ESD_ARM);
+      break;
+
+    case GOODIX_ESD_EXHAUSTED_RESET:
+      fpi_ssm_jump_to_state (ssm, GOODIX_ESD_DONE);
+      break;
+
+    default:
+      g_assert_not_reached ();
+    }
+}
+
+static void
+goodix_esd_handler (FpiSsm *ssm, FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixEsdOperation *data = fpi_ssm_get_data (ssm);
+
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case GOODIX_ESD_RESET:
+      data->attempts++;
+      G_GNUC_FALLTHROUGH;
+
+    case GOODIX_ESD_RESET_AGAIN:
+    case GOODIX_ESD_FAILED_READ_RESET:
+      goodix_cmd_reset_sensor (ssm, dev, TRUE, goodix_esd_result);
+      break;
+
+    case GOODIX_ESD_CHIP:
+      goodix_cmd_read_chip_id (ssm, dev, goodix_esd_result);
+      break;
+
+    case GOODIX_ESD_RETRY:
+      fpi_ssm_jump_to_state (ssm, data->attempts < 10 ? GOODIX_ESD_RESET : GOODIX_ESD_EXHAUSTED_RESET);
+      break;
+
+    case GOODIX_ESD_EXHAUSTED_RESET:
+      goodix_cmd_reset_after_esd (ssm, dev, goodix_esd_result);
+      break;
+
+    case GOODIX_ESD_CONFIG:
+      goodix_cmd_restore_config (ssm, dev, goodix_esd_result);
+      break;
+
+    case GOODIX_ESD_ARM:
+      /* Native missing-file loader preserves RAM bases/image/validity/marker.
+       * No OTP, GTLS, dynamic DAC reseeding or reference capture belongs here. */
+      self->profile9_fdt.wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
+      goodix_cmd_fdt_down_setup (ssm, dev, self->profile9_fdt.base_down);
+      break;
+
+    case GOODIX_ESD_DONE:
+      fpi_ssm_mark_completed (ssm);
+      break;
+
+    default:
+      g_assert_not_reached ();
+    }
+}
+
+void
+goodix_cmd_repair_esd (FpiSsm *parent, FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixEsdOperation *data = g_new0 (GoodixEsdOperation, 1);
+  FpiSsm *ssm = fpi_ssm_new (dev, goodix_esd_handler, GOODIX_ESD_NUM_STATES);
+
+  data->notice_mask = ((self->notice_irq[0] | ((guint16) self->notice_irq[1] << 8)) & 0x410) != 0;
+  fpi_ssm_set_data (ssm, data, g_free);
+  fpi_ssm_start_subsm (parent, ssm);
+}
+
 void
 goodix_cmd_fdt_manual (FpiSsm *ssm, FpDevice *dev,
                        gboolean tx_enable, const guint8 *fdt_base)
+{
+  goodix_cmd_fdt_manual_result (ssm, dev, tx_enable, fdt_base, NULL);
+}
+
+void
+goodix_cmd_fdt_manual_result (FpiSsm *ssm, FpDevice *dev,
+                              gboolean tx_enable, const guint8 *fdt_base,
+                              GoodixCmdResultCallback callback)
 {
   /* Manual FDT op code: 0x0D with TX enabled, 0x8D with TX disabled */
   guint8 op_code = tx_enable ? 0x0D : 0x8D;
@@ -457,8 +607,8 @@ goodix_cmd_fdt_manual (FpiSsm *ssm, FpDevice *dev,
   gsize payload_len;
 
   goodix_build_fdt_payload (op_code, fdt_base, &payload, &payload_len);
-  goodix_run_cmd (ssm, dev, GOODIX_PROTO_CATEGORY_FDT,
-                  GOODIX_PROTO_CMD_FDT_MANUAL, payload, payload_len, TRUE);
+  goodix_run_cmd_result (ssm, dev, GOODIX_PROTO_CATEGORY_FDT,
+                         GOODIX_PROTO_CMD_FDT_MANUAL, payload, payload_len, TRUE, callback);
   g_free (payload);
 }
 
@@ -467,32 +617,36 @@ goodix_cmd_request_image (FpiSsm *ssm, FpDevice *dev,
                           gboolean tx_enable, gboolean hv_enable,
                           gboolean is_finger, guint16 dac)
 {
+  goodix_cmd_request_image_result (ssm, dev, tx_enable, hv_enable, is_finger, dac, NULL);
+}
+
+void
+goodix_cmd_request_image_result (FpiSsm *ssm, FpDevice *dev,
+                                 gboolean tx_enable, gboolean hv_enable,
+                                 gboolean is_finger, guint16 dac,
+                                 GoodixCmdResultCallback callback)
+{
   guint8 img_req[4];
 
   goodix_build_image_request (tx_enable, hv_enable, is_finger, dac, img_req);
-  goodix_run_cmd (ssm, dev, GOODIX_PROTO_CATEGORY_IMAGE, GOODIX_PROTO_CMD_IMAGE,
-                  img_req, sizeof (img_req), TRUE);
+  goodix_run_cmd_result (ssm, dev, GOODIX_PROTO_CATEGORY_IMAGE, GOODIX_PROTO_CMD_IMAGE,
+                         img_req, sizeof (img_req), TRUE, callback);
 }
 
 void
 goodix_cmd_set_sleep_mode (FpiSsm *ssm, FpDevice *dev)
 {
-  /* set_sleep_mode: category=0x6, command=0, payload=\x01\x00 */
-  guint8 payload[2] = { 0x01, 0x00 };
-
-  goodix_run_cmd (ssm, dev, 0x6, 0x0, payload, 2, FALSE);
+  goodix_cmd_set_sleep_mode_result (ssm, dev, NULL);
 }
 
 void
-goodix_cmd_set_sleep_mode_drain_fdt (
-  FpiSsm                    *ssm,
-  FpDevice                  *dev,
-  GoodixProfile9FdtWaitMode  cancelled_mode)
+goodix_cmd_set_sleep_mode_result (FpiSsm *ssm, FpDevice *dev,
+                                  GoodixCmdResultCallback callback)
 {
+  /* set_sleep_mode: category=0x6, command=0, payload=\x01\x00 */
   guint8 payload[2] = { 0x01, 0x00 };
 
-  goodix_run_cmd_drain_fdt_once (ssm, dev, 0x6, 0x0, payload, 2,
-                                 cancelled_mode);
+  goodix_run_cmd_result (ssm, dev, 0x6, 0x0, payload, 2, FALSE, callback);
 }
 
 void
@@ -636,11 +790,11 @@ goodix_cmd_dup_image_reply (FpDevice *dev,
 }
 
 gboolean
-goodix_cmd_parse_fdt_event (FpDevice      *dev,
+goodix_cmd_parse_fdt_event (FpDevice                 *dev,
                             GoodixProfile9FdtWaitMode armed_mode,
                             GoodixFdtEventType       *out_type,
                             GoodixProfile9FdtEvent   *out_event,
-                            GError       **error)
+                            GError                  **error)
 {
   guint8 category, command;
   guint8 expected_command;
@@ -652,9 +806,13 @@ goodix_cmd_parse_fdt_event (FpDevice      *dev,
   g_return_val_if_fail (out_event != NULL, FALSE);
 
   if (armed_mode == GOODIX_PROFILE9_FDT_WAIT_DOWN)
-    expected_command = GOODIX_PROTO_CMD_FDT_DOWN;
+    {
+      expected_command = GOODIX_PROTO_CMD_FDT_DOWN;
+    }
   else if (armed_mode == GOODIX_PROFILE9_FDT_WAIT_UP)
-    expected_command = GOODIX_PROTO_CMD_FDT_UP;
+    {
+      expected_command = GOODIX_PROTO_CMD_FDT_UP;
+    }
   else
     {
       g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
@@ -695,16 +853,20 @@ goodix_cmd_parse_fdt_event (FpDevice      *dev,
       *out_type = GOODIX_FDT_EVENT_NONE;
       out_event->pending = FALSE;
       return TRUE;
+
     case GOODIX_FDT_IRQ_DOWN:
       *out_type = GOODIX_FDT_EVENT_DOWN;
       break;
+
     case GOODIX_FDT_IRQ_UP:
       *out_type = GOODIX_FDT_EVENT_UP;
       break;
+
     case GOODIX_FDT_IRQ_REVERSE:
     case GOODIX_FDT_IRQ_REVERSE_ALT:
       *out_type = GOODIX_FDT_EVENT_REVERSE;
       break;
+
     default:
       /* Native event 0x14 replaces only the worker notification. Its payload
        * is not a raw/touch sample and must not replace any retained base. */

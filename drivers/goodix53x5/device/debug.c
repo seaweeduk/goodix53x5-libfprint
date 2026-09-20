@@ -794,6 +794,7 @@ goodix_debug_log_runtime_result (FpDevice                         *dev,
              "study_gates=finalize:%s/action:%s/queue:%s "
              "template_features=%s "
              "gallery=%u-valid/%u-invalid/%u-evaluated "
+             "capture_health=present:%s/enroll:%s admission=0x%08x/detail:%u "
              "cancel=%s error=%s learning_error=%s",
              action_name,
              output->action_epoch, output->generation_id, stage,
@@ -817,6 +818,9 @@ goodix_debug_log_runtime_result (FpDevice                         *dev,
              template_features,
              output->valid_gallery_count,
              output->invalid_gallery_count, output->evaluated_gallery_count,
+             output->capture_health_present ? "yes" : "no",
+             output->capture_enroll_allowed ? "yes" : "no",
+             output->admission_status, output->admission_detail,
              cancellation, runtime_error, learning_error);
 
   if (!goodix_debug_env_enabled ("GOODIX53X5_DUMP_TEMPLATES") || !dump_dir)

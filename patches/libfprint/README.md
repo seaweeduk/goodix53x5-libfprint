@@ -32,29 +32,47 @@ The generator writes a base-revision header into the patch. The verifier
 enforces that revision before running `git apply --check`; `git apply` alone
 does not enforce patch metadata.
 
-## Idle Suspend Notification
+## Idle suspend and resume
 
-`libfprint-idle-suspend-notify.patch` targets the same exact revision and adds
-the nullable internal `FpDeviceClass.suspend_idle_notify` callback. Core calls
-it synchronously only for an accepted suspend of an open, idle device, before
-completing suspend. The callback may only invalidate driver-owned memory: no
-I/O, asynchronous work, blocking, main-loop reentrancy, action start or
-completion calls. It has no paired resume callback.
+`libfprint-idle-suspend-notify.patch` lets the Goodix driver keep servicing its
+hardware while no action runs. The open device holds the sensor between
+fprintd claims, so the core must tell the driver about system sleep even when
+the device is idle. Upstream completes an idle suspend or resume without
+touching the driver.
 
-Goodix opts in only to set `needs_reinit`; its existing next-action SSM performs
-reinitialization. Closed devices and drivers that do not opt in retain their
-existing behavior. Interactive hooks and the short-action suspend path are
-unchanged. This does not establish physical S3, s2idle or S4 recovery.
+The patch changes only that dispatch in `fpi_device_suspend()` and
+`fpi_device_resume()`:
+
+- an open device with no current action calls the driver's existing `suspend`
+  and `resume` vfuncs instead of completing immediately;
+- a suspend that overlaps a short action (open, close, delete, list, clear)
+  is dispatched again once that action completes, so a device opened during
+  the transition is still quiesced;
+- `fp_device_close()` is rejected while a suspend or resume task is pending
+  (its completion would close the USB handle underneath the power owner) and
+  admitted for a completed suspend, so a device removed during sleep can be
+  closed without resuming hardware and the context can finish its removal.
+
+The driver completes both asynchronously with `fpi_device_suspend_complete()`
+and `fpi_device_resume_complete()`. Suspend joins all background hardware work
+and sleeps the sensor; resume reconstructs the hardware session before it
+completes, so the first request after wake finds the sensor ready. Actions
+that arrive while the driver is quiescing fail with `FP_DEVICE_ERROR_BUSY`
+from the driver; the core rejects them itself once suspend has completed.
+
+Four assertions in `tests/test-fpi-device.c` are updated for the new idle
+dispatch. No new core API, signal or feature flag is added; the paired fprintd
+overlay only relies on the driver-side behaviour above.
 
 Both local build routes verify and apply the patch, and include it in overlay
-and production source identities. The stack manifest also seals its digest.
-All drivers must be rebuilt against the changed internal class layout. Check
-the patch against a pristine checkout with:
+and production source identities. Check it against a pristine checkout with:
 
 ```sh
 ./patches/libfprint/verify-idle-suspend-notify-patch.sh /path/to/pristine/libfprint
 ```
 
-One additional `fpi-device` case, `/driver/identify/suspend_idle_notify`, checks
-notification ordering/counts, repeated cycles, and closed/non-opted-in controls.
-The existing idle and interactive suspend compatibility cases are unchanged.
+Regenerate it from a pristine checkout carrying only these edits:
+
+```sh
+./patches/libfprint/generate-idle-suspend-notify-patch.sh /path/to/modified/libfprint
+```

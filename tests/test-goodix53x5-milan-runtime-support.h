@@ -59,6 +59,7 @@ typedef struct
   gboolean updated;
   FpPrint *enrolled;
   GError  *error;
+  GCancellable *cancel_on_report; /* Borrowed reentrant client cleanup token. */
 } AsyncResult;
 
 /* One shared plan and scan state for all runtime tests and seam callbacks. */
@@ -90,6 +91,8 @@ void close_device (FpDevice *device);
 void milan_runtime_test_auth_start (FpDevice *dev);
 void milan_runtime_test_enroll_start (FpDevice *dev);
 void milan_runtime_test_clear_pending_result_report (FpiDeviceGoodix53x5 *self);
+void milan_runtime_harness_bind_setup (GoodixMilanRuntimeInput *input,
+                                       GoodixMilanGeneration   *generation);
 GoodixSigfmTemplateStatus milan_runtime_harness_match (GoodixMatchInfo        *probe,
                                                        const guint8           *feature,
                                                        gsize                   feature_len,
