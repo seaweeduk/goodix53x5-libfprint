@@ -77,6 +77,8 @@ typedef enum
   GOODIX_FDT_EVENT_DOWN = 0,
   GOODIX_FDT_EVENT_UP,
   GOODIX_FDT_EVENT_REVERSE,
+  GOODIX_FDT_EVENT_NONE,
+  GOODIX_FDT_EVENT_CONFIG,
 } GoodixFdtEventType;
 
 typedef struct
@@ -89,6 +91,14 @@ typedef struct
 } GoodixFdtNotification;
 
 typedef struct _GoodixTransport GoodixTransport;
+typedef struct _GoodixReader GoodixReader;
+
+/* HAL +0x1e0: requested mode, independent of coordinator and FDT wait state. */
+typedef enum
+{
+  GOODIX_REQUESTED_MODE_CAPTURE = 0,
+  GOODIX_REQUESTED_MODE_SLEEP = 2,
+} GoodixRequestedMode;
 
 /* Independent native response events; the first four retain their existing
  * readiness bits used by the named command consumers. */
@@ -102,6 +112,7 @@ typedef enum
   GOODIX_RESPONSE_REGISTER,
   GOODIX_RESPONSE_OTP,
   GOODIX_RESPONSE_PRODUCTION,
+  GOODIX_RESPONSE_FIRMWARE,
   GOODIX_RESPONSE_COUNT,
 } GoodixResponseSlot;
 
@@ -139,15 +150,15 @@ struct _FpiDeviceGoodix53x5
   GByteArray      *mcu_rx;
   GBytes          *mcu_reply;
   gboolean         mcu_ready;
-  /* Demand-driven physical IN/OUT and the accepted foreground operation. */
+  /* One handle-owned IN reader and a separately owned command/event waiter. */
+  GoodixReader    *reader;
   GoodixTransport *transport;
 
-  /* Repeated mode and issued response-command ACK slots. Kept for the device
-   * lifetime: the wire has no generation or reliable remaining ACK count. */
-  guint16 routed_command_acks;
   /* Native response events reset per send; cached bytes survive reset.
    * The manual cache retains metadata for Linux touch-flag consumers. */
   guint8 command_response_ready;
+  /* Category-9/command-2 status is separate from shared response-cache bytes. */
+  guint8 config_response_status;
   /* Receiver-owned decoded image, independent of the command ACK and of the
    * captured frame handed to the runtime worker. Readiness resets per send. */
   guint16 *image_response;
@@ -161,6 +172,7 @@ struct _FpiDeviceGoodix53x5
   guint16 fdt_prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
   GoodixFdtNotification pending_fdt;
   gboolean rx_idle_partial;
+  GoodixRequestedMode requested_mode;
 
   /* Profile-9 FDT state persists across actions and hardware reinitialization. */
   GoodixProfile9FdtState profile9_fdt;

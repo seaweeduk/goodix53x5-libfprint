@@ -223,7 +223,7 @@ complete_usb (void)
       g_cancellable_cancel (action_cancel_token);
     }
 
-  if (goodix_transport_is_idle (FPI_DEVICE_GOODIX53X5 (transfer->device)->transport))
+  if (!FPI_DEVICE_GOODIX53X5 (transfer->device)->transport)
     {
       g_assert_nonnull (cancel);
       g_assert_true (g_cancellable_is_cancelled (cancel));
@@ -487,20 +487,20 @@ test_scenario (gconstpointer user_data)
     }
   for (guint step = 0; io.completions == 0 && step < 48; step++)
     {
-      if (!usb.pending && cancel_arm_case (scenario) && !io.disposition_sent &&
+      if (!self->transport && cancel_arm_case (scenario) && !io.disposition_sent &&
           self->profile9_fdt.owner &&
           fpi_ssm_get_cur_state (self->profile9_fdt.owner) == GOODIX_SCAN_COORD_WAIT_CPU)
         stop_after_capture (dev);
-      if (!usb.pending && (rearm_case (scenario) || scenario->schedule == RESPONSE_HANDOFF) &&
+      if (!self->transport && (rearm_case (scenario) || scenario->schedule == RESPONSE_HANDOFF) &&
           io.wait_cpu_count && !io.disposition_sent)
         stop_after_capture (dev);
-      if (!usb.pending && !scenario->standalone_arm && self->profile9_fdt.owner &&
+      if (!self->transport && !scenario->standalone_arm && self->profile9_fdt.owner &&
           fpi_ssm_get_cur_state (self->profile9_fdt.owner) >= GOODIX_SCAN_COORD_CLEANUP_JOIN &&
           !io.disposition_sent)
         stop_after_capture (dev); /* Join the deferred CPU callback on failure. */
       if (io.completions)
         break;
-      if (!usb.pending)
+      if (!self->transport && !self->reader->joined)
         {
           g_assert_true (g_main_context_pending (NULL));
           g_main_context_iteration (NULL, FALSE);
@@ -510,11 +510,12 @@ test_scenario (gconstpointer user_data)
     }
 
   g_assert_cmpuint (io.completions, ==, 1);
-  if (self->transport && goodix_transport_is_idle (self->transport))
+  if (self->reader)
     {
       /* Action completion no longer closes the handle-owned idle receiver.
        * Exercise its explicit join before retaining the original owner checks. */
       goodix_transport_quiesce (dev, idle_joined, NULL);
+      fixture_refresh_wait ();
       complete_usb ();
     }
   g_assert_null (usb.pending);
