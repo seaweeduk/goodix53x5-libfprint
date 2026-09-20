@@ -53,8 +53,14 @@ sudo ./scripts/install-milan-stack-local.sh
 
 `./install.sh` runs the build and the install together; `./install.sh --debug`
 (or `GOODIX53X5_DEBUG=1` for the builder) produces a diagnostic build with the
-same matching and persistence behaviour. Image capture needs the separate
-configuration in [`DEBUG-CAPTURE-GUIDE.md`](../DEBUG-CAPTURE-GUIDE.md).
+same matching and persistence behaviour. Installing that build automatically
+enables the driver's GLib debug messages, timing logs, and one-line diagnostic
+summaries in the `fprintd.service` journal. Follow them with
+`sudo journalctl -fu fprintd.service -o cat`. Image and template capture remains
+disabled and needs the separate private configuration in
+[`DEBUG-CAPTURE-GUIDE.md`](../DEBUG-CAPTURE-GUIDE.md). Installing a later release
+build removes the managed debug logging configuration automatically; independent
+administrator overrides under `/etc/systemd/system` are not changed.
 
 Builds live under `$XDG_STATE_HOME/goodix53x5-milan` (default
 `~/.local/state/goodix53x5-milan`); `sudo` resolves the invoking user's home.
