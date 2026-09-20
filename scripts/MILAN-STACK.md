@@ -23,10 +23,14 @@ manuals) plus libfprint built with the `goodix53x5` driver only. Enabling
 fingerprint authentication in PAM is left to you and your distribution. Print
 state and the imported Windows PSK stay under `/var/lib/fprint`.
 
-The first `Claim` opens the sensor; after that the daemon keeps it open across
-`Release` and client exit, so later unlocks skip the cold initialization while
-the driver services the sensor in the background. The paired libfprint and
-fprintd patches are required together and support only this Goodix driver. See
+The Milan udev rule starts fprintd when a supported sensor appears. The daemon
+opens the sensor at enumeration and keeps it open across `Release` and client
+exit, so the first unlock can skip cold initialization as well as later ones.
+Installation restarts fprintd to prepare the sensor without a reboot. If eager
+initialization fails, the next authorized `Claim` retries; an early claim waits
+for initialization already in progress. The driver services the initialized
+sensor in the background, including before the first claim. The paired libfprint
+and fprintd patches are required together and support only this Goodix driver. See
 the [fprintd overlay notes](../patches/fprintd/README.md#retained-hardware-session)
 for the claim, sleep and shutdown behaviour.
 
