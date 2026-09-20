@@ -60,6 +60,9 @@ goodix53x5_sources = files(
 )
 
 goodix53x5_cflags = [ '-I' + meson.current_source_dir() ]
+if 'goodix53x5' in drivers
+    optional_deps += dependency('libdeflate')
+endif
 if get_option('goodix53x5_debug')
     goodix53x5_debug_build_id = get_option('goodix53x5_debug_build_id')
     goodix53x5_debug_source_id = get_option('goodix53x5_debug_source_id')

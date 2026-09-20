@@ -11,6 +11,16 @@ build_dir="${GOODIX_MESON_BUILDDIR:-builddir}"
 debug_enabled=false
 debug_build_id=
 debug_source_id=
+command -v pkg-config >/dev/null 2>&1 || {
+  printf 'error: pkg-config is required to build the Goodix driver\n' >&2
+  exit 1
+}
+pkg-config --exists libdeflate || {
+  printf '%s\n' \
+    'error: libdeflate development files are required' \
+    'install libdeflate-dev on Debian/Ubuntu, libdeflate on Arch, or libdeflate-devel on Fedora' >&2
+  exit 1
+}
 if [[ "${GOODIX53X5_DEBUG:-0}" == 1 ]]; then
   if [[ ${GOODIX53X5_INTERNAL_BUILD_ID+x} == x ]] &&
      [[ ! ${GOODIX53X5_INTERNAL_BUILD_ID} =~ ^[0-9a-f]{64}$ ]]; then
