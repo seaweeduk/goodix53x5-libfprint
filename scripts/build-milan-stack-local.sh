@@ -120,6 +120,15 @@ mkdir -p "$payload$MILAN_METADATA_DIR" "$payload$(dirname "$MILAN_UDEV_RULE")"
 milan_run_stage "stage libfprint" env DESTDIR="$payload" ninja -C "$libfprint_build" install
 milan_run_stage "stage fprintd" env DESTDIR="$payload" ninja -C "$fprintd_build" install
 install -m 0644 "$repo_dir/udev/$(basename "$MILAN_UDEV_RULE")" "$payload$MILAN_UDEV_RULE"
+if [[ "$debug_manifest" == 1 ]]; then
+  install -d -m 0755 "$payload$(dirname "$MILAN_DEBUG_LOGGING_DROPIN")"
+  cat > "$payload$MILAN_DEBUG_LOGGING_DROPIN" <<'EOF'
+[Service]
+Environment=G_MESSAGES_DEBUG=libfprint-goodix53x5
+Environment=GOODIX53X5_LOG_TIMING=1
+Environment=GOODIX53X5_LOG_DIAGNOSTICS=1
+EOF
+fi
 
 cat > "$payload$MILAN_BUILD_ENV" <<EOF
 FORMAT=3

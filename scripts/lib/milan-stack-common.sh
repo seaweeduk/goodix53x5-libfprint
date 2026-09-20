@@ -11,6 +11,7 @@ MILAN_METADATA_DIR="/usr/share/goodix53x5-milan"
 MILAN_BUILD_ENV="$MILAN_METADATA_DIR/build.env"
 MILAN_INVENTORY="$MILAN_METADATA_DIR/inventory.json"
 MILAN_UDEV_RULE="/usr/lib/udev/rules.d/99-goodix53x5-milan-persist.rules"
+MILAN_DEBUG_LOGGING_DROPIN="/usr/lib/systemd/system/fprintd.service.d/90-goodix53x5-debug-logging.conf"
 MILAN_FILES_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/milan-stack-files.py"
 
 milan_die() {
@@ -192,6 +193,18 @@ milan_verify_payload() {
   [[ "$(readlink "$payload$MILAN_LIBDIR/libfprint-2.so.2")" == libfprint-2.so.2.0.0 ]] || milan_die "invalid soname symlink"
   grep -Fxq "ExecStart=$MILAN_DAEMON_PATH" "$payload/usr/lib/systemd/system/fprintd.service" ||
     milan_die "staged service selects wrong daemon"
+  if [[ "$debug" == 1 ]]; then
+    [[ -f "$payload$MILAN_DEBUG_LOGGING_DROPIN" ]] ||
+      milan_die "debug payload lacks fprintd logging configuration"
+    grep -Fxq 'Environment=G_MESSAGES_DEBUG=libfprint-goodix53x5' "$payload$MILAN_DEBUG_LOGGING_DROPIN" ||
+      milan_die "debug payload does not enable Goodix debug messages"
+    grep -Fxq 'Environment=GOODIX53X5_LOG_TIMING=1' "$payload$MILAN_DEBUG_LOGGING_DROPIN" ||
+      milan_die "debug payload does not enable timing logs"
+    grep -Fxq 'Environment=GOODIX53X5_LOG_DIAGNOSTICS=1' "$payload$MILAN_DEBUG_LOGGING_DROPIN" ||
+      milan_die "debug payload does not enable diagnostic logs"
+  elif [[ -e "$payload$MILAN_DEBUG_LOGGING_DROPIN" ]]; then
+    milan_die "release payload contains debug logging configuration"
+  fi
 }
 
 # $1 is the root holding the library (payload dir or /); $2 is the expected debug flag.
