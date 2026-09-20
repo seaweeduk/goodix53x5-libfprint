@@ -119,6 +119,10 @@ GLib/GIO, GUsb, OpenSSL 3, Python 3, gettext, Perl's `pod2man`, and the
 development dependencies of libfprint and fprintd, including Polkit's GObject
 library, PAM, and libsystemd.
 
+Install the optional libdeflate development package (`libdeflate-dev` on Debian
+and Ubuntu, `libdeflate` on Arch) to enable accelerated Milan template CRCs.
+Without it, the driver uses its portable slicing-by-eight implementation.
+
 To update, check out the desired revision and run `./install.sh` again. For
 layout, build controls, status checks, and removal behaviour, see the
 [Milan stack guide](scripts/MILAN-STACK.md).

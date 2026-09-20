@@ -16,6 +16,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifdef GOODIX53X5_HAVE_LIBDEFLATE
+#include <libdeflate.h>
+#endif
+
 enum
 {
   MILAN_FEATURE_TAG_ELEMENT = 0x95,
@@ -486,6 +490,9 @@ milan_template_crc32 (const uint8_t *data,
                       size_t         size)
 {
   /* table[n][b] is b advanced through 8 * (n + 1) reflected steps. */
+#ifdef GOODIX53X5_HAVE_LIBDEFLATE
+  return libdeflate_crc32 (0, data, size);
+#else
   static const uint32_t table[8][256] = {
     {
       0x00000000U, 0x77073096U, 0xee0e612cU, 0x990951baU,
@@ -1034,6 +1041,7 @@ milan_template_crc32 (const uint8_t *data,
   for (size_t i = 0; i < size; i++)
     crc = (crc >> 8) ^ table[0][(crc ^ data[i]) & 0xff];
   return ~crc;
+#endif
 }
 
 static uint8_t *

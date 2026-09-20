@@ -50,9 +50,14 @@ for index in "${!sources[@]}"; do
 done
 
 cflags=( -DGOODIX53X5_PARITY -DGOODIX53X5_DEBUG )
+packages=( glib-2.0 gio-2.0 gobject-2.0 gusb )
+if pkg-config --exists libdeflate; then
+  cflags+=( -DGOODIX53X5_HAVE_LIBDEFLATE )
+  packages+=( libdeflate )
+fi
 
 cc -std=c17 -O2 -Wall -Wextra -Werror "${cflags[@]}" \
   -I"$driver" -I"$build" -I"$build/libfprint" -I"$libfprint" -I"$libfprint/libfprint" \
-  $(pkg-config --cflags glib-2.0 gio-2.0 gobject-2.0 gusb) \
+  $(pkg-config --cflags "${packages[@]}") \
   "${sources[@]}" "$repo/tools/milan-parity/current/current-runner.c" \
-  $(pkg-config --libs glib-2.0 gio-2.0 gobject-2.0 gusb) -o "$output"
+  $(pkg-config --libs "${packages[@]}") -o "$output"
