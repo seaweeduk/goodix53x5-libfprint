@@ -115,9 +115,9 @@ fingerprint authentication in PAM; configure that through your distribution.
 > resolved.
 
 Build dependencies include a C toolchain, Git, Meson, Ninja, pkg-config,
-GLib/GIO, GUsb, OpenSSL 3, Python 3, gettext, Perl's `pod2man`, and the
-development dependencies of libfprint and fprintd, including Polkit's GObject
-library, PAM, and libsystemd.
+GLib/GIO, GUsb, OpenSSL 3, libdeflate, Python 3, gettext, Perl's `pod2man`, and
+the development dependencies of libfprint and fprintd, including Polkit's
+GObject library, PAM, and libsystemd.
 
 To update, check out the desired revision and run `./install.sh` again. For
 layout, build controls, status checks, and removal behaviour, see the

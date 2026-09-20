@@ -33,6 +33,7 @@ jobs:
             build-essential \
             git \
             libcairo2-dev \
+            libdeflate-dev \
             libglib2.0-dev \
             libgusb-dev \
             libssl-dev \

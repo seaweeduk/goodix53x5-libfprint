@@ -730,6 +730,11 @@ milan_study_policy_derive (
       feature->overlap_count = live_overlap_counts[i];
     }
 
+  /* Policy selects the matched zero-residual slot before consuming any of the
+   * geometry below. Keep all scalar and reference-transform validation above. */
+  if (input->features[matched_feature_index].residual == 0)
+    return 0;
+
   for (size_t i = 0; i < current->feature_count; i++)
     {
       GoodixMilanStudyPolicyFeature *feature = &input->features[i];
