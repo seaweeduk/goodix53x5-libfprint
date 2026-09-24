@@ -1,8 +1,19 @@
-# Packaging
+# Packaging And Releases
 
-Distribution packages are built for Ubuntu 22.04, 24.04 and 26.04, Debian 12
-and 13, and Fedora 43 and 44 on x86-64. Other distributions, including Arch,
-use the source installation described in the main README.
+Releases are GitHub releases built by `.github/workflows/release.yml`. Each one
+carries:
+
+| Asset | Contents |
+| --- | --- |
+| `goodix53x5-libfprint-VERSION.tar.xz` | Complete source: this repository plus the pinned libfprint and fprintd checkouts |
+| `libfprint-goodix53x5_VERSION-1~DISTRO_amd64.deb`, `fprintd-goodix53x5_…` | Ubuntu 22.04, 24.04 and 26.04, Debian 12 and 13 |
+| `libfprint-goodix53x5-VERSION-1.fcNN.x86_64.rpm`, `fprintd-goodix53x5-…` | Fedora 43 and 44 |
+| `SHA256SUMS` | Checksums of every asset, also covered by GitHub build provenance attestations |
+
+Arch and other distributions use the source installation. The release notes
+tell those users to clone the release tag or extract the release source archive
+and run `./install.sh`, and not to use GitHub's automatically generated source
+archives, which lack the pinned sources and `release.env`.
 
 ## Packages
 
@@ -72,3 +83,60 @@ podman run --rm -v "$PWD:/src" -w /src docker.io/library/ubuntu:24.04 \
 Replace the image with `ubuntu:22.04`, `ubuntu:26.04`, `debian:12`,
 `debian:13`, `fedora:43` or `fedora:44`. Build output stays under
 `.build/packages`.
+
+## Releasing
+
+Releases are made from `main`:
+
+```sh
+packaging/release.sh patch        # or minor, major, or an exact version such as 1.0.0
+```
+
+This starts the Release workflow (also available from the Actions tab). It:
+
+1. selects the version from the latest `vX.Y.Z` tag, refusing anything that is
+   not newer; the first release is `1.0.0`;
+2. builds the source archive and all seven targets;
+3. writes `SHA256SUMS` and build provenance attestations;
+4. creates a **draft** release targeting the built commit, with the install
+   instructions from `packaging/release-notes.md` (filled in with the tag) and
+   notes generated from the pull requests merged since the previous release.
+
+Review the draft on the releases page, edit the notes (add highlights and any
+re-enrollment warnings), and publish it. Publishing creates the tag; nothing is
+public before then. Package changelogs link to the release notes rather than
+duplicating them.
+
+### Versions
+
+The tag is the only version source; no file is bumped.
+
+- **Patch**: fixes and packaging-only changes.
+- **Minor**: new behaviour or supported sensors, and compatible updates of the
+  pinned libfprint or fprintd.
+- **Major**: changes that require re-enrollment or break compatibility with the
+  distribution's fprintd clients.
+
+Package revisions stay at `-1`; a packaging fix is a new patch release. Source
+installations record the version from `git describe` or `release.env` in
+`/usr/share/goodix53x5-milan/build.env`.
+
+### Release Notes
+
+Notes are grouped by pull request label (`.github/release.yml`):
+
+| Label | Section |
+| --- | --- |
+| `feature` | New features |
+| `fix` | Fixes |
+| `hardware` | Hardware support |
+| `packaging` | Packaging and releases |
+| `skip-notes` | Left out of the notes |
+
+Unlabelled pull requests appear under "Other changes". Create the labels once:
+
+```sh
+for label in feature fix hardware packaging skip-notes; do
+  GH_REPO=seaweeduk/goodix53x5-libfprint gh label create "$label"
+done
+```

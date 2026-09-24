@@ -43,8 +43,8 @@ without producing a key.
 
 ## 1. Install And Disable Linux Fingerprint Access
 
-Install a release build with `./install.sh`, or retain debug capture support
-with:
+Install the release packages or a release build with `./install.sh`, or retain
+debug capture support with a source installation:
 
 ```sh
 ./install.sh --debug
