@@ -78,7 +78,8 @@ the builder uses by default, and records its version in `release.env`.
 Distribution packages use the same builder with `--package-root DIR`: the
 verified release payload is copied into `DIR` without an inventory, libfprint
 moves to the private `<libdir>/libfprint-goodix53x5` directory that only the
-daemon loads, and libfprint's development files are dropped.
+daemon loads, and libfprint's development files are dropped. See the
+[packaging guide](../packaging/README.md).
 
 Preflight refuses to continue when a destination is owned by a package or
 already exists without being recorded by a previous source install. Remove the
