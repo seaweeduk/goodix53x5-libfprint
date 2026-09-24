@@ -1,0 +1,20 @@
+changelog:
+  exclude:
+    labels:
+      - skip-notes
+  categories:
+    - title: New features
+      labels:
+        - feature
+    - title: Fixes
+      labels:
+        - fix
+    - title: Hardware support
+      labels:
+        - hardware
+    - title: Packaging and releases
+      labels:
+        - packaging
+    - title: Other changes
+      labels:
+        - "*"
