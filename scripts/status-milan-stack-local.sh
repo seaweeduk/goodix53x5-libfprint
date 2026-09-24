@@ -24,6 +24,7 @@ case "${1:---installed}" in
     milan_verify_debug_census / "$(milan_manifest_value "$MILAN_BUILD_ENV" GOODIX53X5_DEBUG)"
     milan_verify_active_system
     milan_note "installed files, service selection, and library resolution verified"
+    milan_note "installed version: $(milan_recorded_version /)"
     ;;
   --absent)
     [[ ! -e "$MILAN_INVENTORY" ]] || milan_die "manual installation inventory remains: $MILAN_INVENTORY"

@@ -72,6 +72,13 @@ below `sources/` unless `GOODIX_MILAN_LIBFPRINT_SOURCE` or
 Each build verifies the pinned patches, runs the libfprint and Milan test
 suites, stages a `DESTDIR` payload, records its inventory, and publishes
 `builds/current` only after verification. Building never changes the system.
+A release source archive carries the pinned checkouts under `sources/`, which
+the builder uses by default, and records its version in `release.env`.
+
+Distribution packages use the same builder with `--package-root DIR`: the
+verified release payload is copied into `DIR` without an inventory, libfprint
+moves to the private `<libdir>/libfprint-goodix53x5` directory that only the
+daemon loads, and libfprint's development files are dropped.
 
 Preflight refuses to continue when a destination is owned by a package or
 already exists without being recorded by a previous source install. Remove the

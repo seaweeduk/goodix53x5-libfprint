@@ -1,8 +1,29 @@
 #!/usr/bin/env bash
 # Build and stage paired libfprint and fprintd for the distribution's system paths.
+#
+# With --package-root DIR the verified payload is copied into DIR for a
+# distribution package instead of being published for install-milan-stack-local.sh.
+# That layout keeps libfprint in a private directory that only the daemon uses.
 
 set -euo pipefail
 umask 022
+
+usage() {
+  printf 'Usage: %s [--package-root DIR]\n' "$0"
+}
+
+package_root=
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --package-root)
+      [[ "$#" -ge 2 ]] || { usage >&2; exit 1; }
+      package_root="$2"
+      shift 2
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd "$script_dir/.." && pwd)"
@@ -21,6 +42,19 @@ case "${GOODIX53X5_DEBUG:-0}" in
   1) debug_enabled=true; debug_manifest=1; build_kind=debug ;;
   *) milan_die "GOODIX53X5_DEBUG must be 0 or 1" ;;
 esac
+
+libfprint_libdir="$MILAN_LIBDIR"
+fprintd_env=()
+if [[ -n "$package_root" ]]; then
+  milan_require_absolute "--package-root" "$package_root"
+  milan_require_command readelf
+  [[ "$debug_manifest" == 0 ]] || milan_die "distribution packages are release builds; unset GOODIX53X5_DEBUG"
+  [[ ! -e "$package_root" || -z "$(ls -A "$package_root")" ]] ||
+    milan_die "package root is not empty: $package_root"
+  libfprint_libdir="$MILAN_LIBDIR/$MILAN_PACKAGE_LIBRARY_NAME"
+  MILAN_LIBRARY_PATH="$libfprint_libdir/libfprint-2.so.2.0.0"
+  fprintd_env=(env "LDFLAGS=${LDFLAGS:+$LDFLAGS }-Wl,-rpath,$libfprint_libdir")
+fi
 debug_build_id=
 debug_source_id=
 if [[ "$debug_manifest" == 1 ]]; then
@@ -45,14 +79,15 @@ ensure_source() {
 
 source_root="$MILAN_STACK_ROOT/sources"
 mkdir -p "$source_root"
-libfprint_pristine="${GOODIX_MILAN_LIBFPRINT_SOURCE:-$source_root/libfprint-v1.94.10}"
-fprintd_pristine="${GOODIX_MILAN_FPRINTD_SOURCE:-$source_root/fprintd-v1.94.5}"
-ensure_source libfprint "$libfprint_pristine" \
-  "${GOODIX_MILAN_LIBFPRINT_URL:-https://gitlab.freedesktop.org/libfprint/libfprint.git}" \
-  "$MILAN_LIBFPRINT_REVISION"
-ensure_source fprintd "$fprintd_pristine" \
-  "${GOODIX_MILAN_FPRINTD_URL:-https://gitlab.freedesktop.org/libfprint/fprintd.git}" \
-  "$MILAN_FPRINTD_REVISION"
+# Release source archives carry the pinned checkouts below sources/.
+default_libfprint="$source_root/libfprint-v1.94.10"
+default_fprintd="$source_root/fprintd-v1.94.5"
+[[ ! -d "$repo_dir/sources/libfprint" ]] || default_libfprint="$repo_dir/sources/libfprint"
+[[ ! -d "$repo_dir/sources/fprintd" ]] || default_fprintd="$repo_dir/sources/fprintd"
+libfprint_pristine="${GOODIX_MILAN_LIBFPRINT_SOURCE:-$default_libfprint}"
+fprintd_pristine="${GOODIX_MILAN_FPRINTD_SOURCE:-$default_fprintd}"
+ensure_source libfprint "$libfprint_pristine" "$MILAN_LIBFPRINT_URL" "$MILAN_LIBFPRINT_REVISION"
+ensure_source fprintd "$fprintd_pristine" "$MILAN_FPRINTD_URL" "$MILAN_FPRINTD_REVISION"
 "$repo_dir/patches/libfprint/verify-update-result-patch.sh" "$libfprint_pristine"
 "$repo_dir/patches/libfprint/verify-goodix53x5-usb-persist-patch.sh" "$libfprint_pristine"
 "$repo_dir/patches/libfprint/verify-idle-suspend-notify-patch.sh" "$libfprint_pristine"
@@ -88,7 +123,7 @@ for patch in libfprint-update-result libfprint-goodix53x5-usb-persist libfprint-
   git -C "$libfprint_source" apply --reverse --check "$repo_dir/patches/libfprint/$patch.patch"
 done
 milan_run_stage "configure libfprint" meson setup "$libfprint_build" "$libfprint_source" \
-  --reconfigure --prefix=/usr --libdir="$MILAN_LIBDIR" --sysconfdir=/etc --localstatedir=/var \
+  --reconfigure --prefix=/usr --libdir="$libfprint_libdir" --sysconfdir=/etc --localstatedir=/var \
   -Ddrivers=goodix53x5 -Dudev_hwdb=disabled -Dudev_rules=disabled \
   -Dintrospection=false -Dinstalled-tests=false -Ddoc=false \
   -Dgoodix53x5_debug="$debug_enabled" \
@@ -106,7 +141,7 @@ milan_run_stage "clone pinned fprintd checkout" git clone --local --no-hardlinks
 git -C "$fprintd_source" apply "$repo_dir/patches/fprintd/1.94.5-milan-update-save.patch"
 git -C "$fprintd_source" apply "$repo_dir/patches/fprintd/1.94.5-serviced-session.patch"
 git -C "$fprintd_source" apply --reverse --check "$repo_dir/patches/fprintd/1.94.5-serviced-session.patch"
-milan_run_stage "configure fprintd against paired libfprint" meson devenv -C "$libfprint_build" \
+milan_run_stage "configure fprintd against paired libfprint" "${fprintd_env[@]}" meson devenv -C "$libfprint_build" \
   meson setup "$fprintd_build" "$fprintd_source" --prefix=/usr \
   --libdir="$MILAN_LIBDIR" --libexecdir="$(dirname "$MILAN_DAEMON_PATH")" \
   --sysconfdir=/etc --localstatedir=/var \
@@ -120,6 +155,21 @@ mkdir -p "$payload$MILAN_METADATA_DIR" "$payload$(dirname "$MILAN_UDEV_RULE")"
 milan_run_stage "stage libfprint" env DESTDIR="$payload" ninja -C "$libfprint_build" install
 milan_run_stage "stage fprintd" env DESTDIR="$payload" ninja -C "$fprintd_build" install
 install -m 0644 "$repo_dir/udev/$(basename "$MILAN_UDEV_RULE")" "$payload$MILAN_UDEV_RULE"
+
+if [[ -n "$package_root" ]]; then
+  # Development files and AppStream metadata would collide with the
+  # distribution's libfprint packages; packages keep no source-install metadata.
+  rm -rf -- "$payload/usr/include" "$payload$libfprint_libdir/pkgconfig" "$payload$libfprint_libdir/libfprint-2.so" \
+    "$payload/usr/share/metainfo" "$payload$MILAN_METADATA_DIR"
+  milan_verify_runtime_files "$payload" 0
+  readelf -d "$payload$MILAN_DAEMON_PATH" | grep -Eq "\((RUNPATH|RPATH)\).*\[$libfprint_libdir\]" ||
+    milan_die "packaged daemon does not load the private libfprint"
+  mkdir -p "$package_root"
+  cp -a "$payload/." "$package_root/"
+  milan_note "staged verified package payload: $package_root"
+  exit 0
+fi
+
 if [[ "$debug_manifest" == 1 ]]; then
   install -d -m 0755 "$payload$(dirname "$MILAN_DEBUG_LOGGING_DROPIN")"
   cat > "$payload$MILAN_DEBUG_LOGGING_DROPIN" <<'EOF'
@@ -132,6 +182,7 @@ fi
 
 cat > "$payload$MILAN_BUILD_ENV" <<EOF
 FORMAT=3
+VERSION=$(milan_source_version "$repo_dir")
 LIBDIR=$MILAN_LIBDIR
 LIBRARY_PATH=$MILAN_LIBRARY_PATH
 DAEMON_PATH=$MILAN_DAEMON_PATH
@@ -140,7 +191,7 @@ GOODIX53X5_DEBUG_BUILD_ID=$debug_build_id
 GOODIX53X5_DEBUG_SOURCE_ID=$debug_source_id
 LIBFPRINT_REVISION=$MILAN_LIBFPRINT_REVISION
 FPRINTD_REVISION=$MILAN_FPRINTD_REVISION
-OVERLAY_REVISION=$(git -C "$repo_dir" rev-parse HEAD)
+OVERLAY_REVISION=$(milan_source_revision "$repo_dir")
 OVERLAY_INPUT_SHA256=$(milan_overlay_input_sha256 "$repo_dir")
 BUILT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
