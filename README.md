@@ -19,7 +19,8 @@ binaries at runtime.
 
 The project is currently validated on a **Dell XPS 13 9305** with a
 `27c6:5335` sensor. IDs `27c6:5385` and `27c6:5395` are registered by the driver
-but have not received the same hardware validation.
+but have not received the same hardware validation. Check your sensor's ID with
+`lsusb -d 27c6:`.
 
 Before installing on an unlisted Goodix USB device, run:
 
@@ -86,9 +87,10 @@ included in, discovered by, or required to run this repository.
 
 ## Install
 
-The source installation builds pinned, patched libfprint `v1.94.10` and fprintd
-`v1.94.5` and installs them into your distribution's normal paths under `/usr`,
-including the fprintd commands, PAM module, and systemd/D-Bus integration.
+Both install methods provide pinned, patched libfprint `v1.94.10` and fprintd
+`v1.94.5`, including the fprintd commands, PAM module, and systemd/D-Bus
+integration. They replace your distribution's fprintd, so other fingerprint
+readers are not supported while they are installed.
 
 If upgrading from the retired sigfm matcher, delete existing prints while the
 old stack is still installed, then re-enroll after installation:
@@ -97,16 +99,6 @@ old stack is still installed, then re-enroll after installation:
 sudo fprintd-delete "$USER"
 ```
 
-Remove your distribution's libfprint and fprintd packages first. The installer
-refuses to overwrite package-owned or otherwise unrecorded files.
-
-```sh
-./install.sh
-```
-
-Print state stays in `/var/lib/fprint`. The installer does not enable
-fingerprint authentication in PAM; configure that through your distribution.
-
 > [!WARNING]
 > Hyprlock 0.9.6 can record successful fingerprint unlocks as PAM failures and
 > leave fingerprint authentication unavailable after a rapid relock, potentially
@@ -114,13 +106,82 @@ fingerprint authentication in PAM; configure that through your distribution.
 > [hyprwm/hyprlock#1074](https://github.com/hyprwm/hyprlock/issues/1074) is
 > resolved.
 
+### Packages: Ubuntu, Debian, Fedora
+
+Each [release](https://github.com/seaweeduk/goodix53x5-libfprint/releases)
+has x86-64 packages for Ubuntu 22.04, 24.04 and 26.04, Debian 12 and 13, and
+Fedora 43 and 44. Distributions based on one of these may work with the
+package for their base release, but they are not tested. Download both
+packages for your distribution and install them together:
+
+```sh
+# Ubuntu and Debian
+sudo apt install ./libfprint-goodix53x5_*.deb ./fprintd-goodix53x5_*.deb
+# Fedora
+sudo dnf install ./libfprint-goodix53x5-*.rpm ./fprintd-goodix53x5-*.rpm
+```
+
+`fprintd-goodix53x5` replaces the distribution's `fprintd` and its PAM module
+(`libpam-fprintd` or `fprintd-pam`); the package manager removes them during
+the installation. `libfprint-goodix53x5` keeps the driver's libfprint in a
+private directory used only by this fprintd, so the distribution's libfprint
+stays installed and untouched.
+
+Fingerprint login starts disabled. Enable it with:
+
+```sh
+sudo pam-auth-update --enable fprintd            # Ubuntu and Debian
+sudo authselect enable-feature with-fingerprint  # Fedora
+```
+
+Update by installing a newer release's packages the same way. To remove the
+packages and return to the distribution's fprintd:
+
+```sh
+# Ubuntu and Debian
+sudo apt remove fprintd-goodix53x5 libfprint-goodix53x5
+sudo apt install fprintd libpam-fprintd
+# Fedora
+sudo dnf remove fprintd-goodix53x5 libfprint-goodix53x5
+sudo dnf install fprintd fprintd-pam
+```
+
+Prints in `/var/lib/fprint` are kept in both directions. The packages refuse to
+install over a source installation; run `./uninstall.sh` from that checkout
+first.
+
+### Source Installation: Arch And Other Distributions
+
+The source installation builds the same stack and installs it into your
+distribution's normal paths under `/usr`. Remove your distribution's libfprint
+and fprintd packages first. The installer refuses to overwrite package-owned or
+otherwise unrecorded files.
+
+To install a specific release, clone its tag, or extract that release's
+`goodix53x5-libfprint-VERSION.tar.xz`, which also contains the pinned libfprint
+and fprintd sources and builds offline:
+
+```sh
+git clone --branch vX.Y.Z https://github.com/seaweeduk/goodix53x5-libfprint
+cd goodix53x5-libfprint
+./install.sh
+```
+
+GitHub's automatically generated "Source code" archives on the releases page
+lack those pinned sources and the release version; use the clone or the release
+archive instead.
+
+Print state stays in `/var/lib/fprint`. The installer does not enable
+fingerprint authentication in PAM; configure that through your distribution.
+
 Build dependencies include a C toolchain, Git, Meson, Ninja, pkg-config,
 GLib/GIO, GUsb, OpenSSL 3, libdeflate, Python 3, gettext, Perl's `pod2man`, and
 the development dependencies of libfprint and fprintd, including Polkit's
 GObject library, PAM, and libsystemd.
 
-To update, check out the desired revision and run `./install.sh` again. For
-layout, build controls, status checks, and removal behaviour, see the
+To update, check out the desired release tag or revision and run
+`./install.sh` again. For layout, build controls, status checks, and removal
+behaviour, see the
 [Milan stack guide](scripts/MILAN-STACK.md).
 
 ## Enroll And Verify
@@ -167,7 +228,13 @@ opt-in procedure for collecting private biometric debug data is kept in the
 The [Milan parity harness](tools/milan-parity/README.md) documents the retained
 byte-parity contracts and replay tooling.
 
+Package builds and the release process are described in the
+[packaging guide](packaging/README.md).
+
 ## Uninstall
+
+For packages, see [Packages](#packages-ubuntu-debian-fedora). For a source
+installation:
 
 ```sh
 ./uninstall.sh

@@ -7,10 +7,15 @@ MILAN_LIBFPRINT_USB_PERSIST_PATCH_SHA256="743c13782228869b8b5ea834caa096abadd38e
 MILAN_LIBFPRINT_IDLE_SUSPEND_NOTIFY_PATCH_SHA256="7bbdb229e0de58e6b454d5117e517143fc78043beab3bae5596021c21fba67fc"
 MILAN_FPRINTD_PATCH_SHA256="5d87cd806587fa5f035847a38ba3155b38f9a612a3070d9abfa6f83114e58db8"
 MILAN_FPRINTD_SESSION_PATCH_SHA256="e8b3acd37fb490e1542c9599bdeed485266c4ab2fdfbda304600ca828f75ef69"
+MILAN_LIBFPRINT_URL="${GOODIX_MILAN_LIBFPRINT_URL:-https://gitlab.freedesktop.org/libfprint/libfprint.git}"
+MILAN_FPRINTD_URL="${GOODIX_MILAN_FPRINTD_URL:-https://gitlab.freedesktop.org/libfprint/fprintd.git}"
+# Distribution packages keep this libfprint in a private directory of this name.
+MILAN_PACKAGE_LIBRARY_NAME="libfprint-goodix53x5"
 MILAN_METADATA_DIR="/usr/share/goodix53x5-milan"
 MILAN_BUILD_ENV="$MILAN_METADATA_DIR/build.env"
 MILAN_INVENTORY="$MILAN_METADATA_DIR/inventory.json"
 MILAN_UDEV_RULE="/usr/lib/udev/rules.d/99-goodix53x5-milan-persist.rules"
+MILAN_DEBUG_LOGGING_DROPIN="/usr/lib/systemd/system/fprintd.service.d/90-goodix53x5-debug-logging.conf"
 MILAN_FILES_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/milan-stack-files.py"
 
 milan_die() {
@@ -126,6 +131,34 @@ milan_manifest_value() {
   printf '%s\n' "${line#*=}"
 }
 
+# Release archives record their version in release.env; checkouts use tags.
+milan_source_version() {
+  local repo_dir="$1" described
+
+  if [[ -f "$repo_dir/release.env" ]]; then
+    milan_manifest_value "$repo_dir/release.env" VERSION
+  elif described="$(git -C "$repo_dir" describe --tags --match 'v[0-9]*' --dirty 2>/dev/null)"; then
+    printf '%s\n' "${described#v}"
+  else
+    printf '0.0.0+g%s\n' "$(git -C "$repo_dir" rev-parse --short HEAD)"
+  fi
+}
+
+# Builds from before version recording have no VERSION entry.
+milan_recorded_version() {
+  local version
+  version="$(sed -n 's/^VERSION=//p' "${1%/}$MILAN_BUILD_ENV")"
+  printf '%s\n' "${version:-unknown}"
+}
+
+milan_source_revision() {
+  if [[ -f "$1/release.env" ]]; then
+    milan_manifest_value "$1/release.env" REVISION
+  else
+    git -C "$1" rev-parse HEAD
+  fi
+}
+
 milan_verify_repo_inputs() {
   local repo_dir="$1"
 
@@ -173,7 +206,7 @@ milan_open_publication() {
 
 # Check a staged payload against this checkout and its own inventory.
 milan_verify_payload() {
-  local payload="$1" repo_dir="$2" manifest="$1$MILAN_BUILD_ENV" debug path
+  local payload="$1" repo_dir="$2" manifest="$1$MILAN_BUILD_ENV" debug
 
   milan_files verify-build "$payload"
   milan_load_layout "$payload"
@@ -183,15 +216,35 @@ milan_verify_payload() {
     milan_die "published build does not match this checkout; rebuild"
   debug="$(milan_manifest_value "$manifest" GOODIX53X5_DEBUG)"
   [[ "$debug" == 0 || "$debug" == 1 ]] || milan_die "invalid debug manifest value"
+  milan_verify_runtime_files "$payload" "$debug"
+}
+
+# Check the runtime files staged below $1; $2 is the expected debug flag.
+milan_verify_runtime_files() {
+  local payload="$1" debug="$2" path
+
   milan_verify_debug_census "$payload" "$debug"
   for path in "$MILAN_DAEMON_PATH" "$MILAN_LIBRARY_PATH" "$MILAN_LIBDIR/security/pam_fprintd.so" \
       /usr/bin/fprintd-enroll /usr/bin/fprintd-verify /usr/bin/fprintd-list /usr/bin/fprintd-delete \
       /usr/share/dbus-1/system-services/net.reactivated.Fprint.service "$MILAN_UDEV_RULE"; do
     [[ -f "$payload$path" ]] || milan_die "incomplete runtime payload: $path"
   done
-  [[ "$(readlink "$payload$MILAN_LIBDIR/libfprint-2.so.2")" == libfprint-2.so.2.0.0 ]] || milan_die "invalid soname symlink"
+  [[ "$(readlink "$payload$(dirname "$MILAN_LIBRARY_PATH")/libfprint-2.so.2")" == libfprint-2.so.2.0.0 ]] ||
+    milan_die "invalid soname symlink"
   grep -Fxq "ExecStart=$MILAN_DAEMON_PATH" "$payload/usr/lib/systemd/system/fprintd.service" ||
     milan_die "staged service selects wrong daemon"
+  if [[ "$debug" == 1 ]]; then
+    [[ -f "$payload$MILAN_DEBUG_LOGGING_DROPIN" ]] ||
+      milan_die "debug payload lacks fprintd logging configuration"
+    grep -Fxq 'Environment=G_MESSAGES_DEBUG=libfprint-goodix53x5' "$payload$MILAN_DEBUG_LOGGING_DROPIN" ||
+      milan_die "debug payload does not enable Goodix debug messages"
+    grep -Fxq 'Environment=GOODIX53X5_LOG_TIMING=1' "$payload$MILAN_DEBUG_LOGGING_DROPIN" ||
+      milan_die "debug payload does not enable timing logs"
+    grep -Fxq 'Environment=GOODIX53X5_LOG_DIAGNOSTICS=1' "$payload$MILAN_DEBUG_LOGGING_DROPIN" ||
+      milan_die "debug payload does not enable diagnostic logs"
+  elif [[ -e "$payload$MILAN_DEBUG_LOGGING_DROPIN" ]]; then
+    milan_die "release payload contains debug logging configuration"
+  fi
 }
 
 # $1 is the root holding the library (payload dir or /); $2 is the expected debug flag.

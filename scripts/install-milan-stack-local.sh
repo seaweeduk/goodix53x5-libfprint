@@ -42,5 +42,5 @@ milan_unmask_runtime
 systemctl restart fprintd.service
 milan_verify_active_system
 trap - EXIT
-milan_note "installed paired Milan libfprint and fprintd under /usr"
+milan_note "installed paired Milan libfprint and fprintd $(milan_recorded_version /) under /usr"
 milan_note "print state under /var/lib/fprint was not touched"

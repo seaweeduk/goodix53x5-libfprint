@@ -53,8 +53,14 @@ sudo ./scripts/install-milan-stack-local.sh
 
 `./install.sh` runs the build and the install together; `./install.sh --debug`
 (or `GOODIX53X5_DEBUG=1` for the builder) produces a diagnostic build with the
-same matching and persistence behaviour. Image capture needs the separate
-configuration in [`DEBUG-CAPTURE-GUIDE.md`](../DEBUG-CAPTURE-GUIDE.md).
+same matching and persistence behaviour. Installing that build automatically
+enables the driver's GLib debug messages, timing logs, and one-line diagnostic
+summaries in the `fprintd.service` journal. Follow them with
+`sudo journalctl -fu fprintd.service -o cat`. Image and template capture remains
+disabled and needs the separate private configuration in
+[`DEBUG-CAPTURE-GUIDE.md`](../DEBUG-CAPTURE-GUIDE.md). Installing a later release
+build removes the managed debug logging configuration automatically; independent
+administrator overrides under `/etc/systemd/system` are not changed.
 
 Builds live under `$XDG_STATE_HOME/goodix53x5-milan` (default
 `~/.local/state/goodix53x5-milan`); `sudo` resolves the invoking user's home.
@@ -66,6 +72,14 @@ below `sources/` unless `GOODIX_MILAN_LIBFPRINT_SOURCE` or
 Each build verifies the pinned patches, runs the libfprint and Milan test
 suites, stages a `DESTDIR` payload, records its inventory, and publishes
 `builds/current` only after verification. Building never changes the system.
+A release source archive carries the pinned checkouts under `sources/`, which
+the builder uses by default, and records its version in `release.env`.
+
+Distribution packages use the same builder with `--package-root DIR`: the
+verified release payload is copied into `DIR` without an inventory, libfprint
+moves to the private `<libdir>/libfprint-goodix53x5` directory that only the
+daemon loads, and libfprint's development files are dropped. See the
+[packaging guide](../packaging/README.md).
 
 Preflight refuses to continue when a destination is owned by a package or
 already exists without being recorded by a previous source install. Remove the
