@@ -77,6 +77,9 @@ Enable fingerprint login with "authselect enable-feature with-fingerprint".
 
 %prep
 %setup -q
+# Both upstream licenses are named COPYING, and license files install by basename.
+cp -p sources/libfprint/COPYING COPYING.libfprint
+cp -p sources/fprintd/COPYING COPYING.fprintd
 
 %build
 %set_build_flags
@@ -154,8 +157,8 @@ if [ -d /run/systemd/system ]; then
 fi
 
 %files -n fprintd-goodix53x5 -f fprintd.lang
-%license sources/libfprint/COPYING
-%license sources/fprintd/COPYING
+%license COPYING.libfprint
+%license COPYING.fprintd
 %{_libdir}/libfprint-goodix53x5/
 %config(noreplace) %{_sysconfdir}/fprintd.conf
 %{_bindir}/fprintd-*
