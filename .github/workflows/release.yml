@@ -75,7 +75,13 @@ jobs:
 
       - name: Write checksums
         working-directory: dist
-        run: sha256sum -- * > SHA256SUMS
+        run: |
+          # GitHub replaces "~" in asset names with "."; checksum the names users download.
+          shopt -s nullglob
+          for file in *~*; do
+            mv -- "$file" "${file//\~/.}"
+          done
+          sha256sum -- * > SHA256SUMS
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
