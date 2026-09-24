@@ -33,13 +33,31 @@ case " $ID ${ID_LIKE:-} " in
   *) milan_die "unsupported distribution: $ID" ;;
 esac
 
+# Distribution mirrors occasionally list a package before serving it. Refresh
+# the package lists and retry rather than failing the whole build.
+install_with_retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    "$@" && return 0
+    [[ "$attempt" == 3 ]] && break
+    milan_note "dependency installation failed (attempt $attempt of 3); retrying in 60 seconds"
+    sleep 60
+    if [[ "$format" == deb ]]; then
+      apt-get update
+    else
+      dnf makecache --refresh
+    fi
+  done
+  return 1
+}
+
 if [[ "$install_deps" == 1 ]]; then
   if [[ "$format" == deb ]]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y --no-install-recommends ca-certificates dpkg-dev xz-utils
+    install_with_retry apt-get install -y --no-install-recommends ca-certificates dpkg-dev xz-utils
   else
-    dnf install -y findutils rpm-build tar xz 'dnf-command(builddep)'
+    install_with_retry dnf install -y findutils rpm-build tar xz 'dnf-command(builddep)'
   fi
 fi
 
@@ -69,7 +87,7 @@ goodix53x5-libfprint ($deb_version) ${VERSION_CODENAME:-unstable}; urgency=mediu
  -- $maintainer  $(LC_ALL=C date -u -R -d "@$SOURCE_DATE_EPOCH")
 EOF
   if [[ "$install_deps" == 1 ]]; then
-    apt-get build-dep -y "$src"
+    install_with_retry apt-get build-dep -y "$src"
   fi
   (cd "$src" && dpkg-buildpackage -b -us -uc)
   cp -- "$work"/{libfprint,fprintd}-goodix53x5_"$deb_version"_*.deb "$output_dir/"
@@ -79,7 +97,7 @@ build_rpm() {
   local spec="$src/packaging/rpm/goodix53x5-libfprint.spec" topdir="$work/rpmbuild"
 
   if [[ "$install_deps" == 1 ]]; then
-    dnf builddep -y --define "goodix_version $version" "$spec"
+    install_with_retry dnf builddep -y --define "goodix_version $version" "$spec"
   fi
   rpmbuild -bb \
     --define "_topdir $topdir" \
