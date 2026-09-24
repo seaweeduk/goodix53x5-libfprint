@@ -12,6 +12,7 @@ on:
       - udev/**
       - meson-integration.patch
       - .github/workflows/packages.yml
+      - '!**/*.md'
   workflow_call:
     inputs:
       version:
