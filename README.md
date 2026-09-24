@@ -167,6 +167,9 @@ opt-in procedure for collecting private biometric debug data is kept in the
 The [Milan parity harness](tools/milan-parity/README.md) documents the retained
 byte-parity contracts and replay tooling.
 
+Distribution package builds are described in the
+[packaging guide](packaging/README.md).
+
 ## Uninstall
 
 ```sh
