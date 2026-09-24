@@ -123,20 +123,29 @@ installations record the version from `git describe` or `release.env` in
 
 ### Release Notes
 
-Notes are grouped by pull request label (`.github/release.yml`):
+Notes list pull request titles, grouped by label (`.github/release.yml`). Give
+every pull request a user-facing title and exactly one type label; add
+`breaking` as well when users must act. A pull request appears in the first
+matching section.
 
-| Label | Section |
-| --- | --- |
-| `feature` | New features |
-| `fix` | Fixes |
-| `hardware` | Hardware support |
-| `packaging` | Packaging and releases |
-| `skip-notes` | Left out of the notes |
+| Label | Section | Use for |
+| --- | --- | --- |
+| `breaking` | ⚠️ Action required | Added to a type label when users must re-enroll, migrate or change configuration; implies a major release |
+| `feature` | New features | New user-visible capability |
+| `matching` | Recognition and Windows parity | Capture, matching, learning or anti-spoofing behaviour |
+| `fix` | Fixes | User-visible bugs, reliability, sleep/resume or sensor recovery |
+| `performance` | Performance | Faster unlocks, startup or matching |
+| `security` | Security | Hardening of the encrypted link, keys or stored data |
+| `hardware` | Hardware support | New or newly validated sensors and laptops |
+| `packaging` | Packaging and installation | Packages, installers and supported distributions |
+| `skip-notes` | Left out of the notes | Refactors, tests, parity tooling, CI, docs and RE notes |
 
-Unlabelled pull requests appear under "Other changes". Create the labels once:
+Unlabelled pull requests appear under "Other changes". A new label needs a
+matching category in `.github/release.yml`. The labels already exist; to
+recreate them:
 
 ```sh
-for label in feature fix hardware packaging skip-notes; do
-  GH_REPO=seaweeduk/goodix53x5-libfprint gh label create "$label"
+for label in breaking feature matching fix performance security hardware packaging skip-notes; do
+  GH_REPO=seaweeduk/goodix53x5-libfprint gh label create "$label" --force
 done
 ```
