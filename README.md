@@ -109,23 +109,22 @@ sudo fprintd-delete "$USER"
 ### Packages: Ubuntu, Debian, Fedora
 
 Each [release](https://github.com/seaweeduk/goodix53x5-libfprint/releases)
-has x86-64 packages for Ubuntu 22.04, 24.04 and 26.04, Debian 12 and 13, and
-Fedora 43 and 44. Distributions based on one of these may work with the
-package for their base release, but they are not tested. Download both
-packages for your distribution and install them together:
+has one x86-64 package for each of Ubuntu 22.04, 24.04 and 26.04, Debian 12
+and 13, and Fedora 43 and 44; the release notes link each one directly.
+Distributions based on one of these may work with the package for their base
+release, but they are not tested. Download the package for your distribution
+and install it:
 
 ```sh
-# Ubuntu and Debian
-sudo apt install ./libfprint-goodix53x5_*.deb ./fprintd-goodix53x5_*.deb
-# Fedora
-sudo dnf install ./libfprint-goodix53x5-*.rpm ./fprintd-goodix53x5-*.rpm
+sudo apt install ./fprintd-goodix53x5_*.deb      # Ubuntu and Debian
+sudo dnf install ./fprintd-goodix53x5-*.rpm      # Fedora
 ```
 
 `fprintd-goodix53x5` replaces the distribution's `fprintd` and its PAM module
 (`libpam-fprintd` or `fprintd-pam`); the package manager removes them during
-the installation. `libfprint-goodix53x5` keeps the driver's libfprint in a
-private directory used only by this fprintd, so the distribution's libfprint
-stays installed and untouched.
+the installation. The driver's libfprint is kept in a private directory used
+only by this fprintd, so the distribution's libfprint stays installed and
+untouched.
 
 Fingerprint login starts disabled. Enable it with:
 
@@ -134,19 +133,21 @@ sudo pam-auth-update --enable fprintd            # Ubuntu and Debian
 sudo authselect enable-feature with-fingerprint  # Fedora
 ```
 
-Update by installing a newer release's packages the same way. To remove the
-packages and return to the distribution's fprintd:
+Update by installing a newer release's package the same way. Release 1.0.0
+shipped a separate `libfprint-goodix53x5` package; installing a later release
+removes it automatically. To remove the package and return to the
+distribution's fprintd:
 
 ```sh
 # Ubuntu and Debian
-sudo apt remove fprintd-goodix53x5 libfprint-goodix53x5
+sudo apt remove fprintd-goodix53x5
 sudo apt install fprintd libpam-fprintd
 # Fedora
-sudo dnf remove fprintd-goodix53x5 libfprint-goodix53x5
+sudo dnf remove fprintd-goodix53x5
 sudo dnf install fprintd fprintd-pam
 ```
 
-Prints in `/var/lib/fprint` are kept in both directions. The packages refuse to
+Prints in `/var/lib/fprint` are kept in both directions. The package refuses to
 install over a source installation; run `./uninstall.sh` from that checkout
 first.
 

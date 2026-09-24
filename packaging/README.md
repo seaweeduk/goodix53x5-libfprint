@@ -6,8 +6,8 @@ carries:
 | Asset | Contents |
 | --- | --- |
 | `goodix53x5-libfprint-VERSION.tar.xz` | Complete source: this repository plus the pinned libfprint and fprintd checkouts |
-| `libfprint-goodix53x5_VERSION-1.DISTRO_amd64.deb`, `fprintd-goodix53x5_…` | Ubuntu 22.04, 24.04 and 26.04, Debian 12 and 13 (the package version inside is `VERSION-1~DISTRO`) |
-| `libfprint-goodix53x5-VERSION-1.fcNN.x86_64.rpm`, `fprintd-goodix53x5-…` | Fedora 43 and 44 |
+| `fprintd-goodix53x5_VERSION-1.DISTRO_amd64.deb` | Ubuntu 22.04, 24.04 and 26.04, Debian 12 and 13 (the package version inside is `VERSION-1~DISTRO`) |
+| `fprintd-goodix53x5-VERSION-1.fcNN.x86_64.rpm` | Fedora 43 and 44 |
 | `SHA256SUMS` | Checksums of every asset, also covered by GitHub build provenance attestations |
 
 Arch and other distributions use the source installation. The release notes
@@ -17,16 +17,20 @@ archives, which lack the pinned sources and `release.env`.
 
 ## Packages
 
-Both formats build two packages from the `goodix53x5-libfprint` source:
+Both formats build one package, `fprintd-goodix53x5`, from the
+`goodix53x5-libfprint` source:
 
-- `libfprint-goodix53x5` installs libfprint with only the `goodix53x5` driver
-  in the private directory `<libdir>/libfprint-goodix53x5`. It has no
-  development files and never replaces the distribution's libfprint.
-- `fprintd-goodix53x5` installs the patched fprintd at the distribution's
-  normal paths: daemon, `fprintd-*` commands, PAM module, systemd unit, D-Bus
-  and polkit files, and the Milan udev rule. The daemon loads the private
-  libfprint through its `RUNPATH`. It depends on the exact matching
-  `libfprint-goodix53x5`.
+- libfprint with only the `goodix53x5` driver, in the private directory
+  `<libdir>/libfprint-goodix53x5`. It has no development files and never
+  replaces the distribution's libfprint.
+- The patched fprintd at the distribution's normal paths: daemon, `fprintd-*`
+  commands, PAM module, systemd unit, D-Bus and polkit files, and the Milan
+  udev rule. The daemon loads the private libfprint through its `RUNPATH`.
+
+Release 1.0.0 shipped the private libfprint as a separate
+`libfprint-goodix53x5` package. Later packages take it over (`Breaks` and
+`Replaces` on Debian and Ubuntu, `Obsoletes` on Fedora), so upgrading removes
+it in the same transaction.
 
 `fprintd-goodix53x5` replaces the distribution's fprintd packages, which the
 package manager removes during installation:
