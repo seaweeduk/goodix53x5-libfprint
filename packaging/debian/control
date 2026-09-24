@@ -25,36 +25,28 @@ Standards-Version: 4.6.2
 Homepage: https://github.com/seaweeduk/goodix53x5-libfprint
 Rules-Requires-Root: no
 
-Package: libfprint-goodix53x5
-Section: libs
-Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: libfprint with the Goodix 53x5 Milan fingerprint driver
- A libfprint build for the Goodix HTK32 USB fingerprint sensors 27c6:5335,
- 27c6:5385 and 27c6:5395 (Dell XPS 13 9305 and related laptops). It contains
- only the goodix53x5 driver, a native implementation of the Goodix Windows
- Milan matcher with adaptive template learning.
- .
- The library is installed in a private directory and used only by the paired
- fprintd-goodix53x5 daemon; the distribution's libfprint-2-2 is not replaced.
-
 Package: fprintd-goodix53x5
 Architecture: any
-Depends: libfprint-goodix53x5 (= ${binary:Version}),
-         dbus,
+Depends: dbus,
          libpam-runtime (>= 1.1.3-2~),
          polkitd | policykit-1,
          ${shlibs:Depends},
          ${misc:Depends}
 Provides: fprintd (= 1.94.5), libpam-fprintd (= 1.94.5)
 Conflicts: fprintd, libpam-fprintd
-Replaces: fprintd, libpam-fprintd
-Description: fprintd and PAM module for Goodix 53x5 fingerprint sensors
- fprintd 1.94.5 patched for the goodix53x5 Milan driver: it saves templates
- improved by successful matches and keeps the sensor session open between
- unlocks and across suspend. It replaces the distribution's fprintd and
- libpam-fprintd packages and supports only Goodix 27c6:5335, 27c6:5385 and
- 27c6:5395 sensors; other fingerprint readers stop working while it is
- installed.
+Breaks: libfprint-goodix53x5 (<< 1.0.1~)
+Replaces: fprintd, libpam-fprintd, libfprint-goodix53x5 (<< 1.0.1~)
+Description: Goodix 53x5 Milan fingerprint driver with fprintd and PAM module
+ The native Milan fingerprint driver for the Goodix HTK32 USB sensors
+ 27c6:5335, 27c6:5385 and 27c6:5395 (Dell XPS 13 9305 and related laptops),
+ with adaptive template learning, packaged with a matching fprintd 1.94.5 and
+ its PAM module.
+ .
+ The driver's libfprint is installed in a private directory used only by this
+ fprintd; the distribution's libfprint-2-2 is not replaced. fprintd saves
+ templates improved by successful matches and keeps the sensor session open
+ between unlocks and across suspend. This package replaces the distribution's
+ fprintd and libpam-fprintd and supports only the Goodix sensors above; other
+ fingerprint readers stop working while it is installed.
  .
  Enable fingerprint login with "pam-auth-update --enable fprintd".
