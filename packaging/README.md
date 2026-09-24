@@ -6,7 +6,7 @@ carries:
 | Asset | Contents |
 | --- | --- |
 | `goodix53x5-libfprint-VERSION.tar.xz` | Complete source: this repository plus the pinned libfprint and fprintd checkouts |
-| `libfprint-goodix53x5_VERSION-1~DISTRO_amd64.deb`, `fprintd-goodix53x5_…` | Ubuntu 22.04, 24.04 and 26.04, Debian 12 and 13 |
+| `libfprint-goodix53x5_VERSION-1.DISTRO_amd64.deb`, `fprintd-goodix53x5_…` | Ubuntu 22.04, 24.04 and 26.04, Debian 12 and 13 (the package version inside is `VERSION-1~DISTRO`) |
 | `libfprint-goodix53x5-VERSION-1.fcNN.x86_64.rpm`, `fprintd-goodix53x5-…` | Fedora 43 and 44 |
 | `SHA256SUMS` | Checksums of every asset, also covered by GitHub build provenance attestations |
 
