@@ -90,7 +90,7 @@ EOF
     install_with_retry apt-get build-dep -y "$src"
   fi
   (cd "$src" && dpkg-buildpackage -b -us -uc)
-  cp -- "$work"/{libfprint,fprintd}-goodix53x5_"$deb_version"_*.deb "$output_dir/"
+  cp -- "$work"/fprintd-goodix53x5_"$deb_version"_*.deb "$output_dir/"
 }
 
 build_rpm() {

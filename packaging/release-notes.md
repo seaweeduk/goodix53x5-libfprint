@@ -24,13 +24,27 @@ If it reports `COMPATIBLE CANDIDATE`, [open a compatibility issue](https://githu
 
 ## Which download do I need?
 
-| Distribution | Install |
+Download the one package for your distribution:
+
+| Distribution | Package |
 | --- | --- |
-| Ubuntu 22.04 / 24.04 / 26.04, Debian 12 / 13 | Download both `.deb` files for your release, then `sudo apt install ./libfprint-goodix53x5_*.deb ./fprintd-goodix53x5_*.deb` |
-| Fedora 43 / 44 | Download both `.rpm` files for your release, then `sudo dnf install ./libfprint-goodix53x5-*.rpm ./fprintd-goodix53x5-*.rpm` |
+| Ubuntu 26.04 | [fprintd-goodix53x5_@VERSION@-1.ubuntu26.04_amd64.deb](https://github.com/seaweeduk/goodix53x5-libfprint/releases/download/@TAG@/fprintd-goodix53x5_@VERSION@-1.ubuntu26.04_amd64.deb) |
+| Ubuntu 24.04 | [fprintd-goodix53x5_@VERSION@-1.ubuntu24.04_amd64.deb](https://github.com/seaweeduk/goodix53x5-libfprint/releases/download/@TAG@/fprintd-goodix53x5_@VERSION@-1.ubuntu24.04_amd64.deb) |
+| Ubuntu 22.04 | [fprintd-goodix53x5_@VERSION@-1.ubuntu22.04_amd64.deb](https://github.com/seaweeduk/goodix53x5-libfprint/releases/download/@TAG@/fprintd-goodix53x5_@VERSION@-1.ubuntu22.04_amd64.deb) |
+| Debian 13 | [fprintd-goodix53x5_@VERSION@-1.debian13_amd64.deb](https://github.com/seaweeduk/goodix53x5-libfprint/releases/download/@TAG@/fprintd-goodix53x5_@VERSION@-1.debian13_amd64.deb) |
+| Debian 12 | [fprintd-goodix53x5_@VERSION@-1.debian12_amd64.deb](https://github.com/seaweeduk/goodix53x5-libfprint/releases/download/@TAG@/fprintd-goodix53x5_@VERSION@-1.debian12_amd64.deb) |
+| Fedora 44 | [fprintd-goodix53x5-@VERSION@-1.fc44.x86_64.rpm](https://github.com/seaweeduk/goodix53x5-libfprint/releases/download/@TAG@/fprintd-goodix53x5-@VERSION@-1.fc44.x86_64.rpm) |
+| Fedora 43 | [fprintd-goodix53x5-@VERSION@-1.fc43.x86_64.rpm](https://github.com/seaweeduk/goodix53x5-libfprint/releases/download/@TAG@/fprintd-goodix53x5-@VERSION@-1.fc43.x86_64.rpm) |
 | Arch and other distributions | Build this release from source (below) |
 
-The packages replace the distribution's fprintd and its PAM module. Fingerprint login starts disabled. See the [installation guide](https://github.com/seaweeduk/goodix53x5-libfprint/blob/@TAG@/README.md#install) for enabling it and for removal.
+Then install it from the download folder:
+
+```sh
+sudo apt install ./fprintd-goodix53x5_*.deb   # Ubuntu and Debian
+sudo dnf install ./fprintd-goodix53x5-*.rpm   # Fedora
+```
+
+The package replaces the distribution's fprintd and its PAM module. Fingerprint login starts disabled. Upgrading from 1.0.0 uses the same command and removes its separate `libfprint-goodix53x5` package automatically; enrolled fingerprints are kept. See the [installation guide](https://github.com/seaweeduk/goodix53x5-libfprint/blob/@TAG@/README.md#install) for enabling fingerprint login and for removal.
 
 ### Arch and other distributions
 
