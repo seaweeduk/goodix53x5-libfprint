@@ -38,6 +38,33 @@ effects are documented in `usbinterface-FUN_18000e1f0.md`.
 
 ## Reader Stop Is Not A Worker Drain
 
+### Capability-one capture ownership
+
+With Modern Standby capability `0x1800e2120 == 1`, D0 exit leaves HAL
+requested mode `+0x1e0`, wait state `+0x1fc`, enabled byte `+0x204`, capture
+count `+0x280` and callback `+0x240` untouched. It also leaves device request
+`+0xf8`, output pointer `+0x100` and request-state bytes `+0x152/+0x154`
+untouched. No capture-completion or cancellation owner is called. The existing
+sensor arm receives no replacement command from this callback; physical
+retention of that arm across a particular power transition is separate from
+these host-side stores.
+
+Queue creation `0x1800246d8` makes this lifetime explicit. It zeroes a
+`0x60`-byte `WDF_IO_QUEUE_CONFIG`, installs parallel dispatch and default-queue
+byte one, and at `0x18002470d..0x18002472c` sets `PowerManaged` to the Boolean
+`capability != 1`. For capability one this is `WdfFalse`. The conditional move
+at `0x18002473c..0x18002474d` leaves `EvtIoStop` null in that case;
+`EvtIoResume` also remains null. `OnCaptureData` is reached through this
+queue's device-control callback `0x180024220`. Thus this queue supplies no
+power-stop cancellation or resume callback for the retained capture. Explicit
+request cancellation, reset and hardware release remain separate owners.
+
+D0 exit clears active bytes `0x1800a2109` and `0x180084852`, records system
+state at device `+0x168`, stops the nonnull reader target, and resets handshake
+event `0x180084860` only for signed system state greater than one. None of
+these writes clears the HAL worker event or its capture callback. The
+capability-one branch also skips the protocol stop-byte `+0x68e0` write.
+
 Action `0x13` at `0x18002315a` only stores wait state `+0x1fc = 0xf2`
 under the HAL action lock. It does not publish a worker stop event, clear the
 pending event type `+0x08`, reset its event handle `+0x10`, or clear worker

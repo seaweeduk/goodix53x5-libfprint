@@ -63,6 +63,72 @@ and failure behavior.
 
 ## Lifetime Consequence
 
+### Framework idle and wake policy
+
+`PrepareHardware` (`0x180023600`) retrieves USB target traits and calls
+`SetPowerPolicy` (`0x180020494`) only when `traits & 2 != 0`, the WDF
+`WDF_USB_DEVICE_TRAIT_REMOTE_WAKE_CAPABLE` bit. Failed trait retrieval stores
+zero and skips that call. This is a USB capability predicate, independent of
+sensor profile selection.
+
+For Modern Standby capability `0x1800e2120 == 1`, `0x18002056d..0x1800205b1`
+passes the following `0x24`-byte idle settings to
+`WdfDeviceAssignS0IdleSettings`, WDF table slot `+0x80`:
+
+| Offset | Field | Value |
+| --- | --- | --- |
+| `+0x04` | `IdleCaps` | `3`, `IdleUsbSelectiveSuspend` |
+| `+0x08` | `DxState` | `5`, `PowerDeviceMaximum` |
+| `+0x0c` | `IdleTimeout` | `5000` |
+| `+0x10` | `UserControlOfIdleSettings` | `1`, disallow user control |
+| `+0x14` | `Enabled` | `2`, `WdfUseDefault` |
+| `+0x18` | `PowerUpIdleDeviceOnSystemWake` | `2`, `WdfUseDefault` |
+| `+0x1c` | `IdleTimeoutType` | `2`, `SystemManagedIdleTimeoutWithHint` |
+| `+0x20` | `ExcludeD3Cold` | `2`, `WdfUseDefault` |
+
+The 5000-ms value is an idle hint, not a capture timeout. A negative idle-setting
+result returns immediately. After success, exact device byte `+0x151 == 1`
+or `+0x155 == 1` selects `WdfDeviceAssignSxWakeSettings`, slot `+0x88`, at
+`0x1800205fc..0x180020651`. Its `0x14`-byte settings specify `DxState = 5`,
+user control `1`, enabled `2`, and zero child-wake booleans. Negative results
+propagate to `PrepareHardware`; success logs `RemoteWakeUp enable`.
+
+Device construction `0x1800232a8` copies configuration `+0x434` to device
+`+0x151` and configuration `+0x442` to `+0x155`. Capability one together with
+exact configuration `+0x442 == 1` forces `+0x151 = 1`. The compiled defaults
+are zero and one respectively. These fields also select the profile-9
+screen-off image owner described in [the down handler](usbinterface-FUN_180014e10.md).
+
+Construction calls `WdfDeviceInitSetPowerPolicyOwnership`, slot `+0xa8`, with
+TRUE only when capability is not one. Capability one leaves framework-default
+ownership. Its registered PnP/power table contains D0 entry/exit and hardware
+callbacks; self-managed-I/O init/suspend/restart entries remain zero. These
+settings request framework-managed USB idle/wake behavior; they are not a
+vendor FDT command issued by D0 entry.
+
+The DLL has no call through WDF slot `+0xa0`,
+`WdfDeviceInitSetPowerPolicyEventCallbacks`; it does not install its own
+`EvtDeviceArmWakeFromS0`, disarm or wake-triggered callback. USB wake policy
+and the ordinary FDT/display owners are separate contracts.
+
+### Sending while the device is idle
+
+`USBSend` (`0x18001c73c`) calls `0x18001c698` before its send lock and
+synchronous write when capability is exactly one and its retained device
+handle is nonnull. This helper calls `WdfDeviceStopIdleActual`, table slot
+`+0x7c0`, with `WaitForD0 = (0x180084852 != 1)`. D0 entry writes this byte
+one before starting the reader; D0 exit clears it after stopping the reader.
+A nonnegative stop-idle result causes an immediate
+`WdfDeviceResumeIdleActual`, slot `+0x7c8`, before returning to `USBSend`.
+A negative result skips resume-idle; the helper returns void and `USBSend`
+still proceeds to its ordinary protocol-enabled check and write.
+
+This is a per-send power-up request, not an FDT notification filter or an idle
+reference retained for the whole capture. No command is sent by the helper
+itself. A command-producing capture/display/worker owner can therefore cause
+a D0 transition before its write; seeing that write after D0 entry does not
+make D0 entry its command producer.
+
 Selective-suspend and system-power D0 transitions are not equivalent to HAL
 detach. The retained `+0x248` image base and its validity flags survive this
 callback pair as long as WDF does not also schedule `ReleaseHardware`.

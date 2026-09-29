@@ -92,6 +92,28 @@
 
 ## Lifetime Consequence
 
+### D0 entry does not restart this request
+
+`device_get_data` has one executable caller in this DLL, the admitted-request
+call at `0x180021ee1`. The preceding wait at `0x180021ec3` waits up to 3000 ms
+on handshake event `0x180084860`, ignores the wait result, then continues the
+same request. `deviceInit` signalling this event can release an already-entered
+`OnCaptureData`; it does not itself invoke `device_get_data` or create a new
+capture request. A retained request already past admission receives later
+frames through its installed callback without another admission call.
+
+For Modern Standby capability one, the default parallel IOCTL queue is
+explicitly non-power-managed and has null `EvtIoStop` and `EvtIoResume`.
+D0 exit neither completes request `+0xf8` nor clears callback `+0x240`.
+See [D0-exit ownership](usbinterface-FUN_180022ff0.md#capability-one-capture-ownership).
+An independently submitted second request is still rejected while `+0xf8`
+is nonnull.
+
+EC followed by FDT arming also has a request-independent producer in
+[the display callback](usbinterface-FUN_1800174a0.md). The byte sequence alone
+does not distinguish that producer from capture admission, and neither is an
+unconditional rearm in D0 entry or its initialized worker.
+
 Enrollment and identify/verify are separate biometric operations above one
 retained hardware base. Ending one request does not end the base lifetime. The
 ordinary live owner frees its temporary frame and clears the callback only

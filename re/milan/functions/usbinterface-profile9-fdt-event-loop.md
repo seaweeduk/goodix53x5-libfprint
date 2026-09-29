@@ -97,6 +97,37 @@ sections. These teardown operations do not occur in `OnActivate` deactivation.
 
 ## Profile-9 Event Source
 
+### FDT delivery after retained D0 entry
+
+An accepted down packet received after reader restart follows the same path as
+any other down packet: `0x180021200 -> 0x180017ed8 -> 0x18001a7ec ->
+0x180005b80`, IRQ `2` publication of event `0x0f`, then worker `0x18000df20`
+and action zero to `0x180014e10`. The category-three parser requires its HAL
+pointer and callback `+0x148`; action dispatch requires the HAL and enabled
+byte `+0x204 != 0`. Neither reception nor down selection checks a D0 epoch,
+requested mode, wait state `+0x1fc`, protocol stop byte `+0x68e0`, or active
+bytes `0x1800600a4/0x1800a2109/0x180084852`. The last byte instead controls
+the send-side request to enter D0, described in
+[D0 entry](usbinterface-FUN_180022d70.md#sending-while-the-device-is-idle).
+
+No new capture admission or arm ACK is needed before this dispatch. With a
+retained callback, the ordinary genuine-down image gate remains mode
+`+0x1e0 == 0`, image-valid `+0x237 == 1`, callback `+0x240 != NULL` and screen
+byte `0x18005f398 != 0`. It still performs the ordinary raw/manual comparison
+first. With screen byte zero and device `+0x151 == 1`, the earlier WOF branch
+instead reads an image immediately through `0x18001545c`, without that manual
+comparison or requested-mode/image-valid/callback gate. It sets the screen
+byte to one and dispatches action `0x15`, whose delivery requires a callback
+and retained live frame. That WOF continuation rearms up after a non-`-1`
+result, down after `-1`. These are post-event continuations, not resume
+preparation.
+
+The host does not mark a packet as latched during D0-low or recover a packet
+the sensor never delivers. A pending host event retains the ordinary one-slot
+coalescing semantics. A later publication can replace it before worker
+selection. D0 entry itself neither clears that slot nor unconditionally arms
+the sensor; independently scheduled display notifications can arm it.
+
 `FUN_18000450c` (`GxFNHV_MilanOpen`) installs `FUN_180005b80`
 (`milanget_fdtdata`) at profile callback slot `+0x148`. This is the sensor type
 12 MCU FDT-packet parser. Relevant IRQ values are:
