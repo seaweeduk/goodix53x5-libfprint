@@ -102,9 +102,10 @@ This starts the Release workflow (also available from the Actions tab). It:
    not newer; the first release is `1.0.0`;
 2. builds the source archive and all seven targets;
 3. writes `SHA256SUMS` and build provenance attestations;
-4. creates a **draft** release targeting the built commit, with the install
-   instructions from `packaging/release-notes.md` (filled in with the tag) and
-   notes generated from the pull requests merged since the previous release.
+4. creates a **draft** release targeting the built commit, with notes generated
+   from the pull requests merged since the previous release first, followed by
+   the install instructions from `packaging/release-notes.md` (filled in with
+   the tag).
 
 Review the draft on the releases page, edit the notes (add highlights and any
 re-enrollment warnings), and publish it. Publishing creates the tag; nothing is
