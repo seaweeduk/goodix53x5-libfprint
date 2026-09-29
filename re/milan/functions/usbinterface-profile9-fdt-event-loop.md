@@ -908,8 +908,7 @@ Actions arriving while suspend is pending fail with `FP_DEVICE_ERROR_BUSY` in
 `G_IO_ERROR_CANCELLED`.
 
 Resume takes the warm route unless `needs_reinit` is set: it reclaims USB and
-re-keys GTLS only after a reset-resume, retaining reference, calibration and
-FDT state, then restarts service and completes resume. A pre-existing fault or
+re-keys GTLS, retaining reference, calibration and FDT state, then restarts service and completes resume. A pre-existing fault or
 failed warm route runs full reconstruction once through
 `goodix_maybe_start_reinit_subsm` and `goodix_reinit_idle_joined`, where OTP
 reseeds current/default DAC while module-static adjustment history survives.
