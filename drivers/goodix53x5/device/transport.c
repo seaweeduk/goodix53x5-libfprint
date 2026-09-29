@@ -366,8 +366,11 @@ goodix_transport_send (GoodixTransport *operation)
    * it, so only a started write can leave the sensor partially commanded. */
   cancellable = goodix_session_io_cancellable (dev);
   operation->write_submitted = !g_cancellable_is_cancelled (cancellable);
-  fpi_usb_transfer_submit (transfer, 0, cancellable, goodix_tx_cb, operation);
+  /* Native D0 entry starts the continuous reader before launching the GTLS
+   * worker. Post IN before the first OUT after quiesce, too, so queued wake
+   * notifications can arrive without waiting for a command submission. */
   goodix_reader_start (dev);
+  fpi_usb_transfer_submit (transfer, 0, cancellable, goodix_tx_cb, operation);
 }
 
 /* Forward declarations */
