@@ -137,6 +137,93 @@ It does not replace the hardware reference. The current Linux driver has no
 screen-off wake-on-finger capture owner; its adjustment-enabled reads are owned
 by the active `device/scan.c:goodix_capture_ssm_handler`.
 
+### Retained WOF frame and timer lifetime
+
+The seven read-callback arguments are identical to one ordinary live read:
+output pointer, TX `1`, HV `1`, DAC pointer `&HAL[0x312]`, adjustment `1`,
+finger-image `1`, mode `4`. WOF instructions `0x18001557e..0x1800155a4`
+and ordinary instructions `0x180015297..0x1800152c5` supply these values to
+the same profile callback `+0x158`, `0x1800055d0`. The wrapper derives image
+length from profile dimensions, `uint16(88 * 108 * 2) = 0x4a40`, and reads
+the same configured acquisition byte `config[0x426]`. There is no WOF-only
+image command flag or additional eighth length argument at these call sites.
+The differences are the caller's manual-FDT bypass, one-read count, cached
+output/timer lifetime and later action-`0x15` delivery, rather than image
+request parameters. Unlike ordinary `MilanHV_ReadImg`, WOF also omits its
+capture-timing instrumentation and `+0x394` timestamp update.
+
+`MilanHV_ReadImg_ForWOF` (`0x18001545c`) makes one live read, independent of
+capture count `+0x280`. Return `-1` frees only the temporary and leaves any
+previous cached frame and timer untouched. Every other read result stops an
+existing timer `+0x360` synchronously through WDF slot `+0x640`, clears its
+handle at `0x180015614`, then calls `Milan_WOFTimer_init` (`0x180013e60`).
+The timer starts before the owner takes cached-frame lock `+0x368`.
+
+Only exact read result zero copies the temporary into cache `+0x340`. When
+the cache is null, allocation writes the byte size at `+0x34c`, then copies
+only if allocation succeeded. An existing cache is overwritten in place.
+Cache-allocation failure does not change the read result to `-1`: the timer
+has already started and the function can return zero without a cached frame.
+It always frees its temporary before return. No reference, DAC, quality or
+refresh-marker snapshot accompanies the cached pixels.
+
+The caller's WOF branch attempts action `0x15` even when this helper returned
+`-1`. Since that failure does not clear an older cache, an otherwise eligible
+delivery can consume the older frame. Rearming still uses the new read's
+return value: `-1` selects down, every other value selects up after no-op
+sensor callback `+0x110(1)`.
+
+`0x180013e60` creates a parent-device WDF timer with period zero and callback
+`0x180014270`. The start due time is
+`-10000000 * uint8(config[0x441])` in 100-ns units; a null configuration pointer
+selects `-30000000`. The compiled configuration byte at `0x18005e781` is
+three, giving a three-second one-shot timer. It uses the byte directly,
+without clamping zero. Timer-create/start results are not checked.
+
+Expiry `0x180014270` resolves parent device and HAL, takes `+0x368`, frees
+and nulls a nonnull `+0x340`, then releases the lock. It leaves cached size
+`+0x34c`, callback `+0x240`, marker `+0x236` and timer handle `+0x360`
+unchanged. Afterwards, exact capability `0x1800e2120 == 1` and power-button
+byte `+0x358 == 0` cause direct `+0xb0(1)` FDT-down arming. This callback
+does not acquire the HAL action lock or require a capture request.
+
+Other profile-9 cache boundaries are:
+
+- Action `0x15` invokes the installed capture callback, then frees/nulls the
+  cache and clears the callback. It does not stop the timer.
+- UP wrapper `0x180015aa0` frees/nulls the cache when capability is one and
+  `+0x358 == 0`, after reference/health handling and down-arm. Despite its log
+  text, that branch does not stop or clear the timer.
+- Category-C command two can replace `+0x360` with the protocol-side timer
+  `0x1800186f8`; its expiry `0x1800188d0` frees/nulls the cache without arming.
+  See [notification ownership](usbinterface-FUN_180018dd8.md#unsolicited-category-c-notifications).
+- Profile constructor `0x1800162ac:0x180016342` initializes cache pointer
+  `0x180061930`, HAL `+0x340`, to zero. Profile disable `0x1800160a0` stops
+  `+0x360` and deletes lock `+0x368`; its freed pointer `0x180061940` is HAL
+  `+0x350`, not the WOF cache at `+0x340`.
+
+D0 entry/exit, capture admission/cancellation, deactivation, ordinary live
+completion and all-base refresh do not directly free this cache. Display-on
+can consume it through action `0x15`; display-off clears `+0x358` and arms
+down without clearing it. A later WOF read can overwrite it. UP and expiry
+are independent invalidation boundaries even if no capture request arrives.
+
+### Power-button byte on the profile-9 path
+
+HAL `+0x358` is byte storage at `0x180061948`. Profile constructor
+`0x1800162ac:0x180016350` initializes it to zero. Action `0x17` clears it at
+`0x18000e444`, selected by display-off. Category-C command two, logged
+`Press power button`, also writes zero at `0x1800192e2` when capability is
+one and HAL exists. These stores do not set it to one.
+
+The profile-9 reads are `0x1800143e4` in WOF timer expiry and
+`0x180015b84` in the UP wrapper. Both compare against zero and combine that
+predicate with exact capability one. Expiry uses it to select down rearming;
+UP uses it to select cached-frame deletion. WOF/down admission, image reading,
+action-`0x15` delivery and ordinary capture do not test this byte. The static
+profile-9 accesses provide no set-to-one producer. The same numeric offset in
+WDF table calls is a reader-stop function slot, not this HAL byte.
+
 ### Ordinary Request Read And Publication
 
 `FUN_1800150e0` (`MilanHV_ReadImg`) derives one frame length as the low 16 bits

@@ -18,6 +18,14 @@
   global `0x1800e2120 == 1`, frees/nulls cached frame `+0x340` under critical
   section `+0x368`. It does not gate ordinary health or down-arm.
 
+The cached-frame cleanup at `0x180015be5..0x180015c34` does not stop or clear
+timer `+0x360`, despite the preceding diagnostic saying `stop timer if the
+timer active`. It also leaves cached size `+0x34c`, capture callback `+0x240`
+and refresh marker `+0x236` unchanged. The still-live one-shot timer can later
+execute its own conditional down-arm even though UP already freed the image.
+This is the same UP path after WOF capture; it has no WOF-success exemption.
+See [cached-frame lifetime](usbinterface-FUN_180014e10.md#retained-wof-frame-and-timer-lifetime).
+
 See [the ordinary UP decision](usbinterface-FUN_1800149c4.md),
 [health history and consumers](usbinterface-FUN_180011b9c.md), and
 [FDT worker dispatch](usbinterface-profile9-fdt-event-loop.md).

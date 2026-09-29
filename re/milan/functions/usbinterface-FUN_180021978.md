@@ -92,6 +92,29 @@
 
 ## Lifetime Consequence
 
+### Admission with a cached WOF image
+
+Neither `OnCaptureData` nor `device_get_data` tests or consumes HAL cache
+`+0x340`. The no-op at `0x18001f4c0` does not supply cached completion.
+`device_get_data` performs EC/arm selection and only then publishes callback
+`+0x240` at `0x18000f425`; it does not dispatch action `0x15` after publication.
+The profile-9 action-`0x15` producers are the WOF down continuation in
+`0x180014e10` and display-on callback `0x1800174a0`.
+
+A request admitted after WOF acquisition can receive that cache if a later
+display-on action `0x15` runs after callback publication and before expiry or
+UP cleanup. If both delivery actions have already run while the callback was
+null, later admission alone does not retry delivery. There is no pending
+cache-to-next-request handoff in these owners. Subsequent ordinary down can
+instead acquire a new live frame. Windows/WBF request and display scheduling
+are separate from this driver's delivery predicates.
+
+When a callback was already installed, the WOF down continuation sets screen
+byte one and invokes action `0x15` immediately after the WOF reader returns.
+It therefore can complete that outstanding request before any display-on
+notification. The cache expiry and UP invalidation contracts are in
+[the down owner](usbinterface-FUN_180014e10.md#retained-wof-frame-and-timer-lifetime).
+
 ### D0 entry does not restart this request
 
 `device_get_data` has one executable caller in this DLL, the admitted-request

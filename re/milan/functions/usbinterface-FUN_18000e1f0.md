@@ -26,7 +26,37 @@ modified.
 This device-action-`0x15` handoff is an alternate completed-image event route.
 On the ordinary standard profile-9 down path, `FUN_1800150e0`
 (`MilanHV_ReadImg`) invokes the same registered callback directly after all
-requested live reads succeed. A live read returning `-1` reaches neither route.
+requested live reads succeed. An ordinary live read returning `-1` reaches
+neither route.
+
+### Exact retained-frame eligibility and consumption
+
+The dispatcher's common admission requires a nonnull HAL and enabled byte
+`+0x204 != 0`, then takes HAL action lock `0x18005e7c8`. Action `0x15`
+additionally requires screen byte `0x18005f398 == 1` exactly, tested at
+`0x18000e5b7`. It takes cached-frame lock `+0x368`, sets one-press byte
+`+0x348 = 1`, and requires both `+0x240 != NULL` and `+0x340 != NULL`.
+No size, age, timer-running, requested-mode, wait-mode, image-valid,
+power-button, capture-count or pending-WDF-request predicate is added here.
+It passes cached size `+0x34c` unchanged to the callback.
+
+The callback at `0x18000e652` observes current reference `+0x248` and current
+refresh marker `+0x236`, not snapshots from WOF acquisition. Standard
+`CaptureFramedone` (`0x18001fb40`) builds the same fixed-size sample as ordinary
+live completion and copies current calibration and health fields. One-press
+byte `+0x348 = 1` becomes payload byte `+1`. The cached pixels have already
+passed through the ordinary image receive/decode and dynamic-DAC path during
+the WOF read; this delivery does not acquire or adjust them again. Engine
+preprocessing and quality admission still occur after WBF receives the sample.
+See [the sample adapter](FUN_18001f610.md#one-press-sample-flag).
+
+After callback return, action `0x15` clears a nonzero marker, frees/nulls
+`+0x340`, and clears `+0x240`, regardless of whether the callback completed a
+WDF request. It leaves size `+0x34c`, count `+0x280` and timer `+0x360`
+unchanged. Both missing-pointer branches skip consumption. All screen-one
+branches reset `+0x348 = 0` at `0x18000e6bd` before releasing `+0x368`.
+Thus an old callback surviving cancellation can consume the frame without
+delivering it to a request; null callback alone preserves the frame here.
 
 ## Consequences
 
@@ -111,6 +141,42 @@ that callback's result. In contrast, `MilanHV_update_allbase` checks mode 4's
 return before its first acquisition; see `usbinterface-FUN_180015c60.md`.
 The initialized `deviceInit` resume route invokes neither mode; its event
 completion does not certify that configuration has been downloaded.
+
+## EC policy bytes and wire encoding
+
+Action `0x11` rewrites its six-byte argument before calling `EcControl`:
+`c1 = 1` when device `+0x151 == 1` and screen byte `0x18005f398 == 0`;
+otherwise `c1 = incoming_c0`. It then forces `c0 = 0` when requested mode
+`+0x1e0 == 2`. This order preserves the selected `c1` even when sleep mode
+changes `c0`. Incoming byte one is always overwritten. Delay word `+2`
+applies only when resulting `c0 == 0`; timeout word `+4` is the ACK budget.
+
+`EcControl` (`0x18001afec`) serializes three payload bytes `[c0,c1,0]` as
+category `0x0a`, command seven, with checksum enabled. The prefixes below omit
+the following checksum; `04 00` counts the three data bytes plus checksum:
+
+| Producer and predicates | Resulting prefix |
+| --- | --- |
+| Capability-one display-off, initial `00 00`, device `+0x151 == 1` | `ae 04 00 00 01 00` |
+| Display-off with `+0x151 != 1` | `ae 04 00 00 00 00` |
+| Capability-one display-on, initial `01 00`, requested mode not two | `ae 04 00 01 01 00` |
+| Same display-on with mode two | `ae 04 00 00 01 00` |
+| Screen-on capture admission | `ae 04 00 01 01 00` |
+| Screen-off capture admission, device `+0x151 == 1` | `ae 04 00 00 01 00` |
+| Deactivation worker, initial `00 00`, screen on or `+0x151 != 1` | `ae 04 00 00 00 00` |
+| Same deactivation worker, screen off and `+0x151 == 1` | `ae 04 00 00 01 00` |
+
+Capture admission writes requested mode zero before its EC policy, so its
+screen-on route does not inherit the display-on mode-two override. Deactivation
+publishes the worker action separately from its mode-two sleep command; it
+does not guarantee an all-zero EC payload while screen-off WOF is selected.
+
+At `0x18000e7fb..0x18000e817`, the diagnostic names nonzero `c0` as
+`Power Isolate:ON` and zero as `OFF`. At `0x18001b04e..0x18001b08d`,
+`EcControl` names nonzero `c1` as `MCU sleep, then set fingerprint FDT`, zero
+as `Sleep`. The third payload byte is always zero. These are the host's names
+and predicates; they do not establish electrical rail/GPIO polarity or the
+firmware implementation of either control.
 
 ## Request-Independent Event And Display Dispatch
 
