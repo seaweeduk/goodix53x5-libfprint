@@ -56,10 +56,11 @@ gboolean goodix_error_indicates_stale_device (const GError *error);
 
 /**
  * Handle system sleep/wake while the device is open, including ACTION_NONE.
- * Suspend cancels/joins the selected hardware owner and CPU consumer, sends
- * sleep/EC-off, then joins reception while retaining calibration/reference/FDT
- * state. Resume reclaims USB and re-keys GTLS, with one cold reconstruction on
- * failure, then restarts packet-driven servicing before completing.
+ * Suspend cancels/joins the selected hardware owner and CPU consumer, leaves
+ * finger-down armed (sleep/EC-off without a retained reference), then joins
+ * reception while retaining calibration/reference/FDT state. Resume reclaims
+ * USB and re-keys GTLS, with one cold reconstruction on failure, then restarts
+ * packet-driven servicing before completing.
  */
 void goodix_session_suspend (FpDevice *dev);
 void goodix_session_resume (FpDevice *dev);

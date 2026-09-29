@@ -3,7 +3,7 @@
 set -euo pipefail
 
 expected_revision="0c97a47d8ef405cd577b87058c1e89cae9d242e7"
-expected_sha256="7bbdb229e0de58e6b454d5117e517143fc78043beab3bae5596021c21fba67fc"
+expected_sha256="6f0fb15d4c6208504b634f4710781a3b668cb5b31ac9b88db2577a68f62f152c"
 source_dir="${1:?usage: $0 PRISTINE_LIBFPRINT_SOURCE}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 patch_path="$script_dir/libfprint-idle-suspend-notify.patch"

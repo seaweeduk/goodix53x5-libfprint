@@ -1451,10 +1451,11 @@ goodix_session_close (FpDevice *dev)
 /* ========================================================================
  * Suspend / resume policy
  *
- * Suspend joins every hardware owner, sleeps the sensor and powers the EC
- * off, retaining the host calibration/reference/FDT tuple. Resume reclaims
- * USB and re-keys GTLS without resetting that tuple. Existing hardware faults
- * or failed warm reconstruction take the cold path once before completion.
+ * Suspend joins every hardware owner, then leaves finger-down detection armed
+ * (or, without a retained reference, sleeps the sensor and powers the EC off),
+ * retaining the host calibration/reference/FDT tuple. Resume reclaims USB and
+ * re-keys GTLS without resetting that tuple. Existing hardware faults or
+ * failed warm reconstruction take the cold path once before completion.
  * ======================================================================== */
 
 static void
@@ -1483,10 +1484,27 @@ goodix_suspend_power_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 static void
 goodix_suspend_power (FpiSsm *ssm, FpDevice *dev)
 {
-  if (fpi_ssm_get_cur_state (ssm) == 0)
-    goodix_cmd_set_sleep_mode (ssm, dev);
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  gboolean armed = GPOINTER_TO_INT (fpi_ssm_get_data (ssm));
+
+  if (!armed)
+    {
+      if (fpi_ssm_get_cur_state (ssm) == 0)
+        goodix_cmd_set_sleep_mode (ssm, dev);
+      else
+        goodix_cmd_ec_control (ssm, dev, FALSE);
+    }
+  else if (fpi_ssm_get_cur_state (ssm) == 0)
+    {
+      goodix_cmd_ec_control_wake_on_finger (ssm, dev);
+    }
   else
-    goodix_cmd_ec_control (ssm, dev, FALSE);
+    {
+      /* A finger still on the sensor fires this one-shot arm before the
+       * reader stops; suspend retires that down with the link. */
+      self->profile9_fdt.wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
+      goodix_cmd_fdt_down_setup (ssm, dev, self->profile9_fdt.base_down);
+    }
 }
 
 static void
@@ -1494,10 +1512,23 @@ goodix_suspend_service_joined (FpDevice *dev, gpointer data)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   FpiSsm *ssm;
+  gboolean armed;
 
   g_clear_object (&self->session_cancel);
   self->session_cancel = g_cancellable_new ();
+  /* Linux suspend maps to Modern Standby display-off (1800174a0: EC
+   * {00,01,00}, arm down; no sleep or EC-off) followed by D0 exit, which then
+   * only stops the reader. The arm needs the FDT base retained with the
+   * reference; without one, sleep the sensor as before. Native also reads a
+   * wake-on-finger frame at the screen-off down (180014e10). Linux omits it:
+   * the driver runs only after the whole system has resumed, when a held
+   * finger is caught by the next capture and a lifted one leaves a blank
+   * frame. */
+  armed = self->hardware_reference && !self->needs_reinit;
+  GOODIX53X5_DEBUG_ONLY (
+    fp_info ("Suspend %s", armed ? "leaves finger detection armed" : "sleeps the sensor");)
   ssm = fpi_ssm_new (dev, goodix_suspend_power, 2);
+  fpi_ssm_set_data (ssm, GINT_TO_POINTER (armed), NULL);
   self->task_ssm = ssm;
   fpi_ssm_start (ssm, goodix_suspend_power_done);
 }
