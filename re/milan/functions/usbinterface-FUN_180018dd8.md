@@ -259,6 +259,21 @@ predicate. With a nonnull payload, the notification owner handles:
   `0x1800186f8`. This branch publishes no worker event.
 - Other commands return without these effects.
 
+C/1's branch is `0x180019399..0x1800193f6`, with the event store at
+`0x1800193a5`, `SetEvent` at `0x1800193b7`, and diagnostic `wake up`.
+It tests only the nonnull payload entry condition and HAL presence; it does
+not inspect payload bytes, screen state, wait state, capability, or an FDT
+touch mask. It changes neither shared response cache/IRQ nor FDT raw/base
+stores. The write at `0x1800192e2` belongs to C/2, not C/1.
+
+At `0x18000e01d..0x18000e065`, screen byte zero selects action zero for C/1's
+worker event. Profile-9 slot `+0x190` then receives only the HAL pointer.
+The WOF route is independent of the absent FDT packet, but its later UP arm
+uses the already-retained up base; see
+[WOF event inputs](usbinterface-FUN_180014e10.md#wof-admission-and-event-inputs).
+The receive-side `wake up` diagnostic identifies the host interpretation;
+this parser contains no firmware-side condition for generating the notice.
+
 The first two commands share the HAL's single coalescing notification slot
 with FDT events. Their parser mutations precede worker selection. Neither
 notification checks for a pending capture. Down/wake and power-button timer

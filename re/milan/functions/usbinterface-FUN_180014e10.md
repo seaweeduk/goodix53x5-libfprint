@@ -4,8 +4,8 @@
 
 - Address: `0x180014e10`
 - Logged name: `MilanHV_Down_procedure`
-- Role: profile-9/type-12 FDT-down handler that distinguishes drift/noise from
-  a real touch before live-image capture.
+- Role: profile-9/type-12 down handler with ordinary manual-FDT validation and
+  a screen-off wake-on-finger image route that bypasses that validation.
 
 ## Profile-9 Dispatch
 
@@ -136,6 +136,46 @@ callback. This is event-triggered acquisition, not periodic idle adjustment.
 It does not replace the hardware reference. The current Linux driver has no
 screen-off wake-on-finger capture owner; its adjustment-enabled reads are owned
 by the active `device/scan.c:goodix_capture_ssm_handler`.
+
+### WOF admission and event inputs
+
+Before the WOF selector at `0x180014ef6..0x180014f06`, the handler only rejects
+a null HAL, resolves the WDF device context, optionally records timing when
+dword `+0x308 != 0`, and performs the enabled-health reset described above.
+There is no FDT delta, base-validity, touch-mask or image-presence admission
+check. The call at `0x180014f44` precedes, and bypasses, raw-event getter
+`+0x70` at `0x180014f61..0x180014f6a` and manual callback `+0x160`.
+
+Worker events `0x0f` and screen-off `0x13` enter this same handler with only
+the HAL pointer. It does not inspect their event type. With screen byte zero
+and device `+0x151 == 1`, both use the same dimensions, current high DAC,
+image-read callback, cache and timer. C/1 does not need an FDT sample for this
+image read. Its parser does not supply or replace one; see
+[category-C notifications](usbinterface-FUN_180018dd8.md#unsolicited-category-c-notifications).
+
+WOF caches an exact-zero read result without a pixel-content, finger-presence
+or quality veto at `0x180015633..0x1800156d1`. The profile read chain
+`0x1800055d0 -> 0x1800074bc` rejects send/read errors, copies decoded pixels
+and runs DAC adjustment; that adjustment does not supply a rejection status.
+Action `0x15` tests screen byte exactly one, callback `+0x240` and cache
+`+0x340`, then invokes the callback without a content check. A successfully
+read no-finger image therefore follows the same cache/delivery route. The
+driver does not synthesize an empty buffer from a false-down classification.
+
+The subsequent UP arm uses retained FDT-up base `0x180060748`, not the cached
+image. A category-3 down packet computes that base from its raw FDT words and
+touch mask through `0x180004918`, then stores it at
+`0x180005e0d..0x180005e14` before publishing event `0x0f`. C/1 leaves that
+base untouched, so its WOF continuation uses the previously retained base.
+All-base setter `0x180005950:0x180005989..0x180005998` also writes this store.
+Neither WOF acquisition nor its continuation recalculates it from image pixels.
+
+The timer described below provides a DOWN-arm path without an UP packet:
+expiry calls `+0xb0(1)` at `0x180014430` when `+0x358 == 0` and capability
+`0x1800e2120 == 1`, even if action `0x15` already consumed the cache. It does
+not test screen byte or wait state and does not refresh the reference. WOF
+admission itself does not require that capability, so this is a conditional
+rearm rather than a universal missing-UP recovery guarantee.
 
 ### Retained WOF frame and timer lifetime
 
