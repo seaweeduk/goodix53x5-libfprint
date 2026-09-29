@@ -55,10 +55,11 @@ The patch changes only that dispatch in `fpi_device_suspend()` and
 
 The driver completes both asynchronously with `fpi_device_suspend_complete()`
 and `fpi_device_resume_complete()`. Suspend joins all background hardware work
-and sleeps the sensor; resume reclaims USB and re-keys GTLS while retaining host
-calibration/reference state, with one cold reconstruction on failure, before it
-completes. Actions that arrive while the driver is quiescing fail with `FP_DEVICE_ERROR_BUSY`
-from the driver; the core rejects them itself once suspend has completed.
+and sleeps the sensor; resume reclaims USB, re-keying GTLS only after a device
+reset, while retaining host calibration/reference state, with one cold
+reconstruction on failure, before it completes. Actions that arrive while the
+driver is quiescing fail with `FP_DEVICE_ERROR_BUSY` from the driver; the core
+rejects them itself once suspend has completed.
 
 Four assertions in `tests/test-fpi-device.c` are updated for the new idle
 dispatch. No new core API, signal or feature flag is added; the paired fprintd

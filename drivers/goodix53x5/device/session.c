@@ -1453,8 +1453,9 @@ goodix_session_close (FpDevice *dev)
  *
  * Suspend joins every hardware owner, sleeps the sensor and powers the EC
  * off, retaining the host calibration/reference/FDT tuple. Resume reclaims
- * USB and re-keys GTLS without resetting that tuple. Existing hardware faults
- * or failed warm reconstruction take the cold path once before completion.
+ * USB, re-keying GTLS only after a device reset, without resetting that
+ * tuple. Existing hardware faults or failed warm reconstruction take the cold
+ * path once before completion.
  * ======================================================================== */
 
 static void
@@ -1574,6 +1575,7 @@ goodix_resume_warm (FpiSsm *ssm, FpDevice *dev)
   if (fpi_ssm_get_cur_state (ssm) == 0)
     {
       g_autoptr(GError) error = NULL;
+      gboolean reset = FALSE;
 
       if (self->usb_interface_claimed)
         {
@@ -1581,7 +1583,10 @@ goodix_resume_warm (FpiSsm *ssm, FpDevice *dev)
           * claim with kernel-driver detach establishes actual ownership. */
           if (!g_usb_device_release_interface (fpi_device_get_usb_device (dev),
                                                GOODIX_USB_INTERFACE, 0, &error))
-            fp_dbg ("Releasing USB interface before warm resume: %s", error->message);
+            {
+              fp_dbg ("Releasing USB interface before warm resume: %s", error->message);
+              reset = TRUE;
+            }
           self->usb_interface_claimed = FALSE;
           g_clear_error (&error);
         }
@@ -1594,7 +1599,15 @@ goodix_resume_warm (FpiSsm *ssm, FpDevice *dev)
           return;
         }
       self->usb_interface_claimed = TRUE;
-      fpi_ssm_next_state (ssm);
+      /* usbinterface!180020970 re-keys only for a recorded system power state
+       * of two or more; Modern Standby resume keeps the session. A device the
+       * kernel did not reset kept its power and GTLS session through s2idle. */
+      GOODIX53X5_DEBUG_ONLY (
+        fp_info ("Resume %s the GTLS session", reset ? "re-keys" : "keeps");)
+      if (reset)
+        fpi_ssm_next_state (ssm);
+      else
+        fpi_ssm_mark_completed (ssm);
     }
   else
     {
