@@ -76,6 +76,7 @@ struct _GoodixTransport
   GoodixResponseSlot        response_slot;
   guint8                    ack_status;
   guint                     attempt;
+  gboolean                  write_submitted;
   guint                     ack_timeout_ms;
   guint                     response_timeout_ms;
   gsize                     mcu_length;
@@ -318,6 +319,7 @@ goodix_transport_send (GoodixTransport *operation)
   gsize msg_len;
   guint8 *msg;
   FpiUsbTransfer *transfer;
+  GCancellable *cancellable;
   guint8 cmd_byte;
 
   operation->phase = GOODIX_TRANSPORT_SEND;
@@ -359,9 +361,12 @@ goodix_transport_send (GoodixTransport *operation)
                                    chunked, padded_len, g_free);
   /* Native writes have no timeout. The selected action or hardware-service
    * owner supplies cancellation until this callback joins; Linux USB removal
-   * independently completes in-flight transfers with NO_DEVICE. */
-  fpi_usb_transfer_submit (transfer, 0, goodix_session_io_cancellable (dev),
-                           goodix_tx_cb, operation);
+   * independently completes in-flight transfers with NO_DEVICE.
+   * libfprint completes an already-cancelled submission without starting
+   * it, so only a started write can leave the sensor partially commanded. */
+  cancellable = goodix_session_io_cancellable (dev);
+  operation->write_submitted = !g_cancellable_is_cancelled (cancellable);
+  fpi_usb_transfer_submit (transfer, 0, cancellable, goodix_tx_cb, operation);
   goodix_reader_start (dev);
 }
 
@@ -562,6 +567,7 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
     .ordinary_exhaustion = error && !(self->reader && self->reader->error) &&
       (image_failed || goodix_cmd_native_zero (operation->phase, error)),
     .write_cancelled = operation->phase == GOODIX_TRANSPORT_SEND &&
+      operation->write_submitted &&
       (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
        g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_CANCELLED)),
   };
