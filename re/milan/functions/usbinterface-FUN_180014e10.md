@@ -458,3 +458,11 @@ input is outstanding joins that input before replacement, retaining wait state.
 `goodix_scan_set_disposition` records terminal completion intent before starting
 a deferred selected refresh. Its refresh/down-rearm continuation therefore does
 not require another release IRQ to complete an already-successful authentication.
+
+The screen-off wake-on-finger read has no Linux owner. Suspend leaves down armed
+(see [display notifications](usbinterface-FUN_1800174a0.md)), but a down latched
+while the host slept is selected only after the whole system has resumed. It
+then takes the request-independent service's ordinary manual validation: a
+finger still present arms up, a lifted one is a false down with reference
+refresh. The next foreground capture arms down and reads a finger that is still
+present.

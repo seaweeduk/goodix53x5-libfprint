@@ -94,15 +94,16 @@ does not characterize the complete Windows power-transition wire trace.
 
 `drivers/goodix53x5/device/session.c:goodix_session_suspend` records terminal
 intent and joins service/action/CPU ownership and the physical reader through
-`goodix_session_quiesce`. `goodix_suspend_power` then requests sleep followed
-by EC off using a fresh session token. `goodix_suspend_power_done` joins the
-reader used for those commands; `goodix_suspend_joined` invalidates transport,
-releases the hardware reference and clears its pending refresh marker.
-`goodix_session_resume` selects full reconstruction. The software invalidation
-and reference release are unconditional on the successful power path; they
-are not inferred from an observed loss of firmware state or an EC readback.
-The retained native route and current reconstruction owners are mapped in
-[deviceInit](usbinterface-FUN_180020970.md).
+`goodix_session_quiesce`. `goodix_suspend_power` then runs two commands with a
+fresh session token: with a retained reference and clear `needs_reinit`, EC
+`{00,01,00}` followed by a down arm, mapping display-off action `0x11` (see
+[display notifications](usbinterface-FUN_1800174a0.md)); otherwise sleep
+followed by EC off. `goodix_suspend_power_done` joins the reader used for those
+commands; `goodix_suspend_joined` invalidates transport while retaining the
+requested mode, hardware reference, calibration and FDT state, and a failed
+power command sets `needs_reinit`. `goodix_session_resume` selects the warm
+route unless `needs_reinit` is set. The retained native route and current
+reconstruction owners are mapped in [deviceInit](usbinterface-FUN_180020970.md).
 
 ## Power-State And Command-Result Predicates
 

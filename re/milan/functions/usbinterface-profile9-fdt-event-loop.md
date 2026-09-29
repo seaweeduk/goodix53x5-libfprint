@@ -897,20 +897,24 @@ The suspend/resume callbacks in `goodix53x5.c` delegate to
 `device/session.c:goodix_session_suspend` / `goodix_session_resume`, including
 open idle ownership. Suspend uses `goodix_session_quiesce` to cancel and join
 selected service/action work, CPU work and the physical reader. A separate
-sleep/EC-off state machine then runs with a fresh session token and reception;
+two-command power state machine then runs with a fresh session token and
+reception: EC `{00,01,00}` and a down arm with a retained reference, otherwise
+sleep and EC off (see [D0 exit](usbinterface-FUN_180022ff0.md)).
 `goodix_suspend_power_done` joins that reader before `goodix_suspend_joined`
-invalidates transport, releases hardware/setup frames and completes suspend.
+invalidates transport, retaining reference, calibration and FDT state, and
+completes suspend.
 Actions arriving while suspend is pending fail with `FP_DEVICE_ERROR_BUSY` in
 `goodix_session_start_action`; an action interrupted by suspend completes with
 `G_IO_ERROR_CANCELLED`.
 
-Resume runs full reconstruction through `goodix_maybe_start_reinit_subsm` and
-`goodix_reinit_idle_joined` before restarting service and completing resume.
+Resume takes the warm route unless `needs_reinit` is set: it reclaims USB and
+re-keys GTLS only after a reset-resume, retaining reference, calibration and
+FDT state, then restarts service and completes resume. A pre-existing fault or
+failed warm route runs full reconstruction once through
+`goodix_maybe_start_reinit_subsm` and `goodix_reinit_idle_joined`, where OTP
+reseeds current/default DAC while module-static adjustment history survives.
 Successful open/resume preserves the initialization reader; failure joins it
-before invalidation. OTP reseeds current/default DAC while module-static
-adjustment history survives. These paths have no hardware/FDT checkpoint or
-cached-startup owner. The native initialized `deviceInit` route instead retains
-HAL buffers and optionally reestablishes GTLS; see `usbinterface-FUN_180020970.md`.
+before invalidation. See `usbinterface-FUN_180020970.md#resume-source-map`.
 Windows callback scheduling is separate from these source ownership mappings.
 
 Terminal maintenance failure sets `needs_reinit` in

@@ -543,7 +543,12 @@ kernel-driver detach, without a USB or sensor reset. This repairs Linux's stale
 claim after kernel reset-resume. The joined suspend boundary has already retired
 the old reader and incomplete protocol publications before those operations.
 
-The warm child invokes `goodix_gtls_retry_handler` in its two-group/six-attempt
+A failed release of the remembered claim is Linux's reset-resume signal and
+selects the handshake, corresponding to the recorded system-power value of two
+or more. Otherwise the warm child completes after the reclaim with the retained
+GTLS session, corresponding to the below-two case.
+
+The handshake invokes `goodix_gtls_retry_handler` in its two-group/six-attempt
 mode with the selected in-memory PSK. `goodix_gtls_ssm_handler` initializes a fresh
 client, sends hello and validates identity/completion. This maps the initialized
 worker's session replacement above; the independent event-driven

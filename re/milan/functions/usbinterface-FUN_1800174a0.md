@@ -64,5 +64,19 @@ release callback may still be scheduled by Windows.
 
 There is no display-notification counterpart in the current Linux driver.
 `drivers/goodix53x5/device/scan.c` owns action-scoped EC/arm operations;
-`device/session.c` owns suspend/reinitialization. Those owners do not implement
-this capability-selected display callback or its request-independent arms.
+`device/session.c` owns suspend/reinitialization.
+
+System suspend stands in for capability-one display-off action `0x11` followed
+by D0 exit. `device/session.c:goodix_suspend_service_joined` selects the armed
+route when `hardware_reference` is retained and `needs_reinit` is clear.
+`goodix_suspend_power` then sends EC `{00,01,00}` through
+`device/commands.c:goodix_cmd_ec_control_wake_on_finger` and arms down with the
+retained `base_down`, instead of sleep and EC off. Without a retained reference
+it sends sleep followed by EC off. No screen byte is kept, and there is no
+display-on action `0x15` or action-`0x16` counterpart.
+
+The patched libfprint idle suspend enables USB remote wakeup after a successful
+idle suspend of an open device, and resume disables it. This maps the
+`WdfDeviceAssignSxWakeSettings` request that
+[D0 entry setup](usbinterface-FUN_180022d70.md) makes when `+0x151` or `+0x155`
+is one.

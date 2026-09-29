@@ -209,6 +209,8 @@ The current counterparts for actions 0/1/4 are foreground and idle modes of
 coalescing `pending_fdt` notification independently of a foreground request.
 Action 3 maps to `GOODIX_SCAN_COORD_RESTORE_CONFIG`,
 `device/commands.c:goodix_cmd_restore_config`, and the existing down-arm path.
-There is no request-independent display action-7/action-`0x16` owner. See
+There is no request-independent display action-7/action-`0x16` owner; system
+suspend maps action `0x11` (see
+[display notifications](usbinterface-FUN_1800174a0.md#current-source-map)). See
 `usbinterface-profile9-fdt-event-loop.md#current-source-mapping` for servicing,
 handoff and power ownership.
