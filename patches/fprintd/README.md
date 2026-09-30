@@ -81,14 +81,15 @@ so `VerifyStop` and `Release` return promptly.
 
 A hardware fault while idle is handled inside the driver: it stops background
 maintenance and the next action reconstructs the sensor session, so no daemon
-recovery path is needed. Resume after system sleep reclaims the USB interface
-and establishes a fresh GTLS session before the held start runs, retaining the
-host reference, calibration and FDT state. Existing hardware faults or a failed
-warm resume use one cold reconstruction instead. The same driver path handles
-sleep and hibernate; the first FDT arm repairs lost configuration when the
-sensor reports status 3. Debug builds log `Hardware resume ready (warm)` or
-`Hardware resume ready (cold)` with the elapsed time, without requiring a
-capture campaign.
+recovery path is needed. Suspend leaves finger detection armed, as the native
+driver does when the display turns off. Resume after system sleep reclaims the
+USB interface and establishes a fresh GTLS session before the held start runs,
+retaining the host reference, calibration and FDT state. Existing hardware
+faults or a failed warm resume use one cold reconstruction instead. The same
+driver path handles sleep and hibernate; the first FDT arm repairs lost
+configuration when the sensor reports status 3. Debug builds log
+`Hardware resume ready (warm)` or `Hardware resume ready (cold)` with the
+elapsed time, without requiring a capture campaign.
 
 Verify composition and reverse application, or regenerate only this layer:
 

@@ -121,6 +121,10 @@ void goodix_cmd_set_sleep_mode_result (FpiSsm *ssm, FpDevice *dev,
 /* Switch sensor EC power on or off. ACK only; off enables idle tail servicing. */
 void goodix_cmd_ec_control (FpiSsm *ssm, FpDevice *dev, gboolean on);
 
+/* Screen-off EC policy: the MCU sleeps with finger detection kept armed.
+ * ACK only. */
+void goodix_cmd_ec_control_wake_on_finger (FpiSsm *ssm, FpDevice *dev);
+
 /* ========================================================================
  * Named reply parsers
  *

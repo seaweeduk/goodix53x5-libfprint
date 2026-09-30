@@ -1,4 +1,4 @@
-Libfprint-Idle-Suspend-Notify-Patch: 4
+Libfprint-Idle-Suspend-Notify-Patch: 5
 Base-Revision: 0c97a47d8ef405cd577b87058c1e89cae9d242e7
 Base-Tag: v1.94.10
 
@@ -18,7 +18,7 @@ index 6040c1be58ef1b2680a6dce8d4c67da99fd77f35..09890c37ac03c5c9e7bde8aee827750a
        g_task_return_error (task,
                             fpi_device_error_new (FP_DEVICE_ERROR_BUSY));
 diff --git a/libfprint/fpi-device.c b/libfprint/fpi-device.c
-index a1be30c0e6c5cdf4d68bf6cbb6061b66c0042561..2d2d32a8c1fb82b344597e85d03fb3c17c00f020 100644
+index a1be30c0e6c5cdf4d68bf6cbb6061b66c0042561..af8e29df2e077ac504f35507dff83d4014d84342 100644
 --- a/libfprint/fpi-device.c
 +++ b/libfprint/fpi-device.c
 @@ -1615,7 +1615,11 @@ fpi_device_suspend (FpDevice *device)
@@ -59,6 +59,20 @@ index a1be30c0e6c5cdf4d68bf6cbb6061b66c0042561..2d2d32a8c1fb82b344597e85d03fb3c1
        break;
  
      case FPI_DEVICE_ACTION_ENROLL:
+@@ -1768,8 +1777,11 @@ fpi_device_suspend_completed (FpDevice *device)
+   g_autoptr(GTask) task = NULL;
+   FpDevicePrivate *priv = fp_device_get_instance_private (device);
+ 
+-  /* We have an ongoing operation, allow the device to wake up the machine. */
+-  if (priv->current_action != FPI_DEVICE_ACTION_NONE)
++  /* We have an ongoing operation, or an open Goodix device left finger
++   * detection armed while idle; allow the device to wake up the machine. */
++  if (priv->current_action != FPI_DEVICE_ACTION_NONE ||
++      (priv->is_open && !priv->suspend_error &&
++       FP_DEVICE_GET_CLASS (device)->suspend))
+     fpi_device_configure_wakeup (device, TRUE);
+ 
+   if (priv->critical_section)
 diff --git a/libfprint/fpi-device.h b/libfprint/fpi-device.h
 index ab154bc1f55fd70702222fff2135b5ca825474c0..bd996eb22edcad6952f6dce5f505ca96b9229914 100644
 --- a/libfprint/fpi-device.h
