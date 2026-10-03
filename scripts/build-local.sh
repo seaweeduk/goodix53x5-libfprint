@@ -34,7 +34,7 @@ if [[ "${GOODIX53X5_DEBUG:-0}" == 1 ]]; then
   fi
   debug_enabled=true
   debug_build_id="${GOODIX53X5_INTERNAL_BUILD_ID:-$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')}"
-  debug_source_id="$($repo_dir/tools/milan-parity/build-identity "$repo_dir")"
+  debug_source_id="$(python3 "$repo_dir/scripts/lib/milan_source_identity.py" "$repo_dir")"
   if [[ ! $debug_build_id =~ ^[0-9a-f]{64}$ ||
         ! $debug_source_id =~ ^[0-9a-f]{64}$ ]]; then
     printf 'failed to produce valid Goodix debug build provenance\n' >&2

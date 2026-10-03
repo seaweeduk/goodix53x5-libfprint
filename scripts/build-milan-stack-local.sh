@@ -59,7 +59,7 @@ debug_build_id=
 debug_source_id=
 if [[ "$debug_manifest" == 1 ]]; then
   debug_build_id="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')"
-  debug_source_id="$("$repo_dir/tools/milan-parity/build-identity" "$repo_dir")"
+  debug_source_id="$(python3 "$repo_dir/scripts/lib/milan_source_identity.py" "$repo_dir")"
   [[ $debug_build_id =~ ^[0-9a-f]{64}$ && $debug_source_id =~ ^[0-9a-f]{64}$ ]] ||
     milan_die "failed to produce valid Goodix debug build provenance"
 fi
