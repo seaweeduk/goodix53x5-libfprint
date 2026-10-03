@@ -36,6 +36,17 @@ Fingerprint login is not enabled automatically; add pam_fprintd.so to the PAM
 services you want, as described at
 https://wiki.archlinux.org/title/Fprint#Configuration
 EOF
+  if compgen -G '/var/lib/fprint/*/goodix53x5' >/dev/null; then
+    cat <<'EOF'
+
+libfprint-goodix53x5: existing goodix53x5 fingerprints were found. Prints
+enrolled with the older sigfm driver are not compatible. If verification
+reports invalid data, delete them and enroll again:
+
+  fprintd-delete "$USER"
+  fprintd-enroll
+EOF
+  fi
 }
 
 post_upgrade() {

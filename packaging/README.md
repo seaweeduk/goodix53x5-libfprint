@@ -28,10 +28,10 @@ Both formats build one package, `fprintd-goodix53x5`, from the
   commands, PAM module, systemd unit, D-Bus and polkit files, and the Milan
   udev rule. The daemon loads the private libfprint through its `RUNPATH`.
 
-Release 1.0.0 shipped the private libfprint as a separate
-`libfprint-goodix53x5` package. Later packages take it over (`Breaks` and
-`Replaces` on Debian and Ubuntu, `Obsoletes` on Fedora), so upgrading removes
-it in the same transaction.
+The 1.0.0 test release from seaweeduk/goodix53x5-libfprint shipped the
+private libfprint as a separate `libfprint-goodix53x5` deb/rpm package. Current
+packages take it over (`Breaks` and `Replaces` on Debian and Ubuntu,
+`Obsoletes` on Fedora), so upgrading removes it in the same transaction.
 
 `fprintd-goodix53x5` replaces the distribution's fprintd packages, which the
 package manager removes during installation:
@@ -139,13 +139,16 @@ Replace the image with `ubuntu:22.04`, `ubuntu:26.04`, `debian:12`,
 Releases are made from `main`:
 
 ```sh
-packaging/release.sh patch        # or minor, major, or an exact version such as 1.0.0
+packaging/release.sh patch        # or minor, major, or an exact version such as 1.1.0
 ```
 
 This starts the Release workflow (also available from the Actions tab). It:
 
 1. selects the version from the latest `vX.Y.Z` tag, refusing anything that is
-   not newer; the first release is `1.0.0`;
+   not newer. Without any tag, `patch`, `minor` and `major` all give `1.0.0`,
+   so give the first release an exact version newer than the test packages
+   seaweeduk/goodix53x5-libfprint published (up to `1.0.2`), such as
+   `packaging/release.sh 1.1.0`, so those installations upgrade;
 2. builds the source archive, all seven targets and the AUR package;
 3. writes `SHA256SUMS` and build provenance attestations;
 4. creates a **draft** release targeting the built commit, with notes generated
@@ -193,8 +196,9 @@ matching section.
 | `skip-notes` | Left out of the notes | Refactors, tests, parity tooling, CI, docs and RE notes |
 
 Unlabelled pull requests appear under "Other changes". A new label needs a
-matching category in `.github/release.yml`. The labels already exist; to
-recreate them:
+matching category in `.github/release.yml`. Create the labels once, before
+the first release that has a previous tag to compare against (re-running is
+harmless):
 
 ```sh
 for label in breaking feature matching fix performance security hardware packaging skip-notes; do

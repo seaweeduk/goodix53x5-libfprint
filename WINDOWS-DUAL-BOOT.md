@@ -101,9 +101,10 @@ rm ./goodix53x5-windows.psk
 ```
 
 For final confirmation, boot Windows and unlock with Windows Hello, then boot
-Linux and run `fprintd-verify` again. A successful Linux open logs
-`PSK hash matches, no need to write`, proving neither transition replaced the
-shared key.
+Linux and run `fprintd-verify` again. If both succeed, neither transition
+replaced the shared key. A debug build (`./install.sh --debug`) also logs
+`PSK hash matches, no need to write` to the `fprintd.service` journal when it
+opens the sensor.
 
 If an imported key does not match, the driver fails without changing the
 sensor. Re-extract the current Windows key. Removing
