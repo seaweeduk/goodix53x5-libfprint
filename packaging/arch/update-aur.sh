@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Publish a GitHub release's AUR package files to the libfprint-goodix53x5 AUR
 # repository. Needs gh and an SSH key registered with the AUR account that
-# maintains the package; shows the change and asks before pushing.
+# maintains the package; shows the change and asks before pushing unless --yes
+# is given.
 
 set -euo pipefail
 
 usage() {
-  printf 'Usage: %s VERSION\n' "$0"
+  printf 'Usage: %s [--yes] VERSION\n' "$0"
 }
 
 die() {
@@ -14,6 +15,11 @@ die() {
   exit 1
 }
 
+assume_yes=0
+if [[ "${1:-}" == --yes ]]; then
+  assume_yes=1
+  shift
+fi
 [[ "$#" -eq 1 && "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { usage >&2; exit 1; }
 version="$1"
 for command in gh git sha256sum tar; do
@@ -38,8 +44,10 @@ if git -C "$work/aur" diff --cached --quiet; then
 fi
 git -C "$work/aur" diff --cached --stat
 git -C "$work/aur" diff --cached -- .SRCINFO
-read -r -p "Push libfprint-goodix53x5 1:$version-1 to the AUR? [y/N] " answer
-[[ "$answer" == [yY] ]] || die "not pushed"
+if [[ "$assume_yes" == 0 ]]; then
+  read -r -p "Push libfprint-goodix53x5 1:$version-1 to the AUR? [y/N] " answer
+  [[ "$answer" == [yY] ]] || die "not pushed"
+fi
 git -C "$work/aur" commit -q -m "upgpkg: 1:$version-1"
 git -C "$work/aur" push -q origin HEAD:master
 printf 'Pushed libfprint-goodix53x5 1:%s-1 to the AUR.\n' "$version"
