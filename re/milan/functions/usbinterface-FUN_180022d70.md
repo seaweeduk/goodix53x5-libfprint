@@ -39,6 +39,30 @@ to create/resume `deviceInit`. The function finally returns the original
 reader-start status saved in `EDI`, not thread or GTLS success. The framework's
 reaction to that error is a separate lifetime boundary.
 
+### Receive and first-command ordering
+
+The call through WDF slot `+0x350` at `0x180022ea8` starts the continuous-read
+target before `_beginthreadex` at `0x180022f39` creates the initialization
+worker. This is start-before-send ordering, not a wait for the first receive
+completion or a category-C wake notification. The initialized worker tests
+signed system-power state `+0x168 >= 2` at `0x180020e62..0x180020e69` and
+calls the GTLS wrapper directly at `0x180020e7c`. It has no category-C readiness
+gate, preliminary vendor command or fixed pre-handshake settling delay.
+
+`drivers/goodix53x5/device/session.c:goodix_resume_warm` reclaims the USB
+interface and starts `goodix_gtls_retry_handler`. Its first hello reaches
+`device/transport.c:goodix_transport_send`, which calls `goodix_reader_start`
+before submitting bulk OUT, matching the native start-before-send ordering. The
+physical reader then remains posted during the ACK wait. ACK publication before the OUT callback is retained independently
+in `goodix_rx_cell`; callback order alone does not discard an admitted ACK.
+
+Category-C/1 publishes worker event `0x13` through `0x180019264`; it neither
+satisfies a sender ACK nor gates the initialization worker. The screen-off
+consumer can request a WOF image, while the screen-on consumer `0x18000dc84`
+rearms the retained FDT wait direction. See
+[notification publication](usbinterface-FUN_180018dd8.md#unsolicited-category-c-notifications)
+and [GTLS ACK/retry ownership](usbinterface-FUN_180025400.md).
+
 ## Stored Power State
 
 `usbEvtDeviceD0Exit` (`FUN_180022ff0`) records the framework-reported system
