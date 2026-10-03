@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-repo=seaweeduk/goodix53x5-libfprint
+repo="${GH_REPO:-AndyHazz/goodix53x5-libfprint}"
 
 usage() {
   printf 'Usage: %s patch|minor|major|X.Y.Z\n' "$0"

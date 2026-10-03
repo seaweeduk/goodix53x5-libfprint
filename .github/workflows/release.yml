@@ -108,6 +108,6 @@ jobs:
               -f previous_tag_name="$PREVIOUS" --jq '.body' > "$notes_file"
             printf '\n\n' >> "$notes_file"
           fi
-          sed -e "s/@TAG@/$tag/g" -e "s/@VERSION@/$VERSION/g" \
+          sed -e "s/@TAG@/$tag/g" -e "s/@VERSION@/$VERSION/g" -e "s|@REPOSITORY@|$GH_REPO|g" \
             packaging/release-notes.md >> "$notes_file"
           gh release create "$tag" dist/* --draft --target "$GITHUB_SHA" --title "$tag" --notes-file "$notes_file"

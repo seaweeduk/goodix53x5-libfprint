@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: goodix53x5-libfprint
-Source: https://github.com/seaweeduk/goodix53x5-libfprint
+Source: https://github.com/AndyHazz/goodix53x5-libfprint
 
 Files: *
 Copyright: goodix53x5-libfprint contributors
