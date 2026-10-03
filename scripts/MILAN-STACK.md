@@ -57,8 +57,8 @@ same matching and persistence behaviour. Installing that build automatically
 enables the driver's GLib debug messages, timing logs, and one-line diagnostic
 summaries in the `fprintd.service` journal. Follow them with
 `sudo journalctl -fu fprintd.service -o cat`. Image and template capture remains
-disabled and needs the separate private configuration in
-[`DEBUG-CAPTURE-GUIDE.md`](../DEBUG-CAPTURE-GUIDE.md). Installing a later release
+disabled and needs the separate private configuration in the developer
+[debug capture guide](https://github.com/seaweeduk/goodix53x5-libfprint/blob/main/DEBUG-CAPTURE-GUIDE.md). Installing a later release
 build removes the managed debug logging configuration automatically; independent
 administrator overrides under `/etc/systemd/system` are not changed.
 
