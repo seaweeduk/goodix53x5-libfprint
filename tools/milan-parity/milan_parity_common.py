@@ -12,7 +12,14 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from typing import Any, Iterator
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "lib"))
+from milan_source_identity import (  # noqa: E402
+    SourceIdentityError,
+    source_identity as _source_identity,
+)
 
 
 RUNTIME_SCHEMA = "goodix53x5-runtime-debug/v3"
@@ -219,21 +226,7 @@ def locked_state(path_value: str | None) -> Iterator[Path]:
 
 
 def source_identity(repo: Path) -> str:
-    repo = repo.expanduser().resolve()
-    roots = [repo / "drivers" / "goodix53x5"]
-    fixed = [repo / "meson-integration.patch", repo / "scripts" / "build-local.sh",
-             repo / "patches" / "libfprint" / "libfprint-update-result.patch",
-             repo / "patches" / "libfprint" / "libfprint-goodix53x5-usb-persist.patch",
-             repo / "patches" / "libfprint" / "libfprint-idle-suspend-notify.patch"]
-    paths = sorted(path for root in roots for path in root.rglob("*") if path.is_file())
-    paths.extend(fixed)
-    digest = hashlib.sha256()
     try:
-        for path in paths:
-            if not path.is_file():
-                raise HarnessError(f"build identity input is missing: {path}")
-            digest.update(str(path.relative_to(repo)).encode("utf-8") + b"\0")
-            digest.update(path.read_bytes())
-    except OSError as error:
-        raise HarnessError(f"cannot calculate build identity: {error.strerror or error}") from error
-    return digest.hexdigest()
+        return _source_identity(repo)
+    except SourceIdentityError as error:
+        raise HarnessError(str(error)) from error
