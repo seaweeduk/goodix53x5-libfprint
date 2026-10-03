@@ -137,7 +137,7 @@ This starts the Release workflow (also available from the Actions tab). It:
 4. creates a **draft** release targeting the built commit, with notes generated
    from the pull requests merged since the previous release first, followed by
    the install instructions from `packaging/release-notes.md` (filled in with
-   the tag).
+   the tag and repository).
 
 Review the draft on the releases page, edit the notes (add highlights and any
 re-enrollment warnings), and publish it. Publishing creates the tag; nothing is
@@ -184,6 +184,6 @@ recreate them:
 
 ```sh
 for label in breaking feature matching fix performance security hardware packaging skip-notes; do
-  GH_REPO=seaweeduk/goodix53x5-libfprint gh label create "$label" --force
+  GH_REPO=AndyHazz/goodix53x5-libfprint gh label create "$label" --force
 done
 ```
