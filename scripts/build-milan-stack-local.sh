@@ -31,7 +31,13 @@ repo_dir="$(cd "$script_dir/.." && pwd)"
 source "$script_dir/lib/milan-stack-common.sh"
 
 milan_detect_layout
-milan_reject_ephemeral_root "GOODIX_MILAN_STACK_ROOT" "$MILAN_STACK_ROOT"
+# Package builds only use the stack root as scratch space, so makepkg and
+# friends may build below /tmp.
+if [[ -z "$package_root" ]]; then
+  milan_reject_ephemeral_root "GOODIX_MILAN_STACK_ROOT" "$MILAN_STACK_ROOT"
+else
+  milan_require_absolute "GOODIX_MILAN_STACK_ROOT" "$MILAN_STACK_ROOT"
+fi
 for command in git flock meson ninja sha256sum python3 install strings od tr; do
   milan_require_command "$command"
 done

@@ -65,7 +65,8 @@ administrator overrides under `/etc/systemd/system` are not changed.
 Builds live under `$XDG_STATE_HOME/goodix53x5-milan` (default
 `~/.local/state/goodix53x5-milan`); `sudo` resolves the invoking user's home.
 Override with `GOODIX_MILAN_STACK_ROOT`, which must be absolute and not under
-`/tmp`, `/var/tmp`, or `/run`. Pinned libfprint and fprintd checkouts are cloned
+`/tmp`, `/var/tmp`, or `/run`; package builds (`--package-root`) only use it as
+scratch space and accept any absolute path. Pinned libfprint and fprintd checkouts are cloned
 below `sources/` unless `GOODIX_MILAN_LIBFPRINT_SOURCE` or
 `GOODIX_MILAN_FPRINTD_SOURCE` point at existing pristine checkouts.
 
