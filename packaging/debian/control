@@ -1,7 +1,7 @@
 Source: goodix53x5-libfprint
 Section: misc
 Priority: optional
-Maintainer: seaweeduk <anthony.hartfield@gmail.com>
+Maintainer: AndyHazz <andy.nmc@gmail.com>
 Build-Depends: debhelper-compat (= 13),
                binutils,
                gettext,
@@ -22,7 +22,7 @@ Build-Depends: debhelper-compat (= 13),
                python3,
                systemd-dev | systemd
 Standards-Version: 4.6.2
-Homepage: https://github.com/seaweeduk/goodix53x5-libfprint
+Homepage: https://github.com/AndyHazz/goodix53x5-libfprint
 Rules-Requires-Root: no
 
 Package: fprintd-goodix53x5

@@ -113,8 +113,8 @@ capture, or arbitrary exporter option. The small native executable is internal
 to this launcher and is not a public capture runner.
 
 The launcher verifies the DLL hash and existing prefix, and uses the same
-resolved-prefix SHA-256 lock name as `tools/milan-parity/native-runner` under
-`${XDG_CACHE_HOME:-~/.cache}/milan-parity`. It never loads current production code
+resolved-prefix SHA-256 lock name as the Milan parity tooling's native runner,
+under `${XDG_CACHE_HOME:-~/.cache}/milan-parity`. It never loads current production code
 to compute expectations. Shared C helpers only encode/decode the wire format.
 Provenance records all artifact identities, generator sources, native boundary
 addresses, call observations, and tool versions. Reproduction reports tool/source
@@ -128,7 +128,7 @@ GOODIX53X5_DEBUG=0 GOODIX_LIBFPRINT_OFFLINE=1 ./scripts/build-local.sh
 meson test -C .build/libfprint/builddir --print-errorlogs goodix53x5-milan-native-preprocess
 ```
 
-The fixture tooling is independent of the strict public `tools/milan-parity`
-command surface. Suggested mutation checks include loss of retry output/history,
+The fixture tooling is independent of the Milan parity tooling's command
+surface. Suggested mutation checks include loss of retry output/history,
 incorrect sample advancement, temporal maturity/promotion changes, and replacing
 the percentile-gap temporal threshold with the old primary-mode cap.

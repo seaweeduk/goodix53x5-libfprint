@@ -11,7 +11,7 @@ Version:        %{goodix_version}
 Release:        1%{?dist}
 Summary:        Goodix 53x5 Milan fingerprint driver for libfprint and fprintd
 License:        LGPL-2.1-or-later AND GPL-2.0-or-later
-URL:            https://github.com/seaweeduk/goodix53x5-libfprint
+URL:            https://github.com/AndyHazz/goodix53x5-libfprint
 Source0:        %{name}-%{version}.tar.xz
 
 BuildRequires:  binutils
@@ -175,5 +175,5 @@ fi
 %attr(0700,root,root) %dir %{_sharedstatedir}/fprint
 
 %changelog
-* %{goodix_changelog_date} seaweeduk <anthony.hartfield@gmail.com> - %{version}-%{release}
-- Release %{version}. Release notes: https://github.com/seaweeduk/goodix53x5-libfprint/releases
+* %{goodix_changelog_date} AndyHazz <andy.nmc@gmail.com> - %{version}-%{release}
+- Release %{version}. Release notes: https://github.com/AndyHazz/goodix53x5-libfprint/releases

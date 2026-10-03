@@ -57,15 +57,16 @@ same matching and persistence behaviour. Installing that build automatically
 enables the driver's GLib debug messages, timing logs, and one-line diagnostic
 summaries in the `fprintd.service` journal. Follow them with
 `sudo journalctl -fu fprintd.service -o cat`. Image and template capture remains
-disabled and needs the separate private configuration in
-[`DEBUG-CAPTURE-GUIDE.md`](../DEBUG-CAPTURE-GUIDE.md). Installing a later release
+disabled and needs the separate private configuration in the developer
+[debug capture guide](https://github.com/seaweeduk/goodix53x5-libfprint/blob/main/DEBUG-CAPTURE-GUIDE.md). Installing a later release
 build removes the managed debug logging configuration automatically; independent
 administrator overrides under `/etc/systemd/system` are not changed.
 
 Builds live under `$XDG_STATE_HOME/goodix53x5-milan` (default
 `~/.local/state/goodix53x5-milan`); `sudo` resolves the invoking user's home.
 Override with `GOODIX_MILAN_STACK_ROOT`, which must be absolute and not under
-`/tmp`, `/var/tmp`, or `/run`. Pinned libfprint and fprintd checkouts are cloned
+`/tmp`, `/var/tmp`, or `/run`; package builds (`--package-root`) only use it as
+scratch space and accept any absolute path. Pinned libfprint and fprintd checkouts are cloned
 below `sources/` unless `GOODIX_MILAN_LIBFPRINT_SOURCE` or
 `GOODIX_MILAN_FPRINTD_SOURCE` point at existing pristine checkouts.
 

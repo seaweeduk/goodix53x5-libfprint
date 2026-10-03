@@ -100,10 +100,14 @@ jobs:
             echo "::error::Release $tag already exists"
             exit 1
           fi
-          sed -e "s/@TAG@/$tag/g" -e "s/@VERSION@/$VERSION/g" \
-            packaging/release-notes.md > "$RUNNER_TEMP/release-notes.md"
-          notes=(--notes-file "$RUNNER_TEMP/release-notes.md")
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          : > "$notes_file"
           if [[ -n "$PREVIOUS" ]]; then
-            notes+=(--generate-notes --notes-start-tag "$PREVIOUS")
+            gh api --method POST "repos/$GH_REPO/releases/generate-notes" \
+              -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" \
+              -f previous_tag_name="$PREVIOUS" --jq '.body' > "$notes_file"
+            printf '\n\n' >> "$notes_file"
           fi
-          gh release create "$tag" dist/* --draft --target "$GITHUB_SHA" --title "$tag" "${notes[@]}"
+          sed -e "s/@TAG@/$tag/g" -e "s/@VERSION@/$VERSION/g" -e "s|@REPOSITORY@|$GH_REPO|g" \
+            packaging/release-notes.md >> "$notes_file"
+          gh release create "$tag" dist/* --draft --target "$GITHUB_SHA" --title "$tag" --notes-file "$notes_file"

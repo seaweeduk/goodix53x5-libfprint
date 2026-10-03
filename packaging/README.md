@@ -8,10 +8,11 @@ carries:
 | `goodix53x5-libfprint-VERSION.tar.xz` | Complete source: this repository plus the pinned libfprint and fprintd checkouts |
 | `fprintd-goodix53x5_VERSION-1.DISTRO_amd64.deb` | Ubuntu 22.04, 24.04 and 26.04, Debian 12 and 13 (the package version inside is `VERSION-1~DISTRO`) |
 | `fprintd-goodix53x5-VERSION-1.fcNN.x86_64.rpm` | Fedora 43 and 44 |
+| `libfprint-goodix53x5-aur-VERSION.tar.gz` | `PKGBUILD`, `.SRCINFO` and install script for the `libfprint-goodix53x5` AUR package |
 | `SHA256SUMS` | Checksums of every asset, also covered by GitHub build provenance attestations |
 
-Arch and other distributions use the source installation. The release notes
-tell those users to clone the release tag or extract the release source archive
+Other distributions use the source installation. The release notes tell those
+users to clone the release tag or extract the release source archive
 and run `./install.sh`, and not to use GitHub's automatically generated source
 archives, which lack the pinned sources and `release.env`.
 
@@ -53,6 +54,51 @@ reload udev, re-apply the Milan rule to an attached sensor, and restart fprintd
 so the sensor is opened immediately. Print state in `/var/lib/fprint` is never
 removed.
 
+## Arch Linux (AUR)
+
+The `libfprint-goodix53x5` AUR package builds the same payload as the Debian and
+Fedora packages from the release source archive, which its `PKGBUILD` downloads
+from the GitHub release and checks by SHA-256. The package keeps its historical
+name so existing AUR installations upgrade in place:
+
+- `epoch=1`, so release versions sort above the old `1.94.10-N` libfprint-based
+  versions.
+- `provides=fprintd=1.94.5` and `conflicts=fprintd`: pacman offers to remove
+  the distribution's fprintd. The distribution's libfprint may stay installed;
+  the private copy lives in `/usr/lib/libfprint-goodix53x5`.
+- The install script reloads udev, restarts fprintd when a supported sensor is
+  attached, and on upgrade from the sigfm driver asks users to re-enroll.
+  Fingerprint login is left to the user's PAM configuration.
+
+The template and its install script are in `arch/`.
+`arch/make-aur-package.sh ARCHIVE OWNER/REPOSITORY DIR` fills in the version,
+download URL and checksum, and writes `.SRCINFO`; it needs `makepkg`. The
+workflow builds the package from the generated files in an Arch container and
+attaches them to the release.
+
+Publishing a release runs `.github/workflows/aur.yml`, which pushes the
+release's AUR files to `aur.archlinux.org` when the repository has an
+`AUR_SSH_PRIVATE_KEY` secret. To set that up once, create a key for it, add the
+public half to the AUR account that maintains the package (My Account, SSH
+Public Key; the field accepts one key per line), and store the private half:
+
+```sh
+ssh-keygen -t ed25519 -N '' -C 'goodix53x5-libfprint releases' -f aur-release
+gh secret set AUR_SSH_PRIVATE_KEY < aur-release
+rm aur-release
+```
+
+The workflow can also be run from the Actions tab for an already published
+release. Without the secret it does nothing, and the maintainer pushes the
+files with:
+
+```sh
+GH_REPO=OWNER/REPOSITORY packaging/arch/update-aur.sh VERSION
+```
+
+Both download the release's AUR bundle and check it against `SHA256SUMS`. The
+script shows the change and asks before pushing.
+
 ## Build Pipeline
 
 1. `make-source-archive.sh VERSION DIR` archives `HEAD` and fetches the pinned
@@ -72,7 +118,7 @@ removed.
    development files.
 
 Pull requests that change packaging, patches or the stack builder build every
-package through `.github/workflows/packages.yml`.
+package, including the AUR package, through `.github/workflows/packages.yml`.
 
 ### Building Locally
 
@@ -100,16 +146,18 @@ This starts the Release workflow (also available from the Actions tab). It:
 
 1. selects the version from the latest `vX.Y.Z` tag, refusing anything that is
    not newer; the first release is `1.0.0`;
-2. builds the source archive and all seven targets;
+2. builds the source archive, all seven targets and the AUR package;
 3. writes `SHA256SUMS` and build provenance attestations;
-4. creates a **draft** release targeting the built commit, with the install
-   instructions from `packaging/release-notes.md` (filled in with the tag) and
-   notes generated from the pull requests merged since the previous release.
+4. creates a **draft** release targeting the built commit, with notes generated
+   from the pull requests merged since the previous release first, followed by
+   the install instructions from `packaging/release-notes.md` (filled in with
+   the tag and repository).
 
 Review the draft on the releases page, edit the notes (add highlights and any
 re-enrollment warnings), and publish it. Publishing creates the tag; nothing is
-public before then. Package changelogs link to the release notes rather than
-duplicating them.
+public before then. Publishing also updates the AUR package; see
+[Arch Linux (AUR)](#arch-linux-aur). Package changelogs link to the release
+notes rather than duplicating them.
 
 ### Versions
 
@@ -150,6 +198,6 @@ recreate them:
 
 ```sh
 for label in breaking feature matching fix performance security hardware packaging skip-notes; do
-  GH_REPO=seaweeduk/goodix53x5-libfprint gh label create "$label" --force
+  GH_REPO=AndyHazz/goodix53x5-libfprint gh label create "$label" --force
 done
 ```

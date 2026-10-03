@@ -82,7 +82,7 @@ build_deb() {
 goodix53x5-libfprint ($deb_version) ${VERSION_CODENAME:-unstable}; urgency=medium
 
   * Release $version. Release notes:
-    https://github.com/seaweeduk/goodix53x5-libfprint/releases
+    https://github.com/AndyHazz/goodix53x5-libfprint/releases
 
  -- $maintainer  $(LC_ALL=C date -u -R -d "@$SOURCE_DATE_EPOCH")
 EOF

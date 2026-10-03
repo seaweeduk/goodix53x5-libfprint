@@ -31,7 +31,13 @@ repo_dir="$(cd "$script_dir/.." && pwd)"
 source "$script_dir/lib/milan-stack-common.sh"
 
 milan_detect_layout
-milan_reject_ephemeral_root "GOODIX_MILAN_STACK_ROOT" "$MILAN_STACK_ROOT"
+# Package builds only use the stack root as scratch space, so makepkg and
+# friends may build below /tmp.
+if [[ -z "$package_root" ]]; then
+  milan_reject_ephemeral_root "GOODIX_MILAN_STACK_ROOT" "$MILAN_STACK_ROOT"
+else
+  milan_require_absolute "GOODIX_MILAN_STACK_ROOT" "$MILAN_STACK_ROOT"
+fi
 for command in git flock meson ninja sha256sum python3 install strings od tr; do
   milan_require_command "$command"
 done
@@ -59,7 +65,7 @@ debug_build_id=
 debug_source_id=
 if [[ "$debug_manifest" == 1 ]]; then
   debug_build_id="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')"
-  debug_source_id="$("$repo_dir/tools/milan-parity/build-identity" "$repo_dir")"
+  debug_source_id="$(python3 "$repo_dir/scripts/lib/milan_source_identity.py" "$repo_dir")"
   [[ $debug_build_id =~ ^[0-9a-f]{64}$ && $debug_source_id =~ ^[0-9a-f]{64}$ ]] ||
     milan_die "failed to produce valid Goodix debug build provenance"
 fi
