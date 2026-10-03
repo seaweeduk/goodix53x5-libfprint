@@ -76,14 +76,28 @@ download URL and checksum, and writes `.SRCINFO`; it needs `makepkg`. The
 workflow builds the package from the generated files in an Arch container and
 attaches them to the release.
 
-After publishing a release, the AUR maintainer pushes its files with:
+Publishing a release runs `.github/workflows/aur.yml`, which pushes the
+release's AUR files to `aur.archlinux.org` when the repository has an
+`AUR_SSH_PRIVATE_KEY` secret. To set that up once, create a key for it, add the
+public half to the AUR account that maintains the package (My Account, SSH
+Public Key; the field accepts one key per line), and store the private half:
+
+```sh
+ssh-keygen -t ed25519 -N '' -C 'goodix53x5-libfprint releases' -f aur-release
+gh secret set AUR_SSH_PRIVATE_KEY < aur-release
+rm aur-release
+```
+
+The workflow can also be run from the Actions tab for an already published
+release. Without the secret it does nothing, and the maintainer pushes the
+files with:
 
 ```sh
 GH_REPO=OWNER/REPOSITORY packaging/arch/update-aur.sh VERSION
 ```
 
-It downloads the release's AUR bundle, checks it against `SHA256SUMS`, shows the
-change and asks before pushing to `aur.archlinux.org`.
+Both download the release's AUR bundle and check it against `SHA256SUMS`. The
+script shows the change and asks before pushing.
 
 ## Build Pipeline
 
@@ -141,9 +155,9 @@ This starts the Release workflow (also available from the Actions tab). It:
 
 Review the draft on the releases page, edit the notes (add highlights and any
 re-enrollment warnings), and publish it. Publishing creates the tag; nothing is
-public before then. Then update the AUR package as described in
-[Arch Linux (AUR)](#arch-linux-aur). Package changelogs link to the release notes rather than
-duplicating them.
+public before then. Publishing also updates the AUR package; see
+[Arch Linux (AUR)](#arch-linux-aur). Package changelogs link to the release
+notes rather than duplicating them.
 
 ### Versions
 
