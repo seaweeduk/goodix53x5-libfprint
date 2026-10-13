@@ -31,6 +31,9 @@ typedef void (*GoodixGtlsRestartDone) (FpDevice *dev,
                                        GError   *error,
                                        gpointer  data);
 
+/* How long a secure-channel handshake waits for each reply from the sensor. */
+#define GOODIX_CHANNEL_REPLY_TIMEOUT_MS 2000
+
 /* Run the native three-attempt restart with the retained selected PSK.
  * The caller joins the asynchronous completion before resuming scan work. */
 void goodix_start_gtls_restart (FpDevice             *dev,
@@ -70,6 +73,37 @@ void goodix_session_close (FpDevice *dev);
 /* Background and power owners use session_cancel even during foreground
  * admission. Only foreground/open callers use libfprint's action token. */
 GCancellable *goodix_session_io_cancellable (FpDevice *dev);
+
+/* Shared steps of a family's bring-up (GoodixFamily.open_new). */
+
+/* Returns NULL to accept @firmware, which is NULL when every read failed, or
+ * the error that fails open. */
+typedef GError *(*GoodixFirmwareCheck) (const char *firmware);
+
+/* Wakes the sensor and reads its firmware version, up to @reads times with
+ * the native 100 ms sleep after each failure, then asks @check. */
+void goodix_open_probe (FpiSsm *ssm, FpDevice *dev, guint reads,
+                        GoodixFirmwareCheck check);
+/* Resets the sensor and reads its chip ID, up to six read cycles; the first
+ * reset asks for the IRQ status reply where @initial_reset_requests_irq. */
+void goodix_open_identify_chip (FpiSsm *ssm, FpDevice *dev,
+                                gboolean initial_reset_requests_irq);
+/* Verifies and parses the OTP reply the previous state read. */
+gboolean goodix_open_parse_otp (FpDevice *dev, GError **error);
+/* Runs the open handshake attempts of the family's channel. */
+void goodix_open_channel (FpiSsm *ssm, FpDevice *dev);
+
+/* Selects the PSK for this open: the imported key in the state file, or the
+ * default all-zero PSK when there is none. */
+gboolean goodix_load_psk (FpiDeviceGoodix53x5 *self, GError **error);
+/* Sets @matches to whether the PSK hash the sensor returned in preset @slot
+ * is the hash of the PSK this driver holds. Fails when the reply does not parse. */
+gboolean goodix_psk_hash_reply_matches (FpDevice *dev, guint32 slot,
+                                        gboolean *matches, GError **error);
+/* Checks that the PSK hash the sensor returned in preset @slot is the hash of
+ * the PSK this driver holds. Fails when the reply does not parse or the hash
+ * differs, which a sensor the driver never provisions cannot recover from. */
+gboolean goodix_require_current_psk (FpDevice *dev, guint32 slot, GError **error);
 
 /* Every hardware owner reports here when it stops; the session then starts
  * the pending action, the requested reader join, or idle maintenance. */

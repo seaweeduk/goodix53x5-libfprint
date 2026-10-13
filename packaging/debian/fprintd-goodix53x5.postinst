@@ -5,7 +5,7 @@ sensor_present() {
 	for device in /sys/bus/usb/devices/*; do
 		[ "$(cat "$device/idVendor" 2>/dev/null)" = 27c6 ] || continue
 		case "$(cat "$device/idProduct" 2>/dev/null)" in
-			5335|5385|5395) return 0 ;;
+			5335|533c|5385|5395) return 0 ;;
 		esac
 	done
 	return 1
@@ -21,7 +21,7 @@ if [ "$1" = configure ]; then
 		sensor=yes
 	else
 		sensor=no
-		printf '%s\n' "fprintd-goodix53x5: no Goodix 27c6:5335, 27c6:5385 or 27c6:5395 sensor" \
+		printf '%s\n' "fprintd-goodix53x5: no Goodix 27c6:5335, 27c6:533c, 27c6:5385 or 27c6:5395 sensor" \
 		  "found; other fingerprint readers are not supported." >&2
 	fi
 	if [ -d /run/systemd/system ]; then

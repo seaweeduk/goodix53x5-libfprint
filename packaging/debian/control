@@ -38,9 +38,9 @@ Breaks: libfprint-goodix53x5 (<< 1.0.1~)
 Replaces: fprintd, libpam-fprintd, libfprint-goodix53x5 (<< 1.0.1~)
 Description: Goodix 53x5 Milan fingerprint driver with fprintd and PAM module
  The native Milan fingerprint driver for the Goodix HTK32 USB sensors
- 27c6:5335, 27c6:5385 and 27c6:5395 (Dell XPS 13 9305 and related laptops),
- with adaptive template learning, packaged with a matching fprintd 1.94.5 and
- its PAM module.
+ 27c6:5335, 27c6:533c, 27c6:5385 and 27c6:5395 (Dell XPS 13 9305,
+ XPS 13 9310 and related laptops), with adaptive template learning, packaged
+ with a matching fprintd 1.94.5 and its PAM module.
  .
  The driver's libfprint is installed in a private directory used only by this
  fprintd; the distribution's libfprint-2-2 is not replaced. fprintd saves

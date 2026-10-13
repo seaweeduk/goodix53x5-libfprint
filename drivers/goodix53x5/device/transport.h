@@ -22,7 +22,7 @@
 #include "driver-private.h"
 
 /* Command bytes are copied when the request is accepted. */
-typedef struct
+typedef struct _GoodixCmd
 {
   guint8   category;
   guint8   command;
@@ -52,6 +52,21 @@ typedef struct
   gboolean restart_gtls;
 } GoodixTransportResult;
 
+/* One row of the native command table: the 53x5 ACK and data budgets, the
+ * response slot a reply lands in and whether the command is retried. */
+typedef struct
+{
+  guint8 command;
+  guint ack_ms;
+  guint response_ms;
+  GoodixResponseSlot response_slot;
+  gboolean retry;
+} GoodixCommandPolicy;
+
+/* Returns the native table's row for the command with wire byte @command,
+ * or NULL when the table does not list it. */
+const GoodixCommandPolicy *goodix_cmd_policy (guint8 command);
+
 /* Error ownership transfers to done. Result is borrowed for that call only.
  * The completed operation is detached before caller code can submit another. */
 typedef void (*GoodixTransportDone) (FpDevice *dev,
@@ -62,6 +77,18 @@ typedef void (*GoodixTransportJoined) (FpDevice *dev, gpointer data);
 /* Copy the request before returning. The independent IN remains posted. */
 void goodix_transport_command (FpDevice *dev, const GoodixTransportRequest *request,
                                 GoodixTransportDone done, gpointer data);
+/* Writes a raw TLS record; completes once written, as no sensor ACKs one. */
+void goodix_transport_send_record (FpDevice *dev, GBytes *record,
+                                   GoodixTransportDone done, gpointer data);
+
+/* Entry points of the receiver for GoodixLink.receive: protocol messages
+ * go in as direct-framing cells, encrypted images and category-D data whole. */
+void goodix_rx_cell (GoodixTransport *operation, const guint8 *buffer,
+                     gsize cell_length);
+gboolean goodix_rx_image (GoodixTransport *operation, const guint8 *payload,
+                          gsize len);
+void goodix_mcu_publish (FpiDeviceGoodix53x5 *self, const guint8 *payload,
+                         gsize len);
 void goodix_transport_wait_event (FpDevice *dev, GoodixProfile9FdtWaitMode mode,
                                    GoodixTransportDone done, gpointer data);
 void goodix_transport_wait_mcu (FpDevice *dev, guint timeout, gsize length,
@@ -72,6 +99,9 @@ void goodix_transport_cancel_event (FpDevice *dev);
  * this is not a policy to cancel outstanding commands or CPU work. */
 void goodix_transport_quiesce (FpDevice *dev, GoodixTransportJoined joined,
                                gpointer data);
+
+/* Bytes per USB bulk packet; both framings pad writes to whole packets. */
+#define GOODIX_USB_CHUNK_SIZE 64
 
 /* Timeouts in ms */
 #define GOODIX_ACK_TIMEOUT    2000

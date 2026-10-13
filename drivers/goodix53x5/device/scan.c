@@ -51,8 +51,11 @@ typedef enum {
   GOODIX_SCAN_COORD_REARM_DOWN,
   GOODIX_SCAN_COORD_REARM_DOWN_DONE,
   GOODIX_SCAN_COORD_RESTORE_CONFIG,
+  GOODIX_SCAN_COORD_RESTORE_LOST_CONFIG,
   GOODIX_SCAN_COORD_ESD,
   GOODIX_SCAN_COORD_ESD_DONE,
+  GOODIX_SCAN_COORD_CHANNEL_REARM,
+  GOODIX_SCAN_COORD_CHANNEL_REARM_DONE,
   GOODIX_SCAN_COORD_DEACTIVATE_EC,
   GOODIX_SCAN_COORD_DEACTIVATE_EC_DONE,
   GOODIX_SCAN_COORD_WAIT_CPU,
@@ -289,7 +292,50 @@ goodix_scan_gtls_restarted (FpDevice *dev, GError *error, gpointer user_data)
       goodix_scan_request_stop (data, error);
       return;
     }
+  /* Only a reconnect the sensor asked for arms afterwards, as the vendor's
+   * handler does, even while the scan stops. A restart after a failed image
+   * read only restarts the channel: the capture's failure path arms after it. */
+  if (FPI_DEVICE_GOODIX53X5 (dev)->reconnect_requested)
+    {
+      data->dispatching = TRUE;
+      fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_CHANNEL_REARM);
+      return;
+    }
   fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
+}
+
+static void
+goodix_scan_restarted_before_arm (FpDevice *dev, GError *error, gpointer user_data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  FpiSsm *ssm = user_data;
+  gboolean reconnect = self->reconnect_requested;
+
+  if (error)
+    fpi_ssm_mark_failed (ssm, error);
+  else
+    fpi_ssm_jump_to_state (ssm, reconnect &&
+                          fpi_ssm_get_cur_state (ssm) == GOODIX_SCAN_COORD_RECOVERY_ARM_UP ?
+                          GOODIX_SCAN_COORD_CHANNEL_REARM : fpi_ssm_get_cur_state (ssm));
+}
+
+/* Serialize a pending restart before arming on the replacement session.
+ * D0 selects its own down-arm; a failed read keeps the capture continuation.
+ * Inert for 53x5: it requests no reconnects and its restarts do not disarm. */
+static gboolean
+goodix_scan_restart_before_arm (FpiSsm *ssm, FpDevice *dev)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  if (self->reconnect_requested)
+    {
+      self->reconnect_requested = FALSE;
+      return FALSE;
+    }
+  if (!self->gtls_restart_pending || !goodix_family (self)->channel.restart_disarms)
+    return FALSE;
+  goodix_start_gtls_restart (dev, goodix_scan_restarted_before_arm, ssm);
+  return TRUE;
 }
 
 static void
@@ -306,6 +352,12 @@ goodix_scan_event_done (FpDevice *dev, const GoodixTransportResult *result,
        * One transport owner serializes GTLS with capture and arm commands. */
       data->dispatching = TRUE;
       goodix_start_gtls_restart (dev, goodix_scan_gtls_restarted, data);
+      return;
+    }
+  if (!error && self->config_restore_pending && !self->pending_fdt.event.pending)
+    {
+      /* Woken by a configuration loss: restore it before waiting again. */
+      fpi_ssm_jump_to_state (data->ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
       return;
     }
   if (!error)
@@ -370,6 +422,28 @@ goodix_scan_config_restored (FpiSsm *ssm, FpDevice *dev, guint8 status,
     }
   g_clear_error (&error);
   fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_REARM_DOWN);
+}
+
+/* Returns the scan to waiting once a download of the lost configuration
+ * ends, arming nothing, as the vendor's power-lost handler does. Fails the
+ * scan on an error other than an ordinary command failure. */
+static void
+goodix_scan_lost_config_restored (FpiSsm *ssm, FpDevice *dev, guint8 status,
+                                  gboolean native_zero, GError *error)
+{
+  GoodixScanCoordinatorData *data = fpi_ssm_get_data (ssm);
+
+  FPI_DEVICE_GOODIX53X5 (dev)->config_restore_active = FALSE;
+  if (error && !native_zero)
+    {
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+  if (error)
+    fp_warn ("Restoring the lost configuration failed: %s", error->message);
+  g_clear_error (&error);
+  data->dispatching = FALSE;
+  fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
 }
 
 static void
@@ -473,6 +547,8 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_ARM_DOWN:
+      if (goodix_scan_restart_before_arm (ssm, dev))
+        return;
       fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
       goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
       break;
@@ -487,6 +563,12 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
              * to the next owner rather than extending handoff indefinitely. */
             data->dispatching = FALSE;
             goodix_scan_maybe_finish_requested (data);
+            return;
+          }
+        if (self->config_restore_pending && !data->stop_requested)
+          {
+            data->dispatching = TRUE;
+            fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_RESTORE_LOST_CONFIG);
             return;
           }
         /* A pending notification can complete synchronously and free data.
@@ -520,8 +602,9 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
         if (data->event_type == GOODIX_FDT_EVENT_WAKE)
           {
             /* Ordinary screen-on 00dc84 has no requested-mode gate. */
-            fpi_ssm_jump_to_state (ssm, fdt->wait_mode == GOODIX_PROFILE9_FDT_WAIT_UP ?
-                                   GOODIX_SCAN_COORD_RECOVERY_ARM_UP :
+            fpi_ssm_jump_to_state (ssm, goodix_family (self)->protocol.wake_arm_up (
+                                    fdt->wait_mode == GOODIX_PROFILE9_FDT_WAIT_UP) ?
+                                    GOODIX_SCAN_COORD_RECOVERY_ARM_UP :
                                    GOODIX_SCAN_COORD_REARM_DOWN);
             return;
           }
@@ -707,6 +790,8 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
 
     case GOODIX_SCAN_COORD_RECOVERY_ARM_UP:
       data->dispatching = TRUE;
+      if (goodix_scan_restart_before_arm (ssm, dev))
+        return;
       fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_UP;
       goodix_cmd_fdt_up_setup (ssm, dev, fdt->base_up);
       break;
@@ -730,6 +815,8 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       break;
 
     case GOODIX_SCAN_COORD_REARM_DOWN:
+      if (goodix_scan_restart_before_arm (ssm, dev))
+        return;
       fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
       goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
       break;
@@ -780,6 +867,12 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       goodix_cmd_restore_config (ssm, dev, goodix_scan_config_restored);
       break;
 
+    case GOODIX_SCAN_COORD_RESTORE_LOST_CONFIG:
+      self->config_restore_pending = FALSE;
+      self->config_restore_active = TRUE;
+      goodix_cmd_restore_config (ssm, dev, goodix_scan_lost_config_restored);
+      break;
+
     case GOODIX_SCAN_COORD_ESD:
       goodix_cmd_repair_esd (ssm, dev);
       break;
@@ -788,7 +881,16 @@ goodix_scan_coordinator_handler (FpiSsm   *ssm,
       goodix_cmd_ec_control (ssm, dev, FALSE);
       break;
 
+    case GOODIX_SCAN_COORD_CHANNEL_REARM:
+      /* A reconnect the sensor asked for arms finger-down whatever the scan
+       * waited for, as the vendor's handler does. */
+      self->reconnect_requested = FALSE;
+      fdt->wait_mode = GOODIX_PROFILE9_FDT_WAIT_DOWN;
+      goodix_cmd_fdt_down_setup (ssm, dev, fdt->base_down);
+      break;
+
     case GOODIX_SCAN_COORD_ESD_DONE:
+    case GOODIX_SCAN_COORD_CHANNEL_REARM_DONE:
     case GOODIX_SCAN_COORD_DEACTIVATE_EC_DONE:
       data->dispatching = FALSE;
       fpi_ssm_jump_to_state (ssm, GOODIX_SCAN_COORD_WAIT_EVENT);
@@ -1366,7 +1468,9 @@ goodix_capture_ssm_done (FpiSsm   *ssm,
   g_clear_error (&error);
 
   /* Application cancellation cannot cut short the selected handler's rearm. */
-  fpi_ssm_jump_to_state (capture->parent_ssm, GOODIX_SCAN_COORD_REARM_DOWN);
+  fpi_ssm_jump_to_state (capture->parent_ssm,
+                         goodix_family (self)->channel.rearm_after_capture (self) ?
+                         GOODIX_SCAN_COORD_REARM_DOWN : GOODIX_SCAN_COORD_REARM_DOWN_DONE);
 }
 
 /* ========================================================================

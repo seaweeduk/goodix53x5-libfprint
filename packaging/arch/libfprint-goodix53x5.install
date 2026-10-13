@@ -3,7 +3,7 @@ _goodix_sensor_present() {
   for device in /sys/bus/usb/devices/*; do
     [[ "$(cat "$device/idVendor" 2>/dev/null)" == 27c6 ]] || continue
     case "$(cat "$device/idProduct" 2>/dev/null)" in
-      5335|5385|5395) return 0 ;;
+      5335|533c|5385|5395) return 0 ;;
     esac
   done
   return 1
@@ -21,7 +21,7 @@ _goodix_refresh() {
     systemctl restart fprintd.service || true
   else
     systemctl try-restart fprintd.service || true
-    echo "libfprint-goodix53x5: no Goodix 27c6:5335, 27c6:5385 or 27c6:5395 sensor found;"
+    echo "libfprint-goodix53x5: no Goodix 27c6:5335, 27c6:533c, 27c6:5385 or 27c6:5395 sensor found;"
     echo "other fingerprint readers are not supported."
   fi
 }

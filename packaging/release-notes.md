@@ -9,6 +9,7 @@ lsusb -d 27c6:
 | Result | What to do |
 | --- | --- |
 | `27c6:5335`, `27c6:5385` or `27c6:5395` | Supported by this release; choose a download below. Known laptops: Dell XPS 13 9305 (`27c6:5335`), XPS 13 7390 2-in-1 (`27c6:5385`), XPS 15 9570 and XPS 15 7590 (`27c6:5395`). |
+| `27c6:533c` (Dell XPS 13 9310) | Supported by this release, tested on one laptop. Run the detector below first: it checks that the sensor still holds its default key, which it does not after Windows Hello has used it. Installing replaces fprintd, including a setup with Dell's `libfprint-2-tod1-goodix` driver, and fingers enrolled there must be enrolled again. |
 | Another `27c6:` Goodix ID | Not supported by this release yet. Run the detector below and report the result. |
 | No output | No Goodix USB fingerprint sensor was found; this release does not support your reader. |
 

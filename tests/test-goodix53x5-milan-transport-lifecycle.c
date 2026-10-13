@@ -117,13 +117,19 @@ idle_test_reinit_ssm (FpDevice *dev, FpiSsmHandlerCallback handler,
   if (startup_trace && handler == goodix_chip_ssm_handler)
     return fpi_ssm_new_full (dev, handler, GOODIX_CHIP_READ,
                              GOODIX_CHIP_READ, name);
+  if (handler == goodix_htsec_open_handler)
+    {
+      int stop = startup_trace ? GOODIX_HTSEC_OPEN_READ_OTP : GOODIX_HTSEC_OPEN_RESET;
+
+      return fpi_ssm_new_full (dev, handler, stop, stop, name);
+    }
   if (handler != goodix_open_ssm_handler)
     return fpi_ssm_new_full (dev, handler, states, cleanup, name);
   g_assert_true (idle_reinit_testing || idle_open_testing);
   g_assert_true (handler == goodix_open_ssm_handler);
   /* Run reset/claim and the whole startup probe, stopping before calibration. */
-  return fpi_ssm_new_full (dev, handler, GOODIX_OPEN_RESET,
-                           GOODIX_OPEN_RESET, name);
+  return fpi_ssm_new_full (dev, handler, GOODIX_OPEN_UPLOAD_CONFIG,
+                           GOODIX_OPEN_UPLOAD_CONFIG, name);
 }
 
 static void
@@ -704,7 +710,7 @@ test_startup_probe (gconstpointer data)
 
   /* Execute real claim/probe and the reset-only prefix of the chip child. */
   fpi_ssm_start (fpi_ssm_new_full (dev, goodix_open_ssm_handler,
-                                  GOODIX_OPEN_READ_OTP, GOODIX_OPEN_READ_OTP,
+                                  GOODIX_OPEN_UPLOAD_CONFIG, GOODIX_OPEN_UPLOAD_CONFIG,
                                   "startup-boundary"), startup_done);
   for (guint step = 0; !io.completions && step < 150; step++)
     {

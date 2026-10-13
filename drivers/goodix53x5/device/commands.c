@@ -28,17 +28,7 @@
 
 #include <string.h>
 
-#define GOODIX_PROTO_CATEGORY_FDT 0x03
-#define GOODIX_PROTO_CMD_FDT_DOWN 0x01
-#define GOODIX_PROTO_CMD_FDT_UP 0x02
-#define GOODIX_PROTO_CMD_FDT_MANUAL 0x03
-#define GOODIX_PROTO_CATEGORY_IMAGE 0x02
 #define GOODIX_PROTO_CMD_IMAGE 0x00
-
-#define GOODIX_FDT_IRQ_DOWN 0x0002
-#define GOODIX_FDT_IRQ_REVERSE 0x0080
-#define GOODIX_FDT_IRQ_REVERSE_ALT 0x0082
-#define GOODIX_FDT_IRQ_UP 0x0200
 
 /* HV value for image capture */
 #define GOODIX_HV_VALUE 6
@@ -231,10 +221,11 @@ void
 goodix_cmd_probe (FpiSsm *ssm, FpDevice *dev, gboolean firmware,
                   GoodixCmdResultCallback callback)
 {
-  guint8 payload[2] = { 0, 0 };
+  guint8 payload[4] = { 0 };
+  gsize len = firmware ? 2 : goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->protocol.wake_payload_len;
 
   goodix_run_cmd_result (ssm, dev, firmware ? 0x0a : 0, firmware ? 4 : 0,
-                         payload, sizeof (payload), firmware, callback);
+                         payload, len, firmware, callback);
 }
 
 void
@@ -268,7 +259,8 @@ goodix_cmd_read_chip_id (FpiSsm *ssm, FpDevice *dev,
     0x04, 0x00, /* size LE */
   };
 
-  goodix_run_cmd_result (ssm, dev, 0x8, 0x1, payload, sizeof (payload), TRUE, callback);
+  goodix_run_cmd_result (ssm, dev, 0x8, 0x1, payload, sizeof (payload),
+                         TRUE, callback);
 }
 
 void
@@ -290,6 +282,18 @@ goodix_cmd_production_read (FpiSsm *ssm, FpDevice *dev, guint32 read_type)
 }
 
 void
+goodix_cmd_preset_read (FpiSsm *ssm, FpDevice *dev, guint32 slot, guint32 length)
+{
+  /* Length, offset, slot and a zero word. */
+  guint8 payload[16] = { 0 };
+
+  goodix_encode_u32_le (payload, length);
+  goodix_encode_u32_le (payload + 8, slot);
+  goodix_run_cmd (ssm, dev, GOODIX_PROTO_CATEGORY_PRODUCTION, 0x2,
+                  payload, sizeof (payload), TRUE);
+}
+
+void
 goodix_cmd_production_write (FpiSsm *ssm, FpDevice *dev,
                              guint32 data_type,
                              const guint8 *data, gsize data_len)
@@ -301,7 +305,8 @@ goodix_cmd_production_write (FpiSsm *ssm, FpDevice *dev,
   goodix_encode_u32_le (payload + 4, (guint32) data_len);
   memcpy (payload + 8, data, data_len);
 
-  goodix_run_cmd (ssm, dev, 0xE, 0x1, payload, payload_len, TRUE);
+  goodix_run_cmd (ssm, dev, GOODIX_PROTO_CATEGORY_PRODUCTION,
+                  GOODIX_PROTO_CMD_PRODUCTION_WRITE, payload, payload_len, TRUE);
 }
 
 void
@@ -318,10 +323,29 @@ goodix_cmd_mcu_send (FpiSsm *ssm, FpDevice *dev, guint32 data_type,
 }
 
 void
+goodix_cmd_tls_request (FpiSsm *ssm, FpDevice *dev)
+{
+  /* The sensor ACKs, then sends its ClientHello as a TLS pack. */
+  guint8 payload[2] = { 0, 0 };
+
+  goodix_run_cmd (ssm, dev, 0xD, 0x0, payload, sizeof (payload), FALSE);
+}
+
+void
+goodix_cmd_send_tls_record (FpiSsm *ssm, FpDevice *dev, GBytes *record)
+{
+  GoodixCommandCompletion *completion = g_new0 (GoodixCommandCompletion, 1);
+
+  completion->ssm = ssm;
+  goodix_transport_send_record (dev, record, goodix_command_done, completion);
+}
+
+void
 goodix_cmd_upload_config (FpiSsm *ssm, FpDevice *dev,
                           const guint8 *config, gsize config_len)
 {
-  goodix_run_cmd (ssm, dev, 0x9, 0x0, config, config_len, TRUE);
+  goodix_run_cmd (ssm, dev, GOODIX_PROTO_CATEGORY_CONFIG, GOODIX_PROTO_CMD_CONFIG_DOWNLOAD,
+                  config, config_len, TRUE);
 }
 
 void
@@ -334,7 +358,8 @@ goodix_cmd_restore_config (FpiSsm *ssm, FpDevice *dev,
   g_autofree guint8 *payload = g_memdup2 (config, length);
 
   goodix_device_patch_config (payload, length, &self->calib);
-  goodix_run_cmd_result (ssm, dev, 9, 0, payload, length, TRUE, callback);
+  goodix_run_cmd_result (ssm, dev, GOODIX_PROTO_CATEGORY_CONFIG,
+                         GOODIX_PROTO_CMD_CONFIG_DOWNLOAD, payload, length, TRUE, callback);
 }
 
 typedef enum {
@@ -388,7 +413,8 @@ goodix_arm_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
       return;
     }
   if (state == GOODIX_ARM_CONFIG ||
-      (state == GOODIX_ARM_FIRST && !native_zero && (status & 3) == 3))
+      (state == GOODIX_ARM_FIRST && !native_zero &&
+       goodix_family (self)->protocol.repair_arm (status)))
     fpi_ssm_next_state (ssm);
   else
     fpi_ssm_mark_completed (ssm);
@@ -407,7 +433,9 @@ goodix_arm_handler (FpiSsm *ssm, FpDevice *dev)
       const guint8 *config = goodix_device_get_default_config (&payload_len);
       payload = g_memdup2 (config, payload_len);
       goodix_device_patch_config (payload, payload_len, &self->calib);
-      goodix_run_cmd_result (ssm, dev, 9, 0, payload, payload_len, TRUE, goodix_arm_result);
+      goodix_run_cmd_result (ssm, dev, GOODIX_PROTO_CATEGORY_CONFIG,
+                             GOODIX_PROTO_CMD_CONFIG_DOWNLOAD, payload, payload_len, TRUE,
+                             goodix_arm_result);
     }
   else
     {
@@ -652,9 +680,11 @@ goodix_cmd_set_sleep_mode_result (FpiSsm *ssm, FpDevice *dev,
 void
 goodix_cmd_ec_control (FpiSsm *ssm, FpDevice *dev, gboolean on)
 {
-  guint8 payload_on[3] = { 0x01, 0x01, 0x00 };
+  guint8 payload_on[3];
   guint8 payload_off[3] = { 0x00, 0x00, 0x00 };
 
+  memcpy (payload_on, goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->protocol.ec_on_payload,
+          sizeof (payload_on));
   if (on)
     goodix_run_cmd (ssm, dev, 0xA, 0x7, payload_on, 3, FALSE);
   else
@@ -726,7 +756,8 @@ goodix_cmd_parse_production_write_reply (FpDevice      *dev,
                                          const guint8 **out_payload,
                                          gsize         *out_payload_len)
 {
-  return goodix_parse_reply_exact (dev, 0xE, 0x1, out_payload,
+  return goodix_parse_reply_exact (dev, GOODIX_PROTO_CATEGORY_PRODUCTION,
+                                   GOODIX_PROTO_CMD_PRODUCTION_WRITE, out_payload,
                                    out_payload_len, NULL);
 }
 
@@ -800,7 +831,7 @@ goodix_cmd_parse_fdt_event (FpDevice                 *dev,
   guint8 expected_command;
   const guint8 *payload;
   gsize payload_len;
-  guint16 irq;
+  g_autoptr(GError) event_error = NULL;
 
   g_return_val_if_fail (out_type != NULL, FALSE);
   g_return_val_if_fail (out_event != NULL, FALSE);
@@ -830,8 +861,7 @@ goodix_cmd_parse_fdt_event (FpDevice                 *dev,
 
   /* [irq_status(2)][touch_flag(2)][fdt_data(GOODIX_FDT_BASE_LEN)] */
   if (category != GOODIX_PROTO_CATEGORY_FDT ||
-      command != expected_command ||
-      payload_len < 4 + GOODIX_FDT_BASE_LEN)
+      command != expected_command)
     {
       g_set_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
                    "Unexpected FDT event: armed=0x%02x cat=0x%02x cmd=0x%02x len=%zu",
@@ -839,44 +869,25 @@ goodix_cmd_parse_fdt_event (FpDevice                 *dev,
       return FALSE;
     }
 
-  irq = payload[0] | ((guint16) payload[1] << 8);
-  switch (irq)
+  *out_type = goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->protocol.fdt_event (
+    FPI_DEVICE_GOODIX53X5 (dev), payload, payload_len, &event_error);
+  if (event_error)
     {
-    case 0:
-    case 1:
-    case 4:
-    case 8:
-    case 0x10:
-    case 0x20:
-    case 0x40:
-      /* Native selector-1/2 no-ops do not publish raw data or wake the worker. */
-      *out_type = GOODIX_FDT_EVENT_NONE;
+      g_propagate_error (error, g_steal_pointer (&event_error));
+      return FALSE;
+    }
+  if (*out_type == GOODIX_FDT_EVENT_NONE)
+    {
       out_event->pending = FALSE;
       return TRUE;
-
-    case GOODIX_FDT_IRQ_DOWN:
-      *out_type = GOODIX_FDT_EVENT_DOWN;
-      break;
-
-    case GOODIX_FDT_IRQ_UP:
-      *out_type = GOODIX_FDT_EVENT_UP;
-      break;
-
-    case GOODIX_FDT_IRQ_REVERSE:
-    case GOODIX_FDT_IRQ_REVERSE_ALT:
-      *out_type = GOODIX_FDT_EVENT_REVERSE;
-      break;
-
-    default:
-      /* Native event 0x14 replaces only the worker notification. Its payload
-       * is not a raw/touch sample and must not replace any retained base. */
-      *out_type = GOODIX_FDT_EVENT_CONFIG;
-      out_event->irq = irq;
+    }
+  out_event->irq = payload[0] | ((guint16) payload[1] << 8);
+  if (*out_type == GOODIX_FDT_EVENT_CONFIG)
+    {
       out_event->pending = TRUE;
       return TRUE;
     }
 
-  out_event->irq = irq;
   out_event->touch_flag = payload[2] | ((guint16) payload[3] << 8);
   memcpy (out_event->raw, payload + 4, GOODIX_FDT_BASE_LEN);
   out_event->pending = TRUE;

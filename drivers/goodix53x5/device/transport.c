@@ -29,24 +29,14 @@
 
 #include <string.h>
 
-/* USB endpoints — interface 1, CDC Data class */
-#define GOODIX_EP_OUT (0x03 | FPI_USB_ENDPOINT_OUT)
-#define GOODIX_EP_IN  (0x01 | FPI_USB_ENDPOINT_IN)
-
 /* USB chunk size */
-#define GOODIX_USB_CHUNK_SIZE 64
 #define GOODIX_USB_READ_SIZE 0x8000
 #define GOODIX_MCU_RX_SIZE (0x40000)
 
-#define GOODIX_PROTO_CATEGORY_ACK     0x0B
-#define GOODIX_PROTO_CMD_ACK          0x00
-#define GOODIX_PROTO_ACK_FLAG_VALID   0x01
-#define GOODIX_PROTO_CATEGORY_FDT     0x03
-#define GOODIX_PROTO_CMD_FDT_DOWN     0x01
-#define GOODIX_PROTO_CMD_FDT_UP       0x02
 #define GOODIX_FDT_EVENT_PAYLOAD_LEN  (4 + GOODIX_FDT_BASE_LEN)
 #define GOODIX_PROTO_CMD_BYTE(category, command) \
   (((category) << 4) | ((command) << 1))
+
 
 typedef enum {
   GOODIX_TRANSPORT_IDLE,
@@ -71,6 +61,8 @@ struct _GoodixTransport
   gint64                    deadline_us;
   GoodixProfile9FdtWaitMode event_mode;
   GoodixCmd                 cmd;
+  /* A raw TLS record to write instead of cmd; it is never ACKed. */
+  GBytes                   *record;
   gboolean                  expect_data;
   gboolean                  retry;
   GoodixResponseSlot        response_slot;
@@ -114,15 +106,6 @@ goodix_transport_is_idle (GoodixTransport *operation)
  * GLib measures elapsed time, rather than Sleep(1)/Wait(50) poll counts.
  * Register 82 here is the sized/chip adapter (200), not the factory two-byte
  * adapter (500). Unknown commands retain their existing fallback policy. */
-typedef struct
-{
-  guint8 command;
-  guint ack_ms;
-  guint response_ms;
-  GoodixResponseSlot response_slot;
-  gboolean retry;
-} GoodixCommandPolicy;
-
 static const GoodixCommandPolicy command_policies[] = {
   { 0x32, 500, 0, GOODIX_RESPONSE_NONE, TRUE },
   { 0x34, 500, 0, GOODIX_RESPONSE_NONE, TRUE },
@@ -143,13 +126,22 @@ static const GoodixCommandPolicy command_policies[] = {
 
 G_STATIC_ASSERT (GOODIX_RESPONSE_COUNT <= 8);
 
-static const GoodixCommandPolicy *
+const GoodixCommandPolicy *
 goodix_cmd_policy (guint8 command)
 {
   for (guint i = 0; i < G_N_ELEMENTS (command_policies); i++)
     if (command_policies[i].command == command)
       return &command_policies[i];
   return NULL;
+}
+
+/* Checks whether replies for @slot land in the shared response cache, which
+ * the awaited command reads as its own reply. */
+static gboolean
+goodix_response_slot_is_shared (GoodixResponseSlot slot)
+{
+  return slot == GOODIX_RESPONSE_SYSTEM || slot == GOODIX_RESPONSE_REGISTER ||
+         slot == GOODIX_RESPONSE_OTP || slot == GOODIX_RESPONSE_PRODUCTION;
 }
 
 static guint8
@@ -161,16 +153,13 @@ goodix_response_bit (GoodixResponseSlot slot)
 static void
 goodix_cmd_set_policy (GoodixTransport *operation)
 {
-  const GoodixCommandPolicy *policy = goodix_cmd_policy (
-    GOODIX_PROTO_CMD_BYTE (operation->cmd.category, operation->cmd.command));
+  guint8 command = GOODIX_PROTO_CMD_BYTE (operation->cmd.category, operation->cmd.command);
+  const GoodixCommandPolicy *policy = goodix_cmd_policy (command);
 
-  operation->ack_timeout_ms = policy ? policy->ack_ms : GOODIX_ACK_TIMEOUT;
-  operation->response_timeout_ms = policy && policy->response_ms ?
-                                   policy->response_ms : GOODIX_DATA_TIMEOUT;
+  operation->retry = goodix_family (FPI_DEVICE_GOODIX53X5 (operation->dev))->protocol.command_budget (
+    command, operation->expect_data, &operation->ack_timeout_ms, &operation->response_timeout_ms);
   operation->response_slot = policy && operation->expect_data ?
                              policy->response_slot : GOODIX_RESPONSE_NONE;
-  operation->retry = policy && policy->retry &&
-                     (operation->expect_data == (policy->response_slot != GOODIX_RESPONSE_NONE));
 }
 
 static const char *
@@ -204,6 +193,16 @@ goodix_cmd_native_zero (GoodixTransportPhase phase, const GError *error)
          error->code == G_USB_DEVICE_ERROR_INTERNAL;
 }
 
+/* Returns what @operation sends, for its logs and errors. */
+static gchar *
+goodix_transport_describe (GoodixTransport *operation)
+{
+  if (operation->record)
+    return g_strdup ("TLS record");
+  return g_strdup_printf ("command cat=0x%02x cmd=0x%02x",
+                          operation->cmd.category, operation->cmd.command);
+}
+
 static gboolean
 goodix_cmd_retry (GoodixTransport *operation, GError *error)
 {
@@ -212,12 +211,16 @@ goodix_cmd_retry (GoodixTransport *operation, GError *error)
   if (!operation->retry || operation->attempt != 1 ||
       (phase != GOODIX_TRANSPORT_SEND && phase != GOODIX_TRANSPORT_ACK &&
        !(operation->response_slot != GOODIX_RESPONSE_NONE && phase == GOODIX_TRANSPORT_RESPONSE)) ||
-      !goodix_cmd_native_zero (phase, error))
+      !(phase == GOODIX_TRANSPORT_SEND ?
+        (operation->record ? goodix_cmd_native_zero (phase, error) :
+         goodix_family (FPI_DEVICE_GOODIX53X5 (operation->dev))->protocol.retry_write (error)) :
+        g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT)))
     return FALSE;
 
-  fp_dbg ("Retrying command cat=0x%02x cmd=0x%02x phase=%s attempt=1: %s",
-          operation->cmd.category, operation->cmd.command,
-           goodix_cmd_phase_name (phase), error->message);
+  g_autofree gchar *what = goodix_transport_describe (operation);
+
+  fp_dbg ("Retrying %s phase=%s attempt=1: %s",
+          what, goodix_cmd_phase_name (phase), error->message);
   g_error_free (error);
   goodix_transport_send (operation);
   return TRUE;
@@ -230,6 +233,32 @@ goodix_deadline_remaining (gint64 deadline_us)
   gint64 remaining = deadline_us - g_get_monotonic_time ();
 
   return remaining > 0 ? (guint) ((remaining + 999) / 1000) : 0;
+}
+
+/* Checks whether @cmd downloads a sensor configuration. */
+static gboolean
+goodix_cmd_is_config_download (const GoodixCmd *cmd)
+{
+  return cmd->category == GOODIX_PROTO_CATEGORY_CONFIG &&
+         cmd->command == GOODIX_PROTO_CMD_CONFIG_DOWNLOAD;
+}
+
+/* Checks whether the family's protocol refuses @cmd, whichever caller asks. */
+static gboolean
+goodix_cmd_refused (FpiDeviceGoodix53x5 *self, const GoodixCmd *cmd)
+{
+  return !goodix_family (self)->protocol.may_send (cmd);
+}
+
+/* Appends @payload to the category-D stream and signals its waiter. */
+void
+goodix_mcu_publish (FpiDeviceGoodix53x5 *self, const guint8 *payload, gsize len)
+{
+  if (!self->mcu_rx)
+    self->mcu_rx = g_byte_array_new ();
+  g_byte_array_append (self->mcu_rx, payload,
+                       MIN (len, GOODIX_MCU_RX_SIZE - self->mcu_rx->len));
+  self->mcu_ready = TRUE;
 }
 
 static gboolean
@@ -279,6 +308,15 @@ goodix_validate_ack_for_cmd (FpDevice       *dev,
  * ======================================================================== */
 
 static void
+goodix_record_write_failed (FpDevice *dev, gpointer data)
+{
+  GoodixTransport *operation = FPI_DEVICE_GOODIX53X5 (dev)->transport;
+
+  operation->timer = NULL;
+  goodix_transport_complete (operation, g_error_copy (data));
+}
+
+static void
 goodix_tx_cb (FpiUsbTransfer *transfer,
               FpDevice       *dev,
               gpointer        user_data,
@@ -287,6 +325,13 @@ goodix_tx_cb (FpiUsbTransfer *transfer,
   GoodixTransport *operation = user_data;
   GoodixReader *reader = FPI_DEVICE_GOODIX53X5 (dev)->reader;
 
+  /* TOD's WriteTls sleeps 1 ms after every record write, failed or not. */
+  if (error && operation->record)
+    {
+      operation->timer = fpi_device_add_timeout (dev, 1, goodix_record_write_failed,
+                                                 error, (GDestroyNotify) g_error_free);
+      return;
+    }
   if (error)
     {
       goodix_transport_complete (operation, error);
@@ -299,9 +344,15 @@ goodix_tx_cb (FpiUsbTransfer *transfer,
       goodix_transport_complete (operation, g_error_copy (reader->error));
       return;
     }
+  /* A TLS record is not a protocol message; the sensor never ACKs it. */
+  if (operation->record)
+    {
+      goodix_transport_complete (operation, NULL);
+      return;
+    }
   operation->deadline_us = g_get_monotonic_time () + operation->ack_timeout_ms * 1000LL;
-  if ((operation->cmd.category == 0 && operation->cmd.command == 0) ||
-      (operation->cmd.category == 0x0a && operation->cmd.command == 4))
+  if ((operation->cmd.category == GOODIX_PROTO_CATEGORY_NOP && operation->cmd.command == 0) ||
+      (operation->cmd.category == GOODIX_PROTO_CATEGORY_SYSTEM && operation->cmd.command == 4))
     operation->cancellable = g_object_ref (goodix_session_io_cancellable (dev));
   if (operation->ack_status & GOODIX_PROTO_ACK_FLAG_VALID)
     goodix_transport_ack (operation);
@@ -316,11 +367,10 @@ goodix_transport_send (GoodixTransport *operation)
   FpDevice *dev = operation->dev;
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   GoodixCmd *cmd = &operation->cmd;
-  gsize msg_len;
-  guint8 *msg;
+  gsize msg_len, padded_len;
+  guint8 *msg, *chunked;
   FpiUsbTransfer *transfer;
   GCancellable *cancellable;
-  guint8 cmd_byte;
 
   operation->phase = GOODIX_TRANSPORT_SEND;
   operation->attempt++;
@@ -329,35 +379,28 @@ goodix_transport_send (GoodixTransport *operation)
   g_clear_pointer (&operation->cancel_source, g_source_destroy);
   g_clear_object (&operation->cancellable);
   self->command_response_ready &= ~goodix_response_bit (operation->response_slot);
-  msg = goodix_proto_build_message (cmd->category, cmd->command,
-                                    cmd->payload, cmd->payload_len,
-                                    cmd->use_checksum, &msg_len);
-  cmd_byte = msg[0];
 
-  /* The transport uses 64-byte USB writes. Continuation chunks prepend
-   * cmd_byte | 1 and carry up to 63 more bytes of message data. */
-
-  gsize first_len = MIN (msg_len, GOODIX_USB_CHUNK_SIZE);
-  gsize total_chunks = 1 + (msg_len - first_len + 62) / 63;
-  gsize padded_len = total_chunks * GOODIX_USB_CHUNK_SIZE;
-  guint8 *chunked = g_malloc0 (padded_len);
-
-  memcpy (chunked, msg, first_len);
-  gsize src_offset = first_len;
-  for (gsize dst_offset = GOODIX_USB_CHUNK_SIZE;
-       dst_offset < padded_len; dst_offset += GOODIX_USB_CHUNK_SIZE)
+  if (operation->record)
     {
-      gsize data_in_chunk = MIN (63, msg_len - src_offset);
-
-      chunked[dst_offset] = cmd_byte | 1;
-      memcpy (chunked + dst_offset + 1, msg + src_offset, data_in_chunk);
-      src_offset += data_in_chunk;
+      chunked = goodix_family (self)->link.frame_record (operation->record, &padded_len);
+    }
+  else
+    {
+      msg = goodix_proto_build_message (cmd->category, cmd->command,
+                                        cmd->payload, cmd->payload_len,
+                                        cmd->use_checksum, &msg_len);
+      chunked = goodix_family (self)->link.frame (msg, msg_len, &padded_len);
+      g_free (msg);
+    }
+  if (!chunked)
+    {
+      goodix_transport_complete (operation, fpi_device_error_new_msg (
+                                   FP_DEVICE_ERROR_PROTO, "Message too long to frame"));
+      return;
     }
 
-  g_free (msg);
-
   transfer = fpi_usb_transfer_new (dev);
-  fpi_usb_transfer_fill_bulk_full (transfer, GOODIX_EP_OUT,
+  fpi_usb_transfer_fill_bulk_full (transfer, goodix_family (self)->link.ep_out,
                                    chunked, padded_len, g_free);
   /* Native writes have no timeout. The selected action or hardware-service
    * owner supplies cancellation until this callback joins; Linux USB removal
@@ -387,6 +430,7 @@ goodix_transport_free (GoodixTransport *operation)
   g_clear_object (&operation->cancellable);
   g_clear_error (&operation->completion_error);
   g_free (operation->cmd.payload);
+  g_clear_pointer (&operation->record, g_bytes_unref);
   g_object_unref (operation->dev);
   g_free (operation);
 }
@@ -397,6 +441,15 @@ goodix_transport_expired (FpDevice *dev, gpointer data)
   GoodixTransport *operation = data;
 
   operation->timer = NULL;
+  if (operation->phase == GOODIX_TRANSPORT_ACK && operation->expect_data &&
+      goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->protocol.ack_timeout_waits_for_data)
+    {
+      g_autofree gchar *what = goodix_transport_describe (operation);
+
+      fp_dbg ("No ACK for %s; waiting for its data", what);
+      goodix_transport_ack (operation);
+      return;
+    }
   goodix_transport_complete (operation,
                             g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
                                                  "Receive deadline expired"));
@@ -508,8 +561,7 @@ goodix_transport_select_response (GoodixTransport *operation)
   GoodixResponseSlot slot = operation->response_slot;
   gsize offset = 0, length;
 
-  if (slot != GOODIX_RESPONSE_SYSTEM && slot != GOODIX_RESPONSE_REGISTER &&
-      slot != GOODIX_RESPONSE_OTP && slot != GOODIX_RESPONSE_PRODUCTION)
+  if (!goodix_response_slot_is_shared (slot))
     return NULL;
   if (!(self->command_response_ready & goodix_response_bit (slot)))
     return fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
@@ -557,10 +609,17 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
                           self->image_response_failed &&
                           (operation->phase == GOODIX_TRANSPORT_ACK ||
                            operation->phase == GOODIX_TRANSPORT_RESPONSE);
+  gboolean config_failed = !error && operation->expect_data &&
+                           goodix_cmd_is_config_download (&operation->cmd) &&
+                           self->config_download_failed;
 
   if (image_failed)
     error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_IO,
                                  "Image receiver rejected the frame");
+  if (config_failed)
+    error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                     "Configuration download failed: status %u",
+                                     self->config_download_status);
   if (!error && operation->expect_data &&
       (operation->phase == GOODIX_TRANSPORT_ACK || operation->phase == GOODIX_TRANSPORT_RESPONSE))
     error = goodix_transport_select_response (operation);
@@ -568,7 +627,7 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
     .ack_status = operation->ack_status,
     .restart_gtls = operation->phase == GOODIX_TRANSPORT_EVENT && self->gtls_restart_pending,
     .ordinary_exhaustion = error && !(self->reader && self->reader->error) &&
-      (image_failed || goodix_cmd_native_zero (operation->phase, error)),
+      (image_failed || config_failed || goodix_cmd_native_zero (operation->phase, error)),
     .write_cancelled = operation->phase == GOODIX_TRANSPORT_SEND &&
       operation->write_submitted &&
       (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
@@ -578,10 +637,17 @@ goodix_transport_complete (GoodixTransport *operation, GError *error)
   if (error && !(self->reader && self->reader->error) && goodix_cmd_retry (operation, error))
     return;
   else if (error && operation->attempt)
-    g_prefix_error (&error, "Command cat=0x%02x cmd=0x%02x phase=%s attempt=%u: ",
-                    operation->cmd.category, operation->cmd.command,
-                    goodix_cmd_phase_name (operation->phase), operation->attempt);
+    {
+      g_autofree gchar *what = goodix_transport_describe (operation);
 
+      what[0] = g_ascii_toupper (what[0]);
+      g_prefix_error (&error, "%s phase=%s attempt=%u: ", what,
+                      goodix_cmd_phase_name (operation->phase), operation->attempt);
+    }
+
+  if (!error && operation->expect_data && goodix_cmd_is_config_download (&operation->cmd) &&
+      !self->config_restore_pending)
+    self->config_lost = FALSE;
   self->transport = NULL;
   goodix_transport_free (operation);
   if (done)
@@ -617,13 +683,39 @@ goodix_transport_ack (GoodixTransport *operation)
       operation->phase = GOODIX_TRANSPORT_RESPONSE;
       operation->deadline_us = g_get_monotonic_time () + operation->response_timeout_ms * 1000LL;
       g_clear_object (&operation->cancellable);
-      if (operation->cmd.category == 0x0a && operation->cmd.command == 4)
+      if (operation->cmd.category == GOODIX_PROTO_CATEGORY_SYSTEM && operation->cmd.command == 4)
         operation->cancellable = g_object_ref (goodix_session_io_cancellable (operation->dev));
       goodix_transport_receive (operation, operation->response_timeout_ms);
     }
 }
 
+/* Checks whether a reply for @slot answers another command than the one in
+ * flight, as the family's protocol decides. A stale firmware reply must not
+ * complete a reset that shares its slot. */
+static gboolean
+goodix_reply_is_foreign (FpiDeviceGoodix53x5 *self, GoodixResponseSlot slot,
+                         guint8 category, guint8 command)
+{
+  GoodixTransport *operation = self->transport;
+
+  return operation && !operation->record &&
+         (operation->phase == GOODIX_TRANSPORT_SEND || operation->phase == GOODIX_TRANSPORT_ACK ||
+          operation->phase == GOODIX_TRANSPORT_RESPONSE) &&
+         (goodix_response_slot_is_shared (slot) ||
+          (slot == GOODIX_RESPONSE_CONFIG && goodix_cmd_is_config_download (&operation->cmd))) &&
+         !goodix_family (self)->protocol.reply_answers (category, command, &operation->cmd);
+}
+
+/* Each sensor request owns a new session followed by a finger-down arm. */
 static void
+goodix_request_reconnect (FpiDeviceGoodix53x5 *self)
+{
+  fp_info ("Sensor requested a new %s session", goodix_family (self)->channel.name);
+  self->reconnect_pending++;
+  self->gtls_restart_pending = TRUE;
+}
+
+void
 goodix_rx_cell (GoodixTransport *operation,
                 const guint8    *buffer,
                 gsize            cell_length)
@@ -690,138 +782,127 @@ goodix_rx_cell (GoodixTransport *operation,
           payload[0] == GOODIX_PROTO_CMD_BYTE (self->transport->cmd.category,
                                               self->transport->cmd.command))
         self->transport->ack_status = payload[1];
+      /* Only 533c reports events; goodix_htsec_event always returns NONE. */
+      if (self->reply_valid)
+        switch (goodix_family (self)->protocol.event (category, command, payload, payload_len))
+          {
+          case GOODIX_SENSOR_EVENT_CONFIG_LOST:
+            if (!self->config_lost)
+              fp_info ("ACK for 0x%02x reports lost configuration", payload[0]);
+            if (goodix_family (self)->channel.config_lost)
+              goodix_family (self)->channel.config_lost (self);
+            self->config_lost = TRUE;
+            if (!self->config_restore_active)
+              self->config_restore_pending = TRUE;
+            /* A scan waiting for a finger restores the configuration first. */
+            if (operation->phase == GOODIX_TRANSPORT_EVENT)
+              {
+                goodix_proto_rx_reset (&self->rx);
+                goodix_transport_complete (operation, NULL);
+                return;
+              }
+            break;
+          case GOODIX_SENSOR_EVENT_RECONNECT:
+            goodix_request_reconnect (self);
+            goodix_proto_rx_reset (&self->rx);
+            if (operation->phase == GOODIX_TRANSPORT_EVENT)
+              goodix_transport_complete (operation, NULL);
+            else
+              goto receive_more;
+            return;
+          case GOODIX_SENSOR_EVENT_NONE:
+            break;
+          }
 
       if (self->reply_valid)
         {
-          if (category == 0x0c)
+          if (category == GOODIX_PROTO_CATEGORY_NOTICE)
             {
               /* Notice publication shares the worker's coalescing slot, but
                * never supplies a raw FDT vector or mutates FDT bases. */
-              if (command <= 1)
+              gboolean published = command == 1 ||
+                (command == 0 && goodix_family (self)->protocol.notice_irq (self, payload, payload_len));
+
+              if (published)
                 {
-                  if (command == 0)
-                    {
-                      /* Native 019264 aliases the command response cache.
-                       * Both the notice IRQ and an already-signaled response
-                       * observe this prefix and its retained unwritten suffix. */
-                      memcpy (self->shared_response_storage, payload,
-                              MIN (payload_len, sizeof (self->shared_response_storage)));
-                      memcpy (self->notice_irq, self->shared_response_storage,
-                              sizeof (self->notice_irq));
-                    }
                   self->pending_fdt.type = command == 0 ?
                                            GOODIX_FDT_EVENT_ESD : GOODIX_FDT_EVENT_WAKE;
                   self->pending_fdt.event.pending = TRUE;
                 }
               goodix_proto_rx_reset (&self->rx);
-              if (command <= 1 && operation->phase == GOODIX_TRANSPORT_EVENT)
+              if (published && operation->phase == GOODIX_TRANSPORT_EVENT)
                 goodix_transport_complete (operation, NULL);
               else
                 goto receive_more;
               return;
             }
-          if (category == 2)
+          if (category == GOODIX_PROTO_CATEGORY_IMAGE)
             {
-              gsize decoded_len;
-              guint32 counter = self->gtls.hmac_server_counter;
-              g_autofree guint8 *decoded = goodix_crypto_gtls_decrypt_sensor_data (
-                &self->gtls, payload, payload_len, &decoded_len);
-              guint16 *frame = decoded ?
-                               goodix_device_decode_image (decoded, decoded_len) : NULL;
+              gboolean completed = goodix_rx_image (operation, payload, payload_len);
 
-              /* The native raw callback authenticates, converts and signals
-               * before the sender consumes ACK. Failed authentication leaves
-               * the counter/cache intact; an authenticated bad frame retains
-               * the advanced counter but does not signal readiness. */
-              if (frame)
-                {
-                  g_free (self->image_response);
-                  self->image_response = frame;
-                  self->image_response_failed = FALSE;
-                  self->command_response_ready |= goodix_response_bit (GOODIX_RESPONSE_IMAGE);
-                }
-              else if (self->gtls.hmac_server_counter != counter &&
-                       self->gtls.state == 5)
-                {
-                  /* Incomplete-session rejection consumes the counter but
-                   * preserves raw status; only established raw failure sets it. */
-                  self->image_response_failed = TRUE;
-                }
-              if (!frame)
-                {
-                  /* Successful parser/image calls do not clear native history.
-                   * Every second error consumes it even during a restart. */
-                  if (self->image_error_history)
-                    {
-                      self->image_error_history = FALSE;
-                      if (!self->gtls_restart_active)
-                        self->gtls_restart_pending = TRUE;
-                    }
-                  else
-                    {
-                      self->image_error_history = TRUE;
-                    }
-                }
               goodix_proto_rx_reset (&self->rx);
-              if (operation->phase == GOODIX_TRANSPORT_EVENT &&
-                  self->gtls_restart_pending)
-                {
-                  goodix_transport_complete (operation, NULL);
-                  return;
-                }
-              if (current && operation->phase == GOODIX_TRANSPORT_RESPONSE &&
-                  current->response_slot == GOODIX_RESPONSE_IMAGE &&
-                  (self->command_response_ready & goodix_response_bit (GOODIX_RESPONSE_IMAGE)))
-                goodix_transport_complete (operation, NULL);
-              else
+              if (!completed)
                 goto receive_more;
               return;
             }
-          if (category == 0x0d)
+          if (category == GOODIX_PROTO_CATEGORY_MCU)
             {
               /* Parser publication is independent of command, ACK, and GTLS
                * state. Preserve the native bounded byte stream and event. */
-              if (!self->mcu_rx)
-                self->mcu_rx = g_byte_array_new ();
-              g_byte_array_append (self->mcu_rx, payload,
-                                   MIN (payload_len, GOODIX_MCU_RX_SIZE - self->mcu_rx->len));
-              self->mcu_ready = TRUE;
+              goodix_mcu_publish (self, payload, payload_len);
               goodix_proto_rx_reset (&self->rx);
               if (goodix_transport_take_mcu (operation))
                 return;
               goto receive_more;
             }
           GoodixResponseSlot slot =
-            category == 3 && command == 3 ? GOODIX_RESPONSE_MANUAL :
-            category == 9 ? GOODIX_RESPONSE_CONFIG :
-            category == 0x0a && (command == 0 || command == 1 || command == 4) ? GOODIX_RESPONSE_SYSTEM :
-            category == 8 ? GOODIX_RESPONSE_REGISTER :
-            category == 0x0a && command == 3 ? GOODIX_RESPONSE_OTP :
-            category == 0x0f ? GOODIX_RESPONSE_FIRMWARE :
-            category == 0x0e ? GOODIX_RESPONSE_PRODUCTION : GOODIX_RESPONSE_NONE;
-          gboolean shared = slot == GOODIX_RESPONSE_SYSTEM || slot == GOODIX_RESPONSE_REGISTER ||
-                            slot == GOODIX_RESPONSE_OTP || slot == GOODIX_RESPONSE_PRODUCTION ||
-                            category == 0x0f;
+            category == GOODIX_PROTO_CATEGORY_FDT && command == GOODIX_PROTO_CMD_FDT_MANUAL ?
+              GOODIX_RESPONSE_MANUAL :
+            category == GOODIX_PROTO_CATEGORY_CONFIG ? GOODIX_RESPONSE_CONFIG :
+            category == GOODIX_PROTO_CATEGORY_SYSTEM && (command == 0 || command == 1 || command == 4) ?
+              GOODIX_RESPONSE_SYSTEM :
+            category == GOODIX_PROTO_CATEGORY_REGISTER ? GOODIX_RESPONSE_REGISTER :
+            category == GOODIX_PROTO_CATEGORY_SYSTEM && command == 3 ? GOODIX_RESPONSE_OTP :
+            category == GOODIX_PROTO_CATEGORY_FIRMWARE ? GOODIX_RESPONSE_FIRMWARE :
+            category == GOODIX_PROTO_CATEGORY_PRODUCTION ? GOODIX_RESPONSE_PRODUCTION :
+            GOODIX_RESPONSE_NONE;
+          gboolean shared = goodix_response_slot_is_shared (slot) ||
+                            category == GOODIX_PROTO_CATEGORY_FIRMWARE;
 
-          if ((category == 0x0f || (category == 9 && command == 2)) && !payload_len)
+          if (goodix_reply_is_foreign (self, slot, category, command))
+            {
+              fp_dbg ("Ignoring a cat=0x%02x cmd=0x%02x reply while cat=0x%02x cmd=0x%02x waits",
+                      category, command, self->transport->cmd.category,
+                      self->transport->cmd.command);
+              goodix_proto_rx_reset (&self->rx);
+              goto receive_more;
+            }
+          if ((category == GOODIX_PROTO_CATEGORY_FIRMWARE ||
+               (category == GOODIX_PROTO_CATEGORY_CONFIG && command == 2)) && !payload_len)
             {
               error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                 "Status reply is too short");
               goto protocol_error;
             }
-          if (category == 9 && command == 2)
+          if (category == GOODIX_PROTO_CATEGORY_CONFIG && command == 2)
             self->config_response_status = payload[0];
+          if (category == GOODIX_PROTO_CATEGORY_CONFIG && command == GOODIX_PROTO_CMD_CONFIG_DOWNLOAD)
+            {
+              self->config_download_status = payload_len ? payload[0] : 0;
+              self->config_download_failed =
+                !goodix_family (self)->protocol.download_succeeded (payload, payload_len);
+            }
 
           /* DataFromDevice publishes these shared stores without a matching
            * command. Only A/0, A/1 and A/4 signal the version getter's event.
            * Retain every unwritten suffix, including beyond the firmware view. */
           if (shared)
             {
-              gsize offset = category == 0x0e ? 4 : 0;
-              gsize count = category == 0x0f ? MIN (payload_len, 1) :
+              gsize offset = category == GOODIX_PROTO_CATEGORY_PRODUCTION ? 4 : 0;
+              gsize count = category == GOODIX_PROTO_CATEGORY_FIRMWARE ? MIN (payload_len, 1) :
                             MIN (payload_len, sizeof (self->shared_response_storage) - offset);
 
-              if (category == 0x0e)
+              if (category == GOODIX_PROTO_CATEGORY_PRODUCTION)
                 {
                   guint32 length = GUINT32_TO_LE ((guint32) payload_len);
                   memcpy (self->shared_response_storage, &length, sizeof (length));
@@ -857,18 +938,16 @@ goodix_rx_cell (GoodixTransport *operation,
               goodix_transport_complete (operation, NULL);
               return;
             }
-          else if (category == 3 && (command == 1 || command == 2))
+          else if (category == GOODIX_PROTO_CATEGORY_FDT &&
+                   (command == GOODIX_PROTO_CMD_FDT_DOWN || command == GOODIX_PROTO_CMD_FDT_UP))
             {
               GoodixFdtEventType type;
               GoodixProfile9FdtEvent event;
               g_autoptr(GError) event_error = NULL;
-              GoodixProfile9FdtWaitMode mode = command == 1 ?
+              GoodixProfile9FdtWaitMode mode = command == GOODIX_PROTO_CMD_FDT_DOWN ?
                 GOODIX_PROFILE9_FDT_WAIT_DOWN : GOODIX_PROFILE9_FDT_WAIT_UP;
 
-              if (payload_len != GOODIX_FDT_EVENT_PAYLOAD_LEN)
-                event_error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                        "Unexpected FDT event length");
-              if (event_error || !goodix_cmd_parse_fdt_event (dev, mode, &type, &event, &event_error))
+              if (!goodix_cmd_parse_fdt_event (dev, mode, &type, &event, &event_error))
                 {
                   error = g_steal_pointer (&event_error);
                   goto protocol_error;
@@ -963,6 +1042,83 @@ receive_more:
   goodix_rx_continue (operation);
 }
 
+/* Requests a secure-channel restart when the family's channel needs one for
+ * an undecodable frame. An error during a restart still counts. */
+static void
+goodix_count_image_error (FpiDeviceGoodix53x5 *self)
+{
+  if (!goodix_family (self)->channel.image_error (self))
+    return;
+  if (!self->gtls_restart_active)
+    self->gtls_restart_pending = TRUE;
+}
+
+/* Checks whether @operation is a command waiting for its image response. */
+static gboolean
+goodix_transport_awaits_image (GoodixTransport *operation)
+{
+  return !goodix_transport_is_idle (operation) && !operation->completion_pending &&
+         operation->phase == GOODIX_TRANSPORT_RESPONSE &&
+         operation->response_slot == GOODIX_RESPONSE_IMAGE;
+}
+
+/* Publishes an encrypted frame as the image response and returns TRUE if
+ * that completed @operation. */
+gboolean
+goodix_rx_image (GoodixTransport *operation, const guint8 *payload, gsize len)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (operation->dev);
+  g_autofree guint8 *decoded = NULL;
+  gsize decoded_len = 0;
+  GoodixFrameStatus status = goodix_family (self)->channel.decrypt_frame (
+    self, payload, len, &decoded, &decoded_len);
+  guint16 *frame = status == GOODIX_FRAME_DECRYPTED ?
+                   goodix_device_decode_image (decoded, decoded_len) : NULL;
+
+  /* The native raw callback authenticates, converts and signals
+   * before the sender consumes ACK. Failed authentication leaves
+   * the counter/cache intact; an authenticated bad frame retains
+   * the advanced counter but does not signal readiness. */
+  if (frame)
+    {
+      g_free (self->image_response);
+      self->image_response = frame;
+      self->image_response_failed = FALSE;
+      self->command_response_ready |= goodix_response_bit (GOODIX_RESPONSE_IMAGE);
+    }
+  else if (status != GOODIX_FRAME_REJECTED)
+    {
+      /* Incomplete-session rejection consumes the counter but preserves raw
+       * status; an established frame failing to decrypt or decode sets it. */
+      self->image_response_failed = TRUE;
+    }
+  if (!frame && status != GOODIX_FRAME_INVALID)
+    goodix_count_image_error (self);
+
+  if (operation->phase == GOODIX_TRANSPORT_EVENT && self->gtls_restart_pending)
+    {
+      goodix_transport_complete (operation, NULL);
+      return TRUE;
+    }
+  if (goodix_transport_awaits_image (operation) &&
+      (self->command_response_ready & goodix_response_bit (GOODIX_RESPONSE_IMAGE)))
+    {
+      goodix_transport_complete (operation, NULL);
+      return TRUE;
+    }
+  return FALSE;
+}
+
+/* Drops the partial frame the family's link keeps for the next transfer. */
+static void
+goodix_link_discard (FpiDeviceGoodix53x5 *self)
+{
+  const GoodixLink *link = &goodix_family (self)->link;
+
+  if (link->discard)
+    link->discard (self);
+}
+
 static void
 goodix_reader_joined (GoodixReader *reader)
 {
@@ -973,6 +1129,8 @@ goodix_reader_joined (GoodixReader *reader)
 
   g_assert (!reader->pending);
   self->reader = NULL;
+  /* The next reader starts a new stream: a partial pack cannot continue. */
+  goodix_link_discard (self);
   g_clear_object (&reader->cancel);
   g_clear_error (&reader->error);
   g_free (reader);
@@ -997,7 +1155,8 @@ goodix_reader_start (FpDevice *dev)
     return;
   reader->pending = TRUE;
   transfer = fpi_usb_transfer_new (dev);
-  fpi_usb_transfer_fill_bulk (transfer, GOODIX_EP_IN, GOODIX_USB_READ_SIZE);
+  fpi_usb_transfer_fill_bulk (transfer, goodix_family (self)->link.ep_in,
+                              GOODIX_USB_READ_SIZE);
   fpi_usb_transfer_submit (transfer, 0, reader->cancel, goodix_rx_cb, reader);
 }
 
@@ -1030,19 +1189,16 @@ goodix_rx_cb (FpiUsbTransfer *transfer,
        * Never disguise a physical failure as sender timeout/retry. */
       reader->error = error;
       self->needs_reinit = TRUE;
+      /* The lost transfer leaves no way to find the next pack header. */
+      goodix_link_discard (self);
       if (operation != &idle)
         goodix_transport_complete (operation, g_error_copy (error));
       return;
     }
 
-  /* Native posts one 0x8000-byte read and traverses that capacity in 64-byte
-   * cells, gated by nonzero received length and first byte. Only transferred
-   * bytes are available here; never parse the unfilled allocation suffix. */
   operation->processing_cells = TRUE;
-  if (transfer->actual_length && transfer->buffer[0])
-    for (gsize offset = 0; offset < transfer->actual_length; offset += GOODIX_USB_CHUNK_SIZE)
-      goodix_rx_cell (operation, transfer->buffer + offset,
-                      MIN (GOODIX_USB_CHUNK_SIZE, transfer->actual_length - offset));
+  goodix_family (self)->link.receive (self, operation, transfer->buffer,
+                                     transfer->actual_length);
   operation->processing_cells = FALSE;
   self->rx_idle_partial = self->rx.len && !goodix_proto_rx_complete (&self->rx);
 
@@ -1087,6 +1243,8 @@ goodix_transport_reset_mcu (FpDevice *dev)
     g_byte_array_set_size (self->mcu_rx, 0);
   g_clear_pointer (&self->mcu_reply, g_bytes_unref);
   self->reply_valid = FALSE;
+  /* A pack cut short by the previous channel never completes. */
+  goodix_link_discard (self);
   /* The native attempt resets ring indices, not the auto-reset event. */
 }
 
@@ -1104,9 +1262,14 @@ goodix_transport_invalidate (FpDevice *dev)
   self->image_response_failed = FALSE;
   self->image_error_history = FALSE;
   self->gtls_restart_pending = FALSE;
+  self->reconnect_requested = FALSE;
+  self->reconnect_pending = 0;
+  /* psk_refresh_pending survives: the sensor stays unkeyed across a suspend
+   * until the refresh runs, as the vendor's Stop keeps its flag for Start. */
   self->command_response_ready &= ~goodix_response_bit (GOODIX_RESPONSE_IMAGE);
   if (self->rx.buf)
     goodix_proto_rx_reset (&self->rx);
+  goodix_link_discard (self);
   self->reply_valid = FALSE;
   self->rx_idle_partial = FALSE;
   self->pending_fdt.event.pending = FALSE;
@@ -1176,6 +1339,21 @@ goodix_recv_apply_fdt_event (FpDevice                     *dev,
     }
 }
 
+/* Completes @done with a busy error, returning TRUE, if another transport
+ * operation or a reader join owns the device. */
+static gboolean
+goodix_transport_reject_busy (FpDevice *dev, GoodixTransportDone done, gpointer data)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  GoodixTransportResult result = {0};
+
+  if (!self->transport && !(self->reader && self->reader->joined))
+    return FALSE;
+  done (dev, &result, fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
+         "A device transport operation is already active"), data);
+  return TRUE;
+}
+
 void
 goodix_transport_command (FpDevice                     *dev,
                            const GoodixTransportRequest *request,
@@ -1183,13 +1361,16 @@ goodix_transport_command (FpDevice                     *dev,
                            gpointer                     data)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  GoodixTransport *operation = self->transport;
+  GoodixTransport *operation;
 
-  if (operation || (self->reader && self->reader->joined))
+  if (goodix_transport_reject_busy (dev, done, data))
+    return;
+
+  if (goodix_cmd_refused (self, &request->cmd))
     {
       GoodixTransportResult result = {0};
-      done (dev, &result, fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
-             "A device transport operation is already active"), data);
+      done (dev, &result, fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
+             "Refusing to write to this sensor: it is never provisioned"), data);
       return;
     }
 
@@ -1205,6 +1386,29 @@ goodix_transport_command (FpDevice                     *dev,
   goodix_transport_send (operation);
 }
 
+void
+goodix_transport_send_record (FpDevice           *dev,
+                              GBytes             *record,
+                              GoodixTransportDone done,
+                              gpointer            data)
+{
+  GoodixTransport *operation;
+
+  if (goodix_transport_reject_busy (dev, done, data))
+    return;
+  if (!goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->link.frame_record)
+    {
+      GoodixTransportResult result = {0};
+      done (dev, &result, fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
+             "This sensor has no TLS channel"), data);
+      return;
+    }
+
+  operation = goodix_transport_new (dev, GOODIX_TRANSPORT_SEND, done, data);
+  operation->record = g_bytes_ref (record);
+  goodix_transport_send (operation);
+}
+
 static void
 goodix_transport_wait (FpDevice                  *dev,
                         GoodixTransportPhase       phase,
@@ -1217,13 +1421,8 @@ goodix_transport_wait (FpDevice                  *dev,
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
   GoodixTransport *operation;
 
-  if (self->transport || (self->reader && self->reader->joined))
-    {
-      GoodixTransportResult result = {0};
-      done (dev, &result, fpi_device_error_new_msg (FP_DEVICE_ERROR_BUSY,
-             "A device transport operation is already active"), data);
-      return;
-    }
+  if (goodix_transport_reject_busy (dev, done, data))
+    return;
   operation = goodix_transport_new (dev, phase, done, data);
   if (self->reader && self->reader->error)
     {

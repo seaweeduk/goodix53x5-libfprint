@@ -26,15 +26,18 @@
 #include "goodix53x5.h"
 #include "device/proto.h"
 #include "device/crypto.h"
+#include "family.h"
 #include "device/debug.h"
 #include "device/base.h"
 #include "device/health.h"
 #include "milan/match/match.h"
 
-/* USB interface claimed at open and released at close — interface 1,
- * CDC Data class. Endpoint and chunking details live in the transport
- * module. */
-#define GOODIX_USB_INTERFACE 1
+/* id_table driver_data selecting goodix_family_gm168sec; 0 is htsec. */
+#define GOODIX_FAMILY_GM168SEC 1
+
+/* USB interface claimed at open and released at close. */
+#define GOODIX_USB_INTERFACE(dev) \
+  (goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->link.usb_interface)
 
 /* Sensor dimensions */
 #define GOODIX_SENSOR_WIDTH 108
@@ -44,9 +47,6 @@
 
 /* Enroll stages */
 #define GOODIX_ENROLL_SAMPLES 12
-
-/* PSK white box for writing the default all-zero PSK. */
-#define GOODIX_PSK_WHITE_BOX_LEN 96
 
 /* --- Calibration parameters (from OTP) --- */
 typedef struct
@@ -73,18 +73,6 @@ typedef struct
   guint16 low;
 } GoodixDynamicDacState;
 
-typedef enum
-{
-  GOODIX_FDT_EVENT_DOWN = 0,
-  GOODIX_FDT_EVENT_UP,
-  GOODIX_FDT_EVENT_REVERSE,
-  GOODIX_FDT_EVENT_NONE,
-  GOODIX_FDT_EVENT_CONFIG,
-  GOODIX_FDT_EVENT_ESD,
-  GOODIX_FDT_EVENT_WAKE,
-  GOODIX_FDT_EVENT_DEACTIVATE,
-} GoodixFdtEventType;
-
 typedef struct
 {
   /* Receive identity and reverse predecessor travel with the coalesced slot;
@@ -95,6 +83,7 @@ typedef struct
 
 typedef struct _GoodixTransport GoodixTransport;
 typedef struct _GoodixReader GoodixReader;
+typedef struct _GoodixTls GoodixTls;
 
 /* HAL +0x1e0: requested mode, independent of coordinator and FDT wait state. */
 typedef enum
@@ -141,6 +130,13 @@ struct _FpiDeviceGoodix53x5
   void (*service_joined) (FpDevice *dev, gpointer data);
   gpointer service_joined_data;
 
+  /* Owned by the GM168SEC link: its receive stream, reassembled into whole
+   * packs across transfers. */
+  GByteArray   *pack_rx;
+  /* Owned by the GM168SEC channel: the TLS session images are decrypted
+   * through, replaced at every handshake. HTSEC sensors use gtls instead. */
+  GoodixTls    *tls;
+
   /* GTLS session (persists across captures) */
   GoodixGtlsCtx gtls;
   gboolean      image_error_history;
@@ -182,13 +178,32 @@ struct _FpiDeviceGoodix53x5
   /* Native response events reset per send; cached bytes survive reset.
    * The manual cache retains metadata for Linux touch-flag consumers. */
   guint8 command_response_ready;
-  /* Category-9/command-2 status is separate from shared response-cache bytes. */
+  /* Configuration status of the last 9/2 reply. */
   guint8 config_response_status;
+  /* The last download (9/0) reply's status byte, and whether the family's
+   * protocol reads it as a failure. */
+  guint8   config_download_status;
+  gboolean config_download_failed;
   /* Receiver-owned decoded image, independent of the command ACK and of the
    * captured frame handed to the runtime worker. Readiness resets per send. */
   guint16 *image_response;
   gboolean image_response_failed;
+  /* 533c only, from its CONFIG_LOST and RECONNECT events; 53x5 never sets
+   * the fields below up to psk_refresh_pending. */
+  /* Wrapped ACK loss state; a successful download clears it only after the
+   * independent loss notification has been serviced. */
+  gboolean config_lost;
+  gboolean config_restore_pending;
+  gboolean config_restore_active;
+  /* The selected reconnect arms down before any queued reconnect starts. */
+  gboolean reconnect_requested;
+  guint reconnect_pending;
+  /* Set by the 533c channel's config_lost hook; open/resume and reconnect
+   * check the PSK hash while it is set, failed-read recovery keeps it.
+   * Cleared only after a passed check, including across suspend. */
+  gboolean psk_refresh_pending;
   guint8 manual_response[4 + GOODIX_FDT_BASE_LEN];
+  guint16 manual_touch;
   /* Parser mutations precede coalesced notification. The latest reverse event
    * retains the down base installed by its predecessor, not the arm payload. */
   guint16 fdt_prior_down[GOODIX_PROFILE9_FDT_AREA_COUNT];
@@ -295,3 +310,11 @@ struct _FpiDeviceGoodix53x5
   gint                              pending_enroll_stage;
   GError                           *pending_enroll_error;
 };
+
+/* Returns the sensor's family; fixed by its USB id, so valid before open. */
+static inline const GoodixFamily *
+goodix_family (FpiDeviceGoodix53x5 *self)
+{
+  return fpi_device_get_driver_data (FP_DEVICE (self)) == GOODIX_FAMILY_GM168SEC ?
+         &goodix_family_gm168sec : &goodix_family_htsec;
+}

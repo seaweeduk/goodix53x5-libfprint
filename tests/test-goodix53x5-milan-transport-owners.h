@@ -16,6 +16,10 @@ static void capture_setup (FpDevice *, GoodixMilanGeneration *);
 #define goodix_milan_generation_prepare_setup capture_setup
 #define g_get_monotonic_time test_monotonic_time
 #include "drivers/goodix53x5/device/transport.c"
+#include "drivers/goodix53x5/family/htsec/htsec.c"
+#include "drivers/goodix53x5/family/htsec/gtls.c"
+#include "drivers/goodix53x5/family/gm168sec/gm168sec.c"
+#include "drivers/goodix53x5/family/gm168sec/channel.c"
 #include "drivers/goodix53x5/device/commands.c"
 #include "drivers/goodix53x5/device/scan.c"
 static gboolean idle_test_release (void);
@@ -45,6 +49,8 @@ static guint startup_delays;
 #define fpi_device_get_usb_device(device) ((GUsbDevice *) NULL)
 #define fpi_ssm_jump_to_state_delayed startup_delay
 #include "drivers/goodix53x5/device/session.c"
+#include "drivers/goodix53x5/family/htsec/open.c"
+#include "drivers/goodix53x5/family/gm168sec/open.c"
 #undef fpi_ssm_jump_to_state_delayed
 #undef fpi_device_get_usb_device
 #undef fpi_device_action_is_cancelled

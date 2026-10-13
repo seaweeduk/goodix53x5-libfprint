@@ -3,14 +3,19 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: sudo %s [--replace] PSK_FILE\n' "$0"
+  printf 'Usage: sudo %s [--533c] [--replace] PSK_FILE\n' "$0"
 }
 
 replace=0
-if [[ "${1:-}" == --replace ]]; then
-  replace=1
+check_533c=0
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --replace) replace=1 ;;
+    --533c) check_533c=1 ;;
+    *) usage >&2; exit 2 ;;
+  esac
   shift
-fi
+done
 [[ "$#" == 1 ]] || { usage >&2; exit 2; }
 [[ "${EUID:-$(id -u)}" == 0 ]] || {
   printf 'error: this command must run as root\n' >&2
@@ -48,6 +53,11 @@ fi
   printf 'error: PSK file must contain 32 raw bytes or exactly 64 hexadecimal characters\n' >&2
   exit 1
 }
+
+if (( check_533c )); then
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  printf '%s\n' "$psk" | "$script_dir/extract-windows-psk.sh" --verify-533c
+fi
 
 install -d -m 0700 "$state_dir"
 if [[ -e "$state_file" ]]; then

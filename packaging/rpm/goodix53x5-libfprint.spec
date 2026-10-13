@@ -40,7 +40,7 @@ BuildRequires:  util-linux-core
 
 %description
 The goodix53x5 libfprint driver for Goodix HTK32 USB fingerprint sensors
-27c6:5335, 27c6:5385 and 27c6:5395, with the paired fprintd daemon.
+27c6:5335, 27c6:533c, 27c6:5385 and 27c6:5395, with the paired fprintd daemon.
 
 %package -n fprintd-goodix53x5
 Summary:        Goodix 53x5 Milan fingerprint driver with fprintd and PAM module
@@ -62,9 +62,9 @@ Obsoletes:      libfprint-goodix53x5 < 1.0.1
 
 %description -n fprintd-goodix53x5
 The native Milan fingerprint driver for the Goodix HTK32 USB sensors
-27c6:5335, 27c6:5385 and 27c6:5395 (Dell XPS 13 9305 and related laptops),
-with adaptive template learning, packaged with a matching fprintd 1.94.5 and
-its PAM module.
+27c6:5335, 27c6:533c, 27c6:5385 and 27c6:5395 (Dell XPS 13 9305,
+XPS 13 9310 and related laptops), with adaptive template learning, packaged
+with a matching fprintd 1.94.5 and its PAM module.
 
 The driver's libfprint is installed in a private directory used only by this
 fprintd; the distribution's libfprint is not replaced. fprintd saves templates
@@ -137,13 +137,13 @@ sensor=no
 for device in /sys/bus/usb/devices/*; do
   [ "$(cat "$device/idVendor" 2>/dev/null)" = 27c6 ] || continue
   case "$(cat "$device/idProduct" 2>/dev/null)" in
-    5335|5385|5395) sensor=yes ;;
+    5335|533c|5385|5395) sensor=yes ;;
   esac
 done
 udevadm control --reload-rules >/dev/null 2>&1 || :
 udevadm trigger --subsystem-match=usb --attr-match=idVendor=27c6 --action=add >/dev/null 2>&1 || :
 if [ "$sensor" = no ]; then
-  printf '%s\n' "fprintd-goodix53x5: no Goodix 27c6:5335, 27c6:5385 or 27c6:5395 sensor" \
+  printf '%s\n' "fprintd-goodix53x5: no Goodix 27c6:5335, 27c6:533c, 27c6:5385 or 27c6:5395 sensor" \
     "found; other fingerprint readers are not supported." >&2
 fi
 if [ -d /run/systemd/system ]; then

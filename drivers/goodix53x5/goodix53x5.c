@@ -141,6 +141,7 @@ static const FpIdEntry goodix53x5_id_table[] = {
   { .vid = 0x27c6, .pid = 0x5335, },
   { .vid = 0x27c6, .pid = 0x5385, },
   { .vid = 0x27c6, .pid = 0x5395, },
+  { .vid = 0x27c6, .pid = 0x533c, .driver_data = GOODIX_FAMILY_GM168SEC },
   { .vid = 0, .pid = 0, .driver_data = 0 },
 };
 
@@ -150,6 +151,10 @@ goodix_finalize (GObject *object)
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (object);
 
   goodix_milan_generation_invalidate (&self->milan_retained_generation);
+  if (goodix_family (self)->link.discard)
+    goodix_family (self)->link.discard (self);
+  if (goodix_family (self)->channel.discard)
+    goodix_family (self)->channel.discard (self);
   g_clear_pointer (&self->hardware_reference, g_free);
   g_clear_object (&self->session_cancel);
   G_OBJECT_CLASS (fpi_device_goodix53x5_parent_class)->finalize (object);

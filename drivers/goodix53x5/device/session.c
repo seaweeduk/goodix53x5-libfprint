@@ -33,7 +33,6 @@
 
 #include <string.h>
 #include <openssl/crypto.h>
-#include <openssl/rand.h>
 
 #define GOODIX_PSK_STATE_FILE "/var/lib/fprint/goodix53x5.psk"
 
@@ -244,14 +243,7 @@ goodix_session_quiesce (FpDevice *dev,
 typedef enum {
   GOODIX_OPEN_USB_RESET = 0,
   GOODIX_OPEN_CLAIM_INTERFACE,
-  GOODIX_OPEN_PING,
-  GOODIX_OPEN_RESET,
-  GOODIX_OPEN_READ_OTP,
-  GOODIX_OPEN_PARSE_OTP,
-  GOODIX_OPEN_READ_PSK_HASH,
-  GOODIX_OPEN_WRITE_PSK,
-  GOODIX_OPEN_VERIFY_PSK_WRITE,
-  GOODIX_OPEN_GTLS_CLIENT_HELLO,
+  GOODIX_OPEN_BRING_UP,
   GOODIX_OPEN_UPLOAD_CONFIG,
   GOODIX_OPEN_VALIDATE_CONFIG,
   GOODIX_OPEN_CAPTURE_REF,
@@ -275,22 +267,8 @@ goodix_open_state_name (GoodixOpenState state)
       return "usb_reset";
     case GOODIX_OPEN_CLAIM_INTERFACE:
       return "claim_interface";
-    case GOODIX_OPEN_PING:
-      return "ping";
-    case GOODIX_OPEN_RESET:
-      return "reset";
-    case GOODIX_OPEN_READ_OTP:
-      return "read_otp";
-    case GOODIX_OPEN_PARSE_OTP:
-      return "parse_otp";
-    case GOODIX_OPEN_READ_PSK_HASH:
-      return "read_psk_hash";
-    case GOODIX_OPEN_WRITE_PSK:
-      return "write_psk";
-    case GOODIX_OPEN_VERIFY_PSK_WRITE:
-      return "verify_psk_write";
-    case GOODIX_OPEN_GTLS_CLIENT_HELLO:
-      return "gtls_client_hello";
+    case GOODIX_OPEN_BRING_UP:
+      return "bring_up";
     case GOODIX_OPEN_UPLOAD_CONFIG:
       return "upload_config";
     case GOODIX_OPEN_VALIDATE_CONFIG:
@@ -316,23 +294,7 @@ goodix_open_state_name (GoodixOpenState state)
 }
 #endif
 
-/* PSK white box for writing the default all-zero PSK. */
-static const guint8 goodix_psk_white_box[GOODIX_PSK_WHITE_BOX_LEN] = {
-  0xec, 0x35, 0xae, 0x3a, 0xbb, 0x45, 0xed, 0x3f,
-  0x12, 0xc4, 0x75, 0x1f, 0x1e, 0x5c, 0x2c, 0xc0,
-  0x5b, 0x3c, 0x54, 0x52, 0xe9, 0x10, 0x4d, 0x9f,
-  0x2a, 0x31, 0x18, 0x64, 0x4f, 0x37, 0xa0, 0x4b,
-  0x6f, 0xd6, 0x6b, 0x1d, 0x97, 0xcf, 0x80, 0xf1,
-  0x34, 0x5f, 0x76, 0xc8, 0x4f, 0x03, 0xff, 0x30,
-  0xbb, 0x51, 0xbf, 0x30, 0x8f, 0x2a, 0x98, 0x75,
-  0xc4, 0x1e, 0x65, 0x92, 0xcd, 0x2a, 0x2f, 0x9e,
-  0x60, 0x80, 0x9b, 0x17, 0xb5, 0x31, 0x60, 0x37,
-  0xb6, 0x9b, 0xb2, 0xfa, 0x5d, 0x4c, 0x8a, 0xc3,
-  0x1e, 0xdb, 0x33, 0x94, 0x04, 0x6e, 0xc0, 0x6b,
-  0xbd, 0xac, 0xc5, 0x7d, 0xa6, 0xa7, 0x56, 0xc5,
-};
-
-static gboolean
+gboolean
 goodix_load_psk (FpiDeviceGoodix53x5 *self,
                  GError             **error)
 {
@@ -404,6 +366,14 @@ typedef enum {
   GOODIX_PROBE_NUM_STATES,
 } GoodixProbeState;
 
+typedef struct
+{
+  guint               failures;
+  /* Firmware reads before @check decides without a version. */
+  guint               reads;
+  GoodixFirmwareCheck check;
+} GoodixProbeData;
+
 static gboolean
 goodix_probe_cancelled (FpiSsm *ssm, FpDevice *dev)
 {
@@ -432,7 +402,7 @@ goodix_probe_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
                      gboolean native_zero, GError *error)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  guint *failures = fpi_ssm_get_data (ssm);
+  GoodixProbeData *data = fpi_ssm_get_data (ssm);
 
   if (goodix_probe_cancelled (ssm, dev))
     {
@@ -456,12 +426,16 @@ goodix_probe_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
       g_free (self->fw_version);
       self->fw_version = g_strndup ((const gchar *) self->shared_response,
                                     sizeof (self->shared_response));
-      fpi_ssm_mark_completed (ssm);
+      error = data->check (self->fw_version);
+      if (error)
+        fpi_ssm_mark_failed (ssm, error);
+      else
+        fpi_ssm_mark_completed (ssm);
     }
   else
     {
       g_clear_error (&error);
-      (*failures)++;
+      data->failures++;
       /* Native sleeps after every failed query, including iteration five. */
       fpi_ssm_jump_to_state_delayed (ssm, GOODIX_PROBE_AFTER_DELAY, 100);
     }
@@ -470,7 +444,7 @@ goodix_probe_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
 static void
 goodix_probe_ssm_handler (FpiSsm *ssm, FpDevice *dev)
 {
-  guint *failures = fpi_ssm_get_data (ssm);
+  GoodixProbeData *data = fpi_ssm_get_data (ssm);
 
   if (goodix_probe_cancelled (ssm, dev))
     return;
@@ -482,15 +456,36 @@ goodix_probe_ssm_handler (FpiSsm *ssm, FpDevice *dev)
                         goodix_probe_result);
       break;
     case GOODIX_PROBE_AFTER_DELAY:
-      if (*failures == 5)
+      if (data->failures == data->reads)
         {
-          fp_dbg ("Startup firmware query exhausted; continuing device initialization");
-          fpi_ssm_mark_completed (ssm);
+          GError *error = data->check (NULL);
+
+          if (error)
+            {
+              fpi_ssm_mark_failed (ssm, error);
+            }
+          else
+            {
+              fp_dbg ("Startup firmware query exhausted; continuing device initialization");
+              fpi_ssm_mark_completed (ssm);
+            }
         }
       else
         fpi_ssm_jump_to_state (ssm, GOODIX_PROBE_PING);
       break;
     }
+}
+
+void
+goodix_open_probe (FpiSsm *ssm, FpDevice *dev, guint reads, GoodixFirmwareCheck check)
+{
+  FpiSsm *probe = fpi_ssm_new (dev, goodix_probe_ssm_handler, GOODIX_PROBE_NUM_STATES);
+  GoodixProbeData *data = g_new0 (GoodixProbeData, 1);
+
+  data->reads = reads;
+  data->check = check;
+  fpi_ssm_set_data (probe, data, g_free);
+  fpi_ssm_start_subsm (ssm, probe);
 }
 
 typedef enum {
@@ -501,12 +496,18 @@ typedef enum {
   GOODIX_CHIP_NUM_STATES,
 } GoodixChipState;
 
+typedef struct
+{
+  guint    failures;
+  gboolean initial_reset_requests_irq;
+} GoodixChipData;
+
 static void
 goodix_chip_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
                     gboolean native_zero, GError *error)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  guint *failures = fpi_ssm_get_data (ssm);
+  GoodixChipData *data = fpi_ssm_get_data (ssm);
 
   if (goodix_probe_cancelled (ssm, dev))
     {
@@ -565,7 +566,7 @@ goodix_chip_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
             }
         }
       g_clear_error (&error);
-      (*failures)++;
+      data->failures++;
       fpi_ssm_next_state (ssm);
       return;
     }
@@ -581,7 +582,7 @@ goodix_chip_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
 static void
 goodix_chip_ssm_handler (FpiSsm *ssm, FpDevice *dev)
 {
-  guint *failures = fpi_ssm_get_data (ssm);
+  GoodixChipData *data = fpi_ssm_get_data (ssm);
 
   if (goodix_probe_cancelled (ssm, dev))
     return;
@@ -590,7 +591,8 @@ goodix_chip_ssm_handler (FpiSsm *ssm, FpDevice *dev)
     case GOODIX_CHIP_INITIAL_RESET:
     case GOODIX_CHIP_RECOVERY_RESET:
       goodix_cmd_reset_sensor (ssm, dev,
-                                fpi_ssm_get_cur_state (ssm) == GOODIX_CHIP_RECOVERY_RESET,
+                                fpi_ssm_get_cur_state (ssm) == GOODIX_CHIP_RECOVERY_RESET ||
+                                data->initial_reset_requests_irq,
                                 goodix_chip_result);
       break;
 
@@ -599,7 +601,7 @@ goodix_chip_ssm_handler (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case GOODIX_CHIP_AFTER_DELAY:
-      if (*failures == 6)
+      if (data->failures == 6)
         fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
                               FP_DEVICE_ERROR_PROTO,
                               "Chip identification failed after six read cycles"));
@@ -609,17 +611,29 @@ goodix_chip_ssm_handler (FpiSsm *ssm, FpDevice *dev)
     }
 }
 
-typedef enum {
-  GOODIX_GTLS_HELLO,
-  GOODIX_GTLS_IDENTITY,
-  GOODIX_GTLS_VERIFY,
-  GOODIX_GTLS_COMPLETION,
-  GOODIX_GTLS_READY,
-  GOODIX_GTLS_NUM_STATES,
-} GoodixGtlsState;
+void
+goodix_open_identify_chip (FpiSsm *ssm, FpDevice *dev, gboolean initial_reset_requests_irq)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+
+  /* Cold HAL construction deactivates the anchor before any reference
+   * outcome. Ordinary actions and in-place repairs do not reset it. */
+  self->profile9_fdt.drift_anchor_empty = TRUE;
+  goodix_health_reset (&self->health);
+  self->capture_callback_pending = FALSE;
+  FpiSsm *chip = fpi_ssm_new (dev, goodix_chip_ssm_handler, GOODIX_CHIP_NUM_STATES);
+  GoodixChipData *data = g_new0 (GoodixChipData, 1);
+
+  data->initial_reset_requests_irq = initial_reset_requests_irq;
+  fpi_ssm_set_data (chip, data, g_free);
+  fpi_ssm_start_subsm (ssm, chip);
+}
 
 typedef struct {
   guint attempt;
+  GoodixChannelReason reason;
+  /* Attempts before giving up. */
+  guint limit;
   GError *error;
   GoodixGtlsRestartDone restart_done;
   gpointer              restart_data;
@@ -632,93 +646,26 @@ goodix_gtls_retry_free (GoodixGtlsRetry *retry)
   g_free (retry);
 }
 
-static void
-goodix_gtls_ssm_handler (FpiSsm *ssm, FpDevice *dev)
+static void goodix_gtls_retry_handler (FpiSsm *ssm, FpDevice *dev);
+
+/* Returns a new SSM that runs up to @limit handshake attempts. */
+static FpiSsm *
+goodix_gtls_retry_new (FpDevice *dev, guint limit)
 {
-  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  const guint8 *mcu_data;
-  gsize mcu_len;
-  g_autoptr(GError) error = NULL;
+  GoodixGtlsRetry *retry = g_new0 (GoodixGtlsRetry, 1);
+  FpiSsm *ssm = fpi_ssm_new (dev, goodix_gtls_retry_handler, 2);
 
-  if (g_cancellable_set_error_if_cancelled (goodix_session_io_cancellable (dev), &error))
-    {
-      fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-      return;
-    }
+  retry->limit = limit;
+  fpi_ssm_set_data (ssm, retry, (GDestroyNotify) goodix_gtls_retry_free);
+  return ssm;
+}
 
-  switch ((GoodixGtlsState) fpi_ssm_get_cur_state (ssm))
-    {
-    case GOODIX_GTLS_HELLO:
-      goodix_transport_reset_mcu (dev);
-      goodix_crypto_gtls_init (&self->gtls, self->psk);
-      if (RAND_bytes (self->gtls.client_random, 32) != 1)
-        {
-          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
-                                 FP_DEVICE_ERROR_PROTO, "GTLS client random generation failed"));
-          return;
-        }
-      goodix_cmd_mcu_send (ssm, dev, 0xFF01, self->gtls.client_random, 32);
-      break;
-
-    case GOODIX_GTLS_IDENTITY:
-      self->gtls.state = 2;
-      goodix_recv_mcu (ssm, dev, 2000, 72);
-      break;
-
-    case GOODIX_GTLS_VERIFY:
-      if (!goodix_cmd_parse_mcu_reply (dev, 0xFF02, &mcu_data, &mcu_len) || mcu_len != 64)
-        {
-          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
-                                FP_DEVICE_ERROR_PROTO, "Invalid GTLS server identity"));
-          return;
-        }
-      memcpy (self->gtls.server_random, mcu_data, 32);
-      memcpy (self->gtls.server_identity, mcu_data + 32, 32);
-      goodix_crypto_gtls_derive_keys (&self->gtls);
-      if (!goodix_crypto_gtls_verify_identity (&self->gtls))
-        {
-          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
-                                FP_DEVICE_ERROR_PROTO, "GTLS identity verification failed"));
-          return;
-        }
-      {
-        guint8 verify_data[36];
-
-        memcpy (verify_data, self->gtls.client_identity, 32);
-        memset (verify_data + 32, 0xEE, 4);
-        goodix_cmd_mcu_send (ssm, dev, 0xFF03, verify_data, 36);
-      }
-      break;
-
-    case GOODIX_GTLS_COMPLETION:
-      self->gtls.state = 4;
-      goodix_recv_mcu (ssm, dev, 2000, 12);
-      break;
-
-    case GOODIX_GTLS_READY:
-      if (!goodix_cmd_parse_mcu_reply (dev, 0xFF04, &mcu_data, &mcu_len))
-        {
-          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
-                                FP_DEVICE_ERROR_PROTO, "Failed to parse GTLS done"));
-          return;
-        }
-      /* The native completion is exactly twelve bytes including the MCU
-       * header. Its four trailing bytes are not a result code. */
-      if (mcu_len != 4)
-        {
-          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (
-                                FP_DEVICE_ERROR_PROTO, "Wrong GTLS done payload size: %zu", mcu_len));
-          return;
-        }
-      self->gtls.hmac_client_counter = self->gtls.hmac_client_counter_init;
-      self->gtls.hmac_server_counter = self->gtls.hmac_server_counter_init;
-      self->gtls.state = 5;
-      fpi_ssm_next_state (ssm);
-      break;
-
-    case GOODIX_GTLS_NUM_STATES:
-      g_assert_not_reached ();
-    }
+/* Returns a new SSM for the handshake attempts open and resume make. */
+static FpiSsm *
+goodix_gtls_open_retry_new (FpDevice *dev)
+{
+  return goodix_gtls_retry_new (
+    dev, goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->channel.attempts.open);
 }
 
 static void
@@ -747,11 +694,12 @@ goodix_gtls_attempt_done (FpiSsm *attempt, FpDevice *dev, GError *error)
       return;
     }
   retry->error = error;
-  /* deviceInit calls the three-attempt wrapper once more after failure, without
-   * reset or PSK reload. Linux has no production-item cache to clear between
-   * those groups. Each failed attempt, including the last, sleeps ten ms. */
-  fpi_ssm_jump_to_state_delayed (ssm,
-                                 retry->attempt < (retry->restart_done ? 3 : 6) ? 0 : 1, 10);
+  guint delay = goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->channel.retry_delay_ms;
+
+  if (delay)
+    fpi_ssm_jump_to_state_delayed (ssm, retry->attempt < retry->limit ? 0 : 1, delay);
+  else
+    fpi_ssm_jump_to_state (ssm, retry->attempt < retry->limit ? 0 : 1);
 }
 
 static void
@@ -781,7 +729,7 @@ goodix_gtls_retry_handler (FpiSsm *ssm, FpDevice *dev)
     }
   g_clear_error (&retry->error);
   retry->attempt++;
-  FpiSsm *attempt = fpi_ssm_new (dev, goodix_gtls_ssm_handler, GOODIX_GTLS_NUM_STATES);
+  FpiSsm *attempt = goodix_family (FPI_DEVICE_GOODIX53X5 (dev))->channel.attempt_new (dev, retry->reason);
 
   fpi_ssm_set_data (attempt, ssm, NULL);
   fpi_ssm_start (attempt, goodix_gtls_attempt_done);
@@ -806,15 +754,21 @@ goodix_start_gtls_restart (FpDevice *dev, GoodixGtlsRestartDone done,
                            gpointer data)
 {
   FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
-  GoodixGtlsRetry *retry = g_new0 (GoodixGtlsRetry, 1);
-  FpiSsm *ssm = fpi_ssm_new (dev, goodix_gtls_retry_handler, 2);
+  const GoodixChannelAttempts *attempts = &goodix_family (self)->channel.attempts;
+  gboolean reconnect = self->reconnect_pending != 0;
+  FpiSsm *ssm = goodix_gtls_retry_new (dev, reconnect ?
+                                       attempts->reconnect : attempts->after_failed_read);
+  GoodixGtlsRetry *retry = fpi_ssm_get_data (ssm);
 
   g_assert (!self->transport && !self->gtls_restart_active);
-  self->gtls_restart_pending = FALSE;
+  retry->reason = reconnect ? GOODIX_CHANNEL_RECONNECT : GOODIX_CHANNEL_FAILED_READ;
+  self->reconnect_requested = reconnect;
+  if (reconnect)
+    self->reconnect_pending--;
+  self->gtls_restart_pending = self->reconnect_pending != 0;
   self->gtls_restart_active = TRUE;
   retry->restart_done = done;
   retry->restart_data = data;
-  fpi_ssm_set_data (ssm, retry, (GDestroyNotify) goodix_gtls_retry_free);
   fpi_ssm_start (ssm, goodix_gtls_restart_done);
 }
 
@@ -873,6 +827,96 @@ goodix_open_native_result (FpiSsm *ssm, FpDevice *dev, guint8 status,
     }
 }
 
+/* Checks whether @hash, as the sensor reports it, is the SHA-256 of the PSK
+ * this driver holds. */
+static gboolean
+goodix_psk_hash_is_current (FpiDeviceGoodix53x5 *self, const guint8 *hash, gsize len)
+{
+  g_autoptr(GChecksum) sha = g_checksum_new (G_CHECKSUM_SHA256);
+  guint8 expected[32];
+  gsize expected_len = sizeof (expected);
+
+  g_checksum_update (sha, self->psk, GOODIX_PSK_LEN);
+  g_checksum_get_digest (sha, expected, &expected_len);
+  return len >= sizeof (expected) && memcmp (hash, expected, sizeof (expected)) == 0;
+}
+
+static GError *
+goodix_psk_mismatch_error (void)
+{
+  return fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                   "Sensor PSK does not match. If Windows has used this sensor, "
+                                   "import its key as WINDOWS-DUAL-BOOT.md describes");
+}
+
+gboolean
+goodix_psk_hash_reply_matches (FpDevice *dev, guint32 slot, gboolean *matches, GError **error)
+{
+  const guint8 *hash;
+  gsize hash_len;
+
+  if (!goodix_cmd_parse_production_read_reply (dev, slot, &hash, &hash_len))
+    {
+      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                           "Failed to read PSK hash");
+      return FALSE;
+    }
+  *matches = goodix_psk_hash_is_current (FPI_DEVICE_GOODIX53X5 (dev), hash, hash_len);
+  return TRUE;
+}
+
+gboolean
+goodix_require_current_psk (FpDevice *dev, guint32 slot, GError **error)
+{
+  gboolean matches;
+
+  if (!goodix_psk_hash_reply_matches (dev, slot, &matches, error))
+    return FALSE;
+  if (!matches)
+    g_propagate_error (error, goodix_psk_mismatch_error ());
+  return matches;
+}
+
+gboolean
+goodix_open_parse_otp (FpDevice *dev, GError **error)
+{
+  FpiDeviceGoodix53x5 *self = FPI_DEVICE_GOODIX53X5 (dev);
+  const guint8 *pl;
+  gsize pl_len;
+
+  if (!goodix_cmd_parse_otp_reply (dev, &pl, &pl_len, NULL))
+    {
+      g_propagate_error (error, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                          "Failed to parse OTP response"));
+      return FALSE;
+    }
+
+  g_clear_pointer (&self->otp_data, g_free);
+  self->otp_data = g_memdup2 (pl, pl_len);
+  self->otp_len = pl_len;
+
+  if (!goodix_device_verify_otp (pl, pl_len))
+    {
+      g_propagate_error (error, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                          "OTP hash verification failed"));
+      return FALSE;
+    }
+
+  goodix_milan_persistence_prepare (dev);
+  goodix_device_parse_otp (pl, pl_len, &self->calib);
+  /* Sensor checking reseeds current/default; native static adjustment
+   * history is owned by live capture, not HAL reconstruction. */
+  self->dynamic_dac.default_dac = self->calib.dac_h;
+  return TRUE;
+}
+
+void
+goodix_open_channel (FpiSsm *ssm, FpDevice *dev)
+{
+  FPI_DEVICE_GOODIX53X5 (dev)->open_gtls_failed = FALSE;
+  fpi_ssm_start_subsm (ssm, goodix_gtls_open_retry_new (dev));
+}
+
 static void
 goodix_open_ssm_handler (FpiSsm   *ssm,
                          FpDevice *dev)
@@ -912,7 +956,7 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
         GError *error = NULL;
 
         if (!g_usb_device_claim_interface (
-                fpi_device_get_usb_device (dev), GOODIX_USB_INTERFACE,
+                fpi_device_get_usb_device (dev), GOODIX_USB_INTERFACE (dev),
                 G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER, &error))
           {
             fpi_ssm_mark_failed (ssm, error);
@@ -924,204 +968,15 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
       }
       break;
 
-    case GOODIX_OPEN_PING:
-      {
-        FpiSsm *probe = fpi_ssm_new (dev, goodix_probe_ssm_handler, GOODIX_PROBE_NUM_STATES);
-        fpi_ssm_set_data (probe, g_new0 (guint, 1), g_free);
-        fpi_ssm_start_subsm (ssm, probe);
-      }
-      break;
-
-    case GOODIX_OPEN_RESET:
-      {
-        /* Cold HAL construction deactivates the anchor before any reference
-         * outcome. Ordinary actions and in-place repairs do not reset it. */
-        self->profile9_fdt.drift_anchor_empty = TRUE;
-        goodix_health_reset (&self->health);
-        self->capture_callback_pending = FALSE;
-        FpiSsm *chip = fpi_ssm_new (dev, goodix_chip_ssm_handler, GOODIX_CHIP_NUM_STATES);
-
-        fpi_ssm_set_data (chip, g_new0 (guint, 1), g_free);
-        fpi_ssm_start_subsm (ssm, chip);
-      }
-      break;
-
-    case GOODIX_OPEN_READ_OTP:
-      goodix_cmd_read_otp (ssm, dev);
-      break;
-
-    case GOODIX_OPEN_PARSE_OTP:
-      {
-        g_autoptr(GError) error = NULL;
-        const guint8 *pl;
-        gsize pl_len;
-
-        if (!goodix_cmd_parse_otp_reply (dev, &pl, &pl_len, NULL))
-          {
-            fpi_ssm_mark_failed (ssm,
-                                  fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                            "Failed to parse OTP response"));
-            return;
-          }
-
-        g_clear_pointer (&self->otp_data, g_free);
-        self->otp_data = g_memdup2 (pl, pl_len);
-        self->otp_len = pl_len;
-
-        if (!goodix_device_verify_otp (pl, pl_len))
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "OTP hash verification failed"));
-            return;
-          }
-
-        goodix_milan_persistence_prepare (dev);
-        goodix_device_parse_otp (pl, pl_len, &self->calib);
-        /* Sensor checking reseeds current/default; native static adjustment
-         * history is owned by live capture, not HAL reconstruction. */
-        self->dynamic_dac.default_dac = self->calib.dac_h;
-        if (!goodix_load_psk (self, &error))
-          {
-            fpi_ssm_mark_failed (ssm, g_steal_pointer (&error));
-            return;
-          }
-        fpi_ssm_next_state (ssm);
-      }
-      break;
-
-    case GOODIX_OPEN_READ_PSK_HASH:
-      /* read_psk_hash via production_read(0xB003) */
-      goodix_cmd_production_read (ssm, dev, 0xB003);
-      break;
-
-    case GOODIX_OPEN_WRITE_PSK:
-      {
-        /* Check if the sensor PSK hash matches the selected PSK.
-         * Parse the production_read response. */
-        const guint8 *psk_data;
-        gsize psk_data_len;
-
-        if (!goodix_cmd_parse_production_read_reply (dev, 0xB003,
-                                                     &psk_data, &psk_data_len))
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Failed to read PSK hash"));
-            return;
-          }
-
-        /* Compute SHA256 of our PSK and compare */
-        {
-          g_autoptr(GChecksum) sha = g_checksum_new (G_CHECKSUM_SHA256);
-          guint8 expected_hash[32];
-          gsize hash_len = 32;
-
-          g_checksum_update (sha, self->psk, GOODIX_PSK_LEN);
-          g_checksum_get_digest (sha, expected_hash, &hash_len);
-
-          if (psk_data_len >= 32 && memcmp (psk_data, expected_hash, 32) == 0)
-            {
-              fp_dbg ("PSK hash matches, no need to write");
-              self->psk_write_verify_pending = FALSE;
-              fpi_ssm_jump_to_state (ssm, GOODIX_OPEN_GTLS_CLIENT_HELLO);
-              return;
-            }
-        }
-
-        if (self->psk_imported)
-          {
-            fpi_ssm_mark_failed (
-              ssm,
-              fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
-                                        "Sensor PSK does not match imported Windows PSK; refusing to overwrite it"));
-            return;
-          }
-
-        fp_info ("Writing default PSK white box");
-        self->psk_write_verify_pending = TRUE;
-        goodix_cmd_production_write (ssm, dev, 0xB002, goodix_psk_white_box,
-                                     GOODIX_PSK_WHITE_BOX_LEN);
-      }
-      break;
-
-    case GOODIX_OPEN_VERIFY_PSK_WRITE:
-      {
-        const guint8 *pl;
-        gsize pl_len;
-
-        if (!goodix_cmd_parse_production_write_reply (dev, &pl, &pl_len) ||
-            pl_len < 1)
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "Failed to parse PSK write reply"));
-            return;
-          }
-
-        if (pl[0] != 0)
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                           "PSK write failed: %u",
-                                                           pl[0]));
-            return;
-          }
-
-        /* Re-read the PSK hash to verify the write before GTLS */
-        goodix_cmd_production_read (ssm, dev, 0xB003);
-      }
-      break;
-
-    case GOODIX_OPEN_GTLS_CLIENT_HELLO:
-      {
-        if (self->psk_write_verify_pending)
-          {
-            /* Parse the re-read PSK hash from the previous state */
-            const guint8 *psk_data;
-            gsize psk_data_len;
-            g_autoptr(GChecksum) sha = g_checksum_new (G_CHECKSUM_SHA256);
-            guint8 expected_hash[32];
-            gsize hash_len = 32;
-
-            if (!goodix_cmd_parse_production_read_reply (dev, 0xB003,
-                                                         &psk_data,
-                                                         &psk_data_len))
-              {
-                fpi_ssm_mark_failed (ssm,
-                                     fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                               "Failed to re-read PSK hash"));
-                return;
-              }
-
-            g_checksum_update (sha, self->psk, GOODIX_PSK_LEN);
-            g_checksum_get_digest (sha, expected_hash, &hash_len);
-
-            if (psk_data_len < 32 || memcmp (psk_data, expected_hash, 32) != 0)
-              {
-                fpi_ssm_mark_failed (ssm,
-                                     fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                               "PSK hash mismatch after write"));
-                return;
-              }
-
-            self->psk_write_verify_pending = FALSE;
-          }
-
-        FpiSsm *sub = fpi_ssm_new (dev, goodix_gtls_retry_handler, 2);
-
-        self->open_gtls_failed = FALSE;
-        fpi_ssm_set_data (sub, g_new0 (GoodixGtlsRetry, 1),
-                          (GDestroyNotify) goodix_gtls_retry_free);
-        fpi_ssm_start_subsm (ssm, sub);
-      }
+    case GOODIX_OPEN_BRING_UP:
+      fpi_ssm_start_subsm (ssm, goodix_family (self)->open_new (dev));
       break;
 
     case GOODIX_OPEN_UPLOAD_CONFIG:
       {
         self->open_ref_powered = FALSE;
 
-        fp_info ("GTLS handshake completed");
+        fp_info ("%s handshake completed", goodix_family (self)->channel.name);
         goodix_cmd_restore_config (ssm, dev, goodix_open_native_result);
       }
       break;
@@ -1189,6 +1044,16 @@ goodix_open_ssm_handler (FpiSsm   *ssm,
     }
 }
 
+/* Forgets the channel's session and keys, where it keeps any. */
+static void
+goodix_channel_discard (FpiDeviceGoodix53x5 *self)
+{
+  const GoodixChannel *channel = &goodix_family (self)->channel;
+
+  if (channel->discard)
+    channel->discard (self);
+}
+
 static void
 goodix_cleanup_failed_open (FpDevice *dev)
 {
@@ -1208,7 +1073,7 @@ goodix_cleanup_failed_open (FpDevice *dev)
 
   if (self->usb_interface_claimed)
     {
-      if (!g_usb_device_release_interface (usb_dev, GOODIX_USB_INTERFACE, 0,
+      if (!g_usb_device_release_interface (usb_dev, GOODIX_USB_INTERFACE (dev), 0,
                                            &cleanup_error))
         fp_warn ("Failed to release USB interface after open failure: %s",
                  cleanup_error->message);
@@ -1239,7 +1104,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
       self->hardware_refresh_pending = FALSE;
       goodix_milan_persistence_clear (dev);
       OPENSSL_cleanse (self->psk, sizeof (self->psk));
-      OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
+      goodix_channel_discard (self);
       self->psk_imported = FALSE;
       goodix_debug_timing_open_done (self, dev, error->message);
       fpi_device_report_finger_status (dev, FP_FINGER_STATUS_NONE);
@@ -1254,7 +1119,7 @@ goodix_open_complete_after_idle (FpDevice *dev, gpointer data)
           if (self->usb_interface_claimed)
             {
               g_usb_device_release_interface (fpi_device_get_usb_device (dev),
-                                              GOODIX_USB_INTERFACE, 0, NULL);
+                                              GOODIX_USB_INTERFACE (dev), 0, NULL);
               self->usb_interface_claimed = FALSE;
             }
           self->open_usb_reset_required = TRUE;
@@ -1339,7 +1204,7 @@ goodix_reinit_idle_joined (FpDevice *dev, gpointer data)
       /* This is expected to fail with EINVAL after an S4 reset because the
        * kernel already dropped the claim; recovery proceeds either way. */
       if (!g_usb_device_release_interface (fpi_device_get_usb_device (dev),
-                                           GOODIX_USB_INTERFACE,
+                                           GOODIX_USB_INTERFACE (dev),
                                            0, &release_error))
         fp_dbg ("Releasing stale USB interface before reinit failed "
                 "(expected after S4 reset): %s", release_error->message);
@@ -1430,11 +1295,11 @@ goodix_session_close_joined (FpDevice *dev, gpointer data)
   goodix_milan_persistence_clear (dev);
   g_clear_error (&self->pending_enroll_error);
   OPENSSL_cleanse (self->psk, sizeof (self->psk));
-  OPENSSL_cleanse (self->gtls.psk, sizeof (self->gtls.psk));
+  goodix_channel_discard (self);
   self->psk_imported = FALSE;
 
   g_usb_device_release_interface (fpi_device_get_usb_device (dev),
-                                  GOODIX_USB_INTERFACE, 0, &error);
+                                  GOODIX_USB_INTERFACE (dev), 0, &error);
   self->usb_interface_claimed = FALSE;
 
   fpi_device_close_complete (dev, error);
@@ -1580,13 +1445,13 @@ goodix_resume_warm (FpiSsm *ssm, FpDevice *dev)
           /* A stale release can return EINVAL after reset-resume. The fresh
           * claim with kernel-driver detach establishes actual ownership. */
           if (!g_usb_device_release_interface (fpi_device_get_usb_device (dev),
-                                               GOODIX_USB_INTERFACE, 0, &error))
+                                               GOODIX_USB_INTERFACE (dev), 0, &error))
             fp_dbg ("Releasing USB interface before warm resume: %s", error->message);
           self->usb_interface_claimed = FALSE;
           g_clear_error (&error);
         }
       if (!g_usb_device_claim_interface (fpi_device_get_usb_device (dev),
-                                         GOODIX_USB_INTERFACE,
+                                         GOODIX_USB_INTERFACE (dev),
                                          G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER,
                                          &error))
         {
@@ -1601,11 +1466,7 @@ goodix_resume_warm (FpiSsm *ssm, FpDevice *dev)
       /* usbinterface!180020970 resume uses the same two three-attempt groups
        * as cold initialization, not the single group of the event restart.
        * Reuse only the handshake owner, with the already selected PSK. */
-      FpiSsm *sub = fpi_ssm_new (dev, goodix_gtls_retry_handler, 2);
-
-      fpi_ssm_set_data (sub, g_new0 (GoodixGtlsRetry, 1),
-                        (GDestroyNotify) goodix_gtls_retry_free);
-      fpi_ssm_start_subsm (ssm, sub);
+      fpi_ssm_start_subsm (ssm, goodix_gtls_open_retry_new (dev));
     }
 }
 

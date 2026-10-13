@@ -3,22 +3,32 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: sudo %s OUTPUT_FILE\n' "$0"
+  printf 'Usage: sudo %s [--533c] OUTPUT_FILE\n' "$0"
 }
 
-[[ "$#" == 1 ]] || { usage >&2; exit 2; }
+# install-windows-psk.sh uses --verify-533c, passing the key on stdin.
+mode=
+if [[ "${1:-}" == --533c || "${1:-}" == --verify-533c ]]; then
+  mode=$1
+  shift
+fi
+if [[ "$mode" == --verify-533c ]]; then
+  [[ "$#" == 0 ]] || { usage >&2; exit 2; }
+else
+  [[ "$#" == 1 ]] || { usage >&2; exit 2; }
+fi
 [[ "${EUID:-$(id -u)}" == 0 ]] || {
   printf 'error: this command must run as root\n' >&2
   exit 1
 }
 
-output=$1
+output=${1:-}
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source_file=$script_dir/goodix53x5-extract-windows-psk.c
 owner_uid=${SUDO_UID:-0}
 owner_gid=${SUDO_GID:-0}
 
-[[ ! -e "$output" ]] || {
+[[ "$mode" == --verify-533c || ! -e "$output" ]] || {
   printf 'error: output already exists: %s\n' "$output" >&2
   exit 1
 }
@@ -58,6 +68,12 @@ trap 'rm -f -- "$binary"' EXIT
 cc -std=gnu11 -O2 -Wall -Wextra $(pkg-config --cflags gusb) \
   "$source_file" -o "$binary" $(pkg-config --libs gusb)
 "$binary" --self-test
-"$binary" "$output"
-chown -h -- "$owner_uid:$owner_gid" "$output"
-printf 'Saved the verified Windows PSK to %s\n' "$output"
+case "$mode" in
+  --verify-533c) "$binary" --verify-533c ;;
+  --533c) "$binary" --533c "$output" ;;
+  *)
+    "$binary" "$output"
+    chown -h -- "$owner_uid:$owner_gid" "$output"
+    printf 'Saved the verified Windows PSK to %s\n' "$output"
+    ;;
+esac

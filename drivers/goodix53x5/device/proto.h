@@ -25,6 +25,26 @@
  * cmd_byte = category<<4 | command<<1
  * checksum = (0xAA - sum(all_bytes)) & 0xFF, or 0x88 for handshake */
 
+/* Message selectors more than one module names. */
+#define GOODIX_PROTO_CATEGORY_NOP         0x00
+#define GOODIX_PROTO_CATEGORY_IMAGE       0x02
+#define GOODIX_PROTO_CATEGORY_FDT         0x03
+#define GOODIX_PROTO_CMD_FDT_DOWN         0x01
+#define GOODIX_PROTO_CMD_FDT_UP           0x02
+#define GOODIX_PROTO_CMD_FDT_MANUAL       0x03
+#define GOODIX_PROTO_CATEGORY_REGISTER    0x08
+#define GOODIX_PROTO_CATEGORY_CONFIG      0x09
+#define GOODIX_PROTO_CMD_CONFIG_DOWNLOAD  0x0
+#define GOODIX_PROTO_CATEGORY_SYSTEM      0x0a
+#define GOODIX_PROTO_CATEGORY_ACK         0x0b
+#define GOODIX_PROTO_CMD_ACK              0x00
+#define GOODIX_PROTO_ACK_FLAG_VALID       0x01
+#define GOODIX_PROTO_CATEGORY_NOTICE      0x0c
+#define GOODIX_PROTO_CATEGORY_MCU         0x0d
+#define GOODIX_PROTO_CATEGORY_PRODUCTION  0x0e
+#define GOODIX_PROTO_CMD_PRODUCTION_WRITE 0x1
+#define GOODIX_PROTO_CATEGORY_FIRMWARE    0x0f
+
 /* Max reassembly buffer (encrypted image can be ~15KB) */
 #define GOODIX_RX_BUF_SIZE (16 * 1024)
 

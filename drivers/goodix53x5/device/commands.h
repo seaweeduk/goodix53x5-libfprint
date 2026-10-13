@@ -74,6 +74,16 @@ void goodix_cmd_mcu_send (FpiSsm *ssm, FpDevice *dev, guint32 data_type,
 /* Post-MCU-ACK GTLS wait; consume the bounded stream after its receive signal. */
 void goodix_recv_mcu (FpiSsm *ssm, FpDevice *dev, guint timeout, gsize length);
 
+/* GM168SEC sensors (27c6:533c) only. */
+/* Reads @length bytes of preset @slot; the reply has production_read's
+ * layout, so goodix_cmd_parse_production_read_reply() reads it. */
+void goodix_cmd_preset_read (FpiSsm *ssm, FpDevice *dev, guint32 slot,
+                             guint32 length);
+void goodix_cmd_tls_request (FpiSsm *ssm, FpDevice *dev);
+/* Sends a TLS record to the sensor; completes once written, as the sensor
+ * never ACKs one. */
+void goodix_cmd_send_tls_record (FpiSsm *ssm, FpDevice *dev, GBytes *record);
+
 /* Upload the (patched) sensor config blob. Waits for the configuration event;
  * its payload is not a success flag. */
 void goodix_cmd_upload_config (FpiSsm *ssm, FpDevice *dev,
