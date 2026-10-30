@@ -12,6 +12,14 @@ lsusb -d 27c6:
 | Another `27c6:` Goodix ID | Not supported by this release yet. Run the detector below and report the result. |
 | No output | No Goodix USB fingerprint sensor was found; this release does not support your reader. |
 
+**Community-confirmed:** Dell XPS 15 7590 with Goodix 5395 (`27c6:5395`),
+firmware `GF5288_HTSEC_APP_10020`, and chip ID `0x220ca1`. User
+[bavay](https://github.com/bavay) reports working enrollment, verification, and
+adaptive learning on Kubuntu 26.04 with package v1.0.2. The sensor's PSK was
+already set to all zeroes before installation. See
+[Supported Hardware](https://github.com/@REPOSITORY@/blob/@TAG@/README.md#supported-hardware)
+for hardware validation details.
+
 The detector talks to the sensor directly, so it needs root and a C compiler with the GUsb development files (`gcc pkg-config libgusb-dev` on Debian and Ubuntu, `gcc pkgconf-pkg-config libgusb-devel` on Fedora, `gcc pkgconf libgusb` on Arch):
 
 ```sh
