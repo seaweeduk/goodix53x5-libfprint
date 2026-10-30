@@ -17,17 +17,9 @@ binaries at runtime.
 
 ## Supported Hardware
 
-Confirmed working hardware:
-
-| Laptop | Sensor USB ID | Validation |
-| --- | --- | --- |
-| Dell XPS 13 9305 | `27c6:5335` | Project hardware validation |
-| Dell XPS 15 7590 | `27c6:5395` (Goodix 5395) | Community-confirmed enrollment, verification, and adaptive learning on Kubuntu 26.04 with package v1.0.2 |
-
-The Dell XPS 15 7590 was reported working by
-[bavay](https://github.com/bavay) with firmware `GF5288_HTSEC_APP_10020`
-and chip ID `0x220ca1`. Its PSK had already been set to all zeroes before
-installation.
+The project is currently validated on a **Dell XPS 13 9305** with a
+`27c6:5335` sensor. The **Dell XPS 15 7590** with a `27c6:5395` sensor is also
+[reported working](https://github.com/seaweeduk/goodix53x5-libfprint/issues/336).
 
 ID `27c6:5385` is also registered by the driver but has not received the same
 hardware validation. Check your sensor's ID with `lsusb -d 27c6:`.
@@ -122,9 +114,7 @@ Each [release](https://github.com/seaweeduk/goodix53x5-libfprint/releases)
 has one x86-64 package for each of Ubuntu 22.04, 24.04 and 26.04, Debian 12
 and 13, and Fedora 43 and 44; the release notes link each one directly.
 Distributions based on one of these may work with the package for their base
-release; Kubuntu 26.04 has been reported working on the Dell XPS 15 7590 (see
-[Supported Hardware](#supported-hardware)). Download the package for your
-distribution and install it:
+release. Download the package for your distribution and install it:
 
 ```sh
 sudo apt install ./fprintd-goodix53x5_*.deb      # Ubuntu and Debian
@@ -221,9 +211,8 @@ default path. See the [Windows dual-boot migration guide](WINDOWS-DUAL-BOOT.md).
 
 - This is an experimental, out-of-tree driver tied to pinned libfprint and
   fprintd revisions.
-- Hardware validation covers the Dell XPS 13 9305 (`27c6:5335`), with
-  community-confirmed support for the Dell XPS 15 7590 (`27c6:5395`); see
-  [Supported Hardware](#supported-hardware) for test details.
+- Project hardware validation currently covers only the Dell XPS 13 9305 with
+  the `27c6:5335` sensor.
 - Fingerprint images and matching are handled on the host. This is not a
   match-on-chip or secure-element design.
 - A plaintext imported GTLS key is protected by filesystem permissions, not a
