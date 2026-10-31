@@ -37,8 +37,7 @@ PSK provisioning.
 
 Start with the [Linux extractor](#linux-extractor) for any 53x5 sensor. It does
 not restrict product IDs and saves a key only if it matches the sensor's active
-hash. It has been tested with `27c6:5335` and Windows driver `2.0.310.900`, but
-that is a confirmed setup, not a compatibility limit.
+hash. It has been tested with `27c6:5335` and Windows driver `2.0.310.900`.
 
 The [Windows helper](#windows-helper) is an alternative for an encrypted key.
 It currently supports only `27c6:5395` with Dell KP8ND driver `2.1.32.800`,
