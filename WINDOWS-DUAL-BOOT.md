@@ -20,11 +20,11 @@ The fingerprint reader has persistent memory shared by both operating systems.
 When Windows Hello starts after Linux has used the all-zero key, the official
 Goodix driver automatically restores or creates its own key in the reader.
 
-How you export the key depends on the Windows driver. The tested `5335` setup
-stores a readable key on the sensor; the tested `5395` setup stores an encrypted
-copy that needs a Windows helper. Both methods verify the key against the
-sensor's active-key hash before saving it. Once imported, the Linux driver uses
-the same key and skips PSK provisioning.
+Some Windows drivers store a readable key on the sensor; others store an
+encrypted copy. The sensor's USB ID alone does not tell you which method will
+work. Both export methods verify the key against the sensor's active-key hash
+before saving it. Once imported, the Linux driver uses the same key and skips
+PSK provisioning.
 
 ## Requirements
 
@@ -35,21 +35,16 @@ the same key and skips PSK provisioning.
 - Administrator access on Linux and password or PIN login while fingerprint
   authentication is temporarily disabled.
 
-Choose the method for your setup:
+Start with the [Linux extractor](#linux-extractor) for any 53x5 sensor. It does
+not restrict product IDs and saves a key only if it matches the sensor's active
+hash. It has been tested with `27c6:5335` and Windows driver `2.0.310.900`, but
+that is a confirmed setup, not a compatibility limit.
 
-| Sensor and Windows driver | Key export method |
-| --- | --- |
-| `27c6:5335`, tested with `2.0.310.900` | [Linux extractor](#5335-linux-extractor) |
-| `27c6:5395`, Dell KP8ND driver `2.1.32.800` | [Windows helper](#5395-windows-helper) |
-
-The Windows method was [confirmed working on a Dell XPS 15 9570][5395-confirmed].
-Check the driver version in Windows Device Manager, not the Dell download's
-package version. The helper rejects unsupported driver files; other `5395`
-driver versions are not covered.
-
-For other Goodix devices, the Linux extractor can try reading the key, but it
-will not save one unless it matches the sensor's active-key hash. An encrypted
-key cannot be exported with that method.
+The [Windows helper](#windows-helper) is an alternative for an encrypted key.
+It currently supports only `27c6:5395` with Dell KP8ND driver `2.1.32.800`,
+[confirmed working on a Dell XPS 15 9570][5395-confirmed]. It checks the exact
+driver files and rejects other versions. Check the version in Windows Device
+Manager, not the Dell download's package version.
 
 ## 1. Install And Disable Linux Fingerprint Access
 
@@ -73,9 +68,10 @@ are not deleted.
 
 ## 2. Export the Windows key
 
-Follow only the method for your setup, then continue to step 3.
+Try the Linux extractor first, or go straight to the Windows helper if you
+have its supported driver. Once you have a key file, continue to step 3.
 
-### 5335: Linux extractor
+### Linux extractor
 
 Boot Windows and perform a Windows Hello fingerprint operation. This gives the
 Goodix driver an opportunity to detect the previous Linux key and restore or
@@ -92,7 +88,11 @@ The dumper verifies that `fprintd` is masked and inactive, compiles a standalone
 GUsb reader, reads `B001` and `B003`, and writes the key only when their hashes
 match. It makes no persistent sensor writes and does not start GTLS.
 
-### 5395: Windows helper
+If it reports `B001 is not the active plaintext PSK`, it has not exported a
+key. The Windows driver may store an encrypted copy; use the Windows helper
+below if it supports your setup.
+
+### Windows helper
 
 This method needs 64-bit Windows PowerShell 5.1 as administrator, SGX enabled
 in firmware, and working Intel SGX Platform Software. No manual compilation
@@ -127,6 +127,11 @@ If it fails, share the error text and `driver.txt` from
 `C:\ProgramData\Goodix5395KeyExport`, **not the key or logs**. To abandon a
 capture, run the PowerShell command with `-Action Restore`, restart Windows,
 and unmask `fprintd` when back on Linux. See the ZIP's README for details.
+
+If neither method works for your setup, open an issue with your laptop model,
+USB ID, Windows Device Manager driver version, and the error text. An untested
+device is not necessarily incompatible; its Windows key storage needs checking.
+Do not include keys or logs.
 
 ## 3. Import the key on Linux
 
