@@ -661,6 +661,15 @@ goodix_cmd_ec_control (FpiSsm *ssm, FpDevice *dev, gboolean on)
     goodix_run_cmd_ec_off (ssm, dev, payload_off, sizeof (payload_off));
 }
 
+void
+goodix_cmd_ec_control_wake_on_finger (FpiSsm *ssm, FpDevice *dev)
+{
+  /* Action 0x11 display-off with device +0x151 set: c0 zero, c1 one. */
+  guint8 payload[3] = { 0x00, 0x01, 0x00 };
+
+  goodix_run_cmd (ssm, dev, 0xA, 0x7, payload, sizeof (payload), FALSE);
+}
+
 /* ========================================================================
  * Named reply parsers
  * ======================================================================== */

@@ -48,6 +48,10 @@ The patch changes only that dispatch in `fpi_device_suspend()` and
 - a suspend that overlaps a short action (open, close, delete, list, clear)
   is dispatched again once that action completes, so a device opened during
   the transition is still quiesced;
+- a successful idle suspend of an open device enables USB remote wakeup, as
+  the core already does for an action that continues across suspend, so a
+  touch on the still-armed sensor can wake the system; resume disables it
+  again as before;
 - `fp_device_close()` is rejected while a suspend or resume task is pending
   (its completion would close the USB handle underneath the power owner) and
   admitted for a completed suspend, so a device removed during sleep can be
@@ -55,7 +59,8 @@ The patch changes only that dispatch in `fpi_device_suspend()` and
 
 The driver completes both asynchronously with `fpi_device_suspend_complete()`
 and `fpi_device_resume_complete()`. Suspend joins all background hardware work
-and sleeps the sensor; resume reclaims USB and re-keys GTLS while retaining host
+and leaves finger detection armed (sleeping the sensor only when it has no
+retained reference); resume reclaims USB and re-keys GTLS while retaining host
 calibration/reference state, with one cold reconstruction on failure, before it
 completes. Actions that arrive while the driver is quiescing fail with `FP_DEVICE_ERROR_BUSY`
 from the driver; the core rejects them itself once suspend has completed.

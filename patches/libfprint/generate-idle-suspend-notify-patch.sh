@@ -13,7 +13,7 @@ patch_path="$script_dir/libfprint-idle-suspend-notify.patch"
 }
 git -C "$source_dir" diff --check
 {
-  printf 'Libfprint-Idle-Suspend-Notify-Patch: 4\n'
+  printf 'Libfprint-Idle-Suspend-Notify-Patch: 5\n'
   printf 'Base-Revision: %s\n' "$expected_revision"
   printf 'Base-Tag: v1.94.10\n\n'
   git -C "$source_dir" diff --binary --full-index --no-ext-diff -- \
