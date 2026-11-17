@@ -16,7 +16,7 @@ jobs:
     permissions: {}
     outputs:
       # Change these two values to update automatic reviews and /oc together.
-      model: gpt-6-astra
+      model: gpt-6.2-astra
       variant: high
     steps:
       - name: Publish shared settings
