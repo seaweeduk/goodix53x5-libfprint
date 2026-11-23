@@ -1,0 +1,41 @@
+name: Save OpenCode usage
+description: Save this job's OpenCode token usage as an artifact for the usage tracker to collect
+
+runs:
+  using: composite
+  steps:
+    - name: Export usage
+      id: export
+      shell: bash
+      env:
+        REPOSITORY: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+
+        database="$(opencode debug paths db 2>/dev/null || true)"
+        database="${database:-$HOME/.local/share/opencode/opencode.db}"
+        if [ ! -f "$database" ]; then
+          echo "OpenCode did not run; no usage to save."
+          exit 0
+        fi
+
+        out="$RUNNER_TEMP/opencode-usage/usage.json"
+        mkdir -p "$(dirname "$out")"
+        # An export failure fails this step, so a missing usage file never goes unnoticed.
+        python3 "$GITHUB_ACTION_PATH/export_usage.py" "$database" "${REPOSITORY#*/}" > "$out"
+        echo "path=$out" >> "$GITHUB_OUTPUT"
+
+        # A copy in the log, which outlives the artifact, in case the upload fails.
+        echo "::group::OpenCode usage"
+        printf 'OPENCODE_USAGE %s\n' "$(cat "$out")"
+        echo "::endgroup::"
+
+    - name: Upload usage
+      if: steps.export.outputs.path != ''
+      uses: actions/upload-artifact@v7
+      with:
+        # One per attempt: a re-run's usage is new usage, and names must be unique within a run.
+        name: opencode-usage-${{ github.run_attempt }}
+        path: ${{ steps.export.outputs.path }}
+        retention-days: 30
+        if-no-files-found: error

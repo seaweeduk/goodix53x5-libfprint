@@ -1,0 +1,209 @@
+name: OpenCode Comment Agent
+
+on:
+  workflow_call:
+    inputs:
+      use_github_token:
+        description: Use the caller's GitHub token instead of the OpenCode GitHub App
+        required: false
+        type: boolean
+        default: false
+      runs-on:
+        description: Runner label for the agent job
+        required: false
+        type: string
+        default: ubuntu-latest
+      extra-instructions:
+        description: Repository-specific instructions added to the agent's instructions
+        required: false
+        type: string
+        default: ''
+      references:
+        description: A JSON object of references that replaces the shared list
+        required: false
+        type: string
+        default: ''
+    secrets:
+      OPENCODE_AUTH_CONTENT:
+        required: true
+      OPENAI_API_KEY:
+        required: false
+      OPENCODE_API_KEY:
+        required: false
+
+jobs:
+  opencode:
+    if: contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+
+    steps:
+      - name: Load shared OpenCode settings
+        id: settings
+        uses: $/.github/actions/opencode-settings
+
+      - name: Get a GitHub App token
+        id: react-token
+        uses: $/.github/actions/opencode-app-token
+        with:
+          use_github_token: ${{ inputs.use_github_token }}
+
+      - name: React to the comment
+        id: react
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.react-token.outputs.token }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          KIND: ${{ github.event_name == 'pull_request_review_comment' && 'pulls' || 'issues' }}
+        run: |
+          id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/$KIND/comments/$COMMENT_ID/reactions" \
+            -f content=eyes --jq .id || true)"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Read the request
+        id: prepare
+        uses: $/.github/actions/opencode-github
+        env:
+          GH_TOKEN: ${{ steps.react-token.outputs.token }}
+          REACTION_ID: ${{ steps.react.outputs.id }}
+        with:
+          stage: prepare
+
+      - name: Revoke the GitHub App token
+        if: always() && steps.react-token.outputs.app == 'true'
+        shell: bash
+        env:
+          TOKEN: ${{ steps.react-token.outputs.token }}
+        run: |
+          curl -fsS -X DELETE -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/installation/token || true
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.prepare.outputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up OpenCode
+        uses: $/.github/actions/opencode-setup
+        with:
+          auth-content: ${{ secrets.OPENCODE_AUTH_CONTENT }}
+          references: ${{ inputs.references }}
+
+      - name: Prepare the working branch
+        id: branch
+        shell: bash
+        env:
+          MODE: ${{ steps.prepare.outputs.mode }}
+          BRANCH: ${{ steps.prepare.outputs.branch }}
+        run: |
+          set -euo pipefail
+          # The agent may commit on its own; its commits need an author.
+          git config --global user.name "opencode-agent[bot]"
+          git config --global user.email "opencode-agent[bot]@users.noreply.github.com"
+          if [ "$MODE" = issue ]; then
+            git checkout -b "$BRANCH"
+          fi
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # The comment is the agent's prompt, so these go in an instructions file instead.
+      - name: Prepare repository-specific instructions
+        shell: bash
+        env:
+          EXTRA_INSTRUCTIONS: ${{ inputs.extra-instructions }}
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/opencode-repository-instructions.md"
+          : > "$file"
+          if [ -n "${EXTRA_INSTRUCTIONS//[[:space:]]/}" ]; then
+            {
+              echo "# Repository-specific instructions"
+              echo
+              printf '%s\n' "$EXTRA_INSTRUCTIONS"
+            } > "$file"
+          fi
+
+      - name: Run OpenCode
+        id: run
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          MODEL: openai/${{ steps.settings.outputs.model }}#${{ steps.settings.outputs.variant }}
+          NUMBER: ${{ steps.prepare.outputs.number }}
+          OPENCODE_CONFIG_CONTENT: |
+            {
+              "instructions": ["${{ runner.temp }}/opencode-repository-instructions.md"]
+            }
+        run: |
+          set +e -uo pipefail
+          dir="$RUNNER_TEMP/opencode"
+          # Images attached to the comment, downloaded by the prepare stage.
+          files=()
+          while IFS= read -r file; do files+=(--file "$file"); done < "$dir/files.txt"
+          # The agent has no use for the job's OIDC credentials, which can mint the app token.
+          env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+            opencode run --standalone --auto --archived --format json "${files[@]}" \
+              --model "$MODEL" --title "/oc on #$NUMBER" < "$dir/prompt.md" \
+            | tee "$dir/run.jsonl" \
+            | jq -r --unbuffered '
+                if .type == "tool_use" then "| \(.part.tool) \(.part.state.input | tostring | .[0:300])"
+                elif .type == "error" then "::error::\(.error.message // .error | tostring)"
+                else empty end'
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Read the reply
+        id: reply
+        uses: $/.github/actions/opencode-github
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          MODEL: openai/${{ steps.settings.outputs.model }}#${{ steps.settings.outputs.variant }}
+          RUN_STATUS: ${{ steps.run.outputs.status }}
+        with:
+          stage: reply
+
+      - name: Get a GitHub App token
+        id: app
+        if: always() && steps.prepare.outcome == 'success'
+        uses: $/.github/actions/opencode-app-token
+        with:
+          use_github_token: ${{ inputs.use_github_token }}
+
+      - name: Push changes and reply
+        if: always() && steps.prepare.outcome == 'success'
+        uses: $/.github/actions/opencode-github
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          MODEL: openai/${{ steps.settings.outputs.model }}#${{ steps.settings.outputs.variant }}
+          MODE: ${{ steps.prepare.outputs.mode }}
+          NUMBER: ${{ steps.prepare.outputs.number }}
+          BRANCH: ${{ steps.prepare.outputs.branch }}
+          START_HEAD: ${{ steps.branch.outputs.head }}
+          REPLY_OUTCOME: ${{ steps.reply.outcome }}
+          OPENCODE_SESSION: ${{ steps.reply.outputs.session }}
+          REACTION_ID: ${{ steps.react.outputs.id }}
+        with:
+          stage: finish
+
+      - name: Revoke the GitHub App token
+        if: always() && steps.app.outputs.app == 'true'
+        shell: bash
+        env:
+          TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          curl -fsS -X DELETE -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/installation/token || true
+
+      - name: Save OpenCode usage
+        if: always()
+        uses: $/.github/actions/opencode-usage

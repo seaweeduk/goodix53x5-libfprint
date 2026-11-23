@@ -1,0 +1,35 @@
+name: OpenCode GitHub
+description: >
+  The GitHub side of the review and /oc jobs, matching V1's GitHub action: prompt context, reply,
+  pushes and comments. See opencode_github.py.
+
+inputs:
+  stage:
+    description: review, post, prepare, reply, or finish
+    required: true
+
+outputs:
+  mode:
+    description: issue or pr
+    value: ${{ steps.run.outputs.mode }}
+  number:
+    description: The issue or pull request number
+    value: ${{ steps.run.outputs.number }}
+  ref:
+    description: The ref to check out; empty for the default branch
+    value: ${{ steps.run.outputs.ref }}
+  branch:
+    description: The branch to push to
+    value: ${{ steps.run.outputs.branch }}
+  session:
+    description: The OpenCode session the run created
+    value: ${{ steps.run.outputs.session }}
+
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        STAGE: ${{ inputs.stage }}
+      run: python3 "$GITHUB_ACTION_PATH/opencode_github.py" "$STAGE"

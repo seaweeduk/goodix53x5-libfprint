@@ -5,230 +5,57 @@ on:
     types: [opened, ready_for_review]
 
 jobs:
-  settings:
-    uses: ./.github/workflows/opencode-settings.yml
-
   review:
-    needs: settings
-    if: |
-      !github.event.pull_request.draft &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      id-token: write
-      contents: read
-      pull-requests: write
-      issues: write
-      actions: read
+    permissions: { id-token: write, contents: write, pull-requests: write, issues: write, actions: read }
+    uses: ./.github/workflows/opencode-pr-review.yml
+    secrets: inherit
+    with:
+      prompt: |
+        Review this pull request.
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
-          persist-credentials: false
+        Review the diff in the context of the full codebase, including unchanged code it interacts with or affects.
 
-      - name: Prepare OpenCode auth
-        shell: bash
-        env:
-          OPENCODE_AUTH_CONTENT: ${{ secrets.OPENCODE_AUTH_CONTENT }}
-        run: |
-          set -euo pipefail
-          umask 077
+        Relevant upstream source repositories may be available as project references in the system context. Use them selectively when a finding depends on framework, SDK, protocol, or library behavior that needs source-level verification. Do not inspect every reference.
 
-          auth_dir="$HOME/.local/share/opencode"
-          auth_file="$auth_dir/auth.json"
-          install -d -m 700 "$auth_dir"
-          printf '%s' "$OPENCODE_AUTH_CONTENT" | jq -e . > "$auth_file"
-          chmod 600 "$auth_file"
-          access="$(jq -r '.openai.access // empty' "$auth_file")"
-          if [ -n "$access" ]; then
-            echo "::add-mask::$access"
-          fi
+        Report only high-confidence, actionable findings:
+        - Correctness bugs and behavioral regressions
+        - Security, privacy, permission, or data-loss risks
+        - Material performance or reliability risks
+        - Material unnecessary complexity introduced by this pull request when a concrete simpler implementation preserves all current requirements
 
-      - name: Run OpenCode PR review
-        uses: anomalyco/opencode/github@latest
-        env:
-          OPENCODE_PERMISSION: '{"*":"allow","doom_loop":"deny","question":"deny"}'
-          OPENCODE_CONFIG_CONTENT: |
-            {
-              "references": {
-                "react": {
-                  "repository": "react/react",
-                  "description": "Consult only when React hooks, rendering, effects, concurrency, portals, or external-store behavior needs source verification"
-                },
-                "fastapi": {
-                  "repository": "fastapi/fastapi",
-                  "description": "Consult only when FastAPI routing, dependencies, streaming, WebSockets, middleware, or lifespan behavior needs source verification"
-                },
-                "sqlalchemy": {
-                  "repository": "sqlalchemy/sqlalchemy",
-                  "description": "Consult only when SQLAlchemy ORM, async sessions, relationships, transactions, events, or dialect behavior needs source verification"
-                },
-                "alembic": {
-                  "repository": "sqlalchemy/alembic",
-                  "description": "Consult only when Alembic migrations, revision execution, operations, or autogeneration behavior needs source verification"
-                },
-                "pydantic": {
-                  "repository": "pydantic/pydantic",
-                  "description": "Consult only when Pydantic validation, serialization, validators, computed fields, or schema behavior needs source verification"
-                },
-                "google-genai": {
-                  "repository": "googleapis/python-genai",
-                  "description": "Consult only when Google Gen AI Python streaming, tools, uploads, media generation, errors, or usage metadata needs source verification"
-                },
-                "openai-python": {
-                  "repository": "openai/openai-python",
-                  "description": "Consult only when OpenAI Python streaming, typed chunks, tool-call deltas, errors, or client lifecycle needs source verification"
-                },
-                "mcp-python": {
-                  "repository": "modelcontextprotocol/python-sdk",
-                  "description": "Consult only when MCP Python sessions, transports, OAuth, tool calls, cancellation, or cleanup behavior needs source verification"
-                },
-                "libfprint": {
-                  "repository": "https://gitlab.freedesktop.org/libfprint/libfprint.git",
-                  "description": "Consult only when libfprint driver, device state machine, USB transport, image, or private API behavior needs source verification"
-                },
-                "opencv": {
-                  "repository": "opencv/opencv",
-                  "description": "Consult only when OpenCV image processing, CLAHE, SIFT, descriptor matching, or version compatibility needs source verification"
-                },
-                "pygobject": {
-                  "repository": "https://gitlab.gnome.org/GNOME/pygobject.git",
-                  "description": "Consult only when PyGObject or GObject introspection behavior needs source verification"
-                },
-                "libadwaita": {
-                  "repository": "https://gitlab.gnome.org/GNOME/libadwaita.git",
-                  "description": "Consult only when Adwaita widgets, GNOME UI patterns, or GTK integration behavior need verification"
-                },
-                "streamdown": {
-                  "repository": "vercel/streamdown",
-                  "description": "Consult only when Streamdown streaming Markdown rendering or API behavior needs verification"
-                },
-                "ai-sdk": {
-                  "repository": "vercel/ai",
-                  "description": "Consult only when Vercel AI SDK chat, tools, streaming, or UI message behavior needs verification"
-                },
-                "tanstack-query": {
-                  "repository": "TanStack/query",
-                  "description": "Consult only when TanStack Query cache, mutation, invalidation, hydration, or server-state behavior needs verification"
-                },
-                "tanstack-router": {
-                  "repository": "TanStack/router",
-                  "description": "Consult only when TanStack Router or Start routing, loaders, type-safety, SSR, or server-function behavior needs verification"
-                },
-                "tanstack-virtual": {
-                  "repository": "TanStack/virtual",
-                  "description": "Consult only when TanStack Virtual measurement, scrolling, virtualization, or list performance behavior needs verification"
-                },
-                "tanstack-store": {
-                  "repository": "TanStack/store",
-                  "description": "Consult only when TanStack Store state, subscriptions, derived state, or framework integration behavior needs verification"
-                },
-                "tanstack-form": {
-                  "repository": "TanStack/form",
-                  "description": "Consult only when TanStack Form validation, field state, submission, or framework integration behavior needs verification"
-                },
-                "tanstack-table": {
-                  "repository": "TanStack/table",
-                  "description": "Consult only when TanStack Table columns, row models, sorting, filtering, or table state behavior needs verification"
-                },
-                "opencode": {
-                  "repository": "anomalyco/opencode",
-                  "description": "Consult only when OpenCode internals, config, storage, agents, tools, plugins, or runtime behavior need source verification"
-                },
-                "tremor": {
-                  "repository": "tremorlabs/tremor-npm",
-                  "description": "Consult only when @tremor/react dashboard components, charts, tables, styling, or tooltip behavior needs verification"
-                },
-                "recharts": {
-                  "repository": "recharts/recharts",
-                  "description": "Consult only when Recharts APIs, chart behavior, rendering, responsiveness, or integration details need verification"
-                },
-                "yt-dlp": {
-                  "repository": "yt-dlp/yt-dlp",
-                  "description": "Consult only when yt-dlp extractor behavior, options, downloads, or media-platform quirks need source verification"
-                },
-                "instaloader": {
-                  "repository": "instaloader/instaloader",
-                  "description": "Consult only when Instaloader APIs, sessions, rate limits, or Instagram download behavior need source verification"
-                },
-                "hyprland": {
-                  "repository": "hyprwm/Hyprland",
-                  "description": "Use for Hyprland compositor behavior, configuration, plugins, protocols, troubleshooting, and source-level details"
-                },
-                "hypridle": {
-                  "repository": "hyprwm/hypridle",
-                  "description": "Use for hypridle idle daemon behavior, listener and timer configuration, troubleshooting, and source-level details"
-                },
-                "hyprlock": {
-                  "repository": "hyprwm/hyprlock",
-                  "description": "Use for hyprlock lock screen behavior, authentication, rendering, configuration, troubleshooting, and source-level details"
-                }
-              },
-              "provider": {
-                "openai": {
-                  "models": {
-                    "${{ needs.settings.outputs.model }}": {
-                      "options": {
-                        "reasoningEffort": "${{ needs.settings.outputs.variant }}"
-                      }
-                    }
-                  }
-                }
-              }
-            }
-        with:
-          model: openai/${{ needs.settings.outputs.model }}
-          variant: ${{ needs.settings.outputs.variant }}
-          share: false
-          prompt: |
-            Review this pull request.
+        Establish that each reported problem is reachable in a supported, realistic workflow. Trace the relevant callers, callees, validation, synchronization, lifecycle, and upstream or downstream contracts, and actively look for constraints that invalidate the concern. A deterministic code path, a realistic existing harness or reproduction, or an authoritative documented contract is sufficient evidence; executable reproduction is not mandatory when reachability is clear from the code.
 
-            Review the diff in the context of the full codebase, including unchanged code it interacts with or affects.
+        Some behavior can only be established with physical fingerprint hardware, the private Windows DLL or native oracle, or Ghidra. Do not imply that you reproduced behavior with resources that are unavailable. If the code and available contracts establish the defect, report it normally. If a concrete candidate materially depends on hardware behavior, timing, or an undocumented native contract and remains ambiguous after scoped repository research, do not assign it a severity or present it as a confirmed finding. Instead, add a brief `User verification needed` section naming the exact ambiguity and the most direct hardware, native-oracle, or Ghidra check. Use this only for a specific plausible concern that could materially affect the change, not for generic untested scenarios.
 
-            Relevant upstream source repositories may be available as project references in the system context. Use them selectively when a finding depends on framework, SDK, protocol, or library behavior that needs source-level verification. Do not inspect every reference.
+        Do not report a concern that depends only on manually corrupted trusted state, unsupported concurrent administrative use, abrupt process termination or power loss outside the documented recovery model, a violated upstream invariant, or an extremely narrow race without evidence that its scheduling window is practically reachable. For malformed or adversarial input, identify the actual untrusted boundary that permits it. For security findings, identify a credible attacker-controlled path. If reachability remains uncertain after checking the surrounding code and contracts, omit the finding rather than speculate.
 
-            Report only high-confidence, actionable findings:
-            - Correctness bugs and behavioral regressions
-            - Security, privacy, permission, or data-loss risks
-            - Material performance or reliability risks
-            - Material unnecessary complexity introduced by this pull request when a concrete simpler implementation preserves all current requirements
+        Calibrate severity from both impact and practical likelihood:
+        - High: a normal supported workflow or credible attacker can cause security compromise, data loss, a crash, or failure of core functionality
+        - Medium: a realistically reachable defect with material but bounded impact
+        - Low: a localized, realistically reachable defect that is still worth changing
+        Rare or theoretical trigger conditions are not High severity. Do not inflate severity from the worst imaginable consequence when the required preconditions are unlikely.
 
-            Establish that each reported problem is reachable in a supported, realistic workflow. Trace the relevant callers, callees, validation, synchronization, lifecycle, and upstream or downstream contracts, and actively look for constraints that invalidate the concern. A deterministic code path, a realistic existing harness or reproduction, or an authoritative documented contract is sufficient evidence; executable reproduction is not mandatory when reachability is clear from the code.
+        Prefer the smallest durable fix, not merely the smallest diff. Usually this means a local change. However, if a local patch would add branches, state, fallbacks, wrappers, validation, compatibility paths, or special cases to a flawed design, prefer a well-scoped rework of the directly affected code when it reduces total complexity and produces a clearer, more maintainable system. Do not preserve an existing architecture solely to minimize changed lines, and do not propose unrelated cleanup or speculative rewrites.
 
-            Some behavior can only be established with physical fingerprint hardware, the private Windows DLL or native oracle, or Ghidra. Do not imply that you reproduced behavior with resources that are unavailable. If the code and available contracts establish the defect, report it normally. If a concrete candidate materially depends on hardware behavior, timing, or an undocumented native contract and remains ambiguous after scoped repository research, do not assign it a severity or present it as a confirmed finding. Instead, add a brief `User verification needed` section naming the exact ambiguity and the most direct hardware, native-oracle, or Ghidra check. Use this only for a specific plausible concern that could materially affect the change, not for generic untested scenarios.
+        Do not require compatibility with prior development revisions unless the repository documents that behavior as shipped or persisted state that must remain supported.
 
-            Do not report a concern that depends only on manually corrupted trusted state, unsupported concurrent administrative use, abrupt process termination or power loss outside the documented recovery model, a violated upstream invariant, or an extremely narrow race without evidence that its scheduling window is practically reachable. For malformed or adversarial input, identify the actual untrusted boundary that permits it. For security findings, identify a credible attacker-controlled path. If reachability remains uncertain after checking the surrounding code and contracts, omit the finding rather than speculate.
+        Native Windows Milan behavior is authoritative for sensor type 12 / profile 9. Most changes do not require native-parity research. Consult the `milan-dev` reverse-engineering notes only when a candidate finding or its suggested fix could change intended native behavior in Milan algorithms or arithmetic, template validation or serialization, preprocessing, matching, enrollment, study policy, native command or state sequencing, or the parity harness's native contract. Generic Linux integration, build, packaging, documentation, and libfprint API issues do not require this by default.
 
-            Calibrate severity from both impact and practical likelihood:
-            - High: a normal supported workflow or credible attacker can cause security compromise, data loss, a crash, or failure of core functionality
-            - Medium: a realistically reachable defect with material but bounded impact
-            - Low: a localized, realistically reachable defect that is still worth changing
-            Rare or theoretical trigger conditions are not High severity. Do not inflate severity from the worst imaginable consequence when the required preconditions are unlikely.
+        Fetch `milan-dev` only after such a candidate arises. You may use Bash to create a detached worktree, for example:
+        `git fetch --depth=1 origin milan-dev:refs/remotes/origin/milan-dev && git worktree add --detach ../milan-dev-review origin/milan-dev`
+        Search only the directly relevant `re/milan/**` notes by symbol or contract; do not broadly read the branch. If the notes show that apparently unusual behavior intentionally matches the native driver, do not recommend defensive divergence. Defer any concrete unresolved parity question through the `User verification needed` section described above.
 
-            Prefer the smallest durable fix, not merely the smallest diff. Usually this means a local change. However, if a local patch would add branches, state, fallbacks, wrappers, validation, compatibility paths, or special cases to a flawed design, prefer a well-scoped rework of the directly affected code when it reduces total complexity and produces a clearer, more maintainable system. Do not preserve an existing architecture solely to minimize changed lines, and do not propose unrelated cleanup or speculative rewrites.
+        There is no target number of findings, and an LGTM review is a normal successful outcome. Combine symptoms with the same root cause, challenge each candidate before reporting it, and prefer no finding over a weak, speculative, or disproportionately expensive one.
 
-            Do not require compatibility with prior development revisions unless the repository documents that behavior as shipped or persisted state that must remain supported.
+        Never request or recommend adding regression tests, new test cases, or new test files as a finding or suggested fix. Do not run test suites; automated checks handle that separately. You may inspect existing tests and harnesses as evidence, or recommend a focused disposable reproduction as a user-verification step, but do not ask for a committed test.
+        Do not report formatting, lint, generic style preferences, speculative concerns, or pre-existing issues unless this pull request makes them worse or newly reachable.
 
-            Native Windows Milan behavior is authoritative for sensor type 12 / profile 9. Most changes do not require native-parity research. Consult the `milan-dev` reverse-engineering notes only when a candidate finding or its suggested fix could change intended native behavior in Milan algorithms or arithmetic, template validation or serialization, preprocessing, matching, enrollment, study policy, native command or state sequencing, or the parity harness's native contract. Generic Linux integration, build, packaging, documentation, and libfprint API issues do not require this by default.
+        Do not narrate the review process or mention instructions, tools, files that were absent, or checks you did not run. In particular, do not mention whether tests were run or whether project references were consulted. Discuss only the changed code, its behavior, actionable findings, and any concrete user verification that is needed.
 
-            Fetch `milan-dev` only after such a candidate arises. You may use Bash to create a detached worktree, for example:
-            `git fetch --depth=1 origin milan-dev:refs/remotes/origin/milan-dev && git worktree add --detach ../milan-dev-review origin/milan-dev`
-            Search only the directly relevant `re/milan/**` notes by symbol or contract; do not broadly read the branch. If the notes show that apparently unusual behavior intentionally matches the native driver, do not recommend defensive divergence. Defer any concrete unresolved parity question through the `User verification needed` section described above.
+        Output format:
+        - Use clean GitHub-flavored Markdown
+        - If findings exist, start with the numbered findings; include severity, file/line, the realistic trigger, why it matters, supporting evidence, and the smallest proportionate fix
+        - After the findings, optionally add one concise paragraph summarizing the changed behavior and overall assessment
+        - Avoid generic filler and repeated summaries
 
-            There is no target number of findings, and an LGTM review is a normal successful outcome. Combine symptoms with the same root cause, challenge each candidate before reporting it, and prefer no finding over a weak, speculative, or disproportionately expensive one.
-
-            Never request or recommend adding regression tests, new test cases, or new test files as a finding or suggested fix. Do not run test suites; automated checks handle that separately. You may inspect existing tests and harnesses as evidence, or recommend a focused disposable reproduction as a user-verification step, but do not ask for a committed test.
-            Do not report formatting, lint, generic style preferences, speculative concerns, or pre-existing issues unless this pull request makes them worse or newly reachable.
-
-            Do not narrate the review process or mention instructions, tools, files that were absent, or checks you did not run. In particular, do not mention whether tests were run or whether project references were consulted. Discuss only the changed code, its behavior, actionable findings, and any concrete user verification that is needed.
-
-            Output format:
-            - Use clean GitHub-flavored Markdown
-            - If findings exist, start with the numbered findings; include severity, file/line, the realistic trigger, why it matters, supporting evidence, and the smallest proportionate fix
-            - After the findings, optionally add one concise paragraph summarizing the changed behavior and overall assessment
-            - Avoid generic filler and repeated summaries
-
-            If there are no actionable findings and no user verification is needed, respond with "LGTM 👍" on its own line, then leave a blank line before adding a concise explanation of why the changed behavior appears correct. Discuss the code and behavior, not the review process.
+        If there are no actionable findings and no user verification is needed, respond with "LGTM 👍" on its own line, then leave a blank line before adding a concise explanation of why the changed behavior appears correct. Discuss the code and behavior, not the review process.

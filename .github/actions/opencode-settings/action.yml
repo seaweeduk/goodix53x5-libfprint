@@ -1,0 +1,23 @@
+name: OpenCode Settings
+description: Shared OpenAI model and reasoning level for OpenCode workflows
+
+outputs:
+  model:
+    description: OpenAI model used by every OpenCode review entry point
+    value: ${{ steps.settings.outputs.model }}
+  variant:
+    description: OpenCode variant and OpenAI reasoning effort
+    value: ${{ steps.settings.outputs.variant }}
+
+runs:
+  using: composite
+  steps:
+    - name: Publish shared settings
+      id: settings
+      shell: bash
+      env:
+        # Change these two values to update automatic reviews and /oc together.
+        MODEL: gpt-6.2-astra
+        VARIANT: high
+      run: |
+        printf 'model=%s\nvariant=%s\n' "$MODEL" "$VARIANT" >> "$GITHUB_OUTPUT"

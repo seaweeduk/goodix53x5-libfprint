@@ -7,11 +7,7 @@ on:
     types: [created]
 
 jobs:
-  settings:
-    uses: ./.github/workflows/opencode-settings.yml
-
   opencode:
-    needs: settings
     if: |
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
       (
@@ -20,58 +16,6 @@ jobs:
         contains(github.event.comment.body, ' /opencode') ||
         startsWith(github.event.comment.body, '/opencode')
       )
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      id-token: write
-      contents: read
-      actions: read
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Prepare OpenCode auth
-        shell: bash
-        env:
-          OPENCODE_AUTH_CONTENT: ${{ secrets.OPENCODE_AUTH_CONTENT }}
-        run: |
-          set -euo pipefail
-          umask 077
-
-          auth_dir="$HOME/.local/share/opencode"
-          auth_file="$auth_dir/auth.json"
-          install -d -m 700 "$auth_dir"
-          printf '%s' "$OPENCODE_AUTH_CONTENT" | jq -e . > "$auth_file"
-          chmod 600 "$auth_file"
-          access="$(jq -r '.openai.access // empty' "$auth_file")"
-          if [ -n "$access" ]; then
-            echo "::add-mask::$access"
-          fi
-
-      - name: Run OpenCode
-        uses: anomalyco/opencode/github@latest
-        env:
-          OPENCODE_PERMISSION: '{"*":"allow","doom_loop":"deny","question":"deny"}'
-          OPENCODE_CONFIG_CONTENT: |
-            {
-              "provider": {
-                "openai": {
-                  "models": {
-                    "${{ needs.settings.outputs.model }}": {
-                      "options": {
-                        "reasoningEffort": "${{ needs.settings.outputs.variant }}"
-                      }
-                    }
-                  }
-                }
-              }
-            }
-        with:
-          model: openai/${{ needs.settings.outputs.model }}
-          variant: ${{ needs.settings.outputs.variant }}
-          mentions: /opencode,/oc
-          share: false
+    permissions: { id-token: write, contents: write, pull-requests: write, issues: write, actions: read }
+    uses: ./.github/workflows/opencode-comment-agent.yml
+    secrets: inherit

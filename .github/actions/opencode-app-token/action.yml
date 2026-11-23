@@ -1,0 +1,51 @@
+name: OpenCode GitHub App token
+description: >
+  Exchange the job's OIDC token for an OpenCode GitHub App installation token, as the OpenCode V1
+  GitHub action does, so comments and pushes come from opencode-agent. Falls back to the job's
+  GITHUB_TOKEN. Revoke an app token when done (DELETE https://api.github.com/installation/token).
+
+inputs:
+  use_github_token:
+    description: Use the job's GITHUB_TOKEN instead of the app
+    required: false
+    default: 'false'
+
+outputs:
+  token:
+    description: The token to use
+    value: ${{ steps.token.outputs.token }}
+  app:
+    description: "'true' for an app token, which must be revoked"
+    value: ${{ steps.token.outputs.app }}
+
+runs:
+  using: composite
+  steps:
+    - id: token
+      shell: bash
+      env:
+        GITHUB_JOB_TOKEN: ${{ github.token }}
+        USE_GITHUB_TOKEN: ${{ inputs.use_github_token }}
+      run: |
+        set +e -uo pipefail
+        token=""
+        if [ "$USE_GITHUB_TOKEN" != "true" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          oidc="$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=opencode-github-action" | jq -r '.value // empty')"
+          if [ -n "$oidc" ]; then
+            echo "::add-mask::$oidc"
+            token="$(curl -fsS -X POST -H "Authorization: Bearer $oidc" \
+              https://api.opencode.ai/exchange_github_app_token | jq -r '.token // empty')"
+          fi
+        fi
+        if [ -n "$token" ]; then
+          echo "::add-mask::$token"
+          app=true
+        else
+          if [ "$USE_GITHUB_TOKEN" != "true" ]; then
+            echo "::warning::Could not get an OpenCode GitHub App token; using github-actions[bot]."
+          fi
+          token="$GITHUB_JOB_TOKEN"
+          app=false
+        fi
+        { echo "token=$token"; echo "app=$app"; } >> "$GITHUB_OUTPUT"

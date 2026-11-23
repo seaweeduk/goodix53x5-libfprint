@@ -1,0 +1,220 @@
+name: OpenCode PR Review
+
+on:
+  workflow_call:
+    inputs:
+      use_github_token:
+        description: Use the caller's GitHub token instead of the OpenCode GitHub App
+        required: false
+        type: boolean
+        default: false
+      runs-on:
+        description: Runner label for the review job
+        required: false
+        type: string
+        default: ubuntu-latest
+      extra-instructions:
+        description: Repository-specific instructions appended to the review prompt
+        required: false
+        type: string
+        default: ''
+      prompt:
+        description: A review prompt that replaces the default one and extra-instructions
+        required: false
+        type: string
+        default: ''
+      references:
+        description: A JSON object of references that replaces the shared list
+        required: false
+        type: string
+        default: ''
+    secrets:
+      OPENCODE_AUTH_CONTENT:
+        required: true
+      OPENCODE_AUTH_PERSIST_TOKEN:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+      OPENCODE_API_KEY:
+        required: false
+
+jobs:
+  review:
+    if: |
+      !github.event.pull_request.draft &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+
+    steps:
+      - name: Load shared OpenCode settings
+        id: settings
+        uses: $/.github/actions/opencode-settings
+
+      # The pull request's branch, with full history so the agent can diff it against the base
+      # branch: it has no credentials to fetch more.
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up OpenCode
+        uses: $/.github/actions/opencode-setup
+        with:
+          auth-content: ${{ secrets.OPENCODE_AUTH_CONTENT }}
+          references: ${{ inputs.references }}
+
+      # Byte for byte the prompt V1 sent: this text, then the extra instructions, then the context.
+      - name: Prepare the review prompt
+        shell: bash
+        env:
+          REVIEW_PROMPT: ${{ inputs.prompt }}
+          EXTRA_INSTRUCTIONS: ${{ inputs.extra-instructions }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/opencode"
+          mkdir -p "$dir"
+          if [ -n "$REVIEW_PROMPT" ]; then
+            printf '%s' "$REVIEW_PROMPT" > "$dir/prompt.md"
+            exit 0
+          fi
+          {
+            cat <<'PROMPT'
+          Review this pull request.
+
+          If an AGENTS.md file exists, read it at the start of the review.
+          Review the diff in the context of the full codebase, including unchanged code it interacts with or affects.
+
+          Relevant upstream source repositories may be available as project references in the system context. Use them selectively when a finding depends on framework, SDK, protocol, or library behavior that needs source-level verification. Do not inspect every reference.
+
+          Infer the pull request's intended scope from its title, description, linked issue, changed tests or documentation, and the established behavior of the affected code. Review whether the patch correctly implements that scope. Do not invent additional requirements. An enhancement that might be useful, a more general design, or behavior outside the stated scope is not a defect.
+
+          Report only high-confidence, actionable findings that the author should address before merging:
+          - Correctness bugs and behavioral regressions
+          - Security, privacy, permission, or data-loss risks
+          - Material performance or reliability regressions
+          - Material unnecessary complexity introduced by this pull request when a concrete simpler implementation satisfies all current requirements
+
+          Before reporting a finding, establish all of the following:
+          - The pull request introduces the problem or makes a pre-existing problem materially worse or newly reachable
+          - The behavior violates a stated requirement, established repository behavior, or an authoritative external contract
+          - The trigger is reachable in a supported and realistic workflow
+          - The impact is concrete and material enough to interrupt the author
+          - The suggested fix is proportionate and remains within the pull request's scope
+
+          Trace the relevant callers, validation, state transitions, synchronization, lifecycle, and external contracts. Actively look for constraints that invalidate each candidate concern. A clear deterministic path or authoritative contract is sufficient evidence; a reproduction is not required. If any material premise remains uncertain, omit the finding rather than speculate.
+
+          Do not report concerns that depend only on manually corrupted trusted state, violated upstream invariants, unsupported usage, abrupt termination outside the documented recovery model, or extremely unlikely timing. For malformed or adversarial input, identify the actual untrusted boundary that permits it. For race conditions, show that concurrency can occur in the current system and describe a plausible ordering through existing call paths. For security findings, identify a credible attacker-controlled path.
+
+          Calibrate severity using both practical likelihood and impact:
+          - High: a normal supported workflow or credible attacker is likely to cause security compromise, data loss, a crash, or failure of core functionality
+          - Medium: a realistically reachable defect with material but bounded impact
+          - Low: a localized, realistically reachable defect that clearly warrants a code change
+
+          Rare preconditions or theoretical worst cases are not High severity. Do not raise severity based only on the maximum imaginable consequence. When uncertain between two levels, use the lower one.
+
+          Prefer the smallest proportionate fix that fully implements the intended behavior. Do not request new abstractions, compatibility layers, fallbacks, validation, configurability, or generalized hardening unless a current requirement or demonstrated reachable defect needs them. Report complexity only when the pull request itself adds material unnecessary machinery and a concrete simpler alternative preserves all requirements. Do not turn subjective design preferences into findings or use a narrow defect to justify a broader refactor.
+
+          Keep recommendations within scope. Do not request unrelated cleanup, feature enhancements, future-proofing, support for hypothetical callers, or changes that merely make the system more robust in theory. Missing tests are not a standalone finding; mention a focused regression test only as part of fixing a confirmed behavioral defect when it adds clear value.
+
+          There is no target number of findings, and an LGTM review is a normal successful outcome. Combine findings with the same root cause. Do not list every observation: report at most the five most consequential findings unless additional independent High-severity defects would otherwise be omitted.
+
+          Do not run test suites; automated checks handle that separately.
+          Do not report formatting, lint, naming, generic style preferences, speculative concerns, or pre-existing issues unless this pull request makes them materially worse or newly reachable.
+
+          Do not narrate the review process or mention instructions, tools, files that were absent, or checks you did not run. In particular, do not mention whether AGENTS.md existed, whether tests were run, or whether project references were consulted. Discuss only the changed code, its behavior, and actionable findings.
+
+          Output format:
+          - Use clean GitHub-flavored Markdown
+          - If findings exist, list them first by number and in descending severity
+          - For each finding, include severity, file/line, the realistic trigger, concrete impact, supporting evidence, and the smallest proportionate fix
+          - After the findings, optionally add one concise paragraph summarizing the changed behavior and overall assessment
+          - Avoid generic filler and repeated summaries
+
+          If there are no actionable findings, respond with "LGTM 👍" on its own line, then leave a blank line before adding a concise explanation of why the changed behavior appears correct. Discuss the code and behavior, not the review process.
+          PROMPT
+            echo
+            if [ -n "${EXTRA_INSTRUCTIONS//[[:space:]]/}" ]; then
+              echo "Repository-specific instructions from the calling repository. Where they conflict with the instructions above, follow these:"
+              printf '%s\n' "$EXTRA_INSTRUCTIONS"
+            else
+              echo
+            fi
+          } > "$dir/prompt.md"
+
+      - name: Add the pull request context
+        uses: $/.github/actions/opencode-github
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          stage: review
+
+      - name: Run OpenCode PR review
+        id: run
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          MODEL: openai/${{ steps.settings.outputs.model }}#${{ steps.settings.outputs.variant }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set +e -uo pipefail
+          dir="$RUNNER_TEMP/opencode"
+          # The agent has no use for the job's OIDC credentials, which can mint the app token.
+          env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+            opencode run --standalone --auto --archived --format json \
+              --model "$MODEL" --title "Review #$PR" < "$dir/prompt.md" \
+            | tee "$dir/run.jsonl" \
+            | jq -r --unbuffered '
+                if .type == "tool_use" then "| \(.part.tool) \(.part.state.input | tostring | .[0:300])"
+                elif .type == "error" then "::error::\(.error.message // .error | tostring)"
+                else empty end'
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Read the review
+        id: reply
+        uses: $/.github/actions/opencode-github
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          MODEL: openai/${{ steps.settings.outputs.model }}#${{ steps.settings.outputs.variant }}
+          RUN_STATUS: ${{ steps.run.outputs.status }}
+        with:
+          stage: reply
+
+      - name: Get a GitHub App token
+        id: app
+        if: always() && steps.run.outcome != 'skipped'
+        uses: $/.github/actions/opencode-app-token
+        with:
+          use_github_token: ${{ inputs.use_github_token }}
+
+      - name: Post the review
+        if: always() && steps.app.outcome == 'success'
+        uses: $/.github/actions/opencode-github
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPLY_OUTCOME: ${{ steps.reply.outcome }}
+        with:
+          stage: post
+
+      - name: Revoke the GitHub App token
+        if: always() && steps.app.outputs.app == 'true'
+        shell: bash
+        env:
+          TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          curl -fsS -X DELETE -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/installation/token || true
+
+      - name: Save OpenCode usage
+        if: always()
+        uses: $/.github/actions/opencode-usage
